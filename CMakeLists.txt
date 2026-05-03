@@ -1,11 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
 
-# ── Compilers — MUST be set BEFORE project() so CMake's auto-detection picks
-# them up on first configure. Setting them after project() triggers a
-# "variables have changed" cache invalidation loop on subsequent configures,
-# which manifests as CMake endlessly re-running itself.
-set(CMAKE_C_COMPILER   "/usr/bin/clang"   CACHE STRING "C compiler"   FORCE)
-set(CMAKE_CXX_COMPILER "/usr/bin/clang++" CACHE STRING "C++ compiler" FORCE)
+# ── Compilers — set BEFORE project() so CMake's auto-detection picks them up
+# on first configure. Setting them after project() triggers a "variables have
+# changed" cache invalidation loop on subsequent configures, which manifests
+# as CMake endlessly re-running itself.
+#
+# Default to clang on systems where it's the natural choice (Fedora aarch64
+# dev box), but yield to anything the build environment has already set —
+# either via CC/CXX env vars or via a prior cache entry. This lets the same
+# CMakeLists work natively under clang AND inside the GNOME Flatpak SDK
+# (which ships GCC, not clang).
+if(NOT DEFINED CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
+    set(CMAKE_C_COMPILER   "/usr/bin/clang"   CACHE STRING "C compiler")
+endif()
+if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
+    set(CMAKE_CXX_COMPILER "/usr/bin/clang++" CACHE STRING "C++ compiler")
+endif()
 
 project(curvz VERSION 0.1.0 LANGUAGES C CXX)
 

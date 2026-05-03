@@ -1,0 +1,116 @@
+# Flatpak manifest for Curvz.
+#
+# Build locally:
+#   cd /path/to/curvz
+#   flatpak-builder --user --install --force-clean \
+#     build-flatpak packaging/flatpak/io.github.curvz.Curvz.yaml
+#   flatpak run io.github.curvz.Curvz
+#
+# Uninstall:
+#   flatpak uninstall io.github.curvz.Curvz
+#
+# First build downloads ~700 MB of GNOME runtime + SDK and compiles three
+# bundled deps (spdlog, Clipper2, cmark). Subsequent code-change rebuilds
+# are ~30 sec because dep modules are cached.
+
+app-id: io.github.curvz.Curvz
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+command: curvz
+
+# ── Sandbox holes ─────────────────────────────────────────────────────────────
+# Each line is a freedom granted at runtime. Less is better for security.
+# Curvz needs:
+#   • Display + GPU                   → wayland / X11 fallback / dri
+#   • User home for project files     → home
+#   • Print via CUPS (PrintManager)   → cups socket
+#   • Read host icon themes for the
+#     in-app icon library scanner     → three icons:ro mounts
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  - --filesystem=home
+  - --socket=cups
+  - --filesystem=/usr/share/icons:ro
+  - --filesystem=/usr/local/share/icons:ro
+  - --filesystem=xdg-data/icons:ro
+
+# ── Modules ───────────────────────────────────────────────────────────────────
+# Built in order. Each installs to /app inside the sandbox; subsequent modules
+# (and Curvz's own find_package calls) discover them there.
+modules:
+
+  # spdlog — header-only-ish logging, but we want the compiled lib so all of
+  # Curvz's translation units share one logger instance. Versions match the
+  # FetchContent fallback in CMakeLists.txt so behaviour is identical to a
+  # native build.
+  - name: spdlog
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DSPDLOG_BUILD_SHARED=ON
+      - -DSPDLOG_BUILD_EXAMPLE=OFF
+      - -DSPDLOG_BUILD_TESTS=OFF
+    sources:
+      - type: archive
+        url: https://github.com/gabime/spdlog/archive/refs/tags/v1.15.3.tar.gz
+        sha256: 15a04e69c222eb6c01094b5c7ff8a249b36bb22788d72519646fb85feb267e67
+
+  # Clipper2 — Angus Johnson's polygon clipping library. Boost license. Used
+  # by BooleanOpsClipper.cpp as a fallback / cross-check against the
+  # Sederberg-Nishita Bézier clipping path.
+  - name: clipper2
+    buildsystem: cmake-ninja
+    subdir: CPP
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCLIPPER2_UTILS=OFF
+      - -DCLIPPER2_EXAMPLES=OFF
+      - -DCLIPPER2_TESTS=OFF
+    sources:
+      - type: archive
+        url: https://github.com/AngusJohnson/Clipper2/archive/refs/tags/Clipper2_1.5.4.tar.gz
+        sha256: 9d8a35a29d04cd1b7b45f542c0ba48015feece1210036ea9e4efaad3140af4b0
+
+  # cmark — CommonMark parser, used by HelpWindow to render the bundled
+  # markdown manual. Static link is fine; it's small and we want a single
+  # self-contained binary inside the Flatpak.
+  #
+  # `builddir: true` forces flatpak-builder to configure cmark from a sibling
+  # build directory rather than the source root. Without it, cmark's
+  # CMakeLists hits its in-source-build guard and aborts.
+  - name: cmark
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMARK_TESTS=OFF
+      - -DBUILD_SHARED_LIBS=OFF
+    sources:
+      - type: archive
+        url: https://github.com/commonmark/cmark/archive/refs/tags/0.31.1.tar.gz
+        sha256: 3da93db5469c30588cfeb283d9d62edfc6ded9eb0edc10a4f5bbfb7d722ea802
+
+  # Curvz itself. `type: dir, path: ../..` points at the repo root from this
+  # file's location (packaging/flatpak/manifest.yaml → ../.. = repo root).
+  # When Flathub eventually builds this, that source becomes a git URL +
+  # commit ref; for local development the dir source is right.
+  #
+  # `build-options.env` sets CC/CXX before cmake runs. The Curvz CMakeLists
+  # reads ENV{CC}/ENV{CXX} as a way to skip its default-to-clang block, so
+  # this is what makes Curvz build with the SDK's GCC inside the sandbox
+  # while still defaulting to clang on the native dev machine.
+  - name: curvz
+    buildsystem: cmake-ninja
+    build-options:
+      env:
+        CC: gcc
+        CXX: g++
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+    sources:
+      - type: dir
+        path: ../..
