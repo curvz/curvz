@@ -9,6 +9,12 @@ set(CMAKE_CXX_COMPILER "/usr/bin/clang++" CACHE STRING "C++ compiler" FORCE)
 
 project(curvz VERSION 0.1.0 LANGUAGES C CXX)
 
+# ── Application identity ──────────────────────────────────────────────────────
+# Single source of truth for the freedesktop application ID. Used at install
+# time to name the .desktop file, metainfo, MIME XML, and the hicolor app icon.
+# Must match the string passed to Gtk::Application(...) in src/Application.cpp.
+set(CURVZ_APP_ID "io.github.curvz.Curvz")
+
 # ── Parallel build — use all available cores by default ───────────────────────
 include(ProcessorCount)
 ProcessorCount(CPU_COUNT)
@@ -401,5 +407,66 @@ target_compile_definitions(curvz PRIVATE
 )
 
 # ── Install ───────────────────────────────────────────────────────────────────
-install(TARGETS curvz DESTINATION bin)
-install(FILES curvz.desktop DESTINATION share/applications OPTIONAL)
+include(GNUInstallDirs)
+
+# Main binary.
+install(TARGETS curvz DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# Desktop entry — substitute @CURVZ_APP_ID@ from the .in template, then install
+# the result as <app-id>.desktop into share/applications.
+configure_file(
+    ${CMAKE_SOURCE_DIR}/resources/freedesktop/${CURVZ_APP_ID}.desktop.in
+    ${CMAKE_BINARY_DIR}/${CURVZ_APP_ID}.desktop
+    @ONLY
+)
+install(
+    FILES ${CMAKE_BINARY_DIR}/${CURVZ_APP_ID}.desktop
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
+)
+
+# AppStream metainfo — required for Flathub submission, surfaced by
+# software centres (GNOME Software, KDE Discover) for description and
+# screenshots.
+install(
+    FILES ${CMAKE_SOURCE_DIR}/resources/freedesktop/${CURVZ_APP_ID}.metainfo.xml
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo
+)
+
+# MIME type — registers .curvz files so file managers double-click into
+# Curvz and show the correct icon. Filename must match the namespace
+# convention (no app-id prefix is required, but keeping it is harmless and
+# avoids collisions).
+install(
+    FILES ${CMAKE_SOURCE_DIR}/resources/freedesktop/${CURVZ_APP_ID}.mime.xml
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages
+)
+
+# Application icon — the dock looks here for an SVG matching the app ID.
+# Source is curvz-logo-symbolic.svg; renamed at install time so the basename
+# matches CURVZ_APP_ID exactly. Without this, GNOME's dash falls back to a
+# generic placeholder icon.
+install(
+    FILES ${CMAKE_SOURCE_DIR}/resources/icons/curvz-logo-symbolic.svg
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
+    RENAME ${CURVZ_APP_ID}.svg
+)
+
+# ── Post-install hooks ────────────────────────────────────────────────────────
+# When installing into a real prefix (not staging for a package), refresh the
+# desktop, MIME, and icon caches so changes take effect immediately. Distro
+# package managers (rpm, dpkg, flatpak-builder) handle this themselves, so we
+# skip when DESTDIR is set or when CMAKE_INSTALL_PREFIX points outside /usr.
+if(NOT DEFINED ENV{DESTDIR})
+    install(CODE "
+        message(STATUS \"Updating desktop database, MIME database, and icon cache...\")
+        execute_process(COMMAND update-desktop-database -q
+            \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/applications
+            ERROR_QUIET RESULT_VARIABLE _r)
+        execute_process(COMMAND update-mime-database -n
+            \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/mime
+            ERROR_QUIET RESULT_VARIABLE _r)
+        execute_process(COMMAND gtk-update-icon-cache -qtf
+            \${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/icons/hicolor
+            ERROR_QUIET RESULT_VARIABLE _r)
+    ")
+endif()

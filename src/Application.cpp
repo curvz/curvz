@@ -20,7 +20,7 @@ Glib::RefPtr<Application> Application::create() {
 }
 
 Application::Application()
-    : Gtk::Application("com.example.curvz",
+    : Gtk::Application("io.github.curvz.Curvz",
                        Gio::Application::Flags::HANDLES_OPEN) {
   try {
     namespace fs = std::filesystem;

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.curvz.Curvz</id>
+
+  <name>Curvz</name>
+  <summary>Professional SVG icon editor for currentColor-aware glyphs</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <developer id="io.github.curvz">
+    <name>The Curvz Project</name>
+  </developer>
+
+  <description>
+    <p>
+      Curvz is a vector graphics editor focused on producing clean, professional
+      SVG icons. It targets icon authors who need precise control over node
+      types, boolean path operations, and currentColor-aware output suitable for
+      embedding in GTK applications and other contexts where icons should follow
+      the host theme.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Pen, node, rectangle, ellipse, polygon, spiral, line, and text tools</li>
+      <li>Boolean path operations (union, subtract, intersect)</li>
+      <li>Compound paths, blends, clip masks, and warps</li>
+      <li>Multi-document interface with project files and templates</li>
+      <li>Reusable swatches, styles, and themes</li>
+      <li>currentColor-aware SVG output for icon embedding</li>
+      <li>Configurable rulers, guides, grids, and snapping</li>
+      <li>Macro recording and playback</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.curvz.Curvz.desktop</launchable>
+
+  <url type="homepage">https://github.com/curvz/curvz</url>
+  <url type="bugtracker">https://github.com/curvz/curvz/issues</url>
+  <url type="vcs-browser">https://github.com/curvz/curvz</url>
+
+  <categories>
+    <category>Graphics</category>
+    <category>VectorGraphics</category>
+  </categories>
+
+  <keywords>
+    <keyword>svg</keyword>
+    <keyword>icon</keyword>
+    <keyword>vector</keyword>
+    <keyword>graphics</keyword>
+    <keyword>editor</keyword>
+    <keyword>currentcolor</keyword>
+  </keywords>
+
+  <provides>
+    <binary>curvz</binary>
+    <mediatype>application/x-curvz-project</mediatype>
+  </provides>
+
+  <content_rating type="oars-1.1"/>
+
+  <!--
+    Screenshots: replace with real URLs once screenshots are hosted (e.g.
+    raw.githubusercontent.com paths once the manual screenshots land in the
+    repo). At least one screenshot is required for Flathub submission.
+  -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>Curvz workspace overview</caption>
+      <image>https://raw.githubusercontent.com/curvz/curvz/main/resources/help/img/1-3-workspace-overview.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="0.1.0" date="2026-05-02">
+      <description>
+        <p>Initial development release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Curvz
+GenericName=Vector Icon Editor
+Comment=Professional SVG icon editor for currentColor-aware glyphs
+Exec=curvz %F
+Icon=@CURVZ_APP_ID@
+Terminal=false
+Categories=Graphics;VectorGraphics;2DGraphics;
+MimeType=application/x-curvz-project;image/svg+xml;
+Keywords=svg;icon;vector;graphics;editor;currentcolor;
+StartupNotify=true
+StartupWMClass=@CURVZ_APP_ID@
