@@ -9,9 +9,11 @@
 # Uninstall:
 #   flatpak uninstall io.github.curvz.Curvz
 #
-# First build downloads ~700 MB of GNOME runtime + SDK and compiles three
-# bundled deps (spdlog, Clipper2, cmark). Subsequent code-change rebuilds
-# are ~30 sec because dep modules are cached.
+# First build downloads ~700 MB of GNOME runtime + SDK and compiles nine
+# bundled deps (spdlog, Clipper2, cmark, nlohmann_json, and the five-module
+# gtkmm-4 binding stack: libsigc++, glibmm, cairomm, pangomm, gtkmm). Expect
+# ~10-15 min for the first build on a modern machine; subsequent code-change
+# rebuilds are ~30 sec because dep modules are cached.
 
 app-id: io.github.curvz.Curvz
 runtime: org.gnome.Platform
@@ -37,6 +39,25 @@ finish-args:
   - --filesystem=/usr/share/icons:ro
   - --filesystem=/usr/local/share/icons:ro
   - --filesystem=xdg-data/icons:ro
+
+# ── Bundle slimming ───────────────────────────────────────────────────────────
+# These paths are stripped from /app after every module finishes building. They
+# only matter at compile time — keeping them in the bundle bloats the .flatpak
+# without changing runtime behaviour. Standard Flathub idiom; mirrors what
+# every gtkmm-4 manifest on Flathub does.
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /lib/cmake
+  - /share/aclocal
+  - /share/devhelp
+  - /share/doc
+  - /share/gir-1.0
+  - /share/gtk-doc
+  - /share/man
+  - /share/pkgconfig
+  - '*.a'
+  - '*.la'
 
 # ── Modules ───────────────────────────────────────────────────────────────────
 # Built in order. Each installs to /app inside the sandbox; subsequent modules
@@ -94,6 +115,99 @@ modules:
         url: https://github.com/commonmark/cmark/archive/refs/tags/0.31.1.tar.gz
         sha256: 3da93db5469c30588cfeb283d9d62edfc6ded9eb0edc10a4f5bbfb7d722ea802
 
+  # nlohmann/json — header-only JSON library used throughout Curvz for project
+  # file (.curvz) read/write, swatch/style serialisation, and round-trip
+  # fidelity tests. Header-only but the CMake project still installs config
+  # files so Curvz's `find_package(nlohmann_json)` resolves the in-sandbox
+  # copy at /app instead of trying to FetchContent from GitHub (which fails
+  # because the sandbox has no network during the compile phase).
+  #
+  # Version matches the FetchContent fallback in CMakeLists.txt exactly.
+  # Tests are off (we don't need them) but JSON_Install defaults ON for a
+  # top-level build, which is what we want.
+  - name: nlohmann_json
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DJSON_BuildTests=OFF
+    sources:
+      - type: archive
+        url: https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+        sha256: d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
+
+  # ── gtkmm-4 C++ binding stack ────────────────────────────────────────────────
+  # The org.gnome.Sdk//47 runtime ships GTK4 + glib + cairo + pango (the C
+  # libraries) but NOT the C++ binding stack. Curvz is a gtkmm-4.0 application,
+  # so we build the bindings ourselves: libsigc++ → glibmm → cairomm → pangomm
+  # → gtkmm. Versions are pinned to the GNOME 47-era stable releases (Sept
+  # 2024), which is when GNOME 47 itself shipped — keeping bindings and the
+  # GTK4 runtime contemporaneous.
+  #
+  # Why these specific versions:
+  #   libsigc++-3.6.0  - sigc++-3.0 ABI; required by glibmm and cairomm
+  #   glibmm-2.82.0    - glibmm-2.68 ABI; matches glib 2.82 in runtime 47
+  #   cairomm-1.18.0   - cairomm-1.16 ABI; from cairographics.org (not GNOME)
+  #   pangomm-2.54.0   - pangomm-2.48 ABI; matches pango 1.54
+  #   gtkmm-4.16.0     - gtkmm-4.0 ABI; pairs with GTK 4.16 in runtime 47
+  #
+  # All five are meson-built. We disable docs/tests/examples to cut build time
+  # by ~60% — flatpak-builder has to compile the whole stack from source on
+  # every clean build, so this is the difference between a 5-min and 15-min
+  # rebuild after `--force-clean`.
+  #
+  # `config-opts` here are MESON options (`-Dfoo=value` form), not CMake flags.
+
+  - name: libsigc++
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-documentation=false
+      - -Dbuild-examples=false
+      - -Dbuild-tests=false
+      - -Dbenchmark=false
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/libsigc++/3.6/libsigc++-3.6.0.tar.xz
+        sha256: c3d23b37dfd6e39f2e09f091b77b1541fbfa17c4f0b6bf5c89baef7229080e17
+
+  - name: glibmm
+    buildsystem: meson
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/glibmm/2.82/glibmm-2.82.0.tar.xz
+        sha256: 38684cff317273615c67b8fa9806f16299d51e5506d9b909bae15b589fa99cb6
+
+  - name: cairomm
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-documentation=false
+      - -Dbuild-examples=false
+      - -Dbuild-tests=false
+    sources:
+      - type: archive
+        url: https://www.cairographics.org/releases/cairomm-1.18.0.tar.xz
+        sha256: b81255394e3ea8e8aa887276d22afa8985fc8daef60692eb2407d23049f03cfb
+
+  - name: pangomm
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-documentation=false
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/pangomm/2.54/pangomm-2.54.0.tar.xz
+        sha256: 4a5b1fd1b7c47a1af45277ea82b5abeaca8e08fb10a27daa6394cf88d74e7acf
+
+  - name: gtkmm
+    buildsystem: meson
+    config-opts:
+      - -Dbuild-documentation=false
+      - -Dbuild-demos=false
+      - -Dbuild-tests=false
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/gtkmm/4.16/gtkmm-4.16.0.tar.xz
+        sha256: 3b23fd3abf8fb223b00e9983b6010af2db80e38c89ab6994b8b6230aa85d60f9
+
+  # ── Curvz ────────────────────────────────────────────────────────────────────
   # Curvz itself. `type: dir, path: ../..` points at the repo root from this
   # file's location (packaging/flatpak/manifest.yaml → ../.. = repo root).
   # When Flathub eventually builds this, that source becomes a git URL +
