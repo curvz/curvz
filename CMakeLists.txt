@@ -442,11 +442,12 @@ install(
 )
 
 # Application icon — the dock looks here for an SVG matching the app ID.
-# Source is curvz-logo-symbolic.svg; renamed at install time so the basename
-# matches CURVZ_APP_ID exactly. Without this, GNOME's dash falls back to a
-# generic placeholder icon.
+# Source is curvz-app-icon.svg (full-colour launcher icon, distinct from the
+# in-app symbolic). Renamed at install time so the basename matches
+# CURVZ_APP_ID exactly. Without this, GNOME's dash falls back to a generic
+# placeholder icon.
 install(
-    FILES ${CMAKE_SOURCE_DIR}/resources/icons/curvz-logo-symbolic.svg
+    FILES ${CMAKE_SOURCE_DIR}/resources/branding/curvz-app-icon.svg
     DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
     RENAME ${CURVZ_APP_ID}.svg
 )
