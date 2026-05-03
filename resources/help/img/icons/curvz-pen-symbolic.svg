@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g data-curvz-guide-layer="1" data-curvz-guide-color="0,0.749,1">
+  </g>
+  <g data-curvz-layer="1" id="Layer 1">
+    <g data-curvz-group="1" id="Group_20" data-curvz-name="Group_20">
+      <path id="obj104" data-curvz-iid="32e320a7-fd57-4541-91bf-5cbf49b9ef31" d="M 36.3299 919.754 C 96.4568 764.862 221.213 429.128 221.077 429.781 C 220.897 430.639 526.752 281.056 526.663 282.014 C 526.575 282.972 705.298 457.957 705.298 457.957 C 705.67 458.331 565.105 769.74 564.994 769.466 C 564.908 769.253 226.028 899.867 77.7923 959.765 L 354.445 683.112 C 386.8 697.744 426.193 691.78 452.776 665.198 C 487.047 630.927 487.047 575.363 452.776 541.092 C 418.505 506.821 362.941 506.821 328.67 541.092 C 301.501 568.261 295.871 608.813 311.767 641.54 L 36.3299 919.754 Z" data-curvz-types="K K K K K K K K K K K" data-curvz-name="Subtract" fill="currentColor" stroke="currentColor" stroke-width="2"/>
+      <path id="obj99" data-curvz-iid="c2511220-1db2-422c-ba6d-0d19fab397e7" d="M 535.398 217.393 L 535.398 175.065 L 672.115 38.3487 L 714.443 38.3487 L 954.31 278.216 L 954.31 320.544 L 817.594 457.26 L 775.265 457.26 L 535.398 217.393 Z" data-curvz-types="K K K K K K K K" fill="currentColor" stroke="none" stroke-width="0"/>
+    </g>
+  </g>
+</svg>

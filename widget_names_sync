@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# widget_names_sync — regenerate widget_names.db from source.
+#
+# Source is the single source of truth. Every curvz::utils::set_name(w, "abbrev",
+# "long_name") call in src/ or include/ becomes one row in widget_names.db.
+#
+# Usage:
+#   ./widget_names_sync           # regenerate DB from source (default)
+#   ./widget_names_sync --check   # exit non-zero if DB would change (CI / pre-commit)
+#   ./widget_names_sync --print   # write to stdout instead of widget_names.db
+#
+# Why a generator and not a hand-maintained DB?
+# Hand-maintained means the DB drifts when refactors move set_name calls. The
+# call site has the abbrev AND the long name AND the file:line — all three
+# columns we need. So we let source own the data and rebuild the DB on demand.
+
+set -euo pipefail
+
+DB="widget_names.db"
+MODE="generate"
+
+usage() {
+    cat <<EOF
+widget_names_sync — regenerate widget_names.db from source.
+
+DEFAULT BEHAVIOUR
+    Running this script with no arguments rewrites widget_names.db in the
+    current directory. It scans src/ and include/ for every line of the form
+
+        curvz::utils::set_name(widget, "abbrev", "long_name");
+
+    and produces one DB row per call. Run from the repo root.
+
+USAGE
+    ./widget_names_sync           Rewrite widget_names.db from source. (default)
+    ./widget_names_sync --check   Don't write — exit non-zero if DB would change.
+                                  For CI and pre-commit hooks.
+    ./widget_names_sync --print   Write the generated DB to stdout instead of
+                                  the file. Useful for piping or eyeballing.
+    ./widget_names_sync --help    Show this message.
+
+WORKFLOW
+    1. Add curvz::utils::set_name(...) at a widget construction site.
+    2. Run ./widget_names_sync. The DB file is rewritten.
+    3. After any refactor that moves call sites: ./widget_names_sync again.
+    4. To verify the DB matches source without rewriting: --check.
+
+    Comment lines (starting with //) are ignored, so doc-comment examples
+    don't pollute the DB.
+
+LOOKUP (after generating the DB)
+    awk -F'\t' '\$1=="tb"' widget_names.db    # decode one abbrev to file:line
+    grep -P '^tb' widget_names.db             # all abbrevs starting with tb
+    cut -f1 widget_names.db                   # list every registered abbrev
+
+EXIT CODES
+    0   success / DB in sync
+    1   --check found drift (DB out of sync with source)
+    2   bad arguments
+EOF
+}
+
+case "${1:-}" in
+    --check)        MODE="check" ;;
+    --print)        MODE="print" ;;
+    --help|-h)      usage; exit 0 ;;
+    "")             MODE="generate" ;;
+    *)              echo "unknown argument: $1" >&2
+                    echo "try: $0 --help" >&2
+                    exit 2 ;;
+esac
+
+# Harvest every curvz::utils::set_name call.
+#
+# Regex captures:
+#   \1 = file path
+#   \2 = line number
+#   \3 = abbrev (first string argument)
+#   \4 = long name (second string argument)
+#
+# Style convention: one curvz::utils::set_name call per line. Multi-line calls
+# are out of scope — keep them on one line and the harvester sees them.
+harvest() {
+    grep -rn 'curvz::utils::set_name' src/ include/ \
+        --include='*.cpp' --include='*.hpp' 2>/dev/null \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+    | sed -nE 's|^([^:]+):([0-9]+):.*curvz::utils::set_name\([^,]+,[[:space:]]*"([^"]+)"[[:space:]]*,[[:space:]]*"([^"]+)".*|\3\t\4\t\1:\2|p' \
+    | sort -t$'\t' -k1,1
+}
+
+new_content=$(harvest)
+
+if [[ -z "$new_content" ]]; then
+    echo "warning: no curvz::utils::set_name calls found in source" >&2
+fi
+
+row_count=$(printf '%s\n' "$new_content" | grep -c '^[^[:space:]]' || true)
+
+case "$MODE" in
+    print)
+        printf '%s\n' "$new_content"
+        ;;
+    check)
+        if [[ ! -f "$DB" ]]; then
+            echo "check failed: $DB does not exist" >&2
+            exit 1
+        fi
+        current=$(cat "$DB")
+        if [[ "$current" == "$new_content" ]]; then
+            echo "$DB: in sync ($row_count rows)"
+            exit 0
+        else
+            echo "$DB: out of sync — regenerate with: ./widget_names_sync" >&2
+            diff <(echo "$current") <(echo "$new_content") || true
+            exit 1
+        fi
+        ;;
+    generate)
+        echo "regenerating $DB from source..."
+        printf '%s\n' "$new_content" > "$DB"
+        echo "  scanned: src/ include/"
+        echo "  matched: curvz::utils::set_name() calls"
+        echo "  wrote:   $DB ($row_count rows)"
+        ;;
+esac

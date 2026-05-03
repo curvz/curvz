@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g data-curvz-layer="1" id="Layer 1">
+    <path data-curvz-compound="1" id="compound1" data-curvz-name="Compound 1" fill-rule="evenodd" d="M 168.016 635.636 L 598.016 635.636 L 598.016 845.636 L 168.016 845.636 L 168.016 635.636 Z M 43.0157 585.636 C 43.0157 544.214 76.5944 510.636 118.016 510.636 L 648.016 510.636 C 689.437 510.636 723.016 544.214 723.016 585.636 L 723.016 895.636 C 723.016 937.057 689.437 970.636 648.016 970.636 L 118.016 970.636 C 76.5944 970.636 43.0157 937.057 43.0157 895.636 L 43.0157 585.636 Z" data-curvz-types="K K K K|K K K K K K K K" data-curvz-child-ids="obj4,obj2" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    <path id="compound1_0" data-curvz-iid="7dabe5f5-0dc5-4dbf-9b08-8f8eea43d6a9" d="M 500.289 557.616 C 502.345 558.13 500.146 270.547 500.146 270.547 C 500.146 144.961 602.979 42.128 728.565 42.128 C 854.151 42.128 956.984 144.961 956.984 270.547 L 956.984 327.652 C 956.984 359.104 931.332 384.757 899.879 384.757 C 868.427 384.757 842.13 355.457 842.775 327.652 C 843.42 299.847 842.775 270.547 842.775 270.547 C 842.775 206.304 792.808 156.338 728.565 156.338 C 664.322 156.338 614.877 194.317 614.355 270.547 L 611.973 552.125 L 500.289 557.616 Z" data-curvz-types="K K M M K S S K S K K" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+  </g>
+  <g data-curvz-guide-layer="1" data-curvz-guide-color="0,0.749,1">
+    <line data-curvz-guide="1" data-curvz-guide-pos="500.000000" data-curvz-guide-horiz="0"/>
+  </g>
+  <g data-curvz-layer="1" id="Layer 1">
+  </g>
+</svg>

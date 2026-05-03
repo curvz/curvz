@@ -1,0 +1,213 @@
+{
+  "_legend_01": "═══════════════════════════════════════════════════════════════════════",
+  "_legend_02": "  CURVZ STARTER TEMPLATES  —  seeds.json  —  field reference",
+  "_legend_03": "═══════════════════════════════════════════════════════════════════════",
+  "_legend_04": "",
+  "_legend_05": "TOP LEVEL",
+  "_legend_06": "  version   integer  required  currently 1",
+  "_legend_07": "  defaults  object   optional  proportions applied to any seed that",
+  "_legend_08": "                               doesn't carry its own 'proportions' block",
+  "_legend_09": "  seeds     array    required  list of seed objects",
+  "_legend_10": "",
+  "_legend_11": "SEED OBJECT",
+  "_legend_12": "  category     string   required   one of: icons | print | web | social",
+  "_legend_13": "                                  (or any custom name — becomes a folder)",
+  "_legend_14": "  name         string   required   display name; used to form the slug",
+  "_legend_15": "                                  (e.g. 'My Card' → 'my-card.curvztpl')",
+  "_legend_16": "  description  string   optional   short spec text, shown in UI",
+  "_legend_17": "  canvas       object   required   see CANVAS below",
+  "_legend_18": "  proportions  object   optional   per-seed override of defaults",
+  "_legend_19": "",
+  "_legend_20": "CANVAS OBJECT",
+  "_legend_21": "  kind         string   required   one of: ratio | pixel | physical",
+  "_legend_22": "",
+  "_legend_23": "  when kind = 'ratio'  (aspect-ratio based, best for icons)",
+  "_legend_24": "    width      number  required   positive real, e.g. 16 or 1.618",
+  "_legend_25": "    height     number  required   positive real, e.g. 9  or 1.0",
+  "_legend_26": "    quality    integer required   pixels on the short axis, e.g. 1000",
+  "_legend_27": "",
+  "_legend_28": "  when kind = 'pixel'  (literal pixel size, best for web / social)",
+  "_legend_29": "    width      integer required   positive, in pixels",
+  "_legend_30": "    height     integer required   positive, in pixels",
+  "_legend_31": "",
+  "_legend_32": "  when kind = 'physical'  (print / stationery)",
+  "_legend_33": "    width      number  required   positive real, in 'unit'",
+  "_legend_34": "    height     number  required   positive real, in 'unit'",
+  "_legend_35": "    unit       string  required   one of: in | mm | cm",
+  "_legend_36": "    dpi        integer optional   default 300; typical: 72 | 150 | 300 | 600",
+  "_legend_37": "",
+  "_legend_38": "PROPORTIONS OBJECT  (grid + margin computed at instantiation time)",
+  "_legend_39": "  grid_divisions     integer  optional   ≥ 0; default 0 = disabled",
+  "_legend_40": "                                         cells across the short axis",
+  "_legend_41": "  margin_ratio       number   optional   0.0–1.0; default 0.0 = disabled",
+  "_legend_42": "                                         margin = grid_cell × margin_ratio",
+  "_legend_43": "                                         applied to all four sides equally",
+  "_legend_44": "  grid_offset_ratio  number   optional   0.0–1.0; default 0.0",
+  "_legend_45": "                                         grid origin offset as fraction",
+  "_legend_46": "                                         of a cell (0.5 centers on margin)",
+  "_legend_47": "",
+  "_legend_48": "INHERITANCE",
+  "_legend_49": "  A seed without a 'proportions' block inherits the 'defaults' block.",
+  "_legend_50": "  A seed with a partial 'proportions' block inherits missing fields:",
+  "_legend_51": "    \"proportions\": { \"grid_divisions\": 12 }",
+  "_legend_52": "    → uses 12 divisions, inherits margin_ratio + grid_offset_ratio.",
+  "_legend_53": "  Disable proportions entirely for one seed:",
+  "_legend_54": "    \"proportions\": { \"grid_divisions\": 0, \"margin_ratio\": 0 }",
+  "_legend_55": "",
+  "_legend_56": "HOUSE STYLE  (the bundled defaults)",
+  "_legend_57": "  10 divisions across the short axis, margin = half a cell, grid offset",
+  "_legend_58": "  half a cell. On US Letter → 0.425in margins; on a 1000q icon → 50px.",
+  "_legend_59": "",
+  "_legend_60": "LIFECYCLE",
+  "_legend_61": "  • Edit this file freely; delete ~/.config/curvz/templates/.seeds_v1",
+  "_legend_62": "    to re-seed on next launch.",
+  "_legend_63": "  • Existing bundles are never overwritten; only missing ones created.",
+  "_legend_64": "  • Broken JSON falls back to the bundled copy (seeding still works).",
+  "_legend_65": "  • Keys starting with _ are ignored by the parser — use them for notes.",
+  "_legend_66": "",
+  "_legend_67": "═══════════════════════════════════════════════════════════════════════",
+
+  "version": 1,
+
+  "defaults": {
+    "grid_divisions":    10,
+    "margin_ratio":      0.5,
+    "grid_offset_ratio": 0.5
+  },
+
+  "seeds": [
+
+    { "_section": "print" },
+
+    { "category": "print", "name": "US Letter",
+      "description": "8.5 × 11 in, 300 DPI",
+      "canvas": { "kind": "physical", "width": 8.5,  "height": 11.0, "unit": "in", "dpi": 300 } },
+
+    { "category": "print", "name": "US Legal",
+      "description": "8.5 × 14 in, 300 DPI",
+      "canvas": { "kind": "physical", "width": 8.5,  "height": 14.0, "unit": "in", "dpi": 300 } },
+
+    { "category": "print", "name": "US Tabloid",
+      "description": "11 × 17 in, 300 DPI",
+      "canvas": { "kind": "physical", "width": 11.0, "height": 17.0, "unit": "in", "dpi": 300 } },
+
+    { "category": "print", "name": "A3",
+      "description": "297 × 420 mm, 300 DPI",
+      "canvas": { "kind": "physical", "width": 297.0, "height": 420.0, "unit": "mm", "dpi": 300 } },
+
+    { "category": "print", "name": "A4",
+      "description": "210 × 297 mm, 300 DPI",
+      "canvas": { "kind": "physical", "width": 210.0, "height": 297.0, "unit": "mm", "dpi": 300 } },
+
+    { "category": "print", "name": "A5",
+      "description": "148 × 210 mm, 300 DPI",
+      "canvas": { "kind": "physical", "width": 148.0, "height": 210.0, "unit": "mm", "dpi": 300 } },
+
+    { "category": "print", "name": "Business Card",
+      "description": "3.5 × 2 in (US), 300 DPI",
+      "canvas": { "kind": "physical", "width": 3.5,  "height": 2.0,  "unit": "in", "dpi": 300 } },
+
+    { "_section": "icons (resolution-independent aspect ratios at 1000q)" },
+
+    { "category": "icons", "name": "Icon 1:1",
+      "description": "Square icon, 1000q",
+      "canvas": { "kind": "ratio", "width": 1.0, "height": 1.0, "quality": 1000 } },
+
+    { "category": "icons", "name": "Icon Golden (portrait)",
+      "description": "1:1.618 golden ratio, portrait",
+      "canvas": { "kind": "ratio", "width": 1.0, "height": 1.618, "quality": 1000 } },
+
+    { "category": "icons", "name": "Icon Golden (landscape)",
+      "description": "1.618:1 golden ratio, landscape",
+      "canvas": { "kind": "ratio", "width": 1.618, "height": 1.0, "quality": 1000 } },
+
+    { "category": "icons", "name": "Icon Silver (portrait)",
+      "description": "1:\u221A2 silver ratio (A-series), portrait",
+      "canvas": { "kind": "ratio", "width": 1.0, "height": 1.41421356, "quality": 1000 } },
+
+    { "category": "icons", "name": "Icon Silver (landscape)",
+      "description": "\u221A2:1 silver ratio (A-series), landscape",
+      "canvas": { "kind": "ratio", "width": 1.41421356, "height": 1.0, "quality": 1000 } },
+
+    { "category": "icons", "name": "Icon 16:9",
+      "description": "16:9 widescreen icon",
+      "canvas": { "kind": "ratio", "width": 16.0, "height": 9.0, "quality": 1000 } },
+
+    { "category": "icons", "name": "Icon 9:16",
+      "description": "9:16 tall icon (story / reel)",
+      "canvas": { "kind": "ratio", "width": 9.0, "height": 16.0, "quality": 1000 } },
+
+    { "category": "icons", "name": "Icon 2:1",
+      "description": "Double-wide icon",
+      "canvas": { "kind": "ratio", "width": 2.0, "height": 1.0, "quality": 1000 } },
+
+    { "category": "icons", "name": "Icon 1:2",
+      "description": "Double-tall icon",
+      "canvas": { "kind": "ratio", "width": 1.0, "height": 2.0, "quality": 1000 } },
+
+    { "_section": "web" },
+
+    { "category": "web", "name": "Favicon 32",
+      "description": "32 \u00D7 32 px favicon",
+      "canvas": { "kind": "pixel", "width": 32,   "height": 32 } },
+
+    { "category": "web", "name": "Favicon 180 (Apple Touch)",
+      "description": "180 \u00D7 180 px Apple touch icon",
+      "canvas": { "kind": "pixel", "width": 180,  "height": 180 } },
+
+    { "category": "web", "name": "Web Banner",
+      "description": "728 \u00D7 90 px IAB leaderboard banner",
+      "canvas": { "kind": "pixel", "width": 728,  "height": 90 } },
+
+    { "category": "web", "name": "Leaderboard",
+      "description": "970 \u00D7 250 px IAB large leaderboard",
+      "canvas": { "kind": "pixel", "width": 970,  "height": 250 } },
+
+    { "category": "web", "name": "Medium Rectangle",
+      "description": "300 \u00D7 250 px IAB medium rectangle",
+      "canvas": { "kind": "pixel", "width": 300,  "height": 250 } },
+
+    { "category": "web", "name": "OG Image",
+      "description": "1200 \u00D7 630 px Open Graph preview",
+      "canvas": { "kind": "pixel", "width": 1200, "height": 630 } },
+
+    { "category": "web", "name": "Hero 1080p",
+      "description": "1920 \u00D7 1080 px hero banner",
+      "canvas": { "kind": "pixel", "width": 1920, "height": 1080 } },
+
+    { "_section": "social" },
+
+    { "category": "social", "name": "Instagram Square",
+      "description": "1080 \u00D7 1080 px Instagram square post",
+      "canvas": { "kind": "pixel", "width": 1080, "height": 1080 } },
+
+    { "category": "social", "name": "Instagram Portrait",
+      "description": "1080 \u00D7 1350 px Instagram portrait post",
+      "canvas": { "kind": "pixel", "width": 1080, "height": 1350 } },
+
+    { "category": "social", "name": "Instagram Story",
+      "description": "1080 \u00D7 1920 px Instagram story / reel",
+      "canvas": { "kind": "pixel", "width": 1080, "height": 1920 } },
+
+    { "category": "social", "name": "Twitter X Card",
+      "description": "1200 \u00D7 675 px Twitter/X summary card",
+      "canvas": { "kind": "pixel", "width": 1200, "height": 675 } },
+
+    { "category": "social", "name": "Twitter X Header",
+      "description": "1500 \u00D7 500 px Twitter/X profile header",
+      "canvas": { "kind": "pixel", "width": 1500, "height": 500 } },
+
+    { "category": "social", "name": "Facebook Cover",
+      "description": "820 \u00D7 312 px Facebook cover photo",
+      "canvas": { "kind": "pixel", "width": 820,  "height": 312 } },
+
+    { "category": "social", "name": "YouTube Thumbnail",
+      "description": "1280 \u00D7 720 px YouTube video thumbnail",
+      "canvas": { "kind": "pixel", "width": 1280, "height": 720 } },
+
+    { "category": "social", "name": "LinkedIn Banner",
+      "description": "1584 \u00D7 396 px LinkedIn profile banner",
+      "canvas": { "kind": "pixel", "width": 1584, "height": 396 } }
+
+  ]
+}

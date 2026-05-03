@@ -67,3 +67,12 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Curvz-specific
+widget_names.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*~
+resources/resources.gresource

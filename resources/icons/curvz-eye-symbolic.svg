@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g data-curvz-guide-layer="1" data-curvz-guide-color="0,0.749,1">
+  </g>
+  <g data-curvz-layer="1" id="Layer 0">
+    <path id="obj4" data-curvz-iid="24be5dc2-cddb-4586-b2af-20bcbc20115d" d="M 500 378.61 C 581.295 378.61 647.197 444.512 647.197 525.807 C 647.197 607.102 581.295 673.004 500 673.004 C 418.705 673.004 352.803 607.102 352.803 525.807 C 352.803 444.512 418.705 378.61 500 378.61 Z" data-curvz-types="M M M M" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    <path data-curvz-compound="1" id="compound1" data-curvz-name="Compound 1" fill-rule="evenodd" d="M 161.574 533.257 C 181.752 443.329 299.664 275.924 493.436 268.741 C 687.207 261.558 804.474 415.24 838.426 534.286 C 802.213 674.171 657.267 785.409 491.17 783.081 C 325.073 780.753 189.983 652.213 161.574 533.257 Z M 41 533 C 65.0664 376.721 238.422 155.905 489 153 C 739.578 150.095 910.12 347.984 959 528 C 918.758 715.711 752.95 890.754 491.764 898.535 C 230.577 906.316 74.8512 689.127 41 533 Z" data-curvz-types="K S K S|K S K S" data-curvz-child-ids="obj103,obj102" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+  </g>
+</svg>

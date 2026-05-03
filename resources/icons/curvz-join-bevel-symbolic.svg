@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g data-curvz-guide-layer="1" data-curvz-guide-color="0,0.749,1">
+  </g>
+  <g data-curvz-layer="1" id="Layer 1">
+    <path id="obj9" data-curvz-iid="8aa94f61-dd13-4cb8-8f9a-4f213ac8dd9e" d="M 219.779 951.431 C 217.281 952.731 498.468 389.366 498.779 389.431 C 499.091 389.496 787.638 954.742 787.779 954.431 C 787.821 954.34 739.192 953.933 670.365 953.413 C 629.013 873.13 498.709 619.43 498.779 619.431 C 498.85 619.433 383.931 870.678 345.947 951.422 C 273.081 951.13 220.537 951.037 219.779 951.431 Z" data-curvz-types="K K K K K K" data-curvz-name="Subtract (3)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    <path id="obj7" data-curvz-iid="6bb3a7e2-398e-47d3-b82f-c21a0bcb5198" d="M 385.826 273.013 L 614.174 273.013 L 961.4 949.392 L 829.451 949.377 L 500 302.883 L 170.549 949.377 L 38.6005 949.392 L 385.826 273.013 Z" data-curvz-types="K K K K K K K" data-curvz-name="Subtract (2)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+  </g>
+</svg>

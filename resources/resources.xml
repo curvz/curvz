@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <!-- ── Path B: GTK icon-theme extraction source ─────────────────────────
+       Application::on_activate reads each of these from the bundle and
+       writes it to ~/.local/share/icons/hicolor/scalable/apps/, then
+       calls gtk_icon_theme_add_search_path so GTK's icon-theme machinery
+       can resolve the icons by name. This is the bridge that makes
+       set_icon_name("curvz-select-symbolic") work — GTK's lookup is
+       rigid about the hicolor/scalable/apps/ shape, so we mirror that
+       shape on disk at first run.
+
+       The prefix here MUST match what on_activate passes to
+       g_resources_lookup_data: /com/curvz/app/icons/scalable/apps/.
+       Don't change the prefix without updating Application.cpp. -->
+  <gresource prefix="/com/curvz/app/icons/scalable/apps">
+    <file preprocess="xml-stripblanks" alias="curvz-select-symbolic.svg">icons/curvz-select-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-node-symbolic.svg">icons/curvz-node-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-ref-symbolic.svg">icons/curvz-ref-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-text-on-path-symbolic.svg">icons/curvz-text-on-path-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-ruler-symbolic.svg">icons/curvz-ruler-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-corner-symbolic.svg">icons/curvz-corner-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-polygon-symbolic.svg">icons/curvz-polygon-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-spiral-symbolic.svg">icons/curvz-spiral-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-link-symbolic.svg">icons/curvz-link-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-line-symbolic.svg">icons/curvz-line-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-rect-symbolic.svg">icons/curvz-rect-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-oval-symbolic.svg">icons/curvz-oval-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-pen-symbolic.svg">icons/curvz-pen-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-text-symbolic.svg">icons/curvz-text-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-zoom-symbolic.svg">icons/curvz-zoom-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-eyedropper-symbolic.svg">icons/curvz-eyedropper-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-cap-butt-symbolic.svg">icons/curvz-cap-butt-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-cap-round-symbolic.svg">icons/curvz-cap-round-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-cap-square-symbolic.svg">icons/curvz-cap-square-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-join-miter-symbolic.svg">icons/curvz-join-miter-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-join-round-symbolic.svg">icons/curvz-join-round-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-join-bevel-symbolic.svg">icons/curvz-join-bevel-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-eye-symbolic.svg">icons/curvz-eye-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-locked-symbolic.svg">icons/curvz-locked-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-unlocked-symbolic.svg">icons/curvz-unlocked-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-orientation-portrait-symbolic.svg">icons/curvz-orientation-portrait-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-orientation-landscape-symbolic.svg">icons/curvz-orientation-landscape-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-anchor-symbolic.svg">icons/curvz-anchor-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-logo-symbolic.svg">icons/curvz-logo-symbolic.svg</file>
+  </gresource>
+
+  <!-- ── Bundled non-icon data ────────────────────────────────────────────
+       Plain JSON, no xml-stripblanks. Currently just the starter-template
+       seed list (S63), extracted to ~/.config/curvz/templates/ on first
+       run so users can customise their copy. -->
+  <gresource prefix="/com/curvz/app/data">
+    <file>data/seeds.json</file>
+  </gresource>
+
+  <!-- ── In-app manual ────────────────────────────────────────────────────
+       Markdown source files for HelpWindow plus their illustrative PNGs.
+       Plain text — no preprocess. Outline lives in
+       docs/manual-outline-v2.md (s128-locked: 11 chapters, 63 leaves).
+
+       Image filename convention: chapter-prefix + [area-interest], where
+       area is the surface (toolbar, layers, motif…) and interest is what
+       the shot is highlighting on it. So 5-2-1-motif-section.png reads
+       as "Motif page, the section view." Each leaf has one default slot
+       pre-listed below; pages with multiple shots add more aliases when
+       needed.
+
+       Adding a topic:
+         1. drop the .md in resources/help/
+         2. add a <file> entry below
+         3. append a row in HelpWindow::build_topic_list
+
+       Adding a screenshot:
+         1. drop the file in resources/help/img/ matching the alias
+         2. move the opening of the comment past that line so it goes
+            live (close the comment with a closing-marker on the previous
+            line, restart the comment after the new live row)
+         3. touch resources.xml; rebuild
+         If you want a different slug than the placeholder, edit the
+         alias and rename the PNG to match.
+
+       The configure-time file(GLOB) in CMakeLists.txt picks new files
+       up only on re-configure, but resources.xml mtime triggers the
+       resource compile. Touching this file is the simplest way to
+       force a rebundle. -->
+  <gresource prefix="/com/curvz/app/help">
+    <!-- Markdown topics — listed only when the .md exists on disk -->
+    <file alias="1-1-welcome.md">help/1-1-welcome.md</file>
+    <file alias="1-2-about-curvz.md">help/1-2-about-curvz.md</file>
+    <file alias="1-3-workspace-tour.md">help/1-3-workspace-tour.md</file>
+    <file alias="2-1-projects-and-documents.md">help/2-1-projects-and-documents.md</file>
+    <file alias="2-2-templates.md">help/2-2-templates.md</file>
+    <file alias="2-3-import-export.md">help/2-3-import-export.md</file>
+    <file alias="3-1-header-and-tabs.md">help/3-1-header-and-tabs.md</file>
+    <file alias="3-2-menus.md">help/3-2-menus.md</file>
+    <file alias="3-3-toolbar.md">help/3-3-toolbar.md</file>
+    <file alias="3-4-context-bar.md">help/3-4-context-bar.md</file>
+    <file alias="3-5-status-bar.md">help/3-5-status-bar.md</file>
+    <file alias="3-6-canvas-rulers-corner.md">help/3-6-canvas-rulers-corner.md</file>
+    <file alias="3-7-color-picker.md">help/3-7-color-picker.md</file>
+    <file alias="4-1-tools-overview.md">help/4-1-tools-overview.md</file>
+    <file alias="4-2-1-selection-tool.md">help/4-2-1-selection-tool.md</file>
+    <file alias="4-2-2-node-tool.md">help/4-2-2-node-tool.md</file>
+    <file alias="4-3-pen.md">help/4-3-pen.md</file>
+    <file alias="4-4-1-rectangle.md">help/4-4-1-rectangle.md</file>
+    <file alias="4-4-2-ellipse.md">help/4-4-2-ellipse.md</file>
+    <file alias="4-4-3-line.md">help/4-4-3-line.md</file>
+    <file alias="4-4-4-polygon.md">help/4-4-4-polygon.md</file>
+    <file alias="4-4-5-spiral.md">help/4-4-5-spiral.md</file>
+    <file alias="4-5-1-text.md">help/4-5-1-text.md</file>
+    <file alias="4-5-2-text-on-path.md">help/4-5-2-text-on-path.md</file>
+    <file alias="4-6-1-eyedropper.md">help/4-6-1-eyedropper.md</file>
+    <file alias="4-6-2-zoom.md">help/4-6-2-zoom.md</file>
+    <file alias="4-6-3-ruler.md">help/4-6-3-ruler.md</file>
+    <file alias="4-7-reference-points.md">help/4-7-reference-points.md</file>
+    <file alias="4-8-corner.md">help/4-8-corner.md</file>
+    <file alias="5-2-1-motif.md">help/5-2-1-motif.md</file>
+    <file alias="5-1-inspector-overview.md">help/5-1-inspector-overview.md</file>
+    <file alias="5-3-1-metadata.md">help/5-3-1-metadata.md</file>
+    <file alias="5-3-2-canvas.md">help/5-3-2-canvas.md</file>
+    <file alias="5-3-3-guides.md">help/5-3-3-guides.md</file>
+    <file alias="5-3-4-grid.md">help/5-3-4-grid.md</file>
+    <file alias="5-3-5-margins.md">help/5-3-5-margins.md</file>
+    <file alias="5-3-6-snap.md">help/5-3-6-snap.md</file>
+    <file alias="5-3-7-measure.md">help/5-3-7-measure.md</file>
+    <file alias="5-4-1-selection.md">help/5-4-1-selection.md</file>
+    <file alias="5-4-2-text.md">help/5-4-2-text.md</file>
+    <file alias="5-4-3-blend.md">help/5-4-3-blend.md</file>
+    <file alias="5-4-4-node.md">help/5-4-4-node.md</file>
+    <file alias="5-4-5-appearance.md">help/5-4-5-appearance.md</file>
+    <file alias="5-4-6-shadow.md">help/5-4-6-shadow.md</file>
+    <file alias="6-1-content-overview.md">help/6-1-content-overview.md</file>
+    <file alias="6-2-layers.md">help/6-2-layers.md</file>
+    <file alias="6-3-library.md">help/6-3-library.md</file>
+    <file alias="6-4-swatches.md">help/6-4-swatches.md</file>
+    <file alias="6-5-styles.md">help/6-5-styles.md</file>
+    <file alias="6-6-documents.md">help/6-6-documents.md</file>
+    <file alias="7-1-step-and-repeat.md">help/7-1-step-and-repeat.md</file>
+    <file alias="7-2-clip-masks.md">help/7-2-clip-masks.md</file>
+    <file alias="7-3-blends.md">help/7-3-blends.md</file>
+    <file alias="8-1-editing-paths.md">help/8-1-editing-paths.md</file>
+    <file alias="8-2-boolean-operations.md">help/8-2-boolean-operations.md</file>
+    <file alias="8-3-compound-and-derived.md">help/8-3-compound-and-derived.md</file>
+    <file alias="9-1-themes.md">help/9-1-themes.md</file>
+    <file alias="9-2-currentcolor.md">help/9-2-currentcolor.md</file>
+    <file alias="10-1-view-options.md">help/10-1-view-options.md</file>
+    <file alias="10-2-units.md">help/10-2-units.md</file>
+    <file alias="11-1-macros.md">help/11-1-macros.md</file>
+    <file alias="11-2-keyboard-shortcuts.md">help/11-2-keyboard-shortcuts.md</file>
+    <file alias="11-3-troubleshooting.md">help/11-3-troubleshooting.md</file>
+
+    <!-- Live image aliases — files exist on disk -->
+    <file alias="img/1-3-workspace-overview.png">help/img/1-3-workspace-overview.png</file>
+    <file alias="img/5-2-1-motif-section.png">help/img/5-2-1-motif-section.png</file>
+
+    <!-- s131: tool icons used by chapter 4 leaves. The same currentColor
+         symbolic SVGs that the toolbar serves; copies here keep the help
+         gresource self-contained and let the existing markdown image
+         path render them via Gdk::Texture. The SVGs use a currentColor
+         fill so they paint against the help content's foreground colour
+         (the GTK CSS var bound to motif-aware fg-primary), which means
+         the icons flip correctly on dark/light motif. -->
+    <file alias="img/icons/curvz-select-symbolic.svg">help/img/icons/curvz-select-symbolic.svg</file>
+    <file alias="img/icons/curvz-node-symbolic.svg">help/img/icons/curvz-node-symbolic.svg</file>
+    <file alias="img/icons/curvz-pen-symbolic.svg">help/img/icons/curvz-pen-symbolic.svg</file>
+    <file alias="img/icons/curvz-rect-symbolic.svg">help/img/icons/curvz-rect-symbolic.svg</file>
+    <file alias="img/icons/curvz-oval-symbolic.svg">help/img/icons/curvz-oval-symbolic.svg</file>
+    <file alias="img/icons/curvz-line-symbolic.svg">help/img/icons/curvz-line-symbolic.svg</file>
+    <file alias="img/icons/curvz-polygon-symbolic.svg">help/img/icons/curvz-polygon-symbolic.svg</file>
+    <file alias="img/icons/curvz-spiral-symbolic.svg">help/img/icons/curvz-spiral-symbolic.svg</file>
+    <file alias="img/icons/curvz-text-symbolic.svg">help/img/icons/curvz-text-symbolic.svg</file>
+    <file alias="img/icons/curvz-text-on-path-symbolic.svg">help/img/icons/curvz-text-on-path-symbolic.svg</file>
+    <file alias="img/icons/curvz-eyedropper-symbolic.svg">help/img/icons/curvz-eyedropper-symbolic.svg</file>
+    <file alias="img/icons/curvz-zoom-symbolic.svg">help/img/icons/curvz-zoom-symbolic.svg</file>
+    <file alias="img/icons/curvz-ruler-symbolic.svg">help/img/icons/curvz-ruler-symbolic.svg</file>
+    <file alias="img/icons/curvz-ref-symbolic.svg">help/img/icons/curvz-ref-symbolic.svg</file>
+    <file alias="img/icons/curvz-corner-symbolic.svg">help/img/icons/curvz-corner-symbolic.svg</file>
+
+    <!-- Image placeholders for the remaining 61 leaves (order: outline). -->
+    <!--
+    <file alias="img/1-1-welcome-overview.png">help/img/1-1-welcome-overview.png</file>
+    <file alias="img/1-2-app-splash.png">help/img/1-2-app-splash.png</file>
+    <file alias="img/2-1-project-tree.png">help/img/2-1-project-tree.png</file>
+    <file alias="img/2-2-template-gallery.png">help/img/2-2-template-gallery.png</file>
+    <file alias="img/2-3-export-dialog.png">help/img/2-3-export-dialog.png</file>
+    <file alias="img/3-1-header-bar.png">help/img/3-1-header-bar.png</file>
+    <file alias="img/3-2-menu-open.png">help/img/3-2-menu-open.png</file>
+    <file alias="img/3-3-toolbar-buttons.png">help/img/3-3-toolbar-buttons.png</file>
+    <file alias="img/3-4-context-bar-rect.png">help/img/3-4-context-bar-rect.png</file>
+    <file alias="img/3-5-status-bar-readouts.png">help/img/3-5-status-bar-readouts.png</file>
+    <file alias="img/3-6-canvas-anatomy.png">help/img/3-6-canvas-anatomy.png</file>
+    <file alias="img/3-7-picker-popover.png">help/img/3-7-picker-popover.png</file>
+    <file alias="img/4-1-toolbar-tools.png">help/img/4-1-toolbar-tools.png</file>
+    <file alias="img/4-2-1-selection-handles.png">help/img/4-2-1-selection-handles.png</file>
+    <file alias="img/4-2-2-node-handles.png">help/img/4-2-2-node-handles.png</file>
+    <file alias="img/4-3-pen-path.png">help/img/4-3-pen-path.png</file>
+    <file alias="img/4-4-1-rect-drag.png">help/img/4-4-1-rect-drag.png</file>
+    <file alias="img/4-4-2-ellipse-drag.png">help/img/4-4-2-ellipse-drag.png</file>
+    <file alias="img/4-4-3-line-drag.png">help/img/4-4-3-line-drag.png</file>
+    <file alias="img/4-4-4-polygon-context.png">help/img/4-4-4-polygon-context.png</file>
+    <file alias="img/4-4-5-spiral-context.png">help/img/4-4-5-spiral-context.png</file>
+    <file alias="img/4-5-1-text-cursor.png">help/img/4-5-1-text-cursor.png</file>
+    <file alias="img/4-5-2-text-attached.png">help/img/4-5-2-text-attached.png</file>
+    <file alias="img/4-6-1-eyedropper-sample.png">help/img/4-6-1-eyedropper-sample.png</file>
+    <file alias="img/4-6-2-zoom-marquee.png">help/img/4-6-2-zoom-marquee.png</file>
+    <file alias="img/4-6-3-ruler-measurement.png">help/img/4-6-3-ruler-measurement.png</file>
+    <file alias="img/4-7-refpoint-marker.png">help/img/4-7-refpoint-marker.png</file>
+    <file alias="img/4-8-corner-treatments.png">help/img/4-8-corner-treatments.png</file>
+    <file alias="img/5-1-inspector-groups.png">help/img/5-1-inspector-groups.png</file>
+    <file alias="img/5-3-1-metadata-section.png">help/img/5-3-1-metadata-section.png</file>
+    <file alias="img/5-3-2-canvas-section.png">help/img/5-3-2-canvas-section.png</file>
+    <file alias="img/5-3-3-guides-section.png">help/img/5-3-3-guides-section.png</file>
+    <file alias="img/5-3-4-grid-section.png">help/img/5-3-4-grid-section.png</file>
+    <file alias="img/5-3-5-margins-section.png">help/img/5-3-5-margins-section.png</file>
+    <file alias="img/5-3-6-snap-section.png">help/img/5-3-6-snap-section.png</file>
+    <file alias="img/5-3-7-measure-section.png">help/img/5-3-7-measure-section.png</file>
+    <file alias="img/5-4-1-selection-section.png">help/img/5-4-1-selection-section.png</file>
+    <file alias="img/5-4-2-text-section.png">help/img/5-4-2-text-section.png</file>
+    <file alias="img/5-4-3-blend-section.png">help/img/5-4-3-blend-section.png</file>
+    <file alias="img/5-4-4-node-section.png">help/img/5-4-4-node-section.png</file>
+    <file alias="img/5-4-5-appearance-section.png">help/img/5-4-5-appearance-section.png</file>
+    <file alias="img/5-4-6-shadow-section.png">help/img/5-4-6-shadow-section.png</file>
+    <file alias="img/6-1-content-panels.png">help/img/6-1-content-panels.png</file>
+    <file alias="img/6-2-layers-stack.png">help/img/6-2-layers-stack.png</file>
+    <file alias="img/6-3-library-thumbs.png">help/img/6-3-library-thumbs.png</file>
+    <file alias="img/6-4-swatches-grid.png">help/img/6-4-swatches-grid.png</file>
+    <file alias="img/6-5-styles-list.png">help/img/6-5-styles-list.png</file>
+    <file alias="img/6-6-documents-gallery.png">help/img/6-6-documents-gallery.png</file>
+    <file alias="img/7-1-stepandrepeat-dialog.png">help/img/7-1-stepandrepeat-dialog.png</file>
+    <file alias="img/7-2-clipmask-result.png">help/img/7-2-clipmask-result.png</file>
+    <file alias="img/7-3-blend-result.png">help/img/7-3-blend-result.png</file>
+    <file alias="img/8-1-path-editing.png">help/img/8-1-path-editing.png</file>
+    <file alias="img/8-2-boolean-result.png">help/img/8-2-boolean-result.png</file>
+    <file alias="img/8-3-compound-path.png">help/img/8-3-compound-path.png</file>
+    <file alias="img/9-1-themes-dialog.png">help/img/9-1-themes-dialog.png</file>
+    <file alias="img/9-2-currentcolor-comparison.png">help/img/9-2-currentcolor-comparison.png</file>
+    <file alias="img/10-1-view-menu.png">help/img/10-1-view-menu.png</file>
+    <file alias="img/10-2-unit-dropdown.png">help/img/10-2-unit-dropdown.png</file>
+    <file alias="img/11-1-macro-manager.png">help/img/11-1-macro-manager.png</file>
+    <file alias="img/11-2-shortcuts-dialog.png">help/img/11-2-shortcuts-dialog.png</file>
+    <file alias="img/11-3-troubleshooting-overview.png">help/img/11-3-troubleshooting-overview.png</file>
+    -->
+  </gresource>
+
+  <!-- ── Bundled palettes (S101 m2) ──────────────────────────────────────
+       GIMP-format .gpl files loaded via GplFormat parser. Listed in the
+       Swatches panel header dropdown; on click each appends to the
+       current swatch set. Greyscale and Zorn are procedurally generated;
+       the rest are hand-curated. See test_stubs/gen_bundled_palettes.cpp
+       for the generator origin. -->
+  <gresource prefix="/com/curvz/app/palettes">
+    <file>palettes/greyscale.gpl</file>
+    <file>palettes/standard.gpl</file>
+    <file>palettes/vivid.gpl</file>
+    <file>palettes/pastel.gpl</file>
+    <file>palettes/web.gpl</file>
+    <file>palettes/crayon.gpl</file>
+    <file>palettes/zorn.gpl</file>
+  </gresource>
+</gresources>

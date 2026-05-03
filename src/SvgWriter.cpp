@@ -1,0 +1,1170 @@
+#include "SvgWriter.hpp"
+#include "CurvzLog.hpp"
+#include "curvz_utils.hpp"
+#include <sstream>
+#include <iomanip>
+#include <fstream>
+#include <cmath>
+#include <clocale>
+#include <cstring>
+#include <map>
+#include <vector>
+#include <algorithm>
+
+namespace Curvz {
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+static std::string fmt2(double v) {
+    // Force C locale — %.6g in a non-C locale emits thousands separators
+    // (e.g. 1000 → "1,000") which is invalid in SVG path data.
+    char buf[32];
+    const char* old = std::setlocale(LC_NUMERIC, nullptr);
+    std::setlocale(LC_NUMERIC, "C");
+    snprintf(buf, sizeof(buf), "%.6g", v);
+    std::setlocale(LC_NUMERIC, old);
+    return buf;
+}
+
+// 6 decimal places — used for guide positions where sub-unit precision matters.
+// Same locale guard as fmt2: %.6f in a non-C locale emits a comma decimal or
+// thousands separators (e.g. fr_FR → "1234,567890"), which is invalid in SVG
+// attribute values.
+static std::string fmt6(double v) {
+    char buf[32];
+    const char* old = std::setlocale(LC_NUMERIC, nullptr);
+    std::setlocale(LC_NUMERIC, "C");
+    snprintf(buf, sizeof(buf), "%.6f", v);
+    std::setlocale(LC_NUMERIC, old);
+    return buf;
+}
+
+// ── S96 m2 — SVG id emission ─────────────────────────────────────────────────
+//
+// The SVG `id` is a derived, write-only handle constructed from a node's
+// human-readable name and its internal UUID. Source of truth for both
+// remains the in-memory SceneNode fields (`name` and `internal_id`),
+// round-tripped via data-curvz-name and data-curvz-iid respectively.
+//
+// Two thin wrappers below let every emission site stay a one-liner. The
+// "_str" form returns a ready-to-concat attribute (or empty); the "_emit"
+// form streams it. Both delegate to curvz::utils::encode_svg_id.
+static std::string id_attr_str(const std::string& name,
+                               const std::string& iid) {
+    const std::string encoded = curvz::utils::encode_svg_id(name, iid);
+    return encoded.empty() ? std::string()
+                           : " id=\"" + encoded + "\"";
+}
+template <typename Obj>
+static std::string id_attr_str(const Obj& obj) {
+    return id_attr_str(obj.name, obj.internal_id);
+}
+
+// ── S90 Stage 2 — gradient defs collector ────────────────────────────────────
+// A single SvgWrite walks the tree twice: once to collect every gradient
+// FillStyle (fill + stroke.paint slots, recursively through Compounds and
+// Groups), and once to emit. Each unique gradient gets a minted id like
+// "grad1", "grad2", emitted inside <defs>. Shapes reference the gradient
+// via fill="url(#gradN)" — fill_attr() looks up the active collector.
+//
+// Identity is by pointer (FillStyle*). All FillStyles live in the doc
+// tree owned by SceneNodes which don't move during a write, so pointer
+// identity is stable for the duration of the call. If the SAME stops/
+// geometry appears on N shapes we'll mint N defs — dedup is a Stage-3+
+// optimisation; for now repeated-same-gradient is a writer cost only and
+// every renderer handles it.
+struct GradientCollector {
+    // Insertion order = emission order; pointer → minted-id lookup.
+    std::vector<const FillStyle*> entries;
+    std::map<const FillStyle*, std::string> id_map;
+    int next_idx = 1;
+
+    void add(const FillStyle* fs) {
+        if (!fs || !fs->is_gradient()) return;
+        if (id_map.count(fs)) return;
+        std::string id = "grad" + std::to_string(next_idx++);
+        id_map[fs] = id;
+        entries.push_back(fs);
+    }
+
+    // Returns minted id for fs, or empty string if not collected.
+    std::string lookup(const FillStyle* fs) const {
+        auto it = id_map.find(fs);
+        return (it == id_map.end()) ? std::string() : it->second;
+    }
+};
+
+// File-scope active collector. Set on entry to write_svg, cleared on exit.
+// This avoids threading a new parameter through write_object and every
+// helper that calls fill_attr — there are too many sites and the change
+// would be mostly noise. Safe because write_svg isn't reentrant or
+// concurrent in practice.
+static const GradientCollector* g_grad_collector = nullptr;
+
+// Recursive walk: collect every gradient FillStyle in fill + stroke.paint
+// slots. Used as the pre-pass at the top of write_svg.
+static void collect_gradients(const SceneNode& n, GradientCollector& gc) {
+    gc.add(&n.fill);
+    gc.add(&n.stroke.paint);
+    for (const auto& c : n.children)
+        if (c) collect_gradients(*c, gc);
+    if (n.clip_shape) collect_gradients(*n.clip_shape, gc);
+    if (n.blend_source_a) collect_gradients(*n.blend_source_a, gc);
+    if (n.blend_source_b) collect_gradients(*n.blend_source_b, gc);
+    if (n.warp_source) collect_gradients(*n.warp_source, gc);
+}
+
+// Emit a single gradient FillStyle into <defs> at the given indent.
+// Format follows SVG canonicals: gradientUnits="objectBoundingBox" (the
+// only mode S90 Stage 2 ships), spreadMethod="pad" (Cairo default;
+// reflect/repeat is a Stage-3 follow-up tied to the gradient editor).
+static void write_gradient_def(std::ostringstream& out,
+                                const std::string& id,
+                                const FillStyle& f,
+                                int indent) {
+    std::string pad(indent * 2, ' ');
+    // Hex colour helper for stop-color.
+    auto hex = [](double r, double g, double b) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "#%02x%02x%02x",
+                 (int)std::round(r * 255),
+                 (int)std::round(g * 255),
+                 (int)std::round(b * 255));
+        return std::string(buf);
+    };
+    if (f.type == FillStyle::Type::LinearGradient) {
+        out << pad << "<linearGradient id=\"" << id << "\""
+            << " gradientUnits=\"objectBoundingBox\""
+            << " x1=\"" << fmt2(f.g_x1) << "\""
+            << " y1=\"" << fmt2(f.g_y1) << "\""
+            << " x2=\"" << fmt2(f.g_x2) << "\""
+            << " y2=\"" << fmt2(f.g_y2) << "\">\n";
+    } else { // RadialGradient
+        // SVG radial: cx/cy/r are the outer circle, fx/fy the focal point.
+        // Curvz convention: g_x1/g_y1 are the focal (fx,fy), g_x2/g_y2 are
+        // the centre (cx,cy), g_r is the radius. Match that mapping on emit.
+        out << pad << "<radialGradient id=\"" << id << "\""
+            << " gradientUnits=\"objectBoundingBox\""
+            << " cx=\"" << fmt2(f.g_x2) << "\""
+            << " cy=\"" << fmt2(f.g_y2) << "\""
+            << " r=\""  << fmt2(f.g_r)  << "\""
+            << " fx=\"" << fmt2(f.g_x1) << "\""
+            << " fy=\"" << fmt2(f.g_y1) << "\">\n";
+    }
+    for (const auto& s : f.stops) {
+        out << pad << "  <stop offset=\"" << fmt2(s.offset) << "\""
+            << " stop-color=\"" << hex(s.r, s.g, s.b) << "\"";
+        if (s.a < 0.999)
+            out << " stop-opacity=\"" << fmt2(s.a) << "\"";
+        out << "/>\n";
+    }
+    if (f.type == FillStyle::Type::LinearGradient)
+        out << pad << "</linearGradient>\n";
+    else
+        out << pad << "</radialGradient>\n";
+}
+
+// ── S97 m1 — drop shadow defs collector ──────────────────────────────────────
+// Shadows are a per-object effect (see SceneNode shadow_* fields). When a node
+// has shadow_enabled, write_svg's pre-pass collects it into ShadowCollector,
+// emits one <filter> element into <defs> per collected node, and the host
+// node's open tag references it via filter="url(#sh_<short_iid>)". Same
+// pattern as the gradient collector: pre-pass walk, defs-up emit, identifier
+// looked up by pointer at the host emit site.
+//
+// Filter id format is "sh_" + short_iid (8 chars of the host's UUID). Short
+// id keeps the attribute compact and is unique enough — collisions across a
+// single document would require a UUID-prefix collision, which is roughly
+// 1-in-2^32 even within the same doc. If a node has shadow_enabled but no
+// internal_id (legacy load before iid was minted), we skip the filter — the
+// host's iid is minted on load now (S96), so this is a defensive null-check.
+struct ShadowCollector {
+    std::vector<const SceneNode*> entries;
+    std::map<const SceneNode*, std::string> id_map;
+
+    void add(const SceneNode* n) {
+        if (!n || !n->shadow_enabled) return;
+        if (n->internal_id.empty()) return;
+        if (id_map.count(n)) return;
+        std::string id = "sh_" + curvz::utils::short_iid(n->internal_id);
+        id_map[n] = id;
+        entries.push_back(n);
+    }
+
+    std::string lookup(const SceneNode* n) const {
+        auto it = id_map.find(n);
+        return (it == id_map.end()) ? std::string() : it->second;
+    }
+};
+
+// File-scope active collector — same threading approach as g_grad_collector.
+// Set on entry to write_svg, cleared on exit.
+static const ShadowCollector* g_shadow_collector = nullptr;
+
+// Recursive walk: every node with shadow_enabled. The walker descends into the
+// same alt slots as collect_gradients (clip_shape, blend sources, warp source)
+// so a shadowed path nested inside any of them is still collected. Children
+// are walked normally.
+static void collect_shadows(const SceneNode& n, ShadowCollector& sc) {
+    sc.add(&n);
+    for (const auto& c : n.children)
+        if (c) collect_shadows(*c, sc);
+    if (n.clip_shape)     collect_shadows(*n.clip_shape, sc);
+    if (n.blend_source_a) collect_shadows(*n.blend_source_a, sc);
+    if (n.blend_source_b) collect_shadows(*n.blend_source_b, sc);
+    if (n.warp_source)    collect_shadows(*n.warp_source, sc);
+}
+
+// Emit a single <filter> for one shadowed node into <defs> at the given
+// indent. Standard SVG drop-shadow filter chain: source alpha → offset →
+// gaussian blur → flood-fill with shadow colour → composite back under
+// the original. filterUnits="userSpaceOnUse" so dx/dy/stdDeviation are
+// in doc units and don't need bbox-relative remapping.
+//
+// x/y/width/height pad the filter region so the blur isn't clipped at the
+// host bbox. We use a generous fixed pad (-50% / 200%) that covers the
+// vast majority of real shadows; SVG renderers default to a similar value
+// but emitting it explicitly avoids surprises in foreign tools that
+// default differently.
+static void write_shadow_filter(std::ostringstream& out,
+                                 const std::string& id,
+                                 const SceneNode& n,
+                                 int indent) {
+    std::string pad(indent * 2, ' ');
+    // Hex colour helper — same as in write_gradient_def. Local copy keeps
+    // this function self-contained and lets it move freely if we later
+    // hoist the filter logic into its own translation unit.
+    auto hex = [](double r, double g, double b) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "#%02x%02x%02x",
+                 (int)std::round(r * 255),
+                 (int)std::round(g * 255),
+                 (int)std::round(b * 255));
+        return std::string(buf);
+    };
+    // Final shadow alpha is colour.a * shadow_opacity. Pre-multiply here so
+    // the filter chain is a single flood + composite pair, rather than two
+    // alpha multiplies.
+    double final_a = std::max(0.0, std::min(1.0, n.shadow_color_a * n.shadow_opacity));
+
+    out << pad << "<filter id=\"" << id << "\""
+        << " filterUnits=\"userSpaceOnUse\""
+        << " x=\"-50%\" y=\"-50%\" width=\"200%\" height=\"200%\">\n";
+    // 1. Offset the source alpha by (dx, dy).
+    out << pad << "  <feOffset in=\"SourceAlpha\""
+        << " dx=\"" << fmt2(n.shadow_dx) << "\""
+        << " dy=\"" << fmt2(n.shadow_dy) << "\""
+        << " result=\"off\"/>\n";
+    // 2. Blur it (stdDeviation in doc units, matches Cairo Gaussian sigma).
+    out << pad << "  <feGaussianBlur in=\"off\""
+        << " stdDeviation=\"" << fmt2(std::max(0.0, n.shadow_blur)) << "\""
+        << " result=\"blur\"/>\n";
+    // 3. Flood-fill with the shadow colour, then composite-in with the blur
+    //    so the colour only shows where the blurred alpha is non-zero.
+    out << pad << "  <feFlood flood-color=\"" << hex(n.shadow_color_r,
+                                                       n.shadow_color_g,
+                                                       n.shadow_color_b) << "\""
+        << " flood-opacity=\"" << fmt2(final_a) << "\""
+        << " result=\"flood\"/>\n";
+    out << pad << "  <feComposite in=\"flood\" in2=\"blur\" operator=\"in\""
+        << " result=\"shadow\"/>\n";
+    // 4. Place the original artwork on top of the shadow. Painters-order
+    //    via <feMerge>: shadow first (under), source on top.
+    out << pad << "  <feMerge>\n";
+    out << pad << "    <feMergeNode in=\"shadow\"/>\n";
+    out << pad << "    <feMergeNode in=\"SourceGraphic\"/>\n";
+    out << pad << "  </feMerge>\n";
+    out << pad << "</filter>\n";
+}
+
+// Build the per-host attribute string for a shadowed node. Returns empty
+// string when the node has no shadow (or no minted filter id, e.g. missing
+// iid). Otherwise returns a leading-space string of the form:
+//
+//   filter="url(#sh_xxxx)" data-curvz-shadow-dx="..." data-curvz-shadow-dy="..."
+//   data-curvz-shadow-blur="..." data-curvz-shadow-color="rrggbb"
+//   data-curvz-shadow-color-a="..." data-curvz-shadow-opacity="..."
+//
+// The filter ref makes foreign renderers (browsers, Folio, Inkscape) draw
+// the shadow correctly. The data-curvz-* attrs are the source of truth on
+// Curvz round-trip — same dual-source pattern as data-curvz-name vs id.
+static std::string shadow_attr_str(const SceneNode& obj) {
+    if (!obj.shadow_enabled) return std::string();
+    if (!g_shadow_collector) return std::string();
+    const std::string fid = g_shadow_collector->lookup(&obj);
+    if (fid.empty()) return std::string();
+    auto hex = [](double r, double g, double b) {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%02x%02x%02x",
+                 (int)std::round(r * 255),
+                 (int)std::round(g * 255),
+                 (int)std::round(b * 255));
+        return std::string(buf);
+    };
+    std::ostringstream s;
+    s << " filter=\"url(#" << fid << ")\""
+      << " data-curvz-shadow=\"1\""
+      << " data-curvz-shadow-dx=\"" << fmt2(obj.shadow_dx) << "\""
+      << " data-curvz-shadow-dy=\"" << fmt2(obj.shadow_dy) << "\""
+      << " data-curvz-shadow-blur=\"" << fmt2(obj.shadow_blur) << "\""
+      << " data-curvz-shadow-color=\"" << hex(obj.shadow_color_r,
+                                                obj.shadow_color_g,
+                                                obj.shadow_color_b) << "\""
+      << " data-curvz-shadow-color-a=\"" << fmt2(obj.shadow_color_a) << "\""
+      << " data-curvz-shadow-opacity=\"" << fmt2(obj.shadow_opacity) << "\"";
+    return s.str();
+}
+
+// ── encode_warp_envelope ──────────────────────────────────────────────────────
+// Serialize an envelope PathData into a single attribute string.
+// Format: per anchor, six doubles "x,y,cx1,cy1,cx2,cy2" comma-separated.
+// Anchors separated by ";". Envelopes are always open — no closed flag
+// encoded. Node types are always Smooth — not encoded.
+// Example (2-anchor straight line): "0,0,0,0,100,0;300,0,200,0,300,0"
+// Precision via fmt2 (%.6g — 6 significant digits, C locale).
+// Empty or single-anchor envelopes encode as empty string; the parser
+// treats empty as "no envelope → fall back to default identity".
+static std::string encode_warp_envelope(const PathData& env) {
+    if (env.nodes.size() < 2) return std::string();
+    std::string s;
+    for (size_t i = 0; i < env.nodes.size(); ++i) {
+        const auto& n = env.nodes[i];
+        if (i > 0) s += ';';
+        s += fmt2(n.x);   s += ',';
+        s += fmt2(n.y);   s += ',';
+        s += fmt2(n.cx1); s += ',';
+        s += fmt2(n.cy1); s += ',';
+        s += fmt2(n.cx2); s += ',';
+        s += fmt2(n.cy2);
+    }
+    return s;
+}
+
+static std::string fill_attr(const FillStyle& f) {
+    switch (f.type) {
+        case FillStyle::Type::None:         return "none";
+        case FillStyle::Type::CurrentColor: return "currentColor";
+        case FillStyle::Type::Solid: {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "#%02x%02x%02x",
+                     (int)std::round(f.r * 255),
+                     (int)std::round(f.g * 255),
+                     (int)std::round(f.b * 255));
+            return buf;
+        }
+        case FillStyle::Type::LinearGradient:
+        case FillStyle::Type::RadialGradient: {
+            // S90 Stage 2: emit a url(#gradN) reference. The matching
+            // <linearGradient>/<radialGradient> element is in <defs>,
+            // emitted by write_svg's pre-pass against g_grad_collector.
+            // If the collector somehow doesn't have us (shouldn't happen
+            // since collect_gradients walks the same tree), degrade to
+            // first-stop flat colour so the file is still valid SVG.
+            if (g_grad_collector) {
+                std::string id = g_grad_collector->lookup(&f);
+                if (!id.empty()) return "url(#" + id + ")";
+            }
+            double r = f.r, g = f.g, b = f.b;
+            if (!f.stops.empty()) {
+                r = f.stops.front().r;
+                g = f.stops.front().g;
+                b = f.stops.front().b;
+            }
+            char buf[8];
+            snprintf(buf, sizeof(buf), "#%02x%02x%02x",
+                     (int)std::round(r * 255),
+                     (int)std::round(g * 255),
+                     (int)std::round(b * 255));
+            return buf;
+        }
+    }
+    return "none";
+}
+
+static std::string stroke_attrs(const StrokeStyle& s) {
+    std::string out;
+    out += " stroke=\"" + fill_attr(s.paint) + "\"";
+    out += " stroke-width=\"" + fmt2(s.width) + "\"";
+    if (s.cap == LineCap::Round)         out += " stroke-linecap=\"round\"";
+    else if (s.cap == LineCap::Square)   out += " stroke-linecap=\"square\"";
+    if (s.join == LineJoin::Round)       out += " stroke-linejoin=\"round\"";
+    else if (s.join == LineJoin::Bevel)  out += " stroke-linejoin=\"bevel\"";
+    if (s.opacity < 0.999)
+        out += " stroke-opacity=\"" + fmt2(s.opacity) + "\"";
+    return out;
+}
+
+// Swatch-binding sidecar attributes. Emits data-curvz-fill-swatch and/or
+// data-curvz-stroke-swatch when the SceneNode has a non-empty binding id
+// on that slot. These are the round-trip carriers for the Phase 5 / s70
+// binding model: the id IS the paint, the fill=/stroke= SVG attrs are the
+// resolved render cache. Readers unaware of the data-* attrs get a valid
+// solid-colour SVG; Curvz on reload reconstructs the SwatchRef.
+//
+// Called from the same paint-bearing emit sites as fill_attr / stroke_attrs
+// (Path/generic, Compound, Text) so the binding sits immediately next to
+// the FillStyle cache it shadows. Empty string when no binding is set on
+// either slot — zero cost for pre-S70 or never-bound objects.
+static std::string swatch_binding_attrs(const GlyphObject& o) {
+    std::string out;
+    if (!o.fill_swatch_id.empty())
+        out += " data-curvz-fill-swatch=\"" + o.fill_swatch_id + "\"";
+    if (!o.stroke_swatch_id.empty())
+        out += " data-curvz-stroke-swatch=\"" + o.stroke_swatch_id + "\"";
+    return out;
+}
+
+// ── S77 m3c — style binding sidecar ──────────────────────────────────────────
+// Round-trip carrier for SceneNode::bound_style. Same lossy-fallback model
+// as the swatch bindings above: fill=/stroke= (and stroke-width, cap, join,
+// etc.) are the resolved render cache, while data-curvz-style is the binding
+// key. A non-Curvz reader sees a fully-styled SVG and silently loses the
+// binding on round-trip; Curvz on reload re-materialises from the Style
+// referenced by the id.
+//
+// Value shape: either "app:<slug>" (built-in tier) or "stl_<uuid>" (user
+// tier). Both are valid SVG attribute content, no escaping needed.
+//
+// Emitted at the same three paint-bearing sites as swatch_binding_attrs
+// (Path/generic, Compound, Text). Empty string when bound_style is empty —
+// zero cost for never-bound objects, and pre-m3c projects naturally have
+// nothing to lose.
+//
+// On the parser side this is read in apply_style_attrs (single anchor for
+// every node-emit site). The post-load walk in CurvzProject::load runs
+// materialise_from_style on every node with a non-empty bound_style and
+// drops unknown ids — so a project saved with m3c and reopened with the
+// referenced style still in the library re-projects fill/stroke from that
+// Style, validating the binding survived the SVG hop.
+static std::string style_binding_attr(const GlyphObject& o) {
+    if (o.bound_style.empty()) return {};
+    return " data-curvz-style=\"" + o.bound_style + "\"";
+}
+
+// ── write_object ─────────────────────────────────────────────────────────────
+// Recursive SVG element emitter.
+//
+// role_hint: if non-null, the string is inserted as an extra attribute on the
+//   first opening tag emitted for this object. Used by the Blend writer to
+//   tag A and B sources with data-curvz-blend-role="a"/"b" so the parser can
+//   route them back into blend_source_a/b slots on reload.
+static void write_object(std::ostringstream& out, const GlyphObject& obj, int indent,
+                         const char* role_hint = nullptr) {
+    std::string pad(indent * 2, ' ');
+
+    // ── ClipGroup ──────────────────────────────────────────────────────
+    // Emits <g clip-path="url(#<clip_id>)" data-curvz-clipgroup="1">children</g>.
+    // The actual <clipPath> element lives in a top-level <defs> block
+    // written by write_svg itself (see collect_clip_defs). Children are
+    // reversed on emit per the S51 z-order contract (same as Group).
+    if (obj.type == GlyphObject::Type::ClipGroup) {
+        out << pad << "<g data-curvz-clipgroup=\"1\"";
+        if (!obj.clip_id.empty())
+            out << " clip-path=\"url(#" << obj.clip_id << ")\"";
+        out << id_attr_str(obj);
+        if (!obj.internal_id.empty())  out << " data-curvz-iid=\"" << obj.internal_id << "\"";
+        if (!obj.name.empty())         out << " data-curvz-name=\"" << obj.name << "\"";
+        if (!obj.visible)              out << " display=\"none\"";
+        if (obj.opacity < 0.999)       out << " opacity=\"" << fmt2(obj.opacity) << "\"";
+        out << shadow_attr_str(obj);  // S97 m1
+        out << ">\n";
+        for (int i = (int)obj.children.size() - 1; i >= 0; --i)
+            write_object(out, *obj.children[i], indent + 1);
+        out << pad << "</g>\n";
+        return;
+    }
+
+    // ── Blend ──────────────────────────────────────────────────────────
+    // Full round-trip emission (M6). The wrapper carries all params needed
+    // to reconstruct the Blend on parse. Children:
+    //   - A as a path tagged data-curvz-blend-role="a"
+    //   - Cached intermediates as plain paths (no role tag — foreign tools
+    //     see them, parser discards them on reload since cache is derived)
+    //   - B as a path tagged data-curvz-blend-role="b"
+    // z-order contract: same as Group/ClipGroup — write_object reverses
+    // on emit so the first-emitted child is z-bottom in SVG paint order.
+    // Blend's logical order is A(bottom) → cache → B(top), so emission
+    // order unreversed is [A, cache..., B], which means emit iterates the
+    // logical sequence in reverse: B first, cache reversed, A last.
+    if (obj.type == GlyphObject::Type::Blend) {
+        out << pad << "<g data-curvz-blend=\"1\"";
+        out << id_attr_str(obj);
+        if (!obj.internal_id.empty())  out << " data-curvz-iid=\"" << obj.internal_id << "\"";
+        if (!obj.name.empty())         out << " data-curvz-name=\"" << obj.name << "\"";
+        if (!obj.visible)              out << " display=\"none\"";
+        if (obj.opacity < 0.999)       out << " opacity=\"" << fmt2(obj.opacity) << "\"";
+        out << " data-curvz-blend-steps=\"" << obj.blend_steps << "\"";
+        out << " data-curvz-blend-sw-user=\""
+            << (obj.blend_stroke_w_user_set ? "1" : "0") << "\"";
+        if (obj.blend_stroke_w_user_set) {
+            out << " data-curvz-blend-sw-start=\"" << fmt2(obj.blend_stroke_w_start) << "\"";
+            out << " data-curvz-blend-sw-end=\""   << fmt2(obj.blend_stroke_w_end)   << "\"";
+        }
+        out << shadow_attr_str(obj);  // S97 m1
+        out << ">\n";
+        // Emit in REVERSE of logical order (z-order contract). Logical
+        // order is A(bottom) → steps → B(top). Emit: B first, then steps
+        // in reverse, then A.
+        if (obj.blend_source_b)
+            write_object(out, *obj.blend_source_b, indent + 1,
+                         "data-curvz-blend-role=\"b\"");
+        for (int i = (int)obj.blend_cache.size() - 1; i >= 0; --i)
+            if (obj.blend_cache[i]) write_object(out, *obj.blend_cache[i], indent + 1);
+        if (obj.blend_source_a)
+            write_object(out, *obj.blend_source_a, indent + 1,
+                         "data-curvz-blend-role=\"a\"");
+        out << pad << "</g>\n";
+        return;
+    }
+
+    // ── Warp ───────────────────────────────────────────────────────────
+    // M6 full round-trip. Wrapper carries:
+    //   data-curvz-warp="1"                      — marker
+    //   data-curvz-warp-quality="N"              — subdivision density (1..16)
+    //   data-curvz-warp-env-top="..."            — encoded top envelope
+    //   data-curvz-warp-env-bottom="..."         — encoded bottom envelope
+    // Envelope attrs are omitted when empty so M1-stub files and newly-
+    // constructed Warps (before first Apply of a dialog preset) round-
+    // trip as identity-warp fallbacks, matching pre-M6 behavior.
+    //
+    // Single child: the source, tagged data-curvz-warp-role="source".
+    // Caches (glyph_cache, warp_cache) are NOT emitted — derived-not-
+    // authoritative, rebuilt on first draw after parse.
+    if (obj.type == GlyphObject::Type::Warp) {
+        out << pad << "<g data-curvz-warp=\"1\"";
+        out << id_attr_str(obj);
+        if (!obj.internal_id.empty())  out << " data-curvz-iid=\"" << obj.internal_id << "\"";
+        if (!obj.name.empty())         out << " data-curvz-name=\"" << obj.name << "\"";
+        if (!obj.visible)              out << " display=\"none\"";
+        if (obj.opacity < 0.999)       out << " opacity=\"" << fmt2(obj.opacity) << "\"";
+        out << " data-curvz-warp-quality=\"" << obj.warp_quality << "\"";
+        std::string top_enc = encode_warp_envelope(obj.warp_env_top);
+        std::string bot_enc = encode_warp_envelope(obj.warp_env_bottom);
+        if (!top_enc.empty())
+            out << " data-curvz-warp-env-top=\""    << top_enc << "\"";
+        if (!bot_enc.empty())
+            out << " data-curvz-warp-env-bottom=\"" << bot_enc << "\"";
+        out << shadow_attr_str(obj);  // S97 m1
+        out << ">\n";
+        if (obj.warp_source)
+            write_object(out, *obj.warp_source, indent + 1,
+                         "data-curvz-warp-role=\"source\"");
+        out << pad << "</g>\n";
+        return;
+    }
+
+    // ── Group ──────────────────────────────────────────────────────────────
+    if (obj.type == GlyphObject::Type::Group) {
+        out << pad << "<g data-curvz-group=\"1\"";
+        if (role_hint)                out << " " << role_hint;
+        out << id_attr_str(obj);
+        if (!obj.internal_id.empty())  out << " data-curvz-iid=\"" << obj.internal_id << "\"";
+        if (!obj.name.empty())         out << " data-curvz-name=\"" << obj.name << "\"";
+        if (!obj.visible)              out << " display=\"none\"";
+        if (obj.opacity < 0.999)       out << " opacity=\"" << fmt2(obj.opacity) << "\"";
+        out << shadow_attr_str(obj);  // S97 m1
+        out << ">\n";
+        // Reverse children on write: Curvz internal convention is [0]=top,
+        // but SVG paint order is first-element-emitted-is-painted-first
+        // (= bottom). Emitting children[n-1] first restores spec-correct
+        // paint order for external viewers.
+        for (int i = (int)obj.children.size() - 1; i >= 0; --i)
+            write_object(out, *obj.children[i], indent + 1);
+        out << pad << "</g>\n";
+        return;
+    }
+
+    // ── Compound ───────────────────────────────────────────────────────────
+    if (obj.type == GlyphObject::Type::Compound) {
+        // Emit as a single <path> with all child subpaths concatenated.
+        // fill-rule="evenodd" produces the cutout effect in all SVG renderers.
+        // data-curvz-compound preserves the structure for round-trip parsing.
+
+        // Build combined d string from all Path children
+        std::ostringstream d;
+        std::string all_types;
+        std::string child_ids;
+
+        for (const auto& child : obj.children) {
+            if (child->type != GlyphObject::Type::Path || !child->path) continue;
+            const auto& pd = *child->path;
+            if (pd.nodes.empty()) continue;
+
+            if (d.tellp() > 0) d << " ";
+            d << "M " << fmt2(pd.nodes[0].x) << " " << fmt2(pd.nodes[0].y);
+            int n = (int)pd.nodes.size();
+            int segs = pd.closed ? n : n - 1;
+            for (int i = 0; i < segs; ++i) {
+                const BezierNode& a = pd.nodes[i];
+                const BezierNode& b = pd.nodes[(i+1) % n];
+                bool a_degen = (std::abs(a.cx2 - a.x) < 1e-6 && std::abs(a.cy2 - a.y) < 1e-6);
+                bool b_degen = (std::abs(b.cx1 - b.x) < 1e-6 && std::abs(b.cy1 - b.y) < 1e-6);
+                if (a_degen && b_degen)
+                    d << " L " << fmt2(b.x) << " " << fmt2(b.y);
+                else
+                    d << " C " << fmt2(a.cx2) << " " << fmt2(a.cy2)
+                      << " "   << fmt2(b.cx1) << " " << fmt2(b.cy1)
+                      << " "   << fmt2(b.x)   << " " << fmt2(b.y);
+            }
+            if (pd.closed) d << " Z";
+
+            // Accumulate node types per child separated by "|"
+            std::string child_types;
+            for (const auto& nd : pd.nodes) {
+                if (!child_types.empty()) child_types += ' ';
+                switch (nd.type) {
+                    case BezierNode::Type::Symmetric: child_types += 'S'; break;
+                    case BezierNode::Type::Smooth:    child_types += 'M'; break;
+                    case BezierNode::Type::Cusp:      child_types += 'C'; break;
+                    case BezierNode::Type::Corner:    child_types += 'K'; break;
+                }
+            }
+            if (!all_types.empty()) all_types += "|";
+            all_types += child_types;
+
+            // Accumulate child ids for round-trip — encoded the same way
+            // as the SVG `id` attribute itself (name + iid), so external
+            // references to data-curvz-child-ids resolve correctly.
+            if (!child_ids.empty()) child_ids += ",";
+            child_ids += curvz::utils::encode_svg_id(child->name, child->internal_id);
+        }
+
+        if (d.tellp() == 0) return; // no valid children
+
+        // Fill/stroke from compound node itself. Per S58d/g, "Compound owns
+        // its paint" — children's individual fill/stroke values are stale
+        // remnants of pre-compound state and must NOT be the source of
+        // truth on save. (Using children[0] here was a long-standing bug:
+        // it caused compounds to revert to a child's pre-compound colour
+        // on reopen, even after the compound's own fill had been edited.)
+        std::string fill_s   = " fill=\""   + fill_attr(obj.fill) + "\"";
+        std::string stroke_s = stroke_attrs(obj.stroke);
+        std::string swatch_s = swatch_binding_attrs(obj);
+        // S77 m3c: bound_style lives on the compound node itself.
+        std::string style_s  = style_binding_attr(obj);
+
+        out << pad << "<path"
+            << " data-curvz-compound=\"1\""
+            << (role_hint ? std::string(" ") + role_hint : std::string())
+            << id_attr_str(obj)
+            << (obj.internal_id.empty() ? "" : " data-curvz-iid=\"" + obj.internal_id + "\"")
+            << (obj.name.empty() ? "" : " data-curvz-name=\"" + obj.name + "\"")
+            << (!obj.visible     ? " display=\"none\"" : "")
+            << (obj.opacity < 0.999 ? " opacity=\"" + fmt2(obj.opacity) + "\"" : "")
+            << " fill-rule=\"evenodd\""
+            << " d=\"" << d.str() << "\""
+            << " data-curvz-types=\"" << all_types << "\""
+            << " data-curvz-child-ids=\"" << child_ids << "\""
+            << fill_s << stroke_s << swatch_s << style_s
+            << shadow_attr_str(obj)  // S97 m1
+            << "/>\n";
+        return;
+    }
+
+    // ── Image ──────────────────────────────────────────────────────────────
+    if (obj.type == GlyphObject::Type::Image) {
+        out << pad << "<image";
+        out << id_attr_str(obj);
+        if (!obj.internal_id.empty())  out << " data-curvz-iid=\""  << obj.internal_id << "\"";
+        if (!obj.name.empty())    out << " data-curvz-name=\"" << obj.name      << "\"";
+        out << " x=\""            << fmt2(obj.image_x)         << "\"";
+        out << " y=\""            << fmt2(obj.image_y)         << "\"";
+        out << " width=\""        << fmt2(obj.image_w)         << "\"";
+        out << " height=\""       << fmt2(obj.image_h)         << "\"";
+        out << " href=\""         << obj.image_path            << "\"";
+        out << " data-curvz-image=\"1\"";
+        // Emit transform if non-identity
+        const Transform& t = obj.transform;
+        bool has_t = (std::abs(t.a-1.0)>1e-6 || std::abs(t.b)>1e-6 ||
+                      std::abs(t.c)>1e-6 || std::abs(t.d-1.0)>1e-6);
+        if (has_t) {
+            // Apply around image centre: translate(cx,cy) matrix(a,b,c,d,0,0) translate(-cx,-cy)
+            double icx = obj.image_x + obj.image_w * 0.5;
+            double icy = obj.image_y + obj.image_h * 0.5;
+            double te = icx - t.a*icx - t.c*icy;
+            double tf = icy - t.b*icx - t.d*icy;
+            out << " transform=\"matrix(" << fmt2(t.a) << "," << fmt2(t.b)
+                << "," << fmt2(t.c) << "," << fmt2(t.d)
+                << "," << fmt2(te) << "," << fmt2(tf) << ")\"";
+        }
+        if (!obj.visible)         out << " display=\"none\"";
+        if (obj.opacity < 0.999)  out << " opacity=\"" << fmt2(obj.opacity) << "\"";
+        out << shadow_attr_str(obj);  // S97 m1
+        out << "/>\n";
+        return;
+    }
+
+    // ── Ref point ──────────────────────────────────────────────────────────
+    if (obj.type == GlyphObject::Type::Ref) {
+        out << pad << "<circle data-curvz-ref=\"1\""
+            << " cx=\"" << fmt6(obj.ref_x) << "\""
+            << " cy=\"" << fmt6(obj.ref_y) << "\"";
+        out << id_attr_str(obj);
+        if (!obj.internal_id.empty()) out << " data-curvz-iid=\""  << obj.internal_id << "\"";
+        if (!obj.name.empty()) out << " data-curvz-name=\"" << obj.name << "\"";
+        if (!obj.visible)      out << " display=\"none\"";
+        out << " r=\"0\" fill=\"none\" stroke=\"none\"/>\n";
+        return;
+    }
+
+    // ── Text ───────────────────────────────────────────────────────────────
+    if (obj.type == GlyphObject::Type::Text) {
+        // SVG <text> uses Y-down coordinates; text_y is already in doc space (Y-down).
+        // text_content is stored both as element content (for external SVG viewers)
+        // and as data-curvz-content attribute (for reliable round-trip parsing,
+        // since SvgParser's split_tags tokeniser discards inter-tag character data).
+        auto xml_escape = [](const std::string& s) {
+            std::string out;
+            for (char c : s) {
+                if      (c == '&') out += "&amp;";
+                else if (c == '<') out += "&lt;";
+                else if (c == '>') out += "&gt;";
+                else if (c == '"') out += "&quot;";
+                else               out += c;
+            }
+            return out;
+        };
+        out << pad << "<text";
+        out << id_attr_str(obj);
+        if (!obj.internal_id.empty()) out << " data-curvz-iid=\""  << obj.internal_id << "\"";
+        if (!obj.name.empty())   out << " data-curvz-name=\""  << xml_escape(obj.name)            << "\"";
+        out << " x=\""           << fmt2(obj.text_x)           << "\"";
+        out << " y=\""           << fmt2(obj.text_y)           << "\"";
+        out << " font-family=\"" << obj.text_font_family       << "\"";
+        out << " font-size=\""   << fmt2(obj.text_font_size)   << "\"";
+        if (obj.text_bold)   out << " font-weight=\"bold\"";
+        if (obj.text_italic) out << " font-style=\"italic\"";
+        if (obj.text_baseline_shift != 0.0)
+            out << " data-curvz-baseline-shift=\"" << fmt2(obj.text_baseline_shift) << "\"";
+        if (obj.text_letter_spacing != 0.0)
+            out << " letter-spacing=\"" << fmt2(obj.text_letter_spacing) << "\"";
+        if (obj.text_anchor != "start")
+            out << " text-anchor=\"" << obj.text_anchor << "\"";
+        if (obj.text_align != "left" && !obj.text_align.empty())
+            out << " data-curvz-align=\"" << obj.text_align << "\"";
+        out << " fill=\""        << fill_attr(obj.fill)        << "\"";
+        if (obj.stroke.paint.type != FillStyle::Type::None)
+            out << stroke_attrs(obj.stroke);
+        out << swatch_binding_attrs(obj);
+        out << style_binding_attr(obj);  // S77 m3c
+        if (!obj.visible)        out << " display=\"none\"";
+        if (obj.opacity < 0.999) out << " opacity=\"" << fmt2(obj.opacity) << "\"";
+        out << shadow_attr_str(obj);  // S97 m1 — on the <text> open tag, applies to both branches below
+        // Custom attribute for reliable round-trip (split_tags discards char data).
+        out << " data-curvz-content=\"" << xml_escape(obj.text_content) << "\"";
+        if (!obj.text_path_id.empty()) {
+            LOG_DEBUG("SvgWriter: text node '{}' text_path_id='{}'",
+                      obj.id, obj.text_path_id);
+            out << " data-curvz-path-id=\"" << obj.text_path_id << "\"";
+            out << " data-curvz-path-offset=\"" << fmt6(obj.text_path_offset) << "\"";
+            if (obj.text_path_flip) out << " data-curvz-path-flip=\"1\"";
+        }
+        if (!obj.text_path_id.empty()) {
+            // Emit SVG-standard textPath for interoperability with other SVG viewers
+            out << ">\n";
+            out << pad << "  <textPath href=\"#" << obj.text_path_id << "\"";
+            out << " startOffset=\"" << fmt2(obj.text_path_offset) << "px\"";
+            if (obj.text_path_flip) out << " side=\"right\"";
+            out << ">" << xml_escape(obj.text_content) << "</textPath>\n";
+            out << pad << "</text>\n";
+        } else {
+            out << ">" << xml_escape(obj.text_content) << "</text>\n";
+        }
+        return;
+    }
+
+    std::string fill   = " fill=\""   + fill_attr(obj.fill) + "\"";
+    std::string stroke = stroke_attrs(obj.stroke);
+    std::string swatch_bind = swatch_binding_attrs(obj);
+    std::string style_bind  = style_binding_attr(obj);  // S77 m3c
+    std::string id_attr  = id_attr_str(obj);
+    std::string iid_attr = obj.internal_id.empty() ? "" : " data-curvz-iid=\"" + obj.internal_id + "\"";
+    std::string opacity_attr = (obj.opacity < 0.999)
+        ? " opacity=\"" + fmt2(obj.opacity) + "\"" : "";
+
+    if (obj.type == GlyphObject::Type::Path && obj.path) {
+        const auto& pd = *obj.path;
+        if (pd.nodes.empty()) { return; }
+
+        std::ostringstream d;
+        d << "M " << fmt2(pd.nodes[0].x) << " " << fmt2(pd.nodes[0].y);
+        int n = (int)pd.nodes.size();
+        int segs = pd.closed ? n : n - 1;
+        for (int i = 0; i < segs; ++i) {
+            const BezierNode& a = pd.nodes[i];
+            const BezierNode& b = pd.nodes[(i+1) % n];
+            bool a_degen = (std::abs(a.cx2 - a.x) < 1e-6 && std::abs(a.cy2 - a.y) < 1e-6);
+            bool b_degen = (std::abs(b.cx1 - b.x) < 1e-6 && std::abs(b.cy1 - b.y) < 1e-6);
+            if (a_degen && b_degen) {
+                d << " L " << fmt2(b.x) << " " << fmt2(b.y);
+            } else {
+                d << " C " << fmt2(a.cx2) << " " << fmt2(a.cy2)
+                  << " " << fmt2(b.cx1)   << " " << fmt2(b.cy1)
+                  << " " << fmt2(b.x)     << " " << fmt2(b.y);
+            }
+        }
+        if (pd.closed) d << " Z";
+
+        // ── Node type metadata ─────────────────────────────────────────────
+        // Store editor node types as a custom data attribute so they survive
+        // save/load. One char per node: S=Symmetric M=sMooth C=Cusp K=corner
+        // (K avoids collision with the SVG 'C' cubic command letter).
+        std::string types_str;
+        for (const auto& nd : pd.nodes) {
+            if (!types_str.empty()) types_str += ' ';
+            switch (nd.type) {
+                case BezierNode::Type::Symmetric: types_str += 'S'; break;
+                case BezierNode::Type::Smooth:    types_str += 'M'; break;
+                case BezierNode::Type::Cusp:      types_str += 'C'; break;
+                case BezierNode::Type::Corner:    types_str += 'K'; break;
+            }
+        }
+
+        out << pad << "<path";
+        if (role_hint) out << " " << role_hint;
+        out << id_attr
+            << iid_attr
+            << " d=\"" << d.str() << "\""
+            << " data-curvz-types=\"" << types_str << "\""
+            << (obj.name.empty() ? "" : " data-curvz-name=\"" + obj.name + "\"")
+            << fill << stroke << swatch_bind << style_bind << opacity_attr
+            << shadow_attr_str(obj)  // S97 m1
+            << "/>\n";
+    }
+}
+
+// ── write_svg ─────────────────────────────────────────────────────────────────
+
+std::string write_svg(const CurvzDocument& doc) {
+    std::ostringstream out;
+
+    char vb[128];
+    snprintf(vb, sizeof(vb), "0 0 %d %d", doc.canvas_width(), doc.canvas_height());
+
+    // In Physical mode, emit width/height with the physical unit suffix so
+    // downstream renderers display the file at its intended physical size
+    // (viewBox stays in doc-units, so geometry is unchanged).  In Pixel /
+    // Ratio modes there is no physical intent — emit bare numbers matching
+    // the viewBox.  See Inkscape convention: width="1in" + viewBox="0 0 300 300"
+    // establishes the doc-unit ↔ inch mapping declaratively.
+    char wh[64];
+    char hh[64];
+    if (doc.canvas.display_mode == DisplayMode::Physical) {
+        // 2 decimal places for phys w/h; unit is doc.canvas.phys_unit ("in","mm","cm")
+        snprintf(wh, sizeof(wh), "%.4f%s",
+                 doc.canvas.phys_width,  doc.canvas.phys_unit.c_str());
+        snprintf(hh, sizeof(hh), "%.4f%s",
+                 doc.canvas.phys_height, doc.canvas.phys_unit.c_str());
+    } else {
+        snprintf(wh, sizeof(wh), "%d", doc.canvas_width());
+        snprintf(hh, sizeof(hh), "%d", doc.canvas_height());
+    }
+    out << "<svg xmlns=\"http://www.w3.org/2000/svg\""
+        << " viewBox=\"" << vb << "\""
+        << " width=\""  << wh << "\""
+        << " height=\"" << hh << "\""
+        << ">\n";
+
+    // ── S90 Stage 2 — gradient pre-pass ───────────────────────────────
+    // Walk the tree once to collect every gradient FillStyle (fill +
+    // stroke.paint), mint stable url(#gradN) ids for each, and activate
+    // the file-scope collector pointer so fill_attr emits url(...) refs
+    // instead of degrading to flat colour. Cleared at the bottom of this
+    // function. Empty when the doc has no gradients — the collector
+    // pre-pass walk is cheap (just pointer comparisons).
+    GradientCollector gc;
+    for (const auto& l : doc.layers)
+        if (l) collect_gradients(*l, gc);
+    g_grad_collector = &gc;
+
+    // ── S97 m1 — drop shadow pre-pass ─────────────────────────────────
+    // Same shape as the gradient pre-pass: walk every node, collect any
+    // with shadow_enabled, mint per-host filter ids ("sh_<short_iid>"),
+    // activate the file-scope collector pointer so write_object's call
+    // to shadow_attr_str() can look up the minted id at emit time.
+    // Cleared at the bottom of this function.
+    ShadowCollector sc;
+    for (const auto& l : doc.layers)
+        if (l) collect_shadows(*l, sc);
+    g_shadow_collector = &sc;
+
+    // ── <defs> with <clipPath> + <linearGradient>/<radialGradient> ────
+    // Walk the tree once, collect every ClipGroup, and emit its
+    // clip_shape inside <clipPath id="<clip_id>">. The ClipGroup node
+    // itself is emitted later via the normal layer → write_object path,
+    // with just a clip-path="url(#...)" reference. Illustrator/Inkscape/
+    // browsers need the <defs> to precede the referencing <g>.
+    //
+    // The clip_shape is emitted as plain SVG geometry (path or multiple
+    // paths for a Compound) — no fill/stroke on the <clipPath> wrapper
+    // itself. When the clip_shape is missing/empty the ClipGroup is
+    // still emitted (with an empty <clipPath>), so a degenerate
+    // ClipGroup survives a round-trip without being silently dropped.
+    {
+        std::vector<const SceneNode*> clip_groups;
+        std::function<void(const SceneNode&)> collect = [&](const SceneNode& n) {
+            if (n.type == SceneNode::Type::ClipGroup)
+                clip_groups.push_back(&n);
+            for (const auto& c : n.children)
+                if (c) collect(*c);
+            if (n.clip_shape) collect(*n.clip_shape);
+        };
+        for (const auto& l : doc.layers)
+            if (l) collect(*l);
+
+        if (!clip_groups.empty() || !gc.entries.empty() || !sc.entries.empty()) {
+            out << "  <defs>\n";
+            for (const SceneNode* cg : clip_groups) {
+                // clipPathUnits defaults to userSpaceOnUse (what we want).
+                // clip-rule="evenodd" when the shape is a Compound so holes
+                // are honored — matches Cairo EVEN_ODD at render. Path-only
+                // shapes don't need it (single subpath, rule irrelevant).
+                out << "    <clipPath id=\"" << cg->clip_id << "\"";
+                if (cg->clip_shape &&
+                    cg->clip_shape->type == GlyphObject::Type::Compound)
+                    out << " clip-rule=\"evenodd\"";
+                out << ">\n";
+                const SceneNode* cs = cg->clip_shape.get();
+                if (cs) {
+                    // write_object emits at indent 3 → "      <path ..."
+                    // Reuse the existing emitter for Path/Compound so the
+                    // d string, fill-rule, etc. match everywhere else.
+                    write_object(out, *cs, 3);
+                }
+                out << "    </clipPath>\n";
+            }
+            // S90 Stage 2 — gradient defs. One <linearGradient> /
+            // <radialGradient> per unique FillStyle pointer collected by
+            // the pre-pass at the top of this function. Refs from shapes
+            // are emitted by fill_attr() via g_grad_collector lookup.
+            for (const FillStyle* fs : gc.entries) {
+                const std::string& id = gc.id_map.at(fs);
+                write_gradient_def(out, id, *fs, 2);
+            }
+            // S97 m1 — drop shadow defs. One <filter> per shadowed node.
+            // Refs are emitted by write_object via shadow_attr_str(). Each
+            // filter is named sh_<short_iid> (8-hex of the host's UUID).
+            for (const SceneNode* node : sc.entries) {
+                const std::string& id = sc.id_map.at(node);
+                write_shadow_filter(out, id, *node, 2);
+            }
+            out << "  </defs>\n";
+        }
+    }
+
+    for (const auto& layer_uptr : doc.layers) {
+        const SceneNode& layer = *layer_uptr;
+
+        // ── Guide layer ───────────────────────────────────────────────────
+        if (layer.is_guide_layer()) {
+            out << "  <g data-curvz-guide-layer=\"1\"";
+            if (!layer.visible) out << " display=\"none\"";
+            if (layer.locked)   out << " data-curvz-locked=\"1\"";
+            // Emit guide color
+            out << " data-curvz-guide-color=\""
+                << fmt2(doc.guide_color_r) << ","
+                << fmt2(doc.guide_color_g) << ","
+                << fmt2(doc.guide_color_b) << "\"";
+            // S110 m4: emit iid+name for the layer itself, not just children.
+            // Without this the assign_iids safety net mints a fresh iid every
+            // load, generating warning spam and (more importantly) breaking
+            // any feature that relies on stable system-layer identity across
+            // saves.
+            if (!layer.internal_id.empty())
+                out << " data-curvz-iid=\"" << layer.internal_id << "\"";
+            if (!layer.name.empty())
+                out << " data-curvz-name=\"" << layer.name << "\"";
+            out << ">\n";
+            for (const auto& g : layer.children) {
+                if (!g->is_guide()) continue;
+                // S49+: write new-model fields only.  Legacy
+                // data-curvz-guide-pos / data-curvz-guide-horiz are no longer
+                // emitted.  SvgParser still reads them for back-compat load
+                // of older files.
+                out << "    <line data-curvz-guide=\"1\""
+                    << " data-curvz-guide-x=\""     << fmt6(g->guide_x)     << "\""
+                    << " data-curvz-guide-y=\""     << fmt6(g->guide_y)     << "\""
+                    << " data-curvz-guide-angle=\"" << fmt6(g->guide_angle) << "\"";
+                out << id_attr_str(*g);
+                if (!g->internal_id.empty())
+                    out << " data-curvz-iid=\"" << g->internal_id << "\"";
+                if (!g->name.empty())
+                    out << " data-curvz-name=\"" << g->name << "\"";
+                if (g->locked) out << " data-curvz-locked=\"1\"";
+                out << "/>\n";
+            }
+            out << "  </g>\n";
+            continue;
+        }
+
+        // ── Ref layer ─────────────────────────────────────────────────────
+        if (layer.is_ref_layer()) {
+            out << "  <g data-curvz-ref-layer=\"1\"";
+            if (!layer.visible) out << " display=\"none\"";
+            if (layer.locked)   out << " data-curvz-locked=\"1\"";
+            if (!layer.color.empty()) out << " data-curvz-color=\"" << layer.color << "\"";
+            // S110 m4: see guide-layer comment above — same fix here.
+            if (!layer.internal_id.empty())
+                out << " data-curvz-iid=\"" << layer.internal_id << "\"";
+            if (!layer.name.empty())
+                out << " data-curvz-name=\"" << layer.name << "\"";
+            out << ">\n";
+            for (const auto& r : layer.children) {
+                if (!r->is_ref()) continue;
+                out << "    <circle data-curvz-ref=\"1\""
+                    << " cx=\"" << fmt6(r->ref_x) << "\""
+                    << " cy=\"" << fmt6(r->ref_y) << "\""
+                    << " r=\"0\" fill=\"none\" stroke=\"none\"";
+                out << id_attr_str(*r);
+                if (!r->internal_id.empty())
+                    out << " data-curvz-iid=\"" << r->internal_id << "\"";
+                if (!r->name.empty()) out << " data-curvz-name=\"" << r->name << "\"";
+                if (!r->visible)      out << " display=\"none\"";
+                out << "/>\n";
+            }
+            out << "  </g>\n";
+            continue;
+        }
+
+        // ── Measure layer ─────────────────────────────────────────────────
+        if (layer.is_measure_layer()) {
+            out << "  <g data-curvz-measure-layer=\"1\"";
+            if (!layer.visible) out << " display=\"none\"";
+            if (layer.locked)   out << " data-curvz-locked=\"1\"";
+            if (doc.measure_save_to_layer)
+                out << " data-curvz-save-to-layer=\"1\"";
+            if (doc.measure_destruct_after_copy)
+                out << " data-curvz-destruct-after-copy=\"1\"";
+            // S110 m4: see guide-layer comment above — same fix here.
+            if (!layer.internal_id.empty())
+                out << " data-curvz-iid=\"" << layer.internal_id << "\"";
+            if (!layer.name.empty())
+                out << " data-curvz-name=\"" << layer.name << "\"";
+            out << ">\n";
+            for (const auto& m : layer.children) {
+                if (!m->is_measurement()) continue;
+                out << "    <line data-curvz-measure=\"1\""
+                    << " data-curvz-mx1=\"" << fmt6(m->measure_x1) << "\""
+                    << " data-curvz-my1=\"" << fmt6(m->measure_y1) << "\""
+                    << " data-curvz-mx2=\"" << fmt6(m->measure_x2) << "\""
+                    << " data-curvz-my2=\"" << fmt6(m->measure_y2) << "\"";
+                if (!m->visible) out << " display=\"none\"";
+                // S89: stable identity via UUID. The display name is
+                // synthesised at render time from coords + active doc
+                // unit, so no `id` or name attr is round-tripped.
+                if (!m->internal_id.empty())
+                    out << " data-curvz-iid=\"" << m->internal_id << "\"";
+                out << "/>\n";
+            }
+            out << "  </g>\n";
+            continue;
+        }
+
+        // Grid and margin layers are stored in project.json — skip in SVG
+        if (layer.is_grid_layer() || layer.is_margin_layer())
+            continue;
+
+        // Wrap each layer in a <g> — write even if empty so it survives reload
+        out << "  <g data-curvz-layer=\"1\"";
+        // S96 m2: SVG `id` is now derived from name + iid via the codec.
+        // The authoritative source-of-truth for layer identity on load is
+        // data-curvz-iid (UUID) and data-curvz-name (verbatim name); the
+        // SVG `id` is a derived handle for external tools / <use> refs.
+        out << id_attr_str(layer);
+        if (!layer.internal_id.empty())
+            out << " data-curvz-iid=\"" << layer.internal_id << "\"";
+        if (!layer.name.empty())
+            out << " data-curvz-name=\"" << layer.name << "\"";
+        if (!layer.visible)
+            out << " display=\"none\"";
+        if (layer.opacity < 0.999)
+            out << " opacity=\"" << fmt2(layer.opacity) << "\"";
+        if (layer.locked)
+            out << " data-curvz-locked=\"1\"";
+        if (!layer.color.empty())
+            out << " data-curvz-color=\"" << layer.color << "\"";
+        out << ">\n";
+
+        // Reverse children on write — see Group branch comment above for
+        // rationale. Layer's [0]=top, SVG's first-emitted=bottom.
+        for (int i = (int)layer.children.size() - 1; i >= 0; --i)
+            write_object(out, *layer.children[i], 2);
+
+        out << "  </g>\n";
+    }
+
+    out << "</svg>\n";
+    // S90 Stage 2 — clear active collector. Paired with the activation at
+    // the top of this function. Failing to clear would leave a dangling
+    // pointer if the next write_svg call were on a different doc and
+    // didn't reactivate (which it always does, but defensiveness is free).
+    g_grad_collector = nullptr;
+    g_shadow_collector = nullptr;  // S97 m1
+    return out.str();
+}
+
+bool write_svg_file(const CurvzDocument& doc, const std::string& path) {
+    std::ofstream f(path);
+    if (!f) {
+        LOG_ERROR("SvgWriter: cannot open '{}' for writing", path);
+        return false;
+    }
+    f << write_svg(doc);
+    LOG_DEBUG("SvgWriter: wrote '{}'", path);
+    return true;
+}
+
+// ── S104 m1 — Export Documents metadata variant ──────────────────────────────
+//
+// Generates standard SVG via write_svg(), then injects data-curvz-export-*
+// attributes into the root <svg> element via string replacement. Cheaper
+// than parameterising write_svg() — the writer is a 1100-line file with
+// many internal helpers, and the only call site that cares about export
+// metadata is Project → Export Documents. Other callers (Save, icon
+// theme export) intentionally produce vanilla SVG.
+//
+// The injection target is the literal "<svg " prefix on the root element,
+// which write_svg() always emits at offset 0 of its output (no XML
+// declaration, no comments). Robust as long as write_svg's output shape
+// stays "starts with <svg "; if that ever changes the find-replace will
+// fall through to no injection (still produces a valid SVG, just without
+// metadata).
+bool write_svg_file_with_export_meta(const CurvzDocument& doc,
+                                     const std::string& path,
+                                     const std::string& units,
+                                     double size_value,
+                                     const std::string& fit_side) {
+    std::string svg = write_svg(doc);
+
+    // Build the injection. fmt2 isn't visible here; do it inline with
+    // snprintf — same precision as the rest of the writer.
+    char size_buf[32];
+    snprintf(size_buf, sizeof(size_buf), "%.4f", size_value);
+
+    std::string inject = " data-curvz-export-units=\"" + units +
+                         "\" data-curvz-export-size=\""  + size_buf +
+                         "\" data-curvz-export-fit=\""   + fit_side + "\"";
+
+    // Find the root <svg element and inject right after the tag name.
+    // write_svg always emits "<svg xmlns=..." at offset 0.
+    constexpr const char* kSvgPrefix = "<svg ";
+    auto pos = svg.find(kSvgPrefix);
+    if (pos != std::string::npos) {
+        svg.insert(pos + std::strlen(kSvgPrefix) - 1, inject);
+    } else {
+        LOG_WARN("SvgWriter: could not locate <svg root for export metadata "
+                 "injection in '{}' — writing without metadata", path);
+    }
+
+    std::ofstream f(path);
+    if (!f) {
+        LOG_ERROR("SvgWriter: cannot open '{}' for writing", path);
+        return false;
+    }
+    f << svg;
+    LOG_DEBUG("SvgWriter: wrote '{}' with export metadata "
+              "({}={} fit={})", path, units, size_buf, fit_side);
+    return true;
+}
+
+} // namespace Curvz

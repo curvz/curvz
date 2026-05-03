@@ -1,0 +1,16 @@
+GIMP Palette
+Name: Standard
+Columns: 8
+#
+  0   0   0	Black
+255 255 255	White
+128 128 128	Grey
+255   0   0	Red
+255 165   0	Orange
+255 255   0	Yellow
+  0 128   0	Green
+  0   0 255	Blue
+ 75   0 130	Indigo
+238 130 238	Violet
+165  42  42	Brown
+255 192 203	Pink

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g data-curvz-guide-layer="1" data-curvz-guide-color="0,0.749,1">
+    <line data-curvz-guide="1" data-curvz-guide-pos="500.000000" data-curvz-guide-horiz="1"/>
+    <line data-curvz-guide="1" data-curvz-guide-pos="499.505319" data-curvz-guide-horiz="0"/>
+    <line data-curvz-guide="1" data-curvz-guide-pos="938.040192" data-curvz-guide-horiz="1"/>
+  </g>
+  <g data-curvz-layer="1" id="Layer 1">
+    <g data-curvz-group="1" id="Group_1" data-curvz-name="Group_1">
+      <path id="obj16" data-curvz-iid="c8c211cd-c4a7-47e1-b866-7df3fc48f683" d="M 437.234 869.641 L 561.777 869.641 L 561.777 938.04 L 437.234 938.04 L 437.234 869.641 Z" data-curvz-types="K K K K" data-curvz-name=" (2)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+      <path id="obj23" data-curvz-iid="c8c211cd-c4a7-47e1-b866-7df3fc48f683" d="M 437.234 733.757 L 561.777 733.757 L 561.777 802.156 L 437.234 802.156 L 437.234 733.757 Z" data-curvz-types="K K K K" data-curvz-name=" (3)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+      <path id="obj22" data-curvz-iid="833ca5c7-baef-4d3b-9ce6-9f2e19af5b0c" d="M 561.838 581.997 L 561.75 660.044 L 437.257 660.044 L 437.173 581.241 C 412.92 562.455 397.307 533.051 397.307 500 C 397.307 443.284 443.284 397.307 500 397.307 C 556.716 397.307 602.693 443.284 602.693 500 C 602.693 533.498 586.655 563.25 561.838 581.997 Z" data-curvz-types="K K K K K K K" data-curvz-name="Subtract" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    </g>
+    <path id="obj14" data-curvz-iid="c7117f19-5ef6-4c02-a1a0-d029fde1419c" d="M 49.8604 500 C 50.2531 257.201 246.896 60.8762 489.695 60.8762 L 511.446 60.8762 C 753.691 60.8762 950.252 257.756 949.86 500 L 949.15 939.124 L 824.155 939.099 L 824.913 496.14 C 825.247 316.884 679.774 171.141 500.518 171.141 C 320.789 171.141 175.248 316.412 174.913 496.14 L 174.155 939.099 L 49.1502 939.124 L 49.8604 500 Z" data-curvz-types="K K K K K K K K K K K" data-curvz-name="Subtract" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+  </g>
+</svg>

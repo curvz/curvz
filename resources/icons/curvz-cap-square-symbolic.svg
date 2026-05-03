@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g data-curvz-guide-layer="1" display="none" data-curvz-guide-color="0,0.749,1">
+    <line data-curvz-guide="1" data-curvz-guide-pos="500.000000" data-curvz-guide-horiz="1"/>
+    <line data-curvz-guide="1" data-curvz-guide-pos="506.203302" data-curvz-guide-horiz="0"/>
+    <line data-curvz-guide="1" data-curvz-guide-pos="51.136184" data-curvz-guide-horiz="1"/>
+    <line data-curvz-guide="1" data-curvz-guide-pos="49.266289" data-curvz-guide-horiz="0"/>
+  </g>
+  <g data-curvz-layer="1" id="Layer 1">
+    <path id="obj29" data-curvz-iid="412de7f8-3c1b-4209-b1e1-62b62b569583" d="M 51.9655 51.1362 L 951.965 51.1362 L 950 937.463 L 825.101 937.393 L 826.965 164.63 L 176.965 164.63 L 175.101 937.393 L 50 937.463 L 51.9655 51.1362 Z" data-curvz-types="K K K K K K K K" data-curvz-name="Subtract" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    <g data-curvz-group="1" id="obj24" data-curvz-name="Group_1 (2)">
+      <path id="obj25" data-curvz-iid="c8c211cd-c4a7-47e1-b866-7df3fc48f683" d="M 437.234 868.274 L 561.777 868.274 L 561.777 936.674 L 437.234 936.674 L 437.234 868.274 Z" data-curvz-types="K K K K" data-curvz-name=" (3)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+      <path id="obj26" data-curvz-iid="c8c211cd-c4a7-47e1-b866-7df3fc48f683" d="M 437.234 732.39 L 561.777 732.39 L 561.777 800.79 L 437.234 800.79 L 437.234 732.39 Z" data-curvz-types="K K K K" data-curvz-name=" (3)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+      <path id="obj27" data-curvz-iid="833ca5c7-baef-4d3b-9ce6-9f2e19af5b0c" d="M 561.838 580.631 L 561.75 658.678 L 437.257 658.678 L 437.173 579.874 C 412.92 561.088 397.307 531.684 397.307 498.633 C 397.307 441.917 443.284 395.94 500 395.94 C 556.716 395.94 602.693 441.917 602.693 498.633 C 602.693 532.131 586.655 561.883 561.838 580.631 Z" data-curvz-types="K K K K K K K" data-curvz-name="Subtract (2)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    </g>
+  </g>
+</svg>

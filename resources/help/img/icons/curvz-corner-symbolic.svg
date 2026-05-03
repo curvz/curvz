@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g data-curvz-layer="1" id="Layer 1" data-curvz-color="#c061cb">
+    <path data-curvz-compound="1" id="compound1" data-curvz-name="Compound 1" fill-rule="evenodd" d="M 175 175 L 500 175 C 679.493 175 825 320.507 825 500 L 825 825 L 175 825 L 175 175 Z M 75 75 L 500 75 C 734.721 75 925 265.279 925 500 L 925 925 L 75 925 L 75 75 Z" data-curvz-types="K K K K K|K C C K K" data-curvz-child-ids="obj2,obj2" fill="currentColor" stroke="currentColor" stroke-width="2"/>
+  </g>
+  <g data-curvz-ref-layer="1" data-curvz-color="#77767B">
+    <circle data-curvz-ref="1" cx="350.000000" cy="625.000000" r="0" fill="none" stroke="none" id="obj1" data-curvz-name="350.000000_625.000000"/>
+  </g>
+  <g data-curvz-guide-layer="1" data-curvz-guide-color="0.964706,0.380392,0.317647">
+    <line data-curvz-guide="1" data-curvz-guide-pos="500.000000" data-curvz-guide-horiz="0"/>
+    <line data-curvz-guide="1" data-curvz-guide-pos="500.000000" data-curvz-guide-horiz="1"/>
+  </g>
+</svg>

@@ -1,0 +1,336 @@
+#include "math/CornerTreatment.hpp"
+#include "math/Vec2.hpp"
+#include <cmath>
+#include <algorithm>
+#include <cassert>
+#include <unordered_map>
+
+namespace Curvz {
+
+// Kappa: handle distance factor for a circular arc approximation via cubic Bézier.
+// For a 90° arc this is the classic 0.5523 value.
+// For an arbitrary included angle θ, the correct value is:
+//   k = (4/3) * tan(θ/4)
+// We use the per-corner angle so the arc looks circular regardless of corner angle.
+static double kappa_for_angle(double angle_rad) {
+    return (4.0 / 3.0) * std::tan(angle_rad / 4.0);
+}
+
+// ── handle_is_degenerate ──────────────────────────────────────────────────────
+bool handle_is_degenerate(double ax, double ay, double hx, double hy, double epsilon) {
+    double dx = hx - ax, dy = hy - ay;
+    return std::sqrt(dx*dx + dy*dy) < epsilon;
+}
+
+// ── corner_angle_deg ──────────────────────────────────────────────────────────
+double corner_angle_deg(const PathData& path, int idx) {
+    const int n = (int)path.nodes.size();
+    if (n < 2) return -1.0;
+
+    const bool closed = path.closed;
+
+    // Determine incoming and outgoing neighbour indices
+    int prev_idx = idx - 1;
+    int next_idx = idx + 1;
+
+    if (closed) {
+        prev_idx = (idx - 1 + n) % n;
+        next_idx = (idx + 1) % n;
+    } else {
+        if (prev_idx < 0 || next_idx >= n) return -1.0; // endpoint
+    }
+
+    const BezierNode& node = path.nodes[idx];
+    const BezierNode& prev = path.nodes[prev_idx];
+    const BezierNode& next = path.nodes[next_idx];
+
+    // Check handles are degenerate (straight segments in/out)
+    if (!handle_is_degenerate(node.x, node.y, node.cx1, node.cy1)) return -1.0;
+    if (!handle_is_degenerate(node.x, node.y, node.cx2, node.cy2)) return -1.0;
+    if (!handle_is_degenerate(prev.x, prev.y, prev.cx2, prev.cy2)) return -1.0;
+    if (!handle_is_degenerate(next.x, next.y, next.cx1, next.cy1)) return -1.0;
+
+    // Incoming direction: prev → node
+    Vec2 in_dir  = Vec2{node.x - prev.x, node.y - prev.y}.normalised();
+    // Outgoing direction: node → next
+    Vec2 out_dir = Vec2{next.x - node.x, next.y - node.y}.normalised();
+
+    // Angle between the two directions (interior angle at the corner)
+    double dot   = std::clamp(in_dir.dot(out_dir), -1.0, 1.0);
+    double angle = std::acos(dot) * 180.0 / M_PI;
+
+    // acos gives the angle between the vectors; the interior corner angle
+    // is 180° - angle (since in_dir continues and out_dir turns away).
+    return 180.0 - angle;
+}
+
+// ── apply_corner_treatment ────────────────────────────────────────────────────
+PathData apply_corner_treatment(
+    const PathData&                path,
+    const std::unordered_set<int>& node_indices,
+    CornerType                     type,
+    double                         radius,
+    std::vector<CornerResult>*     out_results)
+{
+    const int n = (int)path.nodes.size();
+    const bool closed = path.closed;
+
+    // We'll build an output node list by processing input nodes in order.
+    // For each node:
+    //   - If it's a treatment target and passes all checks: emit P1 [+ arc] + P2
+    //     instead of the original node.
+    //   - Otherwise: emit the original node unchanged.
+    //
+    // We must process in forward order because inserting nodes shifts all
+    // subsequent indices — we work on the *original* indices throughout.
+
+    // Collect sorted, deduplicated treatment candidates (Corner/Cusp only)
+    // that pass validity checks, and record skip reasons for the rest.
+    struct Candidate {
+        int              orig_idx;
+        double           seg_in_len;   // length of incoming straight segment
+        double           seg_out_len;  // length of outgoing straight segment
+        double           angle_deg;    // interior corner angle
+        double           clamped_r;    // radius after clamping
+        Vec2             in_dir;       // unit vector incoming
+        Vec2             out_dir;      // unit vector outgoing
+        CornerSkipReason skip = CornerSkipReason::Ok;
+    };
+
+    std::vector<Candidate> candidates;
+    candidates.reserve(node_indices.size());
+
+    for (int idx : node_indices) {
+        Candidate c;
+        c.orig_idx = idx;
+
+        if (idx < 0 || idx >= n) {
+            c.skip = CornerSkipReason::TooFewNeighbours;
+            candidates.push_back(c);
+            continue;
+        }
+
+        const BezierNode& node = path.nodes[idx];
+
+        // Only Corner and Cusp nodes
+        if (node.type != BezierNode::Type::Corner &&
+            node.type != BezierNode::Type::Cusp) {
+            // Silently skip — not recorded in out_results
+            continue;
+        }
+
+        int prev_idx = closed ? (idx - 1 + n) % n : idx - 1;
+        int next_idx = closed ? (idx + 1) % n     : idx + 1;
+
+        if (!closed && (prev_idx < 0 || next_idx >= n)) {
+            c.skip = CornerSkipReason::TooFewNeighbours;
+            candidates.push_back(c);
+            continue;
+        }
+
+        const BezierNode& prev = path.nodes[prev_idx];
+        const BezierNode& next = path.nodes[next_idx];
+
+        // Check handles for straightness
+        if (!handle_is_degenerate(prev.x, prev.y, prev.cx2, prev.cy2)) {
+            c.skip = CornerSkipReason::CurvedIncoming;
+            candidates.push_back(c);
+            continue;
+        }
+        if (!handle_is_degenerate(node.x, node.y, node.cx1, node.cy1)) {
+            c.skip = CornerSkipReason::CurvedIncoming;
+            candidates.push_back(c);
+            continue;
+        }
+        if (!handle_is_degenerate(node.x, node.y, node.cx2, node.cy2)) {
+            c.skip = CornerSkipReason::CurvedOutgoing;
+            candidates.push_back(c);
+            continue;
+        }
+        if (!handle_is_degenerate(next.x, next.y, next.cx1, next.cy1)) {
+            c.skip = CornerSkipReason::CurvedOutgoing;
+            candidates.push_back(c);
+            continue;
+        }
+
+        // Segment lengths
+        Vec2 in_vec  = {node.x - prev.x, node.y - prev.y};
+        Vec2 out_vec = {next.x - node.x, next.y - node.y};
+        double in_len  = in_vec.length();
+        double out_len = out_vec.length();
+
+        if (in_len < 1e-9 || out_len < 1e-9) {
+            c.skip = CornerSkipReason::TooFewNeighbours;
+            candidates.push_back(c);
+            continue;
+        }
+
+        c.in_dir  = in_vec  * (1.0 / in_len);
+        c.out_dir = out_vec * (1.0 / out_len);
+
+        // Interior angle
+        double dot   = std::clamp(c.in_dir.dot(c.out_dir), -1.0, 1.0);
+        double angle = (180.0 - std::acos(dot) * 180.0 / M_PI);
+        c.angle_deg = angle;
+
+        if (angle < 15.0) {
+            c.skip = CornerSkipReason::AngleTooSharp;
+            candidates.push_back(c);
+            continue;
+        }
+        if (angle > 170.0) {
+            c.skip = CornerSkipReason::AngleTooFlat;
+            candidates.push_back(c);
+            continue;
+        }
+
+        c.seg_in_len  = in_len;
+        c.seg_out_len = out_len;
+
+        // Clamp radius: each treatment consumes `r` from two adjacent segments.
+        // We clamp to half the *shorter* of the two adjacent segments so we
+        // don't consume more than the full segment (which would collide with
+        // a neighbouring treatment or overshoot the previous node).
+        double max_r = std::min(in_len, out_len) * 0.5;
+        c.clamped_r  = std::min(radius, max_r);
+
+        candidates.push_back(c);
+    }
+
+    // Fill out_results
+    if (out_results) {
+        out_results->clear();
+        for (auto& c : candidates) {
+            CornerResult r;
+            r.node_index  = c.orig_idx;
+            r.skip_reason = c.skip;
+            out_results->push_back(r);
+        }
+    }
+
+    // Sort candidates by orig_idx ascending — we'll iterate the original path in order
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate& a, const Candidate& b){ return a.orig_idx < b.orig_idx; });
+
+    // Build a set of orig indices that will actually be replaced (not skipped)
+    std::unordered_set<int> replace_set;
+    for (auto& c : candidates)
+        if (c.skip == CornerSkipReason::Ok) replace_set.insert(c.orig_idx);
+
+    // Build output nodes
+    PathData result;
+    result.closed    = path.closed;
+    result.node_sets = {}; // parametric constraints are no longer valid
+
+    // Map from candidate orig_idx → candidate (for quick lookup)
+    std::unordered_map<int, const Candidate*> cmap;
+    for (auto& c : candidates)
+        if (c.skip == CornerSkipReason::Ok) cmap[c.orig_idx] = &c;
+
+    for (int i = 0; i < n; ++i) {
+        const BezierNode& src = path.nodes[i];
+
+        auto it = cmap.find(i);
+        if (it == cmap.end()) {
+            // Not a treatment node — copy verbatim
+            result.nodes.push_back(src);
+            continue;
+        }
+
+        const Candidate& c = *it->second;
+        const double r     = c.clamped_r;
+
+        // P1 = corner - in_dir * r  (on the incoming segment, r before corner)
+        Vec2 P1 = Vec2{src.x, src.y} - c.in_dir * r;
+        // P2 = corner + out_dir * r (on the outgoing segment, r after corner)
+        Vec2 P2 = Vec2{src.x, src.y} + c.out_dir * r;
+
+        // The included angle at the corner (between the two segment directions)
+        // in radians — used for kappa calculation
+        double dot          = std::clamp(c.in_dir.dot(c.out_dir), -1.0, 1.0);
+        double between_rad  = std::acos(dot); // angle between in_dir and out_dir
+        // The arc spans (π - between_rad) at the corner
+        double arc_span_rad = M_PI - between_rad;
+
+        switch (type) {
+
+        case CornerType::Chamfer: {
+            // Two new corner nodes connected by a straight line: P1 → P2
+            BezierNode n1;
+            n1.x = P1.x; n1.y = P1.y;
+            n1.cx1 = P1.x; n1.cy1 = P1.y; // degenerate handles
+            n1.cx2 = P1.x; n1.cy2 = P1.y;
+            n1.type = BezierNode::Type::Corner;
+
+            BezierNode n2;
+            n2.x = P2.x; n2.y = P2.y;
+            n2.cx1 = P2.x; n2.cy1 = P2.y;
+            n2.cx2 = P2.x; n2.cy2 = P2.y;
+            n2.type = BezierNode::Type::Corner;
+
+            result.nodes.push_back(n1);
+            result.nodes.push_back(n2);
+            break;
+        }
+
+        case CornerType::Round: {
+            // Tangent-continuous arc: handles point along the incoming/outgoing
+            // segment directions, sized by kappa * r.
+            double k = kappa_for_angle(arc_span_rad) * r;
+
+            BezierNode n1;
+            n1.x   = P1.x; n1.y   = P1.y;
+            n1.cx1 = P1.x; n1.cy1 = P1.y; // in-handle retracted (straight incoming segment)
+            // out-handle: along in_dir toward the corner — drives the arc
+            n1.cx2 = P1.x + c.in_dir.x * k;
+            n1.cy2 = P1.y + c.in_dir.y * k;
+            n1.type = BezierNode::Type::Corner;
+
+            BezierNode n2;
+            n2.x   = P2.x; n2.y   = P2.y;
+            // in-handle: along out_dir back toward the corner — drives the arc
+            n2.cx1 = P2.x - c.out_dir.x * k;
+            n2.cy1 = P2.y - c.out_dir.y * k;
+            n2.cx2 = P2.x; n2.cy2 = P2.y; // out-handle retracted (straight outgoing segment)
+            n2.type = BezierNode::Type::Corner;
+
+            result.nodes.push_back(n1);
+            result.nodes.push_back(n2);
+            break;
+        }
+
+        case CornerType::InverseRound: {
+            // P1 is offset from P along -in_dir.
+            // P2 is offset from P along +out_dir.
+            // P1's out-handle points in the direction P2 is offset = +out_dir.
+            // P2's in-handle points in the direction P1 is offset = -in_dir.
+            // This gives the correct tangent for the inscribed circle arc
+            // regardless of corner angle.
+            double k = kappa_for_angle(arc_span_rad) * r;
+
+            BezierNode n1;
+            n1.x   = P1.x; n1.y   = P1.y;
+            n1.cx1 = P1.x; n1.cy1 = P1.y;
+            n1.cx2 = P1.x + c.out_dir.x * k;
+            n1.cy2 = P1.y + c.out_dir.y * k;
+            n1.type = BezierNode::Type::Corner;
+
+            BezierNode n2;
+            n2.x   = P2.x; n2.y   = P2.y;
+            n2.cx1 = P2.x - c.in_dir.x * k;
+            n2.cy1 = P2.y - c.in_dir.y * k;
+            n2.cx2 = P2.x; n2.cy2 = P2.y;
+            n2.type = BezierNode::Type::Corner;
+
+            result.nodes.push_back(n1);
+            result.nodes.push_back(n2);
+            break;
+        }
+
+        } // switch
+    }
+
+    return result;
+}
+
+} // namespace Curvz

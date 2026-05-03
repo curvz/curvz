@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g data-curvz-guide-layer="1" data-curvz-guide-color="0,0.749,1">
+    <line data-curvz-guide="1" data-curvz-guide-pos="500.000000" data-curvz-guide-horiz="1"/>
+    <line data-curvz-guide="1" data-curvz-guide-pos="500.000000" data-curvz-guide-horiz="0"/>
+  </g>
+  <g data-curvz-layer="1" id="Layer 1">
+    <g data-curvz-group="1" id="Group_2" data-curvz-name="Group_2">
+      <path id="obj38" data-curvz-iid="360ec2c7-629f-4c02-a92d-f28e69557934" d="M 947.33 385.537 L 639.996 385.564 C 661.363 415.158 673.961 451.589 673.961 490.994 C 673.961 493.687 673.903 496.366 673.415 499.03 L 822.33 499.03 L 822.33 935.497 L 947.33 935.537 L 947.33 385.537 Z" data-curvz-types="K K K K K K K" data-curvz-name="Subtract (3)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+      <path id="obj37" data-curvz-iid="360ec2c7-629f-4c02-a92d-f28e69557934" d="M 50 386.506 L 357.334 386.534 C 335.967 416.127 323.369 452.559 323.369 491.964 C 323.369 494.657 323.428 497.336 323.915 500 L 175 500 L 175 936.467 L 50 936.506 L 50 386.506 Z" data-curvz-types="K K K K K K K" data-curvz-name="Subtract" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    </g>
+    <g data-curvz-group="1" id="obj30" data-curvz-name="Group_1 (2)">
+      <path id="obj31" data-curvz-iid="c8c211cd-c4a7-47e1-b866-7df3fc48f683" d="M 435.899 868.107 L 560.442 868.107 L 560.442 936.506 L 435.899 936.506 L 435.899 868.107 Z" data-curvz-types="K K K K" data-curvz-name=" (2)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+      <path id="obj32" data-curvz-iid="c8c211cd-c4a7-47e1-b866-7df3fc48f683" d="M 435.899 732.223 L 560.442 732.223 L 560.442 800.622 L 435.899 800.622 L 435.899 732.223 Z" data-curvz-types="K K K K" data-curvz-name=" (2)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+      <path id="obj33" data-curvz-iid="833ca5c7-baef-4d3b-9ce6-9f2e19af5b0c" d="M 560.503 580.464 L 560.415 658.511 L 435.922 658.511 L 435.838 579.707 C 411.585 560.921 395.972 531.517 395.972 498.466 C 395.972 441.75 441.949 395.773 498.665 395.773 C 555.381 395.773 601.359 441.75 601.359 498.466 C 601.359 531.964 585.32 561.716 560.503 580.464 Z" data-curvz-types="K K K K K K K" data-curvz-name="Subtract (2)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    </g>
+  </g>
+</svg>

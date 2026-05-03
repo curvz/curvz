@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g data-curvz-guide-layer="1" data-curvz-guide-color="0,0.749,1">
+    <line data-curvz-guide="1" data-curvz-guide-pos="500.000000" data-curvz-guide-horiz="0"/>
+  </g>
+  <g data-curvz-layer="1" id="Layer 1">
+    <path data-curvz-compound="1" id="obj5" data-curvz-name="Compound 1 (2)" fill-rule="evenodd" d="M 285 619.781 L 715 619.781 L 715 829.781 L 285 829.781 L 285 619.781 Z M 160 569.781 C 160 528.359 193.579 494.781 235 494.781 L 765 494.781 C 806.421 494.781 840 528.359 840 569.781 L 840 879.781 C 840 921.202 806.421 954.781 765 954.781 L 235 954.781 C 193.579 954.781 160 921.202 160 879.781 L 160 569.781 Z" data-curvz-types="K K K K|K K K K K K K K" data-curvz-child-ids="obj6,obj7" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    <path id="obj8" data-curvz-iid="7dabe5f5-0dc5-4dbf-9b08-8f8eea43d6a9" d="M 728.276 590.932 C 726.22 591.446 728.419 422.904 728.419 422.904 C 728.419 297.318 625.586 194.484 500 194.484 C 374.414 194.484 271.581 297.318 271.581 422.904 L 271.581 530.664 C 271.581 562.116 297.233 587.769 328.686 587.769 C 360.138 587.769 386.435 558.469 385.79 530.664 C 385.145 502.859 385.79 422.904 385.79 422.904 C 385.79 358.661 435.757 308.694 500 308.694 C 564.243 308.694 613.688 346.673 614.21 422.904 L 616.592 585.441 L 728.276 590.932 Z" data-curvz-types="K K M M K S S K S K K" data-curvz-name=" (2)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+  </g>
+</svg>

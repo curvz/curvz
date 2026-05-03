@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <!-- Outer body: filled rect with hole (even-odd) -->
+  <path fill="currentColor" fill-rule="evenodd" stroke="none"
+        d="M 1 5 L 15 5 L 15 11 L 1 11 Z
+           M 2 6 L 14 6 L 14 10 L 2 10 Z"/>
+  <!-- Tick marks: short ticks at 4,6,10,12 and tall tick at 8 -->
+  <rect fill="currentColor" x="3.75" y="8" width="0.8" height="2"/>
+  <rect fill="currentColor" x="5.75" y="8" width="0.8" height="2"/>
+  <rect fill="currentColor" x="7.6"  y="7" width="0.8" height="3"/>
+  <rect fill="currentColor" x="9.75" y="8" width="0.8" height="2"/>
+  <rect fill="currentColor" x="11.75" y="8" width="0.8" height="2"/>
+</svg>
