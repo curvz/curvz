@@ -14883,8 +14883,8 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     // Selection only — Eyedropper shows selection outlines but anchor
     // is meaningless there. Glyph: curvz-anchor-symbolic.svg, loaded
     // once into m_anchor_glyph_pixbuf at 2x size for HiDPI crispness;
-    // Cairo downscales for paint via gdk_cairo_set_source_pixbuf, the
-    // same idiom NewDocumentDialog and DocumentGallery use.
+    // Cairo downscales for paint via curvz::utils::cairo_set_source_pixbuf,
+    // the same pump NewDocumentDialog and DocumentGallery use (s135 m2).
     if (m_tool == ActiveTool::Selection) {
       if (SceneNode *a = align_anchor()) {
         if (obj_layer_visible(a)) {
@@ -14933,9 +14933,13 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
               double scale = kGlyphPx / std::max(pw, ph);
               cr->translate(sx, sy);
               cr->scale(scale, scale);
-              gdk_cairo_set_source_pixbuf(cr->cobj(),
-                                          m_anchor_glyph_pixbuf->gobj(),
-                                          -pw * 0.5, -ph * 0.5);
+              // s135 m2: pumped — gdk_cairo_set_source_pixbuf was deprecated
+              // in GTK 4.20. The pump does a proper RGBA→ARGB32 conversion,
+              // sidesteps the deprecation, and matches the per-call cost of
+              // the old function.
+              curvz::utils::cairo_set_source_pixbuf(cr,
+                                                    m_anchor_glyph_pixbuf,
+                                                    -pw * 0.5, -ph * 0.5);
               cr->paint();
             }
             cr->restore();
@@ -17155,7 +17159,8 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
           auto surf2 = Cairo::ImageSurface::create(
               Cairo::Surface::Format::ARGB32, pw, ph);
           auto cr2 = Cairo::Context::create(surf2);
-          gdk_cairo_set_source_pixbuf(cr2->cobj(), pb->gobj(), 0, 0);
+          // s135 m2: pumped — replaces deprecated gdk_cairo_set_source_pixbuf.
+          curvz::utils::cairo_set_source_pixbuf(cr2, pb, 0, 0);
           cr2->paint();
           img_surf = surf2;
         }

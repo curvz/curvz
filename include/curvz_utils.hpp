@@ -48,6 +48,7 @@
 
 #include <cairomm/cairomm.h>
 #include <functional>  // s125 m2a — std::function for callbacks
+#include <gdkmm/pixbuf.h>  // s135 m2 — Gdk::Pixbuf for cairo_set_source_pixbuf pump
 #include <gtkmm/widget.h>
 #include <gtkmm/window.h>
 #include <map>         // s125 m2a — result map for show_form
@@ -236,6 +237,37 @@ void box_blur_argb32(unsigned char* data, int stride,
 Cairo::RefPtr<Cairo::Pattern> build_gradient_pattern(
     const Curvz::FillStyle& fill,
     double bbox_x, double bbox_y, double bbox_w, double bbox_h);
+
+// ── cairo_set_source_pixbuf ───────────────────────────────────────────
+// Set a GdkPixbuf as the source pattern for a Cairo context, with the
+// pixbuf's origin at (x, y) in cr's user space. Drop-in replacement for
+// the deprecated gdk_cairo_set_source_pixbuf (deprecated GTK 4.20).
+//
+// s135 m2: Curvz had eight callsites of the deprecated function across
+// thumbnail/preview render paths (Canvas anchor glyph + image objects,
+// NewDocumentDialog, ManageTemplatesDialog, DocumentGallery, PngExporter,
+// PrintManager). The official 4.20 migration path is texture-download-
+// then-cairo, which adds an allocation and a copy per call. For Curvz's
+// use case — small icon and thumbnail rasters, not video frames — a
+// direct format conversion into a Cairo image surface is simpler, has
+// no GTK-version dependency, and matches the per-call cost of the old
+// function.
+//
+// Format conversion: GdkPixbuf is RGBA byte-order with straight (non-
+// premultiplied) alpha. Cairo ARGB32 is BGRA byte-order in little-endian
+// memory with premultiplied alpha. Per-pixel: swap R and B, multiply
+// each colour channel by alpha/255. RGB pixbufs (no alpha) are filled
+// with A=0xff and skip the premultiply step.
+//
+// The created Cairo surface owns a deep copy of the pixel data, so the
+// caller's Pixbuf RefPtr is free to drop after the pump returns. This
+// matches the contract of the deprecated function.
+//
+// Empty pixbuf or zero-dimensioned pixbuf: no-op.
+void cairo_set_source_pixbuf(
+    const Cairo::RefPtr<Cairo::Context>& cr,
+    const Glib::RefPtr<Gdk::Pixbuf>& pb,
+    double x, double y);
 
 // ── render_drop_shadow_under ──────────────────────────────────────────
 // Paint a tinted, blurred, offset shadow of host_pat onto cr, in the

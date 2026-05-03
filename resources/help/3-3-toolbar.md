@@ -16,13 +16,46 @@ thin divider between groups:
   (Rectangle, Ellipse, Line, Polygon, Spiral), the text tools
   (Text, Text on Path), and the placement tools (Reference points,
   Corner).
-- The **utility tools** at the bottom — Eyedropper, Zoom, Ruler.
+- The **utility tools** — Eyedropper, Zoom, Ruler.
+- The **quick-access cluster** at the bottom — Snap toggle, Align
+  & Distribute, Macro, and the fill-and-stroke well. These are not
+  tools but frequently-used commands and state toggles parked on
+  the toolbar so they are always one click away.
 
-Below the tool list sits the **fill-and-stroke well** — two
-overlapping squares showing the current fill (front) and stroke
-(back) paints. Click either square to open the colour picker for
-that paint. See **Color picker & paint editor** (3.7) for the
-picker itself.
+## The quick-access cluster
+
+Below the tool list is a column of four controls. They are not
+mode switches like the tools above — clicking one performs an
+action or toggles a state without changing the active tool.
+
+- **Snap toggle** — the master snap switch. When on, the cursor
+  catches on the geometry kinds enabled in the **Snap** inspector
+  section (5.3.6). When off, the cursor moves freely. Same as
+  pressing **Q** with the canvas focused. Use it as the quick
+  escape hatch for nudging a single pixel or sketching free-hand,
+  then flip it back on.
+
+- **Align & Distribute** — opens a popover with eight buttons:
+  six align ops (left/centre H/right and top/centre V/bottom) and
+  two distribute ops (horizontal and vertical, equal gaps). The
+  button is **disabled unless the Selection tool is active and at
+  least two objects are selected** — alignment needs something to
+  align *to* and *with*. See the **Align & Distribute** topic
+  (8.4) for the detail of each op, the anchor-click idiom, and
+  how alignment cooperates with reference points. Also reachable
+  from the **Align** menu, where the six align ops have keyboard
+  shortcuts.
+
+- **Macro** — left-click runs the **current macro** (the one last
+  selected in the Macro Manager) against the current selection;
+  right-click opens the Macro Manager. Same as **Ctrl + M** and
+  **Ctrl + Shift + M** respectively. See **Macros** (11.1) for
+  recording, editing, and running.
+
+- **Fill-and-stroke well** — two overlapping squares showing the
+  current fill (front) and stroke (back) paints. Click either
+  square to open the colour picker for that paint. See **Color
+  picker & paint editor** (3.7) for the picker itself.
 
 ## Behaviour
 

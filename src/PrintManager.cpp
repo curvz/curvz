@@ -1098,7 +1098,8 @@ static void render_normal_node(const Cairo::RefPtr<Cairo::Context>& cr,
                     auto surf2 = Cairo::ImageSurface::create(
                         Cairo::Surface::Format::ARGB32, pw, ph);
                     auto cr2 = Cairo::Context::create(surf2);
-                    gdk_cairo_set_source_pixbuf(cr2->cobj(), pb->gobj(), 0, 0);
+                    // s135 m2: pumped — replaces deprecated gdk_cairo_set_source_pixbuf.
+                    curvz::utils::cairo_set_source_pixbuf(cr2, pb, 0, 0);
                     cr2->paint();
                     img_surf = surf2;
                 }

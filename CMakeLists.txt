@@ -43,6 +43,21 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# s135 m3: silence GCC's -Wpsabi advisory notes. These fire when GCC's
+# calling convention for a particular type differs between compiler
+# versions (e.g. std::pair<double,double> changed in GCC 10.1 to match
+# C++14 even when C++17 is enabled). The note is purely informational
+# and aimed at distro maintainers shipping ABI-stable libraries who mix
+# objects across compiler versions. Curvz is built and shipped as a
+# single binary (native or Flatpak) where every translation unit is
+# compiled by the same compiler — there is no ABI boundary where this
+# matters. Targeted suppression keeps the rest of the warning set live;
+# the next dev shouldn't have to re-derive why this one was silenced.
+# Clang doesn't emit -Wpsabi so the flag is GCC-only.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options(-Wno-psabi)
+endif()
+
 # ── Dependencies ──────────────────────────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
 

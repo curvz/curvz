@@ -414,7 +414,8 @@ void NewDocumentDialog::populate_template_grid() {
               cr->save();
               cr->translate(ox, oy);
               cr->scale(scale, scale);
-              gdk_cairo_set_source_pixbuf(cr->cobj(), pb->gobj(), 0, 0);
+              // s135 m2: pumped — replaces deprecated gdk_cairo_set_source_pixbuf.
+              curvz::utils::cairo_set_source_pixbuf(cr, pb, 0, 0);
               cr->paint();
               cr->restore();
             });
@@ -490,7 +491,8 @@ void NewDocumentDialog::populate_template_grid() {
             cr->save();
             cr->translate(ox, oy);
             cr->scale(scale, scale);
-            gdk_cairo_set_source_pixbuf(cr->cobj(), pb->gobj(), 0, 0);
+            // s135 m2: pumped — replaces deprecated gdk_cairo_set_source_pixbuf.
+            curvz::utils::cairo_set_source_pixbuf(cr, pb, 0, 0);
             cr->paint();
             cr->restore();
           });

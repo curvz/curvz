@@ -92,7 +92,20 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
 
   int r = 0;
 
+  // ── Align ─────────────────────────────────────────────────────────────
+  // s135 m1: Align & Distribute promoted to a menu+hotkey path. Six align
+  // ops have hotkeys; distribute is menu-only by design. All gated on
+  // Selection tool active + 2+ objects selected.
+  r = add_heading(m_keyboard_grid, "Align", r);
+  r = add_row(m_keyboard_grid, "Ctrl+Alt+L",   "Align left", r);
+  r = add_row(m_keyboard_grid, "Ctrl+Alt+H",   "Align center horizontal", r);
+  r = add_row(m_keyboard_grid, "Ctrl+Alt+R",   "Align right", r);
+  r = add_row(m_keyboard_grid, "Ctrl+Alt+P",   "Align top", r);
+  r = add_row(m_keyboard_grid, "Ctrl+Alt+M",   "Align center vertical (middle)", r);
+  r = add_row(m_keyboard_grid, "Ctrl+Alt+B",   "Align bottom", r);
+
   // ── Arrange ───────────────────────────────────────────────────────────
+  r = add_spacer(m_keyboard_grid, r);
   r = add_heading(m_keyboard_grid, "Arrange", r);
   r = add_row(m_keyboard_grid, "Ctrl+↑", "Bring forward", r);
   r = add_row(m_keyboard_grid, "Ctrl+↓", "Send backward", r);

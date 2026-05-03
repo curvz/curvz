@@ -552,6 +552,31 @@ void MainWindow::setup_menu() {
   arrange_section->append_submenu("Arrange", arrange_menu);
   menu->append_section("", arrange_section);
 
+  // ── Align submenu ───────────────────────────────────────────────────────
+  // s135 m1: Align & Distribute had been toolbar-only since introduction;
+  // adding the menu mirror brings it into line with Arrange/Path which both
+  // expose toolbar AND menu paths. Enable/disable is driven by the same
+  // update_align_btn predicate that gates the toolbar button (selection >= 2
+  // && Selection tool active). Hotkeys are bound for the six align ops;
+  // distribute is menu-only by design (used less often, less muscle-memory
+  // pressure to reserve a combo).
+  auto align_menu = Gio::Menu::create();
+  align_menu->append("Align Left",          "win.align-left");
+  align_menu->append("Align Center H",      "win.align-center-h");
+  align_menu->append("Align Right",         "win.align-right");
+  auto align_v_section = Gio::Menu::create();
+  align_v_section->append("Align Top",      "win.align-top");
+  align_v_section->append("Align Center V", "win.align-center-v");
+  align_v_section->append("Align Bottom",   "win.align-bottom");
+  align_menu->append_section("", align_v_section);
+  auto distribute_section = Gio::Menu::create();
+  distribute_section->append("Distribute Horizontally", "win.distribute-h");
+  distribute_section->append("Distribute Vertically",   "win.distribute-v");
+  align_menu->append_section("", distribute_section);
+  auto align_section = Gio::Menu::create();
+  align_section->append_submenu("Align", align_menu);
+  menu->append_section("", align_section);
+
   // ── Path submenu ────────────────────────────────────────────────────────
   auto path_menu = Gio::Menu::create();
   path_menu->append("Union", "win.bool-union");
@@ -843,6 +868,66 @@ void MainWindow::setup_menu() {
   m_act_bool_intersect->set_enabled(false);
   add_action(m_act_bool_intersect);
 
+  // s135 m1: Align & Distribute actions. Same wire-up pattern as boolean ops:
+  // stored on MainWindow so the update_align_btn predicate (extended below)
+  // can toggle enabled state. Activate handler delegates to Canvas, exactly
+  // mirroring what the toolbar popover already does via signal_align_requested.
+  m_act_align_left = Gio::SimpleAction::create("align-left");
+  m_act_align_left->signal_activate().connect([this](const Glib::VariantBase &) {
+    m_canvas.align_selection(AlignOp::AlignLeft);
+  });
+  m_act_align_left->set_enabled(false);
+  add_action(m_act_align_left);
+
+  m_act_align_center_h = Gio::SimpleAction::create("align-center-h");
+  m_act_align_center_h->signal_activate().connect([this](const Glib::VariantBase &) {
+    m_canvas.align_selection(AlignOp::AlignCenterH);
+  });
+  m_act_align_center_h->set_enabled(false);
+  add_action(m_act_align_center_h);
+
+  m_act_align_right = Gio::SimpleAction::create("align-right");
+  m_act_align_right->signal_activate().connect([this](const Glib::VariantBase &) {
+    m_canvas.align_selection(AlignOp::AlignRight);
+  });
+  m_act_align_right->set_enabled(false);
+  add_action(m_act_align_right);
+
+  m_act_align_top = Gio::SimpleAction::create("align-top");
+  m_act_align_top->signal_activate().connect([this](const Glib::VariantBase &) {
+    m_canvas.align_selection(AlignOp::AlignTop);
+  });
+  m_act_align_top->set_enabled(false);
+  add_action(m_act_align_top);
+
+  m_act_align_center_v = Gio::SimpleAction::create("align-center-v");
+  m_act_align_center_v->signal_activate().connect([this](const Glib::VariantBase &) {
+    m_canvas.align_selection(AlignOp::AlignCenterV);
+  });
+  m_act_align_center_v->set_enabled(false);
+  add_action(m_act_align_center_v);
+
+  m_act_align_bottom = Gio::SimpleAction::create("align-bottom");
+  m_act_align_bottom->signal_activate().connect([this](const Glib::VariantBase &) {
+    m_canvas.align_selection(AlignOp::AlignBottom);
+  });
+  m_act_align_bottom->set_enabled(false);
+  add_action(m_act_align_bottom);
+
+  m_act_distribute_h = Gio::SimpleAction::create("distribute-h");
+  m_act_distribute_h->signal_activate().connect([this](const Glib::VariantBase &) {
+    m_canvas.align_selection(AlignOp::DistributeH);
+  });
+  m_act_distribute_h->set_enabled(false);
+  add_action(m_act_distribute_h);
+
+  m_act_distribute_v = Gio::SimpleAction::create("distribute-v");
+  m_act_distribute_v->signal_activate().connect([this](const Glib::VariantBase &) {
+    m_canvas.align_selection(AlignOp::DistributeV);
+  });
+  m_act_distribute_v->set_enabled(false);
+  add_action(m_act_distribute_v);
+
   auto act_offset_path = Gio::SimpleAction::create("offset-path");
   act_offset_path->signal_activate().connect([this](const Glib::VariantBase &) {
     auto *doc = m_project ? m_project->active_doc() : nullptr;
@@ -1109,6 +1194,20 @@ void MainWindow::setup_menu() {
     bind("win.arrange-send-back",      {"<Control><Shift>Down"});
     bind("win.flip-horizontal",        {"<Control><Shift>h"});
     bind("win.flip-vertical",          {"<Control><Alt>v"});
+
+    // Align & Distribute (s135 m1)
+    // Six align ops on Ctrl+Alt+letter, mnemonic to direction. Distribute
+    // ops are menu-only — used less often, freer hotkey real estate left
+    // for things that need it more.
+    // fix3: top/bottom on P/B (toP, Bottom) — Ctrl+Alt+arrow gets
+    // intercepted by GNOME's workspace switcher on Fedora and keys never
+    // reach the app. Letter family is consistent and intercept-safe.
+    bind("win.align-left",      {"<Control><Alt>l"});
+    bind("win.align-center-h",  {"<Control><Alt>h"});
+    bind("win.align-right",     {"<Control><Alt>r"});
+    bind("win.align-top",       {"<Control><Alt>p"});
+    bind("win.align-center-v",  {"<Control><Alt>m"});
+    bind("win.align-bottom",    {"<Control><Alt>b"});
 
     // Path
     bind("win.bool-union",      {"<Control><Shift>u"});
@@ -2383,10 +2482,22 @@ void MainWindow::connect_signals() {
 
   // Enable the align button whenever the selection tool is active
   // and 2+ objects are selected.
+  // s135 m1: also flip the eight Align/Distribute SimpleActions so the
+  // menu items grey out in lockstep with the toolbar button. Single
+  // predicate, two enable surfaces — same shape as how the boolean ops
+  // sensitivity pump works.
   auto update_align_btn = [this]() {
     bool ok = (m_active_tool == ActiveTool::Selection) &&
               (m_canvas.selection().size() >= 2);
     m_toolbar.set_align_enabled(ok);
+    if (m_act_align_left)      m_act_align_left->set_enabled(ok);
+    if (m_act_align_center_h)  m_act_align_center_h->set_enabled(ok);
+    if (m_act_align_right)     m_act_align_right->set_enabled(ok);
+    if (m_act_align_top)       m_act_align_top->set_enabled(ok);
+    if (m_act_align_center_v)  m_act_align_center_v->set_enabled(ok);
+    if (m_act_align_bottom)    m_act_align_bottom->set_enabled(ok);
+    if (m_act_distribute_h)    m_act_distribute_h->set_enabled(ok);
+    if (m_act_distribute_v)    m_act_distribute_v->set_enabled(ok);
   };
 
   m_canvas.signal_selection_changed().connect(
@@ -3244,6 +3355,55 @@ void MainWindow::connect_signals() {
         if (ctrl && alt && !shift &&
             (kv == GDK_KEY_d || kv == GDK_KEY_D)) {
           on_step_repeat();
+          return true;
+        }
+
+        // s135 m1: Align hotkeys. Shape mirrors the boolean ops block —
+        // wired directly in CAPTURE because set_accels_for_action accel
+        // dispatch is cosmetic in this codebase. Each branch consults the
+        // SimpleAction's enabled state so the same gate that greys out
+        // the menu item also gates the hotkey path. Distribute is
+        // menu-only by design (no hotkey).
+        //
+        // fix3: top/bottom moved from Ctrl+Alt+Up/Down to Ctrl+Alt+P/B
+        // because GNOME (Fedora aarch64 default) intercepts Ctrl+Alt+arrow
+        // for workspace switching — the keys never reach the app. Letter
+        // family is consistent across all six ops and avoids WM-intercept
+        // class entirely. Mnemonic: P=toP, B=Bottom.
+        if (ctrl && alt && !shift &&
+            (kv == GDK_KEY_l || kv == GDK_KEY_L)) {
+          if (m_act_align_left && m_act_align_left->get_enabled())
+            m_canvas.align_selection(AlignOp::AlignLeft);
+          return true;
+        }
+        if (ctrl && alt && !shift &&
+            (kv == GDK_KEY_h || kv == GDK_KEY_H)) {
+          if (m_act_align_center_h && m_act_align_center_h->get_enabled())
+            m_canvas.align_selection(AlignOp::AlignCenterH);
+          return true;
+        }
+        if (ctrl && alt && !shift &&
+            (kv == GDK_KEY_r || kv == GDK_KEY_R)) {
+          if (m_act_align_right && m_act_align_right->get_enabled())
+            m_canvas.align_selection(AlignOp::AlignRight);
+          return true;
+        }
+        if (ctrl && alt && !shift &&
+            (kv == GDK_KEY_p || kv == GDK_KEY_P)) {
+          if (m_act_align_top && m_act_align_top->get_enabled())
+            m_canvas.align_selection(AlignOp::AlignTop);
+          return true;
+        }
+        if (ctrl && alt && !shift &&
+            (kv == GDK_KEY_m || kv == GDK_KEY_M)) {
+          if (m_act_align_center_v && m_act_align_center_v->get_enabled())
+            m_canvas.align_selection(AlignOp::AlignCenterV);
+          return true;
+        }
+        if (ctrl && alt && !shift &&
+            (kv == GDK_KEY_b || kv == GDK_KEY_B)) {
+          if (m_act_align_bottom && m_act_align_bottom->get_enabled())
+            m_canvas.align_selection(AlignOp::AlignBottom);
           return true;
         }
 

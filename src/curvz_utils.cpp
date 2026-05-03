@@ -333,6 +333,70 @@ Cairo::RefPtr<Cairo::Pattern> build_gradient_pattern(
     return pat;
 }
 
+// ── cairo_set_source_pixbuf ─────────────────────────────────────────
+// See header for design notes. Format conversion in a single pass,
+// row-by-row to respect rowstride padding. Endianness assumption:
+// little-endian host (BGRA in memory == 0xAARRGGBB as uint32_t). Curvz
+// targets aarch64 + x86_64; both are little-endian. If a big-endian
+// build is ever needed, this is the one place that changes.
+void cairo_set_source_pixbuf(
+    const Cairo::RefPtr<Cairo::Context>& cr,
+    const Glib::RefPtr<Gdk::Pixbuf>& pb,
+    double x, double y)
+{
+    if (!cr || !pb) return;
+    int w = pb->get_width();
+    int h = pb->get_height();
+    if (w <= 0 || h <= 0) return;
+
+    bool has_alpha = pb->get_has_alpha();
+    int n_channels = pb->get_n_channels();   // 3 (RGB) or 4 (RGBA)
+    int src_stride = pb->get_rowstride();
+    const guint8* src = pb->get_pixels();
+    if (!src) return;
+
+    // ARGB32 surface — Cairo allocates with appropriate stride for the
+    // platform (multiple of 4 bytes typically). Surface owns its bytes;
+    // no manual lifetime juggling beyond the RefPtr.
+    auto surf = Cairo::ImageSurface::create(
+        Cairo::ImageSurface::Format::ARGB32, w, h);
+    surf->flush();
+    int dst_stride = surf->get_stride();
+    guint8* dst = surf->get_data();
+
+    // Per-pixel: swap RB, premultiply by alpha. Cairo ARGB32 expects
+    // colour channels already multiplied by alpha — straight rendering
+    // a pixbuf in without premultiplying produces visible halos at
+    // partially-transparent edges (the classic GdkPixbuf-on-Cairo bug).
+    for (int row = 0; row < h; ++row) {
+        const guint8* sp = src + row * src_stride;
+        guint8* dp = dst + row * dst_stride;
+        for (int col = 0; col < w; ++col) {
+            guint8 r = sp[0];
+            guint8 g = sp[1];
+            guint8 b = sp[2];
+            guint8 a = has_alpha ? sp[3] : 0xff;
+            if (has_alpha && a != 0xff) {
+                // Round-half-up integer premultiply: (c*a + 127) / 255.
+                // Equivalent within 1 LSB to the float formula c*(a/255).
+                r = static_cast<guint8>((r * a + 127) / 255);
+                g = static_cast<guint8>((g * a + 127) / 255);
+                b = static_cast<guint8>((b * a + 127) / 255);
+            }
+            // Little-endian BGRA byte order = ARGB32 in memory.
+            dp[0] = b;
+            dp[1] = g;
+            dp[2] = r;
+            dp[3] = a;
+            sp += n_channels;
+            dp += 4;
+        }
+    }
+    surf->mark_dirty();
+
+    cr->set_source(surf, x, y);
+}
+
 // ── render_drop_shadow_under ────────────────────────────────────────
 // Mirrors Canvas::render_shadow_under but takes its inputs as values
 // rather than reading from a SceneNode + Canvas member. Skips the

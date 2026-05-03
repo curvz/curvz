@@ -81,6 +81,24 @@ These work with the canvas focused and no modifier.
 - `Ctrl + G` — group.
 - `Ctrl + Shift + G` — ungroup.
 
+## Align & Distribute
+
+These fire only when the Selection tool is active and 2+ objects
+are selected. See **Align & Distribute** (7.4) for the operation
+detail and the anchor-click idiom.
+
+- `Ctrl + Alt + L` — Align Left.
+- `Ctrl + Alt + H` — Align Center Horizontal.
+- `Ctrl + Alt + R` — Align Right.
+- `Ctrl + Alt + P` — Align Top (mnemonic: toP).
+- `Ctrl + Alt + M` — Align Center Vertical (Middle).
+- `Ctrl + Alt + B` — Align Bottom.
+- `Ctrl + Alt + click` — toggle align anchor on a selected
+  object (canvas-side, not a window hotkey).
+
+The two distribute ops (Distribute Horizontally, Distribute
+Vertically) are menu-only; reach them through **Align**.
+
 ## Path operations
 
 - `Ctrl + Shift + U` — Union.

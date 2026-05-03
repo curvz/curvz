@@ -28,7 +28,19 @@ command: curvz
 #   • User home for project files     → home
 #   • Print via CUPS (PrintManager)   → cups socket
 #   • Read host icon themes for the
-#     in-app icon library scanner     → three icons:ro mounts
+#     in-app icon library scanner     → xdg-data/icons (user-installed)
+#
+# s135 m3: removed two impossible mounts that flatpak silently rejects
+# because /usr inside the sandbox is reserved for the runtime:
+#   --filesystem=/usr/share/icons:ro
+#   --filesystem=/usr/local/share/icons:ro
+# These produced "Path /usr is reserved" warnings on launch (Ubuntu
+# 26.04 day-2 Flatpak validation, s134). Flathub docs confirm: any
+# --filesystem path under /usr, /etc, /bin, /lib, /lib32, /lib64, /proc,
+# /sbin, /run/flatpak, /run/host has no effect. The runtime's own
+# /usr/share/icons (Adwaita etc) is naturally available without a
+# mount, since it's inside the sandbox already. Host-installed user
+# themes come from xdg-data/icons, which is the common case.
 finish-args:
   - --socket=wayland
   - --socket=fallback-x11
@@ -36,8 +48,6 @@ finish-args:
   - --device=dri
   - --filesystem=home
   - --socket=cups
-  - --filesystem=/usr/share/icons:ro
-  - --filesystem=/usr/local/share/icons:ro
   - --filesystem=xdg-data/icons:ro
 
 # ── Bundle slimming ───────────────────────────────────────────────────────────

@@ -372,6 +372,21 @@ private:
     Glib::RefPtr<Gio::SimpleAction> m_act_bool_intersect;
     void update_bool_actions_sensitive();
 
+    // s135 m1: Align & Distribute actions. Mirror the Boolean ops pattern —
+    // stored as members so the existing update_align_btn() predicate can flip
+    // their enabled state alongside the toolbar button. Same gate
+    // (selection >= 2 && tool == Selection). Distribute ignores the
+    // align-anchor; align ops honour it (validator-on-read clears stale
+    // anchors automatically).
+    Glib::RefPtr<Gio::SimpleAction> m_act_align_left;
+    Glib::RefPtr<Gio::SimpleAction> m_act_align_center_h;
+    Glib::RefPtr<Gio::SimpleAction> m_act_align_right;
+    Glib::RefPtr<Gio::SimpleAction> m_act_align_top;
+    Glib::RefPtr<Gio::SimpleAction> m_act_align_center_v;
+    Glib::RefPtr<Gio::SimpleAction> m_act_align_bottom;
+    Glib::RefPtr<Gio::SimpleAction> m_act_distribute_h;
+    Glib::RefPtr<Gio::SimpleAction> m_act_distribute_v;
+
     // Debounced auto-save — coalesces rapid changes into one write
     void schedule_save();
     sigc::connection m_save_timer;  // pending debounce timer
