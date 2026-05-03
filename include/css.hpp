@@ -45,7 +45,8 @@
 //     --error-fg      destructive / error text
 //     --error-bg      destructive / error background
 //   Special:
-//     --white-pure    explicit pure white (rare, where var(--white-pure) is the design)
+//     --white-pure    explicit pure white (rare, where var(--white-pure) is the
+//     design)
 //
 // Phase A (this milestone) ships the token block + replaces all hex
 // literals with var() — no visual change. Phase B adds the light fork.
@@ -1553,7 +1554,7 @@ scrolledwindow > viewport > .help-content {
    <b> markup + GTK Label defaults — leaving them alone avoids any
    risk of regressing the existing chapter look. */
 .help-group-title {
-    font-size: 14pt;
+    font-size: 14.666px;
 }
 
 /* s131 m18: callout boxes for "Note:" / "Appears when:" advisory
