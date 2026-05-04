@@ -1,4 +1,5 @@
 #include "MainWindow.hpp"
+#include "AppPreferences.hpp"  // s139 m2 — boolean-cleanup pref + sync
 #include <functional>
 #include <gtkmm/application.h>
 #include <gtkmm/separator.h>
@@ -19,6 +20,7 @@
 #include "curvz_utils.hpp"  // s117 m18 v2: apply_motif_class_from_parent
 #include "style/StyleInterop.hpp"  // mutate_appearance — inspector-driven appearance edits
 #include <algorithm>
+#include <cctype>     // s136 m4: std::isspace for library item name trim
 #include <filesystem>
 #include <fstream>
 #include <giomm/file.h>      // s125 m1a: Gio::File::create_for_path (folder picker)
@@ -35,6 +37,7 @@
 #include <gtkmm/filefilter.h>
 #include <gtkmm/gesturedrag.h>
 #include <gtkmm/image.h>      // s117 m19: custom About dialog hero logo
+#include <gtkmm/linkbutton.h> // s136 m1: About dialog outbound links
 #include <gtkmm/settings.h>
 #include <gtkmm/stack.h>      // s117 m19: custom About dialog flip animation
 #include <gtkmm/stylecontext.h>
@@ -271,7 +274,7 @@ void MainWindow::setup_headerbar() {
     dlg->set_title("About Curvz");
     dlg->set_modal(true);
     dlg->set_resizable(false);
-    dlg->set_default_size(440, 460);
+    dlg->set_default_size(440, 500);
     dlg->set_transient_for(*this);
     curvz::utils::apply_motif_class_from_parent(*dlg, *this);
     // Self-managed lifecycle: deleted via close_request handler so a
@@ -315,7 +318,7 @@ void MainWindow::setup_headerbar() {
     name_lbl->set_markup("<span size='xx-large' weight='bold'>Curvz</span>");
     about_page->append(*name_lbl);
 
-    auto* version_lbl = Gtk::make_managed<Gtk::Label>("Version 0.1");
+    auto* version_lbl = Gtk::make_managed<Gtk::Label>("Version 0.9");
     version_lbl->add_css_class("dim-label");
     about_page->append(*version_lbl);
 
@@ -343,9 +346,42 @@ void MainWindow::setup_headerbar() {
     about_page->append(*copy_lbl);
 
     auto* license_lbl = Gtk::make_managed<Gtk::Label>(
-        "Released under the MIT License");
+        "Released under the GNU General Public License v3.0 or later");
     license_lbl->add_css_class("dim-label");
+    license_lbl->set_wrap(true);
+    license_lbl->set_justify(Gtk::Justification::CENTER);
+    license_lbl->set_max_width_chars(48);
     about_page->append(*license_lbl);
+
+    // s136 m1: outbound links — repo, issues, contact email. Plain
+    // Gtk::LinkButton renders the standard underlined-link affordance and
+    // dispatches via Gtk::UriLauncher (https → default browser, mailto →
+    // default mail client). Margins keep the row compact under the
+    // license line; the row sits above the close-button bar.
+    auto* links_row = Gtk::make_managed<Gtk::Box>(
+        Gtk::Orientation::HORIZONTAL);
+    links_row->set_spacing(4);
+    links_row->set_halign(Gtk::Align::CENTER);
+    links_row->set_margin_top(12);
+
+    auto* repo_btn = Gtk::make_managed<Gtk::LinkButton>(
+        "https://github.com/curvz/curvz", "GitHub");
+    auto* issues_btn = Gtk::make_managed<Gtk::LinkButton>(
+        "https://github.com/curvz/curvz/issues", "Report a bug");
+    auto* mail_btn = Gtk::make_managed<Gtk::LinkButton>(
+        "mailto:curvz.app@proton.me", "Contact");
+
+    links_row->append(*repo_btn);
+    auto* dot1 = Gtk::make_managed<Gtk::Label>("·");
+    dot1->add_css_class("dim-label");
+    links_row->append(*dot1);
+    links_row->append(*issues_btn);
+    auto* dot2 = Gtk::make_managed<Gtk::Label>("·");
+    dot2->add_css_class("dim-label");
+    links_row->append(*dot2);
+    links_row->append(*mail_btn);
+
+    about_page->append(*links_row);
 
     stack->add(*about_page, "about");
 
@@ -528,6 +564,13 @@ void MainWindow::setup_menu() {
   auto edit_menu = Gio::Menu::create();
   edit_menu->append("Undo", "win.undo");
   edit_menu->append("Redo", "win.redo");
+  // s136 m5: selection section — Select All + Deselect All sit between
+  // history (Undo/Redo) and clipboard (Cut/Copy/Paste). Order matches
+  // GIMP / Inkscape / Affinity Edit-menu convention.
+  auto edit_select = Gio::Menu::create();
+  edit_select->append("Select All", "win.select-all");
+  edit_select->append("Deselect All", "win.deselect-all");
+  edit_menu->append_section("", edit_select);
   auto edit_sep = Gio::Menu::create();
   edit_sep->append("Cut", "win.cut");
   edit_sep->append("Copy", "win.copy");
@@ -582,10 +625,35 @@ void MainWindow::setup_menu() {
   path_menu->append("Union", "win.bool-union");
   path_menu->append("Subtract", "win.bool-subtract");
   path_menu->append("Intersect", "win.bool-intersect");
+  // s139 m2: post-pass cleanup toggle. Stateful (renders with checkmark).
+  // Lives in the same menu section as the boolean ops because it modifies
+  // their behaviour. Action is registered in the stateful-actions block
+  // below; persistence is via AppPreferences (~/.config/curvz/preferences.json).
+  // Default off during proof phase — flip on via this menu item; the next
+  // boolean op will run the keeper-set + cleanup_loop walk
+  // (math/BooleanOpsRefit.hpp) instead of returning the raw 139-node
+  // Clipper2 polyline output.
+  path_menu->append("Clean Boolean Output", "win.boolean-cleanup");
+  // s139 m4: pass-2 triplet collapse, gated on Clean Boolean Output also
+  // being on. Sits next to its prerequisite. The two toggles together
+  // produce the load-bearing-only minimum descriptive boolean output;
+  // either alone or both off are valid configurations for diagnostic
+  // and proof-phase work.
+  path_menu->append("Reduce Boolean Nodes", "win.boolean-reduce");
   auto path_compound = Gio::Menu::create();
   path_compound->append("Make Compound Path", "win.make-compound");
   path_compound->append("Split Compound Path", "win.split-compound");
   path_menu->append_section("", path_compound);
+  // Group section (s138) — Group enabled with >=2 nodes selected; Ungroup
+  // enabled when the primary selection is a Group. Conventionally sits
+  // beside Compound because both operations wrap a multi-selection in a
+  // SceneNode container; the difference is structural (Group preserves
+  // the children's identities for editing later; Compound merges them
+  // into one boolean unit).
+  auto path_group = Gio::Menu::create();
+  path_group->append("Group",   "win.group-make");
+  path_group->append("Ungroup", "win.group-release");
+  path_menu->append_section("", path_group);
   auto path_ops = Gio::Menu::create();
   path_ops->append("Offset Path…", "win.offset-path");
   path_ops->append("Expand Stroke", "win.expand-stroke");
@@ -800,6 +868,22 @@ void MainWindow::setup_menu() {
       [this](const Glib::VariantBase &) { m_canvas.clone_selected(); });
   add_action(act_clone);
 
+  // s136 m5: select-all and deselect-all promoted to actions so the Edit
+  // menu can reach them. The hotkeys (Ctrl+A and Ctrl+Shift+A) are still
+  // dispatched through the CAPTURE-phase controller in MainWindow.cpp's
+  // key handler — set_accels_for_action is cosmetic in this codebase
+  // (per the hotkey-dispatch convention). These actions exist so the
+  // menu entries have something to invoke.
+  auto act_select_all = Gio::SimpleAction::create("select-all");
+  act_select_all->signal_activate().connect(
+      [this](const Glib::VariantBase &) { m_canvas.select_all(); });
+  add_action(act_select_all);
+
+  auto act_deselect_all = Gio::SimpleAction::create("deselect-all");
+  act_deselect_all->signal_activate().connect(
+      [this](const Glib::VariantBase &) { m_canvas.clear_selection(); });
+  add_action(act_deselect_all);
+
   auto act_step_repeat = Gio::SimpleAction::create("step-repeat");
   act_step_repeat->signal_activate().connect(
       [this](const Glib::VariantBase &) { on_step_repeat(); });
@@ -954,6 +1038,22 @@ void MainWindow::setup_menu() {
       [this](const Glib::VariantBase &) { m_canvas.split_compound_path(); });
   add_action(act_split_compound);
 
+  // Group / Ungroup (s138). Both wrap pre-existing Canvas methods that
+  // were never reachable from the UI. Default-disabled; sensitivity is
+  // set per selection by update_group_actions_sensitive(), called from
+  // refresh_inspector alongside the other action sensitivity helpers.
+  m_act_group_make = Gio::SimpleAction::create("group-make");
+  m_act_group_make->signal_activate().connect(
+      [this](const Glib::VariantBase &) { m_canvas.group_selection(); });
+  m_act_group_make->set_enabled(false);
+  add_action(m_act_group_make);
+
+  m_act_group_release = Gio::SimpleAction::create("group-release");
+  m_act_group_release->signal_activate().connect(
+      [this](const Glib::VariantBase &) { m_canvas.ungroup_selection(); });
+  m_act_group_release->set_enabled(false);
+  add_action(m_act_group_release);
+
   // Clip / Release Clip. Context-awareness for menu-item enable/disable
   // is deferred — the Canvas methods themselves are defensive (no-op on
   // invalid state, with LOG_INFO). Adding set_enabled() on a selection
@@ -1058,6 +1158,54 @@ void MainWindow::setup_menu() {
   // exclusively through Clipper2; hand-rolled engine is retained on
   // disk for reference but no longer wired to the action system.
 
+  // Path — boolean cleanup toggle (s139 m2, stateful).
+  // Persisted in AppPreferences. The initial state is read from the
+  // already-loaded preferences blob; the toggle handler updates the
+  // pref (which triggers a save) and syncs the canvas flag.
+  // The same cosmetic-accel rule applies as everywhere else here:
+  // there is no hotkey on this action, only a menu item.
+  {
+    const bool initial =
+        AppPreferences::instance().boolean_cleanup_enabled();
+    m_canvas.set_boolean_cleanup_enabled(initial);
+    auto act_clean = Gio::SimpleAction::create_bool("boolean-cleanup", initial);
+    act_clean->signal_activate().connect(
+        [this, act_clean](const Glib::VariantBase &) {
+          const bool now =
+              !AppPreferences::instance().boolean_cleanup_enabled();
+          AppPreferences::instance().set_boolean_cleanup_enabled(now);
+          act_clean->set_state(Glib::Variant<bool>::create(now));
+          m_canvas.set_boolean_cleanup_enabled(now);
+          LOG_INFO("MainWindow: boolean cleanup toggled → {}", now);
+        });
+    add_action(act_clean);
+  }
+
+  // Path — boolean reduce toggle (s139 m4, stateful, pass 2).
+  // Same shape as the cleanup toggle. Reduces the C-C-C triplet structure
+  // produced by cleanup down to one node per triple. Gated at the call
+  // site (Canvas::boolean_op) on cleanup also being on; flipping reduce
+  // without cleanup has no effect on output, so we don't enforce the
+  // dependency here in the UI — the action is independently toggle-able
+  // and persisted, and the user can have any combination of (cleanup,
+  // reduce) without surprises.
+  {
+    const bool initial =
+        AppPreferences::instance().boolean_reduce_enabled();
+    m_canvas.set_boolean_reduce_enabled(initial);
+    auto act_reduce = Gio::SimpleAction::create_bool("boolean-reduce", initial);
+    act_reduce->signal_activate().connect(
+        [this, act_reduce](const Glib::VariantBase &) {
+          const bool now =
+              !AppPreferences::instance().boolean_reduce_enabled();
+          AppPreferences::instance().set_boolean_reduce_enabled(now);
+          act_reduce->set_state(Glib::Variant<bool>::create(now));
+          m_canvas.set_boolean_reduce_enabled(now);
+          LOG_INFO("MainWindow: boolean reduce toggled → {}", now);
+        });
+    add_action(act_reduce);
+  }
+
   auto act_zoom_in = Gio::SimpleAction::create("zoom-in");
   act_zoom_in->signal_activate().connect([this](const Glib::VariantBase &) {
     m_toolbar.signal_zoom_step().emit(+1.0);
@@ -1075,15 +1223,24 @@ void MainWindow::setup_menu() {
       [this](const Glib::VariantBase &) { m_canvas.zoom_to_all_objects(); });
   add_action(act_zoom_fit);
 
-  auto act_zoom_actual = Gio::SimpleAction::create("zoom-actual");
-  act_zoom_actual->signal_activate().connect([this](const Glib::VariantBase &) {
+  // s138 fix: action name is "zoom-100" to match the three call sites
+  // (menu item, accel binding, update_project_sensitive enable list).
+  // Was "zoom-actual" historically; the callers were renamed to "zoom-100"
+  // to match the user-facing label "Zoom to 100%" but the action itself
+  // was missed in the rename. Result: lookup_action("zoom-100") returned
+  // null everywhere, the menu item rendered disabled, and the keybind
+  // dispatched into the void. Caught when s138 m2 made the popover render
+  // accels honestly — the disabled state was always there; the empty
+  // accel column just hid it.
+  auto act_zoom_100 = Gio::SimpleAction::create("zoom-100");
+  act_zoom_100->signal_activate().connect([this](const Glib::VariantBase &) {
     // 1× = fit-zoom (artboard fills viewport with margin)
     double cx = m_canvas.get_width() / 2.0;
     double cy = m_canvas.get_height() / 2.0;
     double target = m_canvas.fit_zoom_value();
     m_canvas.zoom_toward(cx, cy, target / m_canvas.zoom());
   });
-  add_action(act_zoom_actual);
+  add_action(act_zoom_100);
 
   auto act_zoom_200 = Gio::SimpleAction::create("zoom-200");
   act_zoom_200->signal_activate().connect([this](const Glib::VariantBase &) {
@@ -1124,130 +1281,23 @@ void MainWindow::setup_menu() {
   auto popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
   m_hamburger.set_popover(*popover);
 
-  // ── Register keyboard accelerators with the application (S60 M2) ──────
-  // Two purposes:
-  //   1. GTK4 auto-displays the accel on the right side of each menu item
-  //      (e.g. "Save    Ctrl+S"), removing the need for manual labeling.
-  //   2. Menu items that previously had no keyboard access get one.
+  // ── Sync motif class to newly-added windows (S117 m15) ────────────────
+  // When a new top-level window is registered (e.g. a dialog opens), sync
+  // the motif class so it inherits the current project's appearance.
+  // Combined with the walk in apply_motif_to_window, this covers both
+  // "dialog open at toggle time" and "dialog opens after toggle".
   //
-  // Behavior note: existing shortcuts in signal_key_pressed (CAPTURE phase,
-  // in connect_signals) still fire and consume the key before the accel
-  // system can see it — so no double-dispatch for the shortcuts that have
-  // a keyval handler. The new (gap) accels are only wired here and run
-  // through the accel system exclusively.
-  //
-  // Accel string syntax: "<Control>s", "<Control><Shift>s",
-  // "<Control><Alt>v", "<Alt>d". Multiple accels per action are allowed
-  // (e.g. Redo = Ctrl+Shift+Z and Ctrl+Y).
-  auto app = get_application();
-  if (app) {
-    // S117 m15: when a new top-level window is registered (e.g. a
-    // dialog opens), sync the motif class so it inherits the current
-    // project's appearance. Combined with the walk in
-    // apply_motif_to_window, this covers both "dialog open at toggle
-    // time" and "dialog opens after toggle".
-    // S117 m17 diag: log so we can verify whether this signal actually
-    // fires for transient dialogs created via set_transient_for. If
-    // the log shows nothing when a dialog opens, the dialog never
-    // registered with the application and we rely on the
-    // gtk_window_get_toplevels walk in apply_motif_to_window instead.
+  // Note: keyboard accelerator registration moved to Application::on_startup
+  // in s138. get_application() returns null during MainWindow construction
+  // (the window joins the app *after* construction completes), so any code
+  // here that depends on the application reference must guard against that
+  // null-or-not-yet-attached window.
+  if (auto app = get_application()) {
     app->signal_window_added().connect(
         [this](Gtk::Window* w) {
           LOG_INFO("signal_window_added fired: w={}", (void*)w);
           if (w && w != this) sync_motif_class_to(*w);
         });
-
-    auto bind = [&app](const char *action,
-                       std::vector<Glib::ustring> accels) {
-      app->set_accels_for_action(action, accels);
-    };
-
-    // File
-    bind("win.new-project",       {"<Control><Shift>n"});
-    bind("win.new",               {"<Control>n"});
-    bind("win.open",              {"<Control>o"});
-    bind("win.close-project",     {"<Control><Shift>w"});
-    bind("win.save",              {"<Control>s"});
-    bind("win.save-as",           {"<Control><Shift>s"});
-    bind("win.save-as-template",  {"<Control><Alt>s"});
-    bind("win.manage-templates",  {"<Control><Alt>t"});
-    bind("win.import-svg",        {"<Control>i"});
-    bind("win.import-svg-icon",   {"<Control><Alt>i"});
-    bind("win.place-image",       {"<Control><Shift>p"});
-    bind("win.export-theme",      {"<Control><Shift>t"});
-    bind("win.print",             {"<Control>p"});
-
-    // Edit
-    bind("win.undo",            {"<Control>z"});
-    bind("win.redo",            {"<Control><Shift>z", "<Control>y"});
-    bind("win.cut",             {"<Control>x"});
-    bind("win.copy",            {"<Control>c"});
-    bind("win.paste",           {"<Control>v"});
-    bind("win.duplicate",       {"<Control>d"});
-    bind("win.clone",           {"<Alt>d"});
-    bind("win.step-repeat",     {"<Control><Alt>d"});
-
-    // Arrange
-    bind("win.arrange-bring-front",    {"<Control><Shift>Up"});
-    bind("win.arrange-bring-forward",  {"<Control>Up"});
-    bind("win.arrange-send-backward",  {"<Control>Down"});
-    bind("win.arrange-send-back",      {"<Control><Shift>Down"});
-    bind("win.flip-horizontal",        {"<Control><Shift>h"});
-    bind("win.flip-vertical",          {"<Control><Alt>v"});
-
-    // Align & Distribute (s135 m1)
-    // Six align ops on Ctrl+Alt+letter, mnemonic to direction. Distribute
-    // ops are menu-only — used less often, freer hotkey real estate left
-    // for things that need it more.
-    // fix3: top/bottom on P/B (toP, Bottom) — Ctrl+Alt+arrow gets
-    // intercepted by GNOME's workspace switcher on Fedora and keys never
-    // reach the app. Letter family is consistent and intercept-safe.
-    bind("win.align-left",      {"<Control><Alt>l"});
-    bind("win.align-center-h",  {"<Control><Alt>h"});
-    bind("win.align-right",     {"<Control><Alt>r"});
-    bind("win.align-top",       {"<Control><Alt>p"});
-    bind("win.align-center-v",  {"<Control><Alt>m"});
-    bind("win.align-bottom",    {"<Control><Alt>b"});
-
-    // Path
-    bind("win.bool-union",      {"<Control><Shift>u"});
-    bind("win.bool-subtract",   {"<Control><Shift>e"});
-    bind("win.bool-intersect",  {"<Control><Shift>i"});
-    bind("win.make-compound",   {"<Control>8"});
-    bind("win.split-compound",  {"<Control><Shift>8"});
-    bind("win.offset-path",     {"<Control><Shift>o"});
-    bind("win.expand-stroke",   {"<Control><Shift>x"});
-    bind("win.text-to-path",    {"<Control><Alt>t"});
-    bind("win.clip-make",       {"<Control>7"});
-    bind("win.clip-release",    {"<Control><Alt>7"});
-    bind("win.blend-make",      {"<Control>b"});
-    bind("win.blend-release",   {"<Control><Shift>b"});
-    bind("win.warp-make",       {"<Control><Shift>y"});
-    bind("win.warp-edit",       {"<Control><Alt>y"});
-    // warp-release intentionally menu-only (4-key combo not muscle memory)
-    bind("win.warp-flatten",    {"<Control><Alt>f"});
-
-    // View
-    bind("win.toggle-rulers",   {"<Control>r"});
-    bind("win.toggle-outline",  {"<Control>e"});
-    bind("win.zoom-in",         {"plus", "equal", "KP_Add"});
-    bind("win.zoom-out",        {"minus", "KP_Subtract"});
-    bind("win.zoom-100",        {"1", "KP_1"});
-    bind("win.zoom-200",        {"2", "KP_2"});
-    bind("win.zoom-selection",  {"3", "KP_3", "<Control>3"});
-    bind("win.zoom-fit",        {"0", "KP_0", "<Control>0"});
-
-    // Document navigation — both Tab-style (browser/IDE muscle memory)
-    // and Page-Up/Down (keyboards without dedicated PgUp/PgDn keys still
-    // get a working pair via Tab; full-keyboard users get the
-    // conventional PageUp/PageDown).
-    bind("win.doc-next",        {"<Control>Tab",       "<Control>Page_Down"});
-    bind("win.doc-prev",        {"<Control><Shift>Tab", "<Control>Page_Up"});
-
-    // App
-    bind("win.show-help",       {"F1", "<Alt>question"});
-    bind("win.show-shortcuts",  {"question", "slash"});
-    bind("win.quit",            {"<Control>q", "<Control>w"});
   }
 }
 
@@ -1755,6 +1805,10 @@ void MainWindow::connect_signals() {
     if (!m_project)
       return;
     m_new_doc_dialog.show(*this, ndd_available_themes(),
+        m_project->motif == Motif::Light ? templates::MotifTag::Light
+                                         : templates::MotifTag::Dark,
+        m_project->workspace_r(), m_project->workspace_g(), m_project->workspace_b(),
+        m_project->artboard_r(),  m_project->artboard_g(),  m_project->artboard_b(),
         [this](std::unique_ptr<CurvzDocument> seed,
                std::string name,
                std::optional<theme::ThemeId> theme_id) {
@@ -1822,6 +1876,10 @@ void MainWindow::connect_signals() {
       return;
     // Show canvas settings dialog then add new doc to project
     m_new_doc_dialog.show(*this, ndd_available_themes(),
+        m_project->motif == Motif::Light ? templates::MotifTag::Light
+                                         : templates::MotifTag::Dark,
+        m_project->workspace_r(), m_project->workspace_g(), m_project->workspace_b(),
+        m_project->artboard_r(),  m_project->artboard_g(),  m_project->artboard_b(),
         [this](std::unique_ptr<CurvzDocument> seed,
                std::string name,
                std::optional<theme::ThemeId> theme_id) {
@@ -2500,8 +2558,21 @@ void MainWindow::connect_signals() {
     if (m_act_distribute_v)    m_act_distribute_v->set_enabled(ok);
   };
 
+  // s138 fix: canvas selection-change must also refresh the inspector so
+  // action sensitivity (warp / blend / clip / bool) updates. Pre-fix this
+  // lambda only updated the align toolbar button; the four sensitivity
+  // helpers ran from refresh_inspector() at other call sites (tool change,
+  // scene mutation, document switch) but NOT on plain canvas-click
+  // selection changes. Net effect: clicking a path on the canvas would
+  // leave Warp Make / Blend Make / Clip / Boolean ops disabled until some
+  // unrelated event happened to refresh the inspector. refresh_inspector
+  // already includes update_align_btn-equivalent work via its panel
+  // refresh, so the explicit call below is belt-and-braces — keep both.
   m_canvas.signal_selection_changed().connect(
-      [this, update_align_btn](SceneNode *) { update_align_btn(); });
+      [this, update_align_btn](SceneNode *) {
+        update_align_btn();
+        refresh_inspector();
+      });
 
   // Also re-check on tool change (handled in on_tool_changed, but we store
   // the lambda so we can call it there too).
@@ -3436,6 +3507,14 @@ void MainWindow::connect_signals() {
           m_canvas.select_all();
           return true;
         }
+        // s136 m5: Ctrl+Shift+A — deselect all. Counterpart to Ctrl+A,
+        // matches Illustrator/Affinity convention. Esc is left alone (it
+        // continues to mean "cancel in-progress operation only" — see the
+        // Esc handlers above).
+        if (shift && (kv == GDK_KEY_a || kv == GDK_KEY_A)) {
+          m_canvas.clear_selection();
+          return true;
+        }
         if (!shift && (kv == GDK_KEY_c || kv == GDK_KEY_C)) {
           m_canvas.copy_selected();
           return true;
@@ -3759,6 +3838,22 @@ void MainWindow::update_warp_action_sensitive() {
   if (m_act_warp_flatten) m_act_warp_flatten->set_enabled(warp_ok);
 }
 
+// s138: Group / Ungroup sensitivity. Group requires >=2 selected (the
+// minimum that produces a meaningful container). Ungroup requires the
+// primary selection to be a Group node. Canvas::group_selection and
+// Canvas::ungroup_selection are defensive about preconditions, but
+// gating at the action level keeps the menu honest about what's
+// available before the user tries to invoke it.
+void MainWindow::update_group_actions_sensitive() {
+  const auto &sel = m_canvas.selection();
+  bool make_ok = sel.size() >= 2;
+  if (m_act_group_make) m_act_group_make->set_enabled(make_ok);
+
+  SceneNode *primary = m_canvas.selected_object();
+  bool release_ok = (primary && primary->type == SceneNode::Type::Group);
+  if (m_act_group_release) m_act_group_release->set_enabled(release_ok);
+}
+
 void MainWindow::update_bool_actions_sensitive() {
   // s122 m3: Union / Subtract / Intersect — at least 2 selected, each
   // either a closed Path or a Compound with all-closed children. Same-
@@ -3802,6 +3897,7 @@ void MainWindow::refresh_inspector() {
   update_clip_actions_sensitive();
   update_blend_action_sensitive();
   update_warp_action_sensitive();
+  update_group_actions_sensitive();  // s138
   update_bool_actions_sensitive();  // s122 m2
   Glib::signal_idle().connect_once([this]() {
     if (m_closing)
@@ -4337,6 +4433,10 @@ void MainWindow::on_close_project() {
 void MainWindow::on_new() {
   if (!m_project) return;  // guarded by menu sensitivity, belt-and-braces
   m_new_doc_dialog.show(*this, ndd_available_themes(),
+      m_project->motif == Motif::Light ? templates::MotifTag::Light
+                                       : templates::MotifTag::Dark,
+      m_project->workspace_r(), m_project->workspace_g(), m_project->workspace_b(),
+      m_project->artboard_r(),  m_project->artboard_g(),  m_project->artboard_b(),
       [this](std::unique_ptr<CurvzDocument> seed,
              std::string name,
              std::optional<theme::ThemeId> theme_id) {
@@ -4492,7 +4592,15 @@ void MainWindow::on_save_as_template() {
         return;
       }
       std::string bundle;
-      if (templates::save(*doc, meta, &bundle)) {
+      // m4: save() now writes both motif PNGs eagerly. Pass both motif
+      // pairs from the project so the bundle is valid in either motif
+      // immediately.
+      if (templates::save(*doc, meta,
+              m_project->workspace_dark_r,  m_project->workspace_dark_g,  m_project->workspace_dark_b,
+              m_project->artboard_dark_r,   m_project->artboard_dark_g,   m_project->artboard_dark_b,
+              m_project->workspace_light_r, m_project->workspace_light_g, m_project->workspace_light_b,
+              m_project->artboard_light_r,  m_project->artboard_light_g,  m_project->artboard_light_b,
+              &bundle)) {
         LOG_INFO("on_save_as_template: saved '{}'", bundle);
       } else {
         LOG_ERROR("on_save_as_template: save failed");
@@ -4520,7 +4628,15 @@ void MainWindow::on_save_as_template() {
 // File → Manage Templates — opens the template browser. Enabled regardless
 // of project state (templates are user-global).
 void MainWindow::on_manage_templates() {
-  m_manage_templates_dialog.show(*this, [this]() {
+  // motif tag for thumbnail picking. When there's no project, we still need
+  // to pick a motif somehow — fall back to Dark since the dialog itself
+  // applies the motif class from the parent window separately. Templates
+  // are user-global so the picked motif is purely cosmetic for thumb display.
+  templates::MotifTag motif = templates::MotifTag::Dark;
+  if (m_project && m_project->motif == Motif::Light) {
+    motif = templates::MotifTag::Light;
+  }
+  m_manage_templates_dialog.show(*this, motif, [this]() {
     // No-op for now: NewDocumentDialog rescans templates on each show(),
     // so changes from the manager are picked up the next time the user
     // opens Add to Project or New Project. If a persistent picker UI ever
@@ -5329,10 +5445,26 @@ void MainWindow::on_request_save_selection_to_library() {
       });
 }
 
-// ── on_save_selection_to_library
-// Builds a scratch CurvzDocument from the current selection, serialises it via
-// optimise_svg, and writes to dest_dir/{name}.svg.  The filename comes from
-// the document filename stem; a numeric suffix is added if it already exists.
+// ── on_save_selection_to_library ─────────────────────────────────────────────
+//
+// s136 m4: orchestrator. Prompts the user for an item name, then routes to
+// write_library_item to do the actual file write. Smart default for the prompt:
+//
+//   • Single object selected → pre-fill with the object's `name` (which may be
+//     a designer-set string like "arrow" or an auto-generated default like
+//     "Rectangle 3"). Either way, the user gets a meaningful starting point.
+//   • Multi-selection → pre-fill empty (deliberate friction — saving a group
+//     should be a deliberate naming act). If the user submits empty anyway,
+//     a `group_<n>` fallback is generated, collision-aware.
+//
+// Collision handling: a typed name that clashes with an existing file in
+// dest_dir is reported via show_confirm with Replace / Cancel. The fallback
+// path (`item_<n>` / `group_<n>`) is the only place where automatic numeric
+// suffixing happens.
+//
+// Why this is the chokepoint: both entry points (LibraryPanel + button and
+// Canvas right-click → Save to Library…) funnel through here. The folder
+// picker happens before this; the name prompt and write happen here.
 
 void MainWindow::on_save_selection_to_library(const std::string &dest_dir) {
   if (!m_project)
@@ -5349,6 +5481,116 @@ void MainWindow::on_save_selection_to_library(const std::string &dest_dir) {
         "Select one or more objects before adding to the library.");
     return;
   }
+
+  // ── Build the prompt's default value ───────────────────────────────────
+  // Single selection → object name (may be empty / default-generated).
+  // Multi-selection → empty, forcing the user to type or accept group_<n>.
+  std::string default_name;
+  if (sel.size() == 1 && sel[0]) {
+    default_name = sel[0]->name;
+  }
+
+  // Prompt for the library item name. Spec-driven via curvz::utils::show_form.
+  // The async callback fires once on dismissal with the user's input (or the
+  // cancel-button index if dismissed). On Save, we either accept the typed
+  // name, generate a fallback if it's empty, or surface a collision alert.
+  std::vector<curvz::utils::FormField> fields = {
+      {"name", "Name",
+       curvz::utils::TextField{default_name, "Library item name"}}};
+
+  std::vector<std::string> buttons = {"Cancel", "Save"};
+
+  curvz::utils::show_form(
+      *this, "Save to library",
+      "Name this item — it will appear in the Library panel and on disk as "
+      "<name>.svg.",
+      fields, buttons,
+      /*default_button=*/1, /*cancel_button=*/0,
+      [this, dest_dir, multi = (sel.size() > 1)](
+          int button_index,
+          const std::map<std::string, curvz::utils::FormFieldValue> &values) {
+        if (button_index != 1) return; // Cancel
+
+        // Fetch typed name; trim whitespace.
+        std::string name;
+        auto it = values.find("name");
+        if (it != values.end()) name = it->second.text();
+        // Trim
+        auto ltrim = [](std::string s) {
+          size_t i = 0;
+          while (i < s.size() && std::isspace((unsigned char)s[i])) ++i;
+          return s.substr(i);
+        };
+        auto rtrim = [](std::string s) {
+          size_t i = s.size();
+          while (i > 0 && std::isspace((unsigned char)s[i - 1])) --i;
+          return s.substr(0, i);
+        };
+        name = rtrim(ltrim(name));
+
+        namespace fs = std::filesystem;
+
+        // Empty name → fallback to item_<n> (single) or group_<n> (multi).
+        // Walk numeric suffixes until a free slot is found.
+        if (name.empty()) {
+          std::error_code ec;
+          fs::create_directories(dest_dir, ec);
+          const std::string prefix = multi ? "group_" : "item_";
+          int n = 1;
+          while (true) {
+            std::string candidate = prefix + std::to_string(n);
+            std::string path = dest_dir + "/" + candidate + ".svg";
+            if (!fs::exists(path, ec)) {
+              name = candidate;
+              break;
+            }
+            ++n;
+          }
+          (void)write_library_item(dest_dir, name);
+          return;
+        }
+
+        // Typed name → check collision; if present, ask Replace / Cancel.
+        std::error_code ec;
+        std::string candidate = dest_dir + "/" + name + ".svg";
+        if (fs::exists(candidate, ec)) {
+          curvz::utils::show_confirm(
+              *this, "Item already exists",
+              "An item named \"" + name +
+                  "\" already exists in this category.\n\n"
+                  "Replace it, or cancel and choose a different name?",
+              {"Cancel", "Replace"}, /*default_button=*/0,
+              /*cancel_button=*/0,
+              [this, dest_dir, name](int btn) {
+                if (btn != 1) return; // Cancel
+                std::error_code ec;
+                fs::remove(dest_dir + "/" + name + ".svg", ec);
+                (void)write_library_item(dest_dir, name);
+              });
+          return;
+        }
+
+        (void)write_library_item(dest_dir, name);
+      });
+}
+
+// ── write_library_item ───────────────────────────────────────────────────────
+//
+// s136 m4: the actual file-writing helper. Pure function over (dest_dir,
+// base_name) — assumes base_name is final, performs the geometry-collection
+// and serialisation it always did, writes <dest_dir>/<base_name>.svg.
+//
+// Refresh of the LibraryPanel happens here on success so callers don't all
+// have to remember it.
+
+bool MainWindow::write_library_item(const std::string &dest_dir,
+                                    const std::string &base_name) {
+  if (!m_project) return false;
+  auto *doc = m_project->active_doc();
+  if (!doc) return false;
+
+  const auto &sel = m_canvas.selection();
+  if (sel.empty()) return false;
 
   // ── Build scratch document ────────────────────────────────────────────
   CurvzDocument scratch;
@@ -5428,38 +5670,31 @@ void MainWindow::on_save_selection_to_library(const std::string &dest_dir) {
   // ── Serialise via optimise_svg ────────────────────────────────────────
   std::string svg = optimise_svg(scratch);
 
-  // ── Derive filename ───────────────────────────────────────────────────
-  namespace fs = std::filesystem;
-  std::string stem = fs::path(doc->filename).stem().string();
-  if (stem.empty())
-    stem = "shape";
-
   // Ensure dest_dir exists
+  namespace fs = std::filesystem;
   std::error_code ec;
   fs::create_directories(dest_dir, ec);
 
-  // Avoid clobbering existing files — append numeric suffix
-  std::string dest = dest_dir + "/" + stem + ".svg";
-  int suffix = 2;
-  while (fs::exists(dest, ec))
-    dest = dest_dir + "/" + stem + std::to_string(suffix++) + ".svg";
+  // s136 m4: filename comes from caller. Collision was handled upstream by
+  // the orchestrator (Replace / Cancel) — here we just write.
+  const std::string dest = dest_dir + "/" + base_name + ".svg";
 
   // Write
   std::ofstream f(dest);
   if (!f) {
-    LOG_ERROR("on_save_selection_to_library: cannot write '{}'", dest);
+    LOG_ERROR("write_library_item: cannot write '{}'", dest);
     curvz::utils::show_alert(*this, "Save failed",
                              "Could not write to:\n" + dest);
-    return;
+    return false;
   }
   f << svg;
   f.close();
 
-  LOG_INFO("on_save_selection_to_library: saved {} object(s) to '{}'",
-           sel.size(), dest);
+  LOG_INFO("write_library_item: saved {} object(s) to '{}'", sel.size(), dest);
 
   // Refresh panel so new item appears immediately
   m_library.refresh();
+  return true;
 }
 
 // ── on_step_repeat

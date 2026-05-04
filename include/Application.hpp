@@ -9,6 +9,7 @@ public:
 
 protected:
     Application();
+    void on_startup() override;
     void on_activate() override;
 };
 

@@ -65,6 +65,11 @@ bool export_png_sized(const CurvzDocument& doc,
 // name_label is the human name rendered centered on the thumb (typically
 // meta.name). dimensions_label is rendered smaller below (typically the spec
 // string like "1080 × 1920" or "8.5 × 11 in"). Empty strings skip the label.
+//
+// workspace_r/g/b and artboard_r/g/b are the project's motif-resolved colours
+// for the variant being rendered — the bundle stores one PNG per motif so
+// the dialog can pick the matching one at display time. These map directly
+// to CurvzProject::workspace_r() / artboard_r() for the chosen motif.
 bool export_template_thumbnail(const CurvzDocument& doc,
                                const std::string& path,
                                int size_px,
@@ -72,6 +77,8 @@ bool export_template_thumbnail(const CurvzDocument& doc,
                                const std::string& dimensions_label,
                                int grid_divisions,
                                double margin_ratio,
-                               double grid_offset_ratio);
+                               double grid_offset_ratio,
+                               double workspace_r, double workspace_g, double workspace_b,
+                               double artboard_r,  double artboard_g,  double artboard_b);
 
 } // namespace Curvz

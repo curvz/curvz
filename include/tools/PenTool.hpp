@@ -67,7 +67,14 @@ struct PenTool {
     void cancel();
 
     // Draw WIP + live preview rubber-band bezier.
-    void draw_preview(const Cairo::RefPtr<Cairo::Context>& cr, double zoom) const;
+    // Render the in-progress path. Caller passes the project's current
+    // motif-resolved Creation colour; PenTool stays project-agnostic and
+    // uses these values for committed segments, the live rubber-band, and
+    // the handle squares. The handle lever lines use a derived lightened
+    // shade (blended toward white) so they read as a softer accessory
+    // colour against the same family as the path itself.
+    void draw_preview(const Cairo::RefPtr<Cairo::Context>& cr, double zoom,
+                      double creation_r, double creation_g, double creation_b) const;
 
     // ── Helpers ───────────────────────────────────────────────────────────
     bool is_near_start(Vec2 pos, double zoom) const;

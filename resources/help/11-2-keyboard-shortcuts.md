@@ -28,9 +28,12 @@ The page survives offline; the dialog is faster mid-task.
 - `Ctrl + V` — paste.
 - `Ctrl + D` — duplicate.
 - `Ctrl + A` — select all.
+- `Ctrl + Shift + A` — deselect all.
 - `Ctrl + Alt + D` — Step and Repeat.
 - `Delete` / `Backspace` — delete selection or selected guides.
-- `Esc` — clear selection or exit current mode.
+- `Esc` — cancel current operation (Pen, Line, text edit, guide
+  construction, warp pick set). Does not clear object selection;
+  use `Ctrl + Shift + A` for that.
 
 ## Tools
 

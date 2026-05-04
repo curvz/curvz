@@ -2710,6 +2710,21 @@ void Canvas::select_all() {
   LOG_INFO("Canvas: select_all — {} objects", m_selection.size());
 }
 
+// s136 m5: counterpart to select_all. Wired to Ctrl+Shift+A. Cheap to call
+// when nothing is selected (no signal storm, no redraw) — guards on the
+// already-empty case so accidental double-presses don't churn.
+void Canvas::clear_selection() {
+  if (m_selection.empty() && m_selected == nullptr)
+    return;
+
+  m_selection.clear();
+  m_selected = nullptr;
+
+  m_sig_selection.emit(nullptr);
+  queue_draw();
+  LOG_INFO("Canvas: clear_selection");
+}
+
 void Canvas::copy_selected() {
   if (m_selection.empty() || !m_doc)
     return;
@@ -5754,7 +5769,52 @@ void Canvas::boolean_op(BooleanOpType op) {
   LOG_INFO("Canvas: boolean {} — engine=Clipper2, operands={}, total subpaths={}",
            op_name, operands.size(), total_subs);
 
-  final_loops = Curvz::boolean_op_clipper(operands, op);
+  // ── s140 m3 — ENRICH + CLIPPER2 + CLEANUP ───────────────────────────────
+  // When cleanup is on, run enrichment on the input operands (s140 m1
+  // validated), hand to Clipper2 (s140 m2 validated), then run
+  // cleanup_loop on each result.
+  //
+  // Cleanup walk (s140 m3 — single pass, no pass 2):
+  //   - Compute keeper set from ORIGINAL (un-enriched) operand geometry.
+  //     This contains originals + intersections only. Synthetic guards
+  //     are NOT keepers in the cleanup phase — they served their purpose
+  //     at Clipper2 time (carrying curve shape into the boolean output
+  //     via on-curve smooth tangent samples) and are now interpolant-
+  //     equivalent.
+  //   - Per keeper, find its slot in the output polyline and tag it.
+  //     Originals restore byte-for-byte from KeeperPoint::source (the
+  //     authored handles + type — corner stays corner, smooth stays
+  //     smooth). Intersections retract to Corner.
+  //   - Delete every untagged node.
+  //
+  // Toggle off → no enrichment, no cleanup, raw Clipper2 path
+  // (pre-s139 behaviour).
+  std::vector<std::vector<BezierPath>> enriched_operands;
+  Curvz::refit::KeeperSet synthetic_guards;
+  const auto* operands_for_clipper = &operands;
+  if (m_boolean_cleanup_enabled) {
+    Curvz::refit::enrich_operands(operands, enriched_operands, synthetic_guards);
+    operands_for_clipper = &enriched_operands;
+    LOG_INFO("Canvas: boolean {} — s140 m3: enrichment ON, {} synthetic "
+             "guards across {} operands; handing enriched operands to Clipper2.",
+             op_name, synthetic_guards.size(), enriched_operands.size());
+  }
+
+  final_loops = Curvz::boolean_op_clipper(*operands_for_clipper, op);
+
+  if (m_boolean_cleanup_enabled && !final_loops.empty()) {
+    // Keepers from the ORIGINAL operand geometry (pre-enrichment).
+    // compute_keeper_set returns originals + intersections only — the
+    // SyntheticGuard category is not produced here. Guards are
+    // intentionally absent: they're transport, not destination.
+    auto keepers = Curvz::refit::compute_keeper_set(operands, op);
+    LOG_INFO("Canvas: boolean {} — s140 m3 cleanup: {} keepers across "
+             "{} loops",
+             op_name, keepers.size(), final_loops.size());
+    for (auto &loop : final_loops) {
+      loop = Curvz::refit::cleanup_loop(std::move(loop), keepers);
+    }
+  }
 
   if (final_loops.empty()) {
     LOG_WARN("Canvas: boolean {} returned empty result", op_name);
@@ -14985,7 +15045,13 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     cr->save();
     cr->translate(ox, oy);
     cr->scale(m_zoom, m_zoom);
-    m_pen_tool.draw_preview(cr, m_zoom);
+    // s137 m5: pass project's motif-resolved Creation colour through.
+    // PenTool stays project-agnostic; receives values, doesn't reach
+    // back into the project.
+    m_pen_tool.draw_preview(cr, m_zoom,
+                            m_project->creation_r(),
+                            m_project->creation_g(),
+                            m_project->creation_b());
     cr->restore();
   }
 
@@ -17371,7 +17437,10 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
   if (m_tool == ActiveTool::Line && m_line_tool.active()) {
     double ox = doc_origin_x(), oy = doc_origin_y();
     cr->save();
-    cr->set_source_rgba(0.3, 0.6, 1.0, 0.9);
+    // s137 m5: creation colour (motif-aware), per-project user setting.
+    cr->set_source_rgba(m_project->creation_r(),
+                        m_project->creation_g(),
+                        m_project->creation_b(), 0.9);
     cr->set_line_width(1.5);
     std::vector<double> dashes = {4.0, 3.0};
     cr->set_dash(dashes, 0);
@@ -17390,7 +17459,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
 
     // Draw placed anchor points
     cr->set_dash(std::vector<double>{}, 0);
-    cr->set_source_rgba(0.3, 0.6, 1.0, 1.0);
+    cr->set_source_rgba(m_project->creation_r(),
+                        m_project->creation_g(),
+                        m_project->creation_b(), 1.0);
     for (auto [px, py] : m_line_tool.points) {
       cr->arc(px * m_zoom + ox, py * m_zoom + oy, 3.0, 0, 2 * M_PI);
       cr->fill();
@@ -17437,8 +17508,13 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
         polygon_to_path(cx, cy, radius, sides, inflection, m_poly_drag_angle);
 
     cr->save();
+    // s137 m5: creation colour (motif-aware) for both fill and outline.
+    // Fill alpha 0.12 / outline alpha 0.9 are role-coded — fills always
+    // dimmer than outlines at every construction site.
     // Fill
-    cr->set_source_rgba(0.2, 0.5, 1.0, 0.12);
+    cr->set_source_rgba(m_project->creation_r(),
+                        m_project->creation_g(),
+                        m_project->creation_b(), 0.12);
     bool first = true;
     for (const auto &n : pd.nodes) {
       double sx = n.x * m_zoom + ox;
@@ -17453,7 +17529,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
     cr->fill();
 
     // Outline
-    cr->set_source_rgba(0.3, 0.6, 1.0, 0.9);
+    cr->set_source_rgba(m_project->creation_r(),
+                        m_project->creation_g(),
+                        m_project->creation_b(), 0.9);
     cr->set_line_width(1.0);
     std::vector<double> dashes = {4.0, 3.0};
     cr->set_dash(dashes, 0);
@@ -17490,7 +17568,10 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
                                  m_spiral_turns, m_spiral_drag_angle);
 
     cr->save();
-    cr->set_source_rgba(0.3, 0.6, 1.0, 0.9);
+    // s137 m5: creation colour (motif-aware).
+    cr->set_source_rgba(m_project->creation_r(),
+                        m_project->creation_g(),
+                        m_project->creation_b(), 0.9);
     cr->set_line_width(1.0);
     std::vector<double> dashes = {4.0, 3.0};
     cr->set_dash(dashes, 0);
@@ -17532,8 +17613,10 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
 
   cr->save();
 
-  // Fill preview
-  cr->set_source_rgba(0.2, 0.5, 1.0, 0.12);
+  // Fill preview — s137 m5: creation colour (motif-aware), dim alpha for fill.
+  cr->set_source_rgba(m_project->creation_r(),
+                      m_project->creation_g(),
+                      m_project->creation_b(), 0.12);
   if (m_tool == ActiveTool::Ellipse) {
     cr->save();
     cr->translate(x1 + w * 0.5, y1 + h * 0.5);
@@ -17545,8 +17628,10 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
   }
   cr->fill();
 
-  // Outline
-  cr->set_source_rgba(0.3, 0.6, 1.0, 0.9);
+  // Outline — s137 m5: creation colour (motif-aware), bold alpha for outline.
+  cr->set_source_rgba(m_project->creation_r(),
+                      m_project->creation_g(),
+                      m_project->creation_b(), 0.9);
   cr->set_line_width(1.0);
   std::vector<double> dashes = {4.0, 3.0};
   cr->set_dash(dashes, 0);

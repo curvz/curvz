@@ -127,6 +127,7 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   r = add_row(m_keyboard_grid, "Ctrl+Shift+Z", "Redo", r);
   r = add_row(m_keyboard_grid, "Ctrl+Y", "Redo (alternate)", r);
   r = add_row(m_keyboard_grid, "Ctrl+A", "Select all", r);
+  r = add_row(m_keyboard_grid, "Ctrl+Shift+A", "Deselect all", r);
   r = add_row(m_keyboard_grid, "Ctrl+C", "Copy", r);
   r = add_row(m_keyboard_grid, "Ctrl+X", "Cut", r);
   r = add_row(m_keyboard_grid, "Ctrl+V", "Paste", r);

@@ -7,6 +7,7 @@
 #include "math/BezierPath.hpp"
 #include "math/BooleanOps.hpp"
 #include "math/BooleanOpsClipper.hpp"
+#include "math/BooleanOpsRefit.hpp"  // s139 m2 — keeper-set + cleanup_loop post-pass
 #include "math/CornerTreatment.hpp"
 #include "math/PathOffset.hpp"
 #include "tools/PenTool.hpp"
@@ -577,6 +578,7 @@ public:
 
   // Clipboard operations
   void select_all();
+  void clear_selection();  // s136 m5: counterpart to select_all (Ctrl+Shift+A)
   void copy_selected();
   void cut_selected();
   void paste_clipboard();
@@ -1356,6 +1358,25 @@ private:
   // no longer reachable from the running app: no flag, no action, no
   // menu, no dispatch branch.
 
+  // ── Boolean-op cleanup post-pass (s139 m2) ───────────────────────────
+  // When true, Canvas::boolean_op runs the keeper-set + cleanup_loop
+  // post-pass on Clipper2 output (see math/BooleanOpsRefit.hpp).
+  // Reduces ~30× node-count inflation that Clipper2's polyline output
+  // produces. Default false during proof phase; flipped via the
+  // hamburger menu's "Clean Boolean Output" toggle, persisted by
+  // AppPreferences. MainWindow keeps this synced to the app preference
+  // on startup and on user toggle.
+  bool m_boolean_cleanup_enabled = false;
+
+  // ── Boolean-op reduce pass (s139 m4 — pass 2) ────────────────────────
+  // When true AND m_boolean_cleanup_enabled is true, Canvas::boolean_op
+  // runs reduce_loop on each cleaned result loop after cleanup_loop.
+  // Reduces the C-C-C triplet structure to one survivor per triple
+  // (two-from-three reduction). Effective node count drops by ~2/3
+  // compared to cleanup-only output. Has no effect when cleanup itself
+  // is off; the dependency is enforced at the call site.
+  bool m_boolean_reduce_enabled = false;
+
 public:
   void toggle_outline_mode() {
     m_outline_mode = !m_outline_mode;
@@ -1369,6 +1390,21 @@ public:
   sigc::signal<void()> &signal_outline_mode_changed() {
     return m_sig_outline_mode_changed;
   }
+
+  // s139 m2: boolean-op cleanup post-pass setter. MainWindow calls this
+  // on startup (from the loaded AppPreferences value) and on every
+  // user toggle of the "Clean Boolean Output" menu item. Cheap setter —
+  // no signal, no redraw; the flag is consulted only on the next
+  // boolean_op invocation.
+  void set_boolean_cleanup_enabled(bool v) { m_boolean_cleanup_enabled = v; }
+  bool boolean_cleanup_enabled() const { return m_boolean_cleanup_enabled; }
+
+  // s139 m4: boolean-op reduce setter. Same pattern as cleanup. The flag
+  // is consulted alongside cleanup on the next boolean_op invocation;
+  // reduce only runs if cleanup is also on.
+  void set_boolean_reduce_enabled(bool v) { m_boolean_reduce_enabled = v; }
+  bool boolean_reduce_enabled() const { return m_boolean_reduce_enabled; }
+
 
   // s113 m2: preview-mode safety threshold.
   //

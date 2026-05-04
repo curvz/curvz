@@ -445,9 +445,12 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_template_thumb_surface(
         const std::string& dimensions_label,
         int grid_divisions,
         double margin_ratio,
-        double grid_offset_ratio) {
+        double grid_offset_ratio,
+        double workspace_r, double workspace_g, double workspace_b,
+        double artboard_r,  double artboard_g,  double artboard_b) {
 
     (void)name_label; (void)dimensions_label;
+    (void)workspace_r; (void)workspace_g; (void)workspace_b; // letterbox is transparent
 
     const int cw = doc.canvas_width();
     const int ch = doc.canvas_height();
@@ -462,7 +465,9 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_template_thumb_surface(
     }
     auto cr = Cairo::Context::create(surface);
 
-    // Transparent background.
+    // Transparent background. The dialog draws its own workspace tint behind
+    // the thumb (the tile chrome handles that), so we letterbox transparent
+    // and only fill the canvas rect itself.
     cr->set_operator(Cairo::Context::Operator::CLEAR);
     cr->paint();
     cr->set_operator(Cairo::Context::Operator::OVER);
@@ -483,17 +488,17 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_template_thumb_surface(
     LOG_INFO("thumb geom rect=({:.1f},{:.1f} {:.1f}x{:.1f}) scale={:.4f}",
              rect_x, rect_y, rect_w, rect_h, scale);
 
-    // 1. Canvas fill — #2E2E2E, color-grabbed from the Default template's
-    //    canvas render. Keeps thumbs visually consistent with what the
-    //    instantiated doc looks like in the app.
-    cr->set_source_rgba(0x2E / 255.0, 0x2E / 255.0, 0x2E / 255.0, 1.0);
+    // 1. Canvas fill — artboard colour for the requested motif. Replaces the
+    //    pre-m4 hardcoded #2E2E2E so the bundle's per-motif PNG cache renders
+    //    in the right motif at save time.
+    cr->set_source_rgba(artboard_r, artboard_g, artboard_b, 1.0);
     cr->rectangle(rect_x, rect_y, rect_w, rect_h);
     cr->fill();
     LOG_INFO("thumb step 1: canvas fill done");
 
-    // 2. Grid lines — bluish (SceneNode defaults 0.5, 0.5, 0.8). Alpha 0.45
-    //    works well against the dark canvas; the hue still reads blue even
-    //    at low opacity. Line width 1.4 at 256px.
+    // 2. Grid lines — bluish-grey at moderate alpha. Reads against either
+    //    motif so the colour stays the same regardless of which PNG variant
+    //    is being rendered.
     if (grid_divisions > 0) {
         const double doc_short_px = std::min(rect_w, rect_h);
         const double step         = doc_short_px / (double)grid_divisions;
@@ -520,9 +525,7 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_template_thumb_surface(
         }
     }
 
-    // 3. Margin rectangle — red (SceneNode defaults 0.8, 0.3, 0.3). Slightly
-    //    lighter + moderate alpha to read against the dark canvas without
-    //    being harsh.
+    // 3. Margin rectangle — red, motif-neutral.
     if (margin_ratio > 0.0 && grid_divisions > 0) {
         const double doc_short_px = std::min(rect_w, rect_h);
         const double step         = doc_short_px / (double)grid_divisions;
@@ -540,8 +543,7 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_template_thumb_surface(
         }
     }
 
-    // 4. Canvas border — light gray so it's visible against the dark fill
-    //    without being harsh. 1.5px at 256 stays crisp post-downscale.
+    // 4. Canvas border — neutral mid-grey, motif-neutral.
     cr->set_source_rgba(0.55, 0.55, 0.55, 0.9);
     cr->set_line_width(1.5);
     cr->rectangle(rect_x + 0.75, rect_y + 0.75, rect_w - 1.5, rect_h - 1.5);
@@ -561,10 +563,14 @@ bool export_template_thumbnail(const CurvzDocument& doc,
                                const std::string& dimensions_label,
                                int grid_divisions,
                                double margin_ratio,
-                               double grid_offset_ratio) {
+                               double grid_offset_ratio,
+                               double workspace_r, double workspace_g, double workspace_b,
+                               double artboard_r,  double artboard_g,  double artboard_b) {
     auto surface = render_template_thumb_surface(
         doc, size_px, name_label, dimensions_label,
-        grid_divisions, margin_ratio, grid_offset_ratio);
+        grid_divisions, margin_ratio, grid_offset_ratio,
+        workspace_r, workspace_g, workspace_b,
+        artboard_r,  artboard_g,  artboard_b);
     cairo_status_t status = cairo_surface_write_to_png(surface->cobj(), path.c_str());
     if (status != CAIRO_STATUS_SUCCESS) {
         LOG_ERROR("PngExporter: failed to write template thumb '{}' ({})",

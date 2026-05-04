@@ -5,6 +5,7 @@
 #include "math/BezierPath.hpp"
 #include <algorithm>
 #include <cairomm/cairomm.h>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <functional>
@@ -374,6 +375,13 @@ Gtk::Widget* LibraryPanel::make_item_card(const LibraryItem& item) {
             auto menu = Gio::Menu::create();
             menu->append("Place on canvas", "libctx.place");
 
+            // s136 m4: Rename… — user-tier items only. Library system tier
+            // is read-only (lives under /usr/share/curvz/library) so renames
+            // would silently fail; gating the entry to is_user makes the
+            // capability honest at the menu level rather than on click.
+            if (is_user)
+                menu->append("Rename…", "libctx.rename");
+
             if (is_user)
                 menu->append("Delete from library", "libctx.del");
 
@@ -385,6 +393,123 @@ Gtk::Widget* LibraryPanel::make_item_card(const LibraryItem& item) {
                     m_sig_place_item.emit(svg_path);
                 });
             ag->add_action(act_place);
+
+            if (is_user) {
+                // s136 m4: Rename. Pulls the current stem, prompts via
+                // show_form, validates the typed name (non-empty, no slashes),
+                // checks for collision in the same category folder, and
+                // performs an fs::rename on success. Refresh the panel from
+                // an idle so the widget tree is stable when we rebuild.
+                auto act_rename = Gio::SimpleAction::create("rename");
+                act_rename->signal_activate().connect(
+                    [this, outer, svg_path](const Glib::VariantBase&) {
+                        // Walk up to the parent Window for the dialog.
+                        Gtk::Window* win = nullptr;
+                        for (Gtk::Widget* w = outer->get_parent(); w;
+                             w = w->get_parent()) {
+                            win = dynamic_cast<Gtk::Window*>(w);
+                            if (win) break;
+                        }
+                        if (!win) {
+                            LOG_WARN("LibraryPanel: rename — no parent window");
+                            return;
+                        }
+
+                        const std::string current_stem =
+                            fs::path(svg_path).stem().string();
+                        const std::string parent_dir =
+                            fs::path(svg_path).parent_path().string();
+
+                        std::vector<curvz::utils::FormField> fields = {
+                            {"name", "Name",
+                             curvz::utils::TextField{current_stem,
+                                                     "Library item name"}}};
+                        std::vector<std::string> buttons = {"Cancel", "Rename"};
+
+                        curvz::utils::show_form(
+                            *win, "Rename library item",
+                            "New name for this item.",
+                            fields, buttons,
+                            /*default_button=*/1, /*cancel_button=*/0,
+                            [this, win, svg_path, parent_dir, current_stem](
+                                int btn,
+                                const std::map<std::string,
+                                               curvz::utils::FormFieldValue>&
+                                    values) {
+                                if (btn != 1) return; // Cancel
+
+                                std::string name;
+                                auto it = values.find("name");
+                                if (it != values.end())
+                                    name = it->second.text();
+                                // Trim
+                                auto trim = [](std::string s) {
+                                    size_t i = 0;
+                                    while (i < s.size() &&
+                                           std::isspace((unsigned char)s[i]))
+                                        ++i;
+                                    s = s.substr(i);
+                                    size_t j = s.size();
+                                    while (j > 0 && std::isspace(
+                                               (unsigned char)s[j - 1]))
+                                        --j;
+                                    return s.substr(0, j);
+                                };
+                                name = trim(name);
+
+                                // Empty → silently no-op. The user's intent
+                                // is unclear; refusing without complaint is
+                                // friendlier than an alert.
+                                if (name.empty()) return;
+
+                                // Reject path separators — names map to
+                                // single filenames in the category folder,
+                                // not subpaths.
+                                if (name.find('/') != std::string::npos ||
+                                    name.find('\\') != std::string::npos) {
+                                    curvz::utils::show_alert(
+                                        *win, "Invalid name",
+                                        "Library item names cannot contain "
+                                        "slashes.");
+                                    return;
+                                }
+
+                                // No-op if the user re-typed the same name.
+                                if (name == current_stem) return;
+
+                                const std::string new_path =
+                                    parent_dir + "/" + name + ".svg";
+
+                                std::error_code ec;
+                                if (fs::exists(new_path, ec)) {
+                                    curvz::utils::show_alert(
+                                        *win, "Item already exists",
+                                        "An item named \"" + name +
+                                            "\" already exists in this "
+                                            "category. Choose a different "
+                                            "name.");
+                                    return;
+                                }
+
+                                fs::rename(svg_path, new_path, ec);
+                                if (ec) {
+                                    LOG_WARN("LibraryPanel: rename failed "
+                                             "for '{}': {}",
+                                             svg_path, ec.message());
+                                    curvz::utils::show_alert(
+                                        *win, "Rename failed",
+                                        "Could not rename to \"" + name +
+                                            "\".");
+                                    return;
+                                }
+                                LOG_INFO("LibraryPanel: renamed '{}' → '{}'",
+                                         svg_path, new_path);
+                                Glib::signal_idle().connect_once(
+                                    [this]() { refresh(); });
+                            });
+                    });
+                ag->add_action(act_rename);
+            }
 
             if (is_user) {
                 auto act_del = Gio::SimpleAction::create("del");

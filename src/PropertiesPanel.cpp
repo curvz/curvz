@@ -1179,6 +1179,7 @@ void PropertiesPanel::build_project_section(CurvzProject *project,
   // make_managed; the local just stores the same address).
   Gtk::DrawingArea *proj_artboard_da = nullptr;
   Gtk::DrawingArea *proj_workspace_da = nullptr;
+  Gtk::DrawingArea *proj_creation_da = nullptr;  // s137 m5
   CurvzSwitch *theme_sw = nullptr;
   Gtk::Label *theme_value_lbl = nullptr;
 
@@ -1323,8 +1324,31 @@ void PropertiesPanel::build_project_section(CurvzProject *project,
         }
       },
       &proj_workspace_da);
+  // s137 m5: Creation colour. Same motif-aware pattern — clicking the
+  // chip in Light mode edits the light slots, in Dark mode edits the
+  // dark slots. Used by every "creating something" preview surface
+  // (rect/ellipse/line/polygon/spiral construction, pen tool segments
+  // and handles).
+  add_color_row(
+      "Creation",
+      [project]() { return std::make_tuple(project->creation_r(),
+                                           project->creation_g(),
+                                           project->creation_b()); },
+      [project](double r, double g, double b) {
+        if (project->motif == Motif::Light) {
+          project->creation_light_r = r;
+          project->creation_light_g = g;
+          project->creation_light_b = b;
+        } else {
+          project->creation_dark_r = r;
+          project->creation_dark_g = g;
+          project->creation_dark_b = b;
+        }
+      },
+      &proj_creation_da);
   curvz::utils::set_name(proj_artboard_da, "ins_proj_ab", "inspector_project_artboard_swatch_da");
   curvz::utils::set_name(proj_workspace_da, "ins_proj_ws", "inspector_project_workspace_swatch_da");
+  curvz::utils::set_name(proj_creation_da, "ins_proj_cr", "inspector_project_creation_swatch_da");
 
   // ── Reset row ─────────────────────────────────────────────────────
   // Single button, restores the active-motif's artboard + workspace
@@ -1342,22 +1366,24 @@ void PropertiesPanel::build_project_section(CurvzProject *project,
     curvz::utils::set_name(btn, "ins_proj_rst", "inspector_project_reset_btn");
     btn->add_css_class("flat");
     btn->set_tooltip_text(
-        "Restore artboard and workspace colours to defaults for the current theme");
+        "Restore artboard, workspace, and creation colours to defaults for the current theme");
     // s127: also queue_draw on the chips after reset. Pre-s127 this
     // relied on the (never-actually-happening) panel rebuild path; now
     // we drive the repaint explicitly, same as the motif Switch.
-    // Capture chips BY VALUE — proj_artboard_da / proj_workspace_da are
-    // local variables; capturing by reference would be UAF once the
-    // function returns. The pointed-to widgets are heap-allocated by
-    // make_managed and survive for the panel's lifetime.
+    // Capture chips BY VALUE — proj_*_da are local variables; capturing
+    // by reference would be UAF once the function returns. The pointed-to
+    // widgets are heap-allocated by make_managed and survive for the
+    // panel's lifetime.
     Gtk::DrawingArea *artb_chip = proj_artboard_da;
     Gtk::DrawingArea *work_chip = proj_workspace_da;
+    Gtk::DrawingArea *crea_chip = proj_creation_da;  // s137 m5
     btn->signal_clicked().connect(
-        [this, project, gen, artb_chip, work_chip]() {
+        [this, project, gen, artb_chip, work_chip, crea_chip]() {
           if (m_build_gen != gen) return;
           project->reset_motif_bg_to_defaults(project->motif);
           if (artb_chip) artb_chip->queue_draw();
           if (work_chip) work_chip->queue_draw();
+          if (crea_chip) crea_chip->queue_draw();
           emit_prop_changed();
         });
     row->append(*btn);
@@ -1373,9 +1399,10 @@ void PropertiesPanel::build_project_section(CurvzProject *project,
   if (theme_sw && theme_value_lbl) {
     Gtk::DrawingArea *artb_chip = proj_artboard_da;
     Gtk::DrawingArea *work_chip = proj_workspace_da;
+    Gtk::DrawingArea *crea_chip = proj_creation_da;  // s137 m5
     Gtk::Label *value_lbl = theme_value_lbl;
     theme_sw->signal_toggled().connect(
-        [this, project, value_lbl, gen, artb_chip, work_chip](bool on) {
+        [this, project, value_lbl, gen, artb_chip, work_chip, crea_chip](bool on) {
           if (m_build_gen != gen) return;
           project->motif = on ? Motif::Light : Motif::Dark;
           value_lbl->set_text(on ? "Light" : "Dark");
@@ -1385,6 +1412,7 @@ void PropertiesPanel::build_project_section(CurvzProject *project,
           // that's needed — no panel rebuild.
           if (artb_chip) artb_chip->queue_draw();
           if (work_chip) work_chip->queue_draw();
+          if (crea_chip) crea_chip->queue_draw();
           emit_prop_changed();
         });
   }

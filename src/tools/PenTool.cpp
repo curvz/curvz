@@ -268,10 +268,19 @@ void PenTool::cancel() {
 }
 
 // ── draw_preview ──────────────────────────────────────────────────────────────
-void PenTool::draw_preview(const Cairo::RefPtr<Cairo::Context>& cr, double zoom) const {
+void PenTool::draw_preview(const Cairo::RefPtr<Cairo::Context>& cr, double zoom,
+                           double creation_r, double creation_g, double creation_b) const {
     if (!has_wip || wip.nodes.empty()) return;
 
     cr->save();
+
+    // Derived handle-lever colour: blend Creation toward white by 40%.
+    // Reads as a softer family member of the path colour without needing
+    // a separate user-tunable setting.
+    auto lighten = [](double c) { return c + (1.0 - c) * 0.4; };
+    const double lever_r = lighten(creation_r);
+    const double lever_g = lighten(creation_g);
+    const double lever_b = lighten(creation_b);
 
     // Build a render copy with live handles applied
     BezierPath render_wip = wip;
@@ -301,7 +310,7 @@ void PenTool::draw_preview(const Cairo::RefPtr<Cairo::Context>& cr, double zoom)
     // ── Draw committed segments ────────────────────────────────────────────
     if (render_wip.nodes.size() >= 2) {
         render_wip.apply_to_cairo(cr);
-        cr->set_source_rgba(0.88, 0.88, 0.88, 0.9);
+        cr->set_source_rgba(creation_r, creation_g, creation_b, 0.9);
         cr->set_line_width(1.5 / zoom);
         cr->stroke();
     }
@@ -315,7 +324,7 @@ void PenTool::draw_preview(const Cairo::RefPtr<Cairo::Context>& cr, double zoom)
         Vec2 n0_cx1 = live_in_valid ? live_in : Vec2{n0.cx1, n0.cy1};
         cr->move_to(n_last.x, n_last.y);
         cr->curve_to(n_last.cx2, n_last.cy2, n0_cx1.x, n0_cx1.y, n0.x, n0.y);
-        cr->set_source_rgba(0.88, 0.88, 0.88, 0.9);
+        cr->set_source_rgba(creation_r, creation_g, creation_b, 0.9);
         cr->set_line_width(1.5 / zoom);
         cr->stroke();
     }
@@ -346,7 +355,7 @@ void PenTool::draw_preview(const Cairo::RefPtr<Cairo::Context>& cr, double zoom)
 
         cr->move_to(p0.x, p0.y);
         cr->curve_to(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
-        cr->set_source_rgba(0.75, 0.75, 0.75, 0.6);
+        cr->set_source_rgba(creation_r, creation_g, creation_b, 0.7);
         cr->set_line_width(1.0 / zoom);
         std::vector<double> dashes = {4.0/zoom, 3.0/zoom};
         cr->set_dash(dashes, 0);
@@ -365,7 +374,8 @@ void PenTool::draw_preview(const Cairo::RefPtr<Cairo::Context>& cr, double zoom)
 
             auto draw_h = [&](Vec2 h) {
                 if (h.dist(anchor) < 0.5/zoom) return;
-                cr->set_source_rgba(0.5, 0.65, 1.0, 0.7);
+                // Lever line — lightened-derived from Creation colour.
+                cr->set_source_rgba(lever_r, lever_g, lever_b, 0.7);
                 cr->set_line_width(0.8/zoom);
                 cr->move_to(anchor.x, anchor.y);
                 cr->line_to(h.x, h.y);
@@ -376,7 +386,9 @@ void PenTool::draw_preview(const Cairo::RefPtr<Cairo::Context>& cr, double zoom)
                 cr->rotate(M_PI/4);
                 cr->rectangle(-hr,-hr,hr*2,hr*2);
                 cr->restore();
-                cr->set_source_rgba(0.3,0.6,1.0,0.9);
+                // Handle square — full Creation colour fill, white outline
+                // (white reads on either motif for the inset stroke).
+                cr->set_source_rgba(creation_r, creation_g, creation_b, 0.9);
                 cr->fill_preserve();
                 cr->set_source_rgb(1,1,1);
                 cr->set_line_width(0.5/zoom);
@@ -404,6 +416,8 @@ void PenTool::draw_preview(const Cairo::RefPtr<Cairo::Context>& cr, double zoom)
     }
 
     // ── Close indicator ───────────────────────────────────────────────────
+    // Stays green — semantic "click here to close the path", role-coded
+    // independent of Creation colour.
     if (wip.nodes.size() >= 2 && mouse_valid && is_near_start(mouse_doc, zoom)) {
         const BezierNode& first = wip.nodes[0];
         cr->arc(first.x, first.y, 6.0/zoom, 0, 2*M_PI);

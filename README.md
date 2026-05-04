@@ -17,7 +17,7 @@ manual (Help menu) is the most current source of truth for what's stable.
 ## Features
 
 - Pen, node, rectangle, ellipse, polygon, spiral, line, and text tools
-- Boolean path operations (union, with subtract / intersect in progress)
+- Boolean path operations — Union, Subtract, Intersect (Clipper2-backed)
 - Compound paths, blends, clip masks, warps
 - Multi-document interface with project files (`.curvz`) and templates
 - Reusable swatches, styles, and themes
@@ -33,20 +33,33 @@ manual (Help menu) is the most current source of truth for what's stable.
 **Fedora:**
 ```
 sudo dnf install gtkmm4.0-devel cairomm1.16-devel pangomm2.48-devel \
+                 freetype-devel fontconfig-devel \
                  nlohmann-json-devel spdlog-devel libpng-devel \
+                 cmark-devel clipper2-devel \
                  cmake clang pkgconf-pkg-config
 ```
 
 **Ubuntu / Debian:**
 ```
 sudo apt install libgtkmm-4.0-dev libcairomm-1.16-dev libpangomm-2.48-dev \
+                 libfreetype-dev libfontconfig1-dev \
                  nlohmann-json3-dev libspdlog-dev libpng-dev \
+                 libcmark-dev \
                  cmake clang pkg-config
 ```
 
 The bundled `build.sh` will install Ubuntu dependencies automatically if
 `apt-get` is detected; Fedora users should install manually using the line
 above.
+
+> **Note on Clipper2 and cmark:** if your distribution doesn't ship a
+> recent `clipper2-devel` / `libcmark-dev` package (Ubuntu LTS releases
+> typically don't yet have Clipper2), CMake will fall back to fetching
+> and building these as part of the Curvz build via `FetchContent`. This
+> works without intervention — it just adds a one-time download and a
+> few extra minutes to the first clean build. Installing the system
+> packages (where available) is faster and lets multiple projects share
+> the libraries.
 
 ### Build
 
@@ -85,7 +98,16 @@ have not been tested.
 Curvz is licensed under the GNU General Public License v3.0 or later. See
 [LICENSE](LICENSE) for full terms.
 
-## Project status & handover
+## Contact and support
+
+- **Bug reports and feature requests** —
+  [GitHub Issues](https://github.com/curvz/curvz/issues). Public, gives
+  the bug a permanent home, and lets others see whether their problem
+  has already been raised.
+- **General contact** — `curvz.app@proton.me`. For non-bug questions
+  or anything you'd rather not file publicly.
+
+## Project status and handover
 
 Curvz is currently maintained by a single developer as a side project. The
 codebase is structured for handover — well-commented, conventional CMake +

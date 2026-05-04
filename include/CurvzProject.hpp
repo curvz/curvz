@@ -91,6 +91,33 @@ struct CurvzProject {
     double workspace_light_g = 0.753;
     double workspace_light_b = 0.753;
 
+    // ── Creation colour (s137 m5) ─────────────────────────────────────
+    // Used everywhere the user is *creating* something but hasn't yet
+    // committed it: rect/ellipse/line/polygon/spiral construction
+    // outlines and fills, pen tool segments and rubber-band, pen handle
+    // levers (lightened-derived from this value).
+    //
+    // Selection-time UI (selected-object outline, marquee, resize handles)
+    // is a sibling concept and uses its own hardcoded blue today; a future
+    // "Selection colour" setting may split it out further.
+    //
+    // Defaults are calibrated for contrast against each motif's artboard:
+    //   Dark motif  → light blue (reads bright against #282828 artboard)
+    //   Light motif → dark navy (reads dark against #e0e0e0 artboard)
+    // Both are within the same blue family for visual consistency with
+    // Curvz's accent vocabulary, but luminance flips with motif.
+    //
+    // r/g/b only — alphas at each draw site stay hardcoded because they
+    // encode role within creation (fill = dim, outline = bold, rubber-
+    // band = tentative). Letting users override alphas would turn every
+    // tool's preview into a designer's job.
+    double creation_dark_r  = 0.30;   // current cyan-blue, reads on dark
+    double creation_dark_g  = 0.60;
+    double creation_dark_b  = 1.00;
+    double creation_light_r = 0.05;   // deep navy, reads on light
+    double creation_light_g = 0.25;
+    double creation_light_b = 0.55;
+
     // ── Active-motif accessors ────────────────────────────────────────
     // Return the rgb triple matching the project's current motif.
     // Callers that paint or read the bg should use these instead of
@@ -102,6 +129,9 @@ struct CurvzProject {
     double workspace_r() const { return motif == Motif::Light ? workspace_light_r : workspace_dark_r; }
     double workspace_g() const { return motif == Motif::Light ? workspace_light_g : workspace_dark_g; }
     double workspace_b() const { return motif == Motif::Light ? workspace_light_b : workspace_dark_b; }
+    double creation_r()  const { return motif == Motif::Light ? creation_light_r  : creation_dark_r;  }
+    double creation_g()  const { return motif == Motif::Light ? creation_light_g  : creation_dark_g;  }
+    double creation_b()  const { return motif == Motif::Light ? creation_light_b  : creation_dark_b;  }
 
     // Project-wide color system (Phase 1 / M4). See ARCHITECTURE.md
     // "Color System". Empty in v1 — types exist, no UI wired yet, not
@@ -151,6 +181,10 @@ struct CurvzProject {
             workspace_light_r = 0.753;  // #c0c0c0
             workspace_light_g = 0.753;
             workspace_light_b = 0.753;
+            // Creation: deep navy that reads against light artboard.
+            creation_light_r  = 0.05;
+            creation_light_g  = 0.25;
+            creation_light_b  = 0.55;
         } else {
             artboard_dark_r  = 0.157;   // #282828
             artboard_dark_g  = 0.157;
@@ -158,6 +192,10 @@ struct CurvzProject {
             workspace_dark_r = 0.09;    // #171717
             workspace_dark_g = 0.09;
             workspace_dark_b = 0.09;
+            // Creation: light blue that reads against dark artboard.
+            creation_dark_r  = 0.30;
+            creation_dark_g  = 0.60;
+            creation_dark_b  = 1.00;
         }
     }
 

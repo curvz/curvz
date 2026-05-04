@@ -3,6 +3,7 @@
 #include "CurvzEntry.hpp"
 #include "TemplateLibrary.hpp"
 #include "theme/Theme.hpp"
+#include <atomic>
 #include <functional>
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
@@ -19,9 +20,14 @@
 #include <gtkmm/spinbutton.h>
 #include <gtkmm/stringlist.h>
 #include <gtkmm/window.h>
+#include <gdkmm/pixbuf.h>
+#include <glibmm/dispatcher.h>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <queue>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace Curvz {
@@ -72,12 +78,24 @@ public:
     // appears directly below the Name row offering "No theme" plus one
     // entry per saved theme. When empty, the row is hidden.
     //
+    // motif tells the dialog which of each disk template's two PNG variants
+    // (thumbnail-dark.png / thumbnail-light.png) to display, and is also
+    // used to choose the cache filename when lazy-regenerating a missing
+    // variant. workspace_r/g/b and artboard_r/g/b are the project's current
+    // motif-resolved colours — used for built-in tile rendering AND passed
+    // to the regen worker so newly-rendered PNGs match the active motif.
+    // Cached at show() — the dialog is modal so the motif can't change
+    // while it's open.
+    //
     // Persistent selection: NDD remembers the last-picked theme id
     // across show() calls. On re-open, if the remembered id is still
     // present in available_themes, it's pre-selected; otherwise the
     // dropdown defaults back to "No theme".
     void show(Gtk::Window& parent,
               const std::vector<theme::Theme>& available_themes,
+              templates::MotifTag motif,
+              double workspace_r, double workspace_g, double workspace_b,
+              double artboard_r,  double artboard_g,  double artboard_b,
               Callback cb);
 
 private:
@@ -130,9 +148,67 @@ private:
     void maybe_autofill_name(const std::string& label);
 
     // Draw a synthetic thumbnail for built-ins. `cr` is the Cairo context
-    // from a DrawingArea draw func; `w`/`h` are the allocation.
-    static void draw_builtin_thumb(const Cairo::RefPtr<Cairo::Context>& cr,
-                                   int w, int h, BuiltIn kind);
+    // from a DrawingArea draw func; `w`/`h` are the allocation. Uses the
+    // motif colours cached at show() so preview matches the actual canvas
+    // appearance in the active light/dark motif.
+    void draw_builtin_thumb(const Cairo::RefPtr<Cairo::Context>& cr,
+                            int w, int h, BuiltIn kind) const;
+
+    // Draw a placeholder thumbnail for a disk template while its real PNG
+    // is regenerating. Uses entry.aspect_ratio for the canvas shape and
+    // entry.meta.{grid_divisions,margin_ratio,grid_offset_ratio} for the
+    // overlay. Motif-aware (uses cached workspace+artboard colours). This
+    // is what the user sees during the regen window — and also what stays
+    // visible underneath the crossfade as the real PNG fades in.
+    void paint_disk_placeholder(const Cairo::RefPtr<Cairo::Context>& cr,
+                                int w, int h,
+                                const templates::TemplateEntry& entry) const;
+
+    // ── Disk-template thumb regen (m4) ────────────────────────────────────
+    // A DiskTileState lives one-per-disk-tile while the dialog is shown.
+    // It owns the DrawingArea pointer (non-owning — widget tree owns the
+    // memory), the cached pixbuf once regen lands, and the alpha animation
+    // state for crossfade-in. The state vector is rebuilt on every show()
+    // alongside m_disk_templates so indices match; in-flight worker
+    // callbacks compare against m_regen_generation to detect staleness.
+    struct DiskTileState {
+        Gtk::DrawingArea*           area = nullptr;
+        Glib::RefPtr<Gdk::Pixbuf>   pb;             // null until regen lands
+        // Crossfade alpha 0..1. Starts at 0 when pb is set; animates to 1 over
+        // ~150ms via a Glib::signal_timeout. Once at 1, the timer disconnects.
+        double                      alpha = 0.0;
+        bool                        fading = false;
+        // Generation at the time this tile's regen was kicked off. Used to
+        // discard stale callbacks from a closed-then-reopened dialog cycle.
+        uint64_t                    generation = 0;
+    };
+
+    // Schedule the background regen for every disk template that doesn't
+    // already have a cached PNG for the current motif. Staggered by
+    // ~k_regen_stagger_ms so they pop in sequentially rather than as a clump.
+    // Called from populate_template_grid() at the end of disk-template setup.
+    void kickoff_disk_regens();
+
+    // Worker thread entry point for one tile. Calls
+    // templates::ensure_thumb_for_motif(); on success, posts the resulting
+    // path back to the UI thread via m_regen_dispatcher. All inputs are
+    // passed by value (snapshot at kickoff time) so the worker never reads
+    // shared dialog state while running — populate_template_grid()
+    // reassigning m_disk_templates while a worker is mid-flight is safe.
+    void regen_worker(int tile_index, uint64_t generation,
+                      templates::TemplateEntry entry,
+                      templates::MotifTag motif,
+                      double workspace_r, double workspace_g, double workspace_b,
+                      double artboard_r,  double artboard_g,  double artboard_b);
+
+    // Drains m_regen_results on the UI thread (Glib::Dispatcher emit).
+    // For each completed tile, loads the PNG into a Pixbuf and starts the
+    // crossfade animation.
+    void on_regen_dispatch();
+
+    // Per-frame crossfade tick for a tile. Returns true to keep ticking,
+    // false to disconnect. Bumps alpha and queue_draws the area.
+    bool tick_crossfade(int tile_index);
 
     // ── Live update helpers ───────────────────────────────────────────────
     void update_from_pixel();
@@ -237,6 +313,53 @@ private:
     std::string m_last_autofill;            // last auto-filled string, so we
                                             // know whether the entry still
                                             // holds our placeholder
+
+    // ── Motif colour cache (set by show()) ────────────────────────────────
+    // Workspace + artboard rgb taken from the project at show() time. Used
+    // by draw_builtin_thumb and the dimension-preview thumb so template
+    // tiles render in colours that match the actual canvas under the
+    // current motif. Defaults are dark-motif greys so a fresh dialog
+    // (pre-show) draws sensibly if anything peeks early.
+    double m_workspace_r = 0.09, m_workspace_g = 0.09, m_workspace_b = 0.09;
+    double m_artboard_r  = 0.157, m_artboard_g = 0.157, m_artboard_b = 0.157;
+    templates::MotifTag m_motif = templates::MotifTag::Dark;
+
+    // ── Disk-template thumb regen pipeline (m4) ──────────────────────────
+    // One state record per disk-template tile, parallel to m_disk_templates
+    // and m_tile_disk. Holds the cached Pixbuf and crossfade animation state.
+    // Rebuilt on every show() so a closed-then-reopened dialog starts fresh.
+    std::vector<DiskTileState>      m_disk_tile_state;
+
+    // Generation counter. Bumped on every show(). Worker callbacks tag
+    // themselves with the generation at kickoff time and discard their
+    // result if the generation has moved on (dialog closed and reopened).
+    // The PNG cache write still happens — a stale callback's only side
+    // effect is the file on disk, which is correct for next time.
+    std::atomic<uint64_t>           m_regen_generation{0};
+
+    // UI-thread dispatch from worker threads. Workers push completed tile
+    // indices to m_regen_results (under m_regen_mutex) and call emit() on
+    // the dispatcher. The UI thread drains m_regen_results in
+    // on_regen_dispatch().
+    Glib::Dispatcher                m_regen_dispatcher;
+    std::mutex                      m_regen_mutex;
+    struct RegenResult {
+        int      tile_index;
+        uint64_t generation;
+        std::string out_path;  // empty on failure
+    };
+    std::queue<RegenResult>         m_regen_results;
+    bool                            m_regen_dispatcher_connected = false;
+
+    // Stagger between consecutive worker kickoffs (ms). Small enough to feel
+    // continuous, large enough to read as a left-to-right fill rather than
+    // a popcorn burst. ~80ms × 6 tiles = ~half-second total kickoff window.
+    static constexpr int k_regen_stagger_ms = 80;
+
+    // Crossfade duration (ms) and tick interval (ms). 150ms / 16ms ≈ 9 frames,
+    // smooth at 60fps. Easy easing curve applied in tick_crossfade.
+    static constexpr int k_crossfade_ms       = 150;
+    static constexpr int k_crossfade_tick_ms  = 16;
 };
 
 } // namespace Curvz

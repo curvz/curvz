@@ -594,6 +594,7 @@ void HelpWindow::build_topic_list() {
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/1-1-welcome.md",                "1.1 Welcome" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/1-2-about-curvz.md",            "1.2 About Curvz" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/1-3-workspace-tour.md",         "1.3 Workspace tour" },
+    { RowKind::Leaf, 1, true,  "/com/curvz/app/help/1-4-how-curvz-thinks-about-size.md", "1.4 How Curvz thinks about size" },
 
     { RowKind::Chapter, 0, false, "", "2 Documents and files" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/2-1-projects-and-documents.md", "2.1 Projects & documents" },
@@ -664,6 +665,7 @@ void HelpWindow::build_topic_list() {
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/7-2-clip-masks.md",             "7.2 Clip masks" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/7-3-blends.md",                 "7.3 Blends" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/7-4-align-distribute.md",       "7.4 Align & Distribute" },
+    { RowKind::Leaf, 1, true,  "/com/curvz/app/help/7-5-group-ungroup.md",          "7.5 Group and Ungroup" },
 
     { RowKind::Chapter, 0, false, "", "8 Path operations" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/8-1-editing-paths.md",          "8.1 Editing paths" },

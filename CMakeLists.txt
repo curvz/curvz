@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
+# ── Policy: CMP0135 — FetchContent extract-timestamp behaviour ────────────────
+# CMake 3.24+ prefers extraction-time timestamps over archive timestamps for
+# URL-based FetchContent so that dependents rebuild whenever the URL changes.
+# Setting NEW silences the per-configure dev warning and gives us the saner
+# behaviour. The if(POLICY ...) guard makes this a no-op on older CMakes
+# (we still target a 3.20 minimum).
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
+
 # ── Compilers — set BEFORE project() so CMake's auto-detection picks them up
 # on first configure. Setting them after project() triggers a "variables have
 # changed" cache invalidation loop on subsequent configures, which manifests
@@ -17,7 +27,7 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX})
     set(CMAKE_CXX_COMPILER "/usr/bin/clang++" CACHE STRING "C++ compiler")
 endif()
 
-project(curvz VERSION 0.1.0 LANGUAGES C CXX)
+project(curvz VERSION 0.9.0 LANGUAGES C CXX)
 
 # ── Application identity ──────────────────────────────────────────────────────
 # Single source of truth for the freedesktop application ID. Used at install
@@ -237,6 +247,11 @@ set(SOURCES
     src/MacroSystem.cpp
     src/MacroManagerWindow.cpp
     src/MacroEditorWindow.cpp
+    # s139 m2: app-tier user preferences (boolean cleanup toggle and
+    # whatever future app-tier knobs land). Persists at
+    # ~/.config/curvz/preferences.json. Sibling to MacroSystem in
+    # role: singleton, load on startup, save on every change.
+    src/AppPreferences.cpp
     src/Canvas.cpp
     src/DocumentGallery.cpp
     src/PropertiesPanel.cpp
@@ -272,6 +287,12 @@ set(SOURCES
     src/math/BezierPath.cpp
     src/math/BooleanOps.cpp
     src/math/BooleanOpsClipper.cpp
+    # s139 m1: Clipper2 output reconstruction post-pass. Header published,
+    # keeper-set computation implemented. s139 m2: cleanup_loop body
+    # implemented; wired into Canvas::boolean_op behind the
+    # AppPreferences::boolean_cleanup_enabled toggle (default off).
+    # See docs/clipper-reconstruction-integration.md.
+    src/math/BooleanOpsRefit.cpp
     src/math/CornerTreatment.cpp
     src/math/HitTest.cpp
     src/math/PathOffset.cpp

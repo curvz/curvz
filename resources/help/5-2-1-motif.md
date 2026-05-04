@@ -36,31 +36,61 @@ Click either swatch to open the colour picker. See **Color picker &
 paint editor** (3.7) for the picker itself; the change is immediate —
 Curvz repaints the canvas as you adjust the colour.
 
+## ❹ Creation
+
+Below Workspace is a third swatch: **Creation** ❹.
+
+This is the colour Curvz uses while you are *making* something but
+have not yet committed it. Drag a rectangle and the live preview is
+drawn in this colour. Plot points with the line tool and the
+in-progress segments are this colour. Build a Bézier curve with the
+pen tool and the path you are tracing is this colour, along with its
+node handles.
+
+Once you release the mouse and the shape is committed to the
+document, it adopts whatever fill and stroke its appearance settings
+specify. Creation colour only ever appears during the brief window
+between starting a tool and finishing the shape.
+
+The default is a light blue in dark theme and a deep navy in light
+theme — both calibrated to read clearly against the artboard tone.
+If your artboard is heavily customised and the default no longer
+contrasts well, click the swatch and pick something that does.
+
+Selection-time visuals (the dashed rectangle around a selected
+object, the resize handles, the marquee you drag to select multiple
+objects) are a separate concept and are not affected by this
+setting.
+
 ## Per-theme colour memory
 
-Curvz keeps **separate artboard and workspace colours for each
-theme**. If you set a particular pair while in Dark mode, then flip
-to Light and pick different colours there, both customisations are
-remembered. Flipping back to Dark restores the dark-mode pair you
-chose; flipping to Light restores the light-mode pair.
+Curvz keeps **separate artboard, workspace, and creation colours for
+each theme**. If you set a particular trio while in Dark mode, then
+flip to Light and pick different colours there, both customisations
+are remembered. Flipping back to Dark restores the dark-mode trio you
+chose; flipping to Light restores the light-mode trio.
 
-This matters because the colour that reads well as an artboard tint
-depends on the surrounding chrome. A medium grey that lifts an icon
-nicely on a dark panel can feel sunken on a light one. Letting each
-theme keep its own pair means you tune both surfaces once and never
-have to re-pick when toggling.
+This matters because the colour that reads well depends on the
+surrounding chrome. A medium grey that lifts an icon nicely on a
+dark panel can feel sunken on a light one. A bright cyan that pops
+against a dark artboard turns into a glare against a white one.
+Letting each theme keep its own trio means you tune both surfaces
+once and never have to re-pick when toggling.
 
-The defaults are deliberately neutral greys in both themes — Curvz
-is not a "paper" editor, so light mode does not assume white. You
-get a working surface, not a printed page.
+The defaults are deliberately neutral greys for artboard and
+workspace in both themes — Curvz is not a "paper" editor, so light
+mode does not assume white. The Creation defaults flip luminance
+between themes (light blue for dark, deep navy for light) so the
+preview always has clear contrast against the artboard.
 
-## ❹ Reset
+## ❺ Reset
 
-The **Reset** button ❹ at the bottom of the section restores the
-*current theme's* artboard and workspace pair to Curvz's defaults.
-It does not touch the other theme's pair, and it does not flip the
-theme itself. Use it when you have over-tuned one mode and want a
-clean baseline back without disturbing your work in the other mode.
+The **Reset** button ❺ at the bottom of the section restores the
+*current theme's* artboard, workspace, and creation trio to Curvz's
+defaults. It does not touch the other theme's trio, and it does not
+flip the theme itself. Use it when you have over-tuned one mode and
+want a clean baseline back without disturbing your work in the
+other mode.
 
 ## Project scope
 

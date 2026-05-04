@@ -390,7 +390,20 @@ void seed_defaults_if_needed() {
         meta.margin_ratio      = sd.margin_ratio;
         meta.grid_offset_ratio = sd.grid_offset_ratio;
 
-        if (!save(*doc, meta)) {
+        // m4: save() now writes both motif PNGs eagerly and needs both
+        // motifs' workspace+artboard colours. First-run seeding has no
+        // project context, so we use the canonical defaults baked into
+        // CurvzProject (artboard_dark = 0.157, workspace_dark = 0.09,
+        // artboard_light = 0.878, workspace_light = 0.753). If a user
+        // later customises their project's motif colours, that's fine —
+        // the seed PNGs are still valid; they just don't reflect the
+        // post-customise palette. (User regenerates by deleting the
+        // bundle's PNG; ensure_thumb_for_motif rebuilds it on next view.)
+        if (!save(*doc, meta,
+                  /*dark workspace*/  0.09,  0.09,  0.09,
+                  /*dark artboard*/   0.157, 0.157, 0.157,
+                  /*light workspace*/ 0.753, 0.753, 0.753,
+                  /*light artboard*/  0.878, 0.878, 0.878)) {
             LOG_WARN("SeedTemplates: save failed for '{}/{}'",
                      sd.category, sd.name);
             ++failed;

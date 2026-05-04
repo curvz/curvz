@@ -108,7 +108,9 @@ void ManageTemplatesDialog::build_layout() {
 
 // ── show ─────────────────────────────────────────────────────────────────────
 
-void ManageTemplatesDialog::show(Gtk::Window& parent, ChangedCb on_changed) {
+void ManageTemplatesDialog::show(Gtk::Window& parent, templates::MotifTag motif,
+                                 ChangedCb on_changed) {
+    m_motif      = motif;
     m_on_changed = std::move(on_changed);
     set_transient_for(parent);
     curvz::utils::apply_motif_class_from_parent(*this, parent);  // s117 m18 v2
@@ -286,10 +288,21 @@ void ManageTemplatesDialog::append_template_row(
     // ── Thumbnail ─────────────────────────────────────────────────────────
     auto* thumb = Gtk::make_managed<Gtk::DrawingArea>();
     thumb->set_size_request(ROW_THUMB_PX, ROW_THUMB_PX);
-    if (!e.thumb_path.empty()) {
+    // Pick the motif-appropriate thumb. Fall back to whichever variant is
+    // available if the requested motif's PNG isn't on disk yet (legacy
+    // bundle, or new bundle whose lazy-regen for the other motif hasn't
+    // fired). Empty when neither exists — placeholder draw kicks in.
+    std::string chosen_thumb =
+        (m_motif == templates::MotifTag::Light) ? e.thumb_path_light
+                                                 : e.thumb_path_dark;
+    if (chosen_thumb.empty()) {
+        chosen_thumb = (m_motif == templates::MotifTag::Light) ? e.thumb_path_dark
+                                                                : e.thumb_path_light;
+    }
+    if (!chosen_thumb.empty()) {
         Glib::RefPtr<Gdk::Pixbuf> pb;
         try {
-            pb = Gdk::Pixbuf::create_from_file(e.thumb_path);
+            pb = Gdk::Pixbuf::create_from_file(chosen_thumb);
         } catch (const Glib::Error&) {}
         thumb->set_draw_func(
             [pb](const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) {

@@ -1,4 +1,5 @@
 #include "Application.hpp"
+#include "AppPreferences.hpp"  // s139 m2 — load pref before MainWindow construction
 #include "CurvzLog.hpp"
 #include "MacroSystem.hpp"
 #include "MainWindow.hpp"
@@ -36,6 +37,121 @@ Application::Application()
     LOG_INFO("Curvz starting — log: {}", log_path);
   } catch (...) {
   }
+}
+
+// s138: Register keyboard accelerators at the application level.
+//
+// Background: this code lived in MainWindow::setup_menu() through s137.
+// MainWindow's constructor calls setup_menu() during construction, but the
+// window has not yet been added to the application at that point — so
+// get_application() returns null and the entire bind block was skipped
+// silently. Net effect: accels were never registered, the hamburger menu
+// rendered with empty accel columns, and the manual claim that the menu
+// shows shortcuts had not been true since whenever the regression landed.
+//
+// The fix is structural, not procedural. Accels are an application-scope
+// concern: GTK4's accel system is owned by Gtk::Application and survives
+// any window-construction reshuffle. Registering them in on_startup —
+// which fires once before any window exists — removes the latent
+// dependency on MainWindow's construction order and makes the call site
+// match the concept's natural home.
+//
+// CAPTURE-controller note: per s125+ project rules, set_accels_for_action
+// is COSMETIC in this codebase. Every shortcut that needs to dispatch is
+// wired explicitly in MainWindow's CAPTURE-phase key controller switch.
+// This block exists solely so the popover menu can render the accel
+// strings in its right-aligned column. Do not assume an accel registered
+// here will fire — the controller is the source of truth for dispatch.
+void Application::on_startup() {
+  Gtk::Application::on_startup();
+
+  auto bind = [this](const char *action,
+                     std::vector<Glib::ustring> accels) {
+    set_accels_for_action(action, accels);
+  };
+
+  // File
+  bind("win.new-project",       {"<Control><Shift>n"});
+  bind("win.new",               {"<Control>n"});
+  bind("win.open",              {"<Control>o"});
+  bind("win.close-project",     {"<Control><Shift>w"});
+  bind("win.save",              {"<Control>s"});
+  bind("win.save-as",           {"<Control><Shift>s"});
+  bind("win.save-as-template",  {"<Control><Alt>s"});
+  bind("win.manage-templates",  {"<Control><Alt>t"});
+  bind("win.import-svg",        {"<Control>i"});
+  bind("win.import-svg-icon",   {"<Control><Alt>i"});
+  bind("win.place-image",       {"<Control><Shift>p"});
+  bind("win.export-theme",      {"<Control><Shift>t"});
+  bind("win.print",             {"<Control>p"});
+
+  // Edit
+  bind("win.undo",            {"<Control>z"});
+  bind("win.redo",            {"<Control><Shift>z", "<Control>y"});
+  bind("win.select-all",      {"<Control>a"});
+  bind("win.deselect-all",    {"<Control><Shift>a"});
+  bind("win.cut",             {"<Control>x"});
+  bind("win.copy",            {"<Control>c"});
+  bind("win.paste",           {"<Control>v"});
+  bind("win.duplicate",       {"<Control>d"});
+  bind("win.clone",           {"<Alt>d"});
+  bind("win.step-repeat",     {"<Control><Alt>d"});
+
+  // Arrange
+  bind("win.arrange-bring-front",    {"<Control><Shift>Up"});
+  bind("win.arrange-bring-forward",  {"<Control>Up"});
+  bind("win.arrange-send-backward",  {"<Control>Down"});
+  bind("win.arrange-send-back",      {"<Control><Shift>Down"});
+  bind("win.flip-horizontal",        {"<Control><Shift>h"});
+  bind("win.flip-vertical",          {"<Control><Alt>v"});
+
+  // Align & Distribute (s135 m1)
+  bind("win.align-left",      {"<Control><Alt>l"});
+  bind("win.align-center-h",  {"<Control><Alt>h"});
+  bind("win.align-right",     {"<Control><Alt>r"});
+  bind("win.align-top",       {"<Control><Alt>p"});
+  bind("win.align-center-v",  {"<Control><Alt>m"});
+  bind("win.align-bottom",    {"<Control><Alt>b"});
+
+  // Path
+  bind("win.bool-union",      {"<Control><Shift>u"});
+  bind("win.bool-subtract",   {"<Control><Shift>e"});
+  bind("win.bool-intersect",  {"<Control><Shift>i"});
+  bind("win.make-compound",   {"<Control>8"});
+  bind("win.split-compound",  {"<Control><Shift>8"});
+  bind("win.group-make",      {"<Control>g"});
+  bind("win.group-release",   {"<Control><Shift>g"});
+  bind("win.offset-path",     {"<Control><Shift>o"});
+  bind("win.expand-stroke",   {"<Control><Shift>x"});
+  bind("win.text-to-path",    {"<Control><Alt>t"});
+  bind("win.clip-make",       {"<Control>7"});
+  bind("win.clip-release",    {"<Control><Alt>7"});
+  bind("win.blend-make",      {"<Control>b"});
+  bind("win.blend-release",   {"<Control><Shift>b"});
+  bind("win.warp-make",       {"<Control><Shift>y"});
+  bind("win.warp-edit",       {"<Control><Alt>y"});
+  bind("win.warp-flatten",    {"<Control><Alt>f"});
+
+  // View
+  bind("win.toggle-rulers",   {"<Control>r"});
+  bind("win.toggle-outline",  {"<Control>e"});
+  bind("win.zoom-in",         {"plus", "equal", "KP_Add"});
+  bind("win.zoom-out",        {"minus", "KP_Subtract"});
+  bind("win.zoom-100",        {"1", "KP_1"});
+  bind("win.zoom-200",        {"2", "KP_2"});
+  bind("win.zoom-selection",  {"3", "KP_3", "<Control>3"});
+  bind("win.zoom-fit",        {"0", "KP_0", "<Control>0"});
+
+  // Document navigation
+  bind("win.doc-next",        {"<Control>Tab",        "<Control>Page_Down"});
+  bind("win.doc-prev",        {"<Control><Shift>Tab", "<Control>Page_Up"});
+
+  // App
+  bind("win.show-help",       {"F1", "<Alt>question"});
+  bind("win.show-shortcuts",  {"question", "slash"});
+  bind("win.quit",            {"<Control>q", "<Control>w"});
+
+  LOG_INFO("Application::on_startup — registered menu accels");
 }
 
 void Application::on_activate() {
@@ -86,6 +202,10 @@ void Application::on_activate() {
   }
 
   MacroManager::instance().load();
+
+  // s139 m2: load app-tier preferences (boolean-cleanup toggle, etc.) before
+  // MainWindow construction so its action initial state matches disk.
+  AppPreferences::instance().load();
 
   // S69 M2: load app-global swatch defaults once at startup. Each project
   // that subsequently opens or is created gets these seeded into its

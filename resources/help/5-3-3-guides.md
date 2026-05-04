@@ -86,13 +86,20 @@ button that removes the lot. There are no shared-property fields
 Below the per-guide content is a **From 2 points…** button.
 Click it to start a two-click capture: snap the cursor to two
 nodes on existing artwork, and Curvz constructs the guide that
-passes through both. A small review dialog confirms the result;
-press **P** there to flip to the perpendicular instead.
+passes through both. A small review dialog confirms the result.
 
 Use this when the guide you want is implied by the artwork —
 the line through two corners of a shape, the perpendicular to a
 stroke at a known node, and so on. It is faster than typing
 coordinates by hand.
+
+> **Note:** in the review dialog, press **P** to flip the
+> result to the **perpendicular** of the line through the two
+> points. Both the original and the perpendicular guide pass
+> through the **midpoint** of the two clicks. Useful when the
+> two anchors define an *edge* and you want a guide running
+> across it — for example, a vertical guide through the centre
+> of a shape's top edge.
 
 ## Adding guides
 

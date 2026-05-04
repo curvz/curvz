@@ -11,6 +11,7 @@
 #include <gtkmm/gestureclick.h>
 #include <gtkmm/stylecontext.h>
 #include <string>
+#include <thread>
 
 namespace Curvz {
 
@@ -182,15 +183,42 @@ NewDocumentDialog::NewDocumentDialog()
         double dh = ch * scale;
         double ox = (w - dw) * 0.5;
         double oy = (h - dh) * 0.5;
-        // shadow
+        // shadow — black at low alpha reads against either motif
         cr->set_source_rgba(0, 0, 0, 0.3);
         cr->rectangle(ox + 2, oy + 2, dw, dh);
         cr->fill();
-        // canvas
-        cr->set_source_rgb(0.15, 0.15, 0.15);
+        // canvas — artboard colour (motif-aware)
+        cr->set_source_rgb(m_artboard_r, m_artboard_g, m_artboard_b);
         cr->rectangle(ox, oy, dw, dh);
         cr->fill();
-        // border
+
+        // Built-in Default: overlay grid (10×10) and margin (5%) so the small
+        // preview matches what the Default tile shows. Blank / disk templates
+        // / no-selection skip this — the simple framed rect is correct for
+        // them. Disk-template-aware preview is m4 territory.
+        if (m_selected_builtin == BuiltIn::Default) {
+          // Grid lines — bluish-grey at 35% alpha reads against either motif.
+          cr->set_source_rgba(0.45, 0.45, 0.7, 0.35);
+          cr->set_line_width(0.5);
+          for (int i = 1; i < 10; ++i) {
+            double x = ox + dw * i / 10.0;
+            cr->move_to(x, oy);
+            cr->line_to(x, oy + dh);
+            double y = oy + dh * i / 10.0;
+            cr->move_to(ox, y);
+            cr->line_to(ox + dw, y);
+          }
+          cr->stroke();
+          // Margin rectangle (5% inset) — red at 60% alpha.
+          double mr = 0.05;
+          cr->set_source_rgba(0.85, 0.35, 0.35, 0.6);
+          cr->set_line_width(1.0);
+          cr->rectangle(ox + dw * mr, oy + dh * mr,
+                        dw * (1 - 2 * mr), dh * (1 - 2 * mr));
+          cr->stroke();
+        }
+
+        // border — neutral mid-grey reads against either motif
         cr->set_source_rgba(0.5, 0.5, 0.5, 0.8);
         cr->set_line_width(0.5);
         cr->rectangle(ox + 0.5, oy + 0.5, dw - 1, dh - 1);
@@ -299,6 +327,10 @@ void NewDocumentDialog::populate_template_grid() {
   m_tile_blank   = nullptr;
   m_tile_default = nullptr;
   m_tile_disk.assign(m_disk_templates.size(), nullptr);
+  // m4: regen state runs parallel to m_tile_disk. Reset to default-constructed
+  // entries so the previous show()'s pixbufs and animation state don't leak
+  // into the new population.
+  m_disk_tile_state.assign(m_disk_templates.size(), DiskTileState{});
 
   // Helpers --------------------------------------------------------------
 
@@ -365,7 +397,7 @@ void NewDocumentDialog::populate_template_grid() {
   {
     auto *area = Gtk::make_managed<Gtk::DrawingArea>();
     area->set_draw_func(
-        [](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
+        [this](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
           draw_builtin_thumb(cr, w, h, BuiltIn::Blank);
         });
     auto *tile = make_tile("Blank", area, [this]() {
@@ -395,12 +427,24 @@ void NewDocumentDialog::populate_template_grid() {
     if (user_disk_idx >= 0) {
       const auto &e = m_disk_templates[user_disk_idx];
       tile_label = e.meta.name;
-      if (!e.thumb_path.empty()) {
+      // Pick the motif-appropriate thumb path with fallback. The hijacked
+      // Default tile is a single one-off — we don't run it through the
+      // regen pipeline (m_disk_tile_state slots are for the disk-templates
+      // grid below, not this one tile). If neither motif's PNG exists yet,
+      // fall through to the synthesized Default placeholder.
+      std::string chosen =
+          (m_motif == templates::MotifTag::Light) ? e.thumb_path_light
+                                                  : e.thumb_path_dark;
+      if (chosen.empty()) {
+        chosen = (m_motif == templates::MotifTag::Light) ? e.thumb_path_dark
+                                                          : e.thumb_path_light;
+      }
+      if (!chosen.empty()) {
         Glib::RefPtr<Gdk::Pixbuf> pb;
-        try { pb = Gdk::Pixbuf::create_from_file(e.thumb_path); }
+        try { pb = Gdk::Pixbuf::create_from_file(chosen); }
         catch (const Glib::Error &) {}
         area->set_draw_func(
-            [pb](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
+            [this, pb](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
               if (!pb) {
                 draw_builtin_thumb(cr, w, h, BuiltIn::Default);
                 return;
@@ -421,13 +465,13 @@ void NewDocumentDialog::populate_template_grid() {
             });
       } else {
         area->set_draw_func(
-            [](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
+            [this](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
               draw_builtin_thumb(cr, w, h, BuiltIn::Default);
             });
       }
     } else {
       area->set_draw_func(
-          [](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
+          [this](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
             draw_builtin_thumb(cr, w, h, BuiltIn::Default);
           });
     }
@@ -461,52 +505,58 @@ void NewDocumentDialog::populate_template_grid() {
     }
 
     auto *area = Gtk::make_managed<Gtk::DrawingArea>();
-    if (!e.thumb_path.empty()) {
-      // Load the PNG once here; capture the pixbuf into the draw func so
-      // redraws (hover, resize, theme change) don't re-hit the filesystem.
-      // If the load fails the capture is null and the draw func paints a
-      // placeholder.
-      Glib::RefPtr<Gdk::Pixbuf> pb;
-      try {
-        pb = Gdk::Pixbuf::create_from_file(e.thumb_path);
-      } catch (const Glib::Error &) {
-        // Leave pb null — placeholder will be drawn
-      }
-      area->set_draw_func(
-          [pb](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
-            if (!pb) {
-              cr->set_source_rgba(0.5, 0.5, 0.5, 0.3);
-              cr->rectangle(2, 2, w - 4, h - 4);
-              cr->fill();
-              return;
-            }
-            int pw = pb->get_width();
-            int ph = pb->get_height();
-            if (pw <= 0 || ph <= 0) return;
-            double scale = std::min((double)w / pw, (double)h / ph);
-            double dw = pw * scale;
-            double dh = ph * scale;
-            double ox = (w - dw) * 0.5;
-            double oy = (h - dh) * 0.5;
-            cr->save();
-            cr->translate(ox, oy);
-            cr->scale(scale, scale);
-            // s135 m2: pumped — replaces deprecated gdk_cairo_set_source_pixbuf.
-            curvz::utils::cairo_set_source_pixbuf(cr, pb, 0, 0);
-            cr->paint();
-            cr->restore();
-          });
-    } else {
-      // No thumbnail file — paint a placeholder
-      area->set_draw_func(
-          [](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
-            cr->set_source_rgba(0.5, 0.5, 0.5, 0.3);
-            cr->rectangle(2, 2, w - 4, h - 4);
-            cr->fill();
-          });
-    }
-
     int my_index = (int)i;
+    m_disk_tile_state[my_index].area = area;
+
+    // m4: every disk tile uses the same draw_func shape.
+    //   1. If the cached pixbuf for this tile is not yet loaded, paint a
+    //      procedural placeholder built from the template's meta + aspect.
+    //      This is what shows during the regen window.
+    //   2. If the pixbuf IS loaded, paint the placeholder UNDERNEATH (so
+    //      the crossfade has something to fade in over) and the pixbuf
+    //      ON TOP at alpha m_disk_tile_state[idx].alpha. When alpha hits
+    //      1.0 the placeholder is fully covered and the tick disconnects.
+    //
+    // Capturing `this` and `my_index` is safe across show() calls because:
+    //   - the DrawingArea is owned by the widget tree (lives until the
+    //     next populate_template_grid()),
+    //   - on the next populate, m_disk_tile_state is re-assigned and the
+    //     stale state vector is replaced, so any draws on still-existing
+    //     widgets read the new values harmlessly.
+    area->set_draw_func(
+        [this, my_index](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
+          // Bounds-guard: m_disk_tile_state may have been re-sized smaller
+          // by a fresh populate while this widget is still draining a draw.
+          if (my_index < 0 || my_index >= (int)m_disk_tile_state.size()) return;
+          const auto &state = m_disk_tile_state[my_index];
+          // Always draw the procedural placeholder first. Cheap, motif-
+          // aware, gives the user something to look at instantly.
+          if (my_index < (int)m_disk_templates.size()) {
+            const auto &e = m_disk_templates[my_index];
+            paint_disk_placeholder(cr, w, h, e);
+          }
+          // If we have a cached pixbuf, paint it on top at the current
+          // crossfade alpha.
+          if (state.pb && state.alpha > 0.0) {
+            int pw = state.pb->get_width();
+            int ph = state.pb->get_height();
+            if (pw > 0 && ph > 0) {
+              double scale = std::min((double)w / pw, (double)h / ph);
+              double dw = pw * scale, dh = ph * scale;
+              double ox = (w - dw) * 0.5, oy = (h - dh) * 0.5;
+              cr->save();
+              cr->translate(ox, oy);
+              cr->scale(scale, scale);
+              cr->push_group();
+              curvz::utils::cairo_set_source_pixbuf(cr, state.pb, 0, 0);
+              cr->paint();
+              cr->pop_group_to_source();
+              cr->paint_with_alpha(state.alpha);
+              cr->restore();
+            }
+          }
+        });
+
     auto *tile = make_tile(e.meta.name, area, [this, my_index]() {
       select_template(my_index);
     });
@@ -517,6 +567,14 @@ void NewDocumentDialog::populate_template_grid() {
       ++cat_row;
     }
   }
+
+  // m4: kick off background regen for every disk template that doesn't
+  // already have a cached PNG for the current motif. Tiles already on disk
+  // load synchronously here in the worker (cheap — Gdk::Pixbuf::create_from_file
+  // is the same call we used to do inline) and crossfade in immediately.
+  // Tiles that need rendering go through the slower SVG-parse + Cairo path
+  // and arrive whenever they finish.
+  kickoff_disk_regens();
 }
 
 // ── Selection handling ───────────────────────────────────────────────────────
@@ -658,9 +716,9 @@ void NewDocumentDialog::refresh_tile_selection() {
 
 // ── Synthetic-thumbnail renderer ─────────────────────────────────────────────
 void NewDocumentDialog::draw_builtin_thumb(
-    const Cairo::RefPtr<Cairo::Context> &cr, int w, int h, BuiltIn kind) {
-  // Background
-  cr->set_source_rgb(0.12, 0.12, 0.12);
+    const Cairo::RefPtr<Cairo::Context> &cr, int w, int h, BuiltIn kind) const {
+  // Background — workspace colour (motif-aware)
+  cr->set_source_rgb(m_workspace_r, m_workspace_g, m_workspace_b);
   cr->rectangle(0, 0, w, h);
   cr->fill();
 
@@ -671,13 +729,14 @@ void NewDocumentDialog::draw_builtin_thumb(
   double cw = w - inset * 2;
   double ch = h - inset * 2;
 
-  // Canvas fill (lighter than background)
-  cr->set_source_rgb(0.18, 0.18, 0.18);
+  // Canvas fill — artboard colour (motif-aware)
+  cr->set_source_rgb(m_artboard_r, m_artboard_g, m_artboard_b);
   cr->rectangle(cx, cy, cw, ch);
   cr->fill();
 
   if (kind == BuiltIn::Default) {
-    // Grid lines — 10×10 subdivisions to evoke 100×100 grid on a 1000-unit doc
+    // Grid lines — 10×10 subdivisions to evoke 100×100 grid on a 1000-unit doc.
+    // Bluish-grey at 35% alpha reads against either motif.
     cr->set_source_rgba(0.45, 0.45, 0.7, 0.35);
     cr->set_line_width(0.5);
     for (int i = 1; i < 10; ++i) {
@@ -689,7 +748,8 @@ void NewDocumentDialog::draw_builtin_thumb(
       cr->line_to(cx + cw, y);
     }
     cr->stroke();
-    // Margin rectangle (5% inset → corresponds to 50/1000 units)
+    // Margin rectangle (5% inset → corresponds to 50/1000 units).
+    // Red at 60% alpha reads against either motif.
     double m = 0.05;
     cr->set_source_rgba(0.85, 0.35, 0.35, 0.6);
     cr->set_line_width(1.0);
@@ -698,10 +758,99 @@ void NewDocumentDialog::draw_builtin_thumb(
     cr->stroke();
   }
 
-  // Canvas border (always drawn)
+  // Canvas border (always drawn) — neutral mid-grey reads against either motif.
   cr->set_source_rgba(0.55, 0.55, 0.55, 0.9);
   cr->set_line_width(1.0);
   cr->rectangle(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
+  cr->stroke();
+}
+
+// ── Disk-template procedural placeholder (m4) ────────────────────────────────
+// Mirrors draw_builtin_thumb's structure but takes its proportions from the
+// disk template's metadata + viewBox aspect (cached at scan time). Used while
+// the real PNG is regenerating in the background, and also stays visible
+// underneath as the real PNG crossfades in on top.
+void NewDocumentDialog::paint_disk_placeholder(
+    const Cairo::RefPtr<Cairo::Context> &cr, int w, int h,
+    const templates::TemplateEntry &entry) const {
+  // Workspace fill — motif-aware. Matches the dark band around the canvas
+  // rect on the rendered PNGs.
+  cr->set_source_rgb(m_workspace_r, m_workspace_g, m_workspace_b);
+  cr->rectangle(0, 0, w, h);
+  cr->fill();
+
+  // Canvas rect: aspect-preserved letterbox at ~3% inset (matches the PNG
+  // renderer's geometry so the placeholder looks structurally identical).
+  double aspect = entry.aspect_ratio > 0.0 ? entry.aspect_ratio : 1.0;
+  double pad = std::min(w, h) * 0.03;
+  double avail_w = w - 2 * pad;
+  double avail_h = h - 2 * pad;
+  double rect_w, rect_h;
+  if (aspect >= 1.0) {
+    // landscape or square — width-bound first
+    rect_w = avail_w;
+    rect_h = rect_w / aspect;
+    if (rect_h > avail_h) {
+      rect_h = avail_h;
+      rect_w = rect_h * aspect;
+    }
+  } else {
+    // portrait — height-bound first
+    rect_h = avail_h;
+    rect_w = rect_h * aspect;
+    if (rect_w > avail_w) {
+      rect_w = avail_w;
+      rect_h = rect_w / aspect;
+    }
+  }
+  double rect_x = (w - rect_w) * 0.5;
+  double rect_y = (h - rect_h) * 0.5;
+
+  // Artboard fill.
+  cr->set_source_rgb(m_artboard_r, m_artboard_g, m_artboard_b);
+  cr->rectangle(rect_x, rect_y, rect_w, rect_h);
+  cr->fill();
+
+  // Grid + margin overlays from meta (when present). Same colour vocabulary
+  // as draw_builtin_thumb so light/dark mode reads consistently across all
+  // tiles in the dialog. Skipped silently when the meta says "no rules".
+  const int divisions  = entry.meta.grid_divisions;
+  const double m_ratio = entry.meta.margin_ratio;
+  const double off_r   = entry.meta.grid_offset_ratio;
+
+  if (divisions > 0) {
+    double doc_short = std::min(rect_w, rect_h);
+    double step = doc_short / (double)divisions;
+    if (step >= 1.5) {
+      double off = step * off_r;
+      cr->set_source_rgba(0.45, 0.45, 0.7, 0.35);
+      cr->set_line_width(0.5);
+      for (double x = rect_x + off; x <= rect_x + rect_w + 0.1; x += step) {
+        cr->move_to(x, rect_y);
+        cr->line_to(x, rect_y + rect_h);
+      }
+      for (double y = rect_y + off; y <= rect_y + rect_h + 0.1; y += step) {
+        cr->move_to(rect_x, y);
+        cr->line_to(rect_x + rect_w, y);
+      }
+      cr->stroke();
+    }
+    if (m_ratio > 0.0) {
+      double mpx = step * m_ratio;
+      if (mpx >= 1.0 && (rect_w - 2 * mpx) > 2.0 && (rect_h - 2 * mpx) > 2.0) {
+        cr->set_source_rgba(0.85, 0.35, 0.35, 0.6);
+        cr->set_line_width(1.0);
+        cr->rectangle(rect_x + mpx, rect_y + mpx,
+                      rect_w - 2 * mpx, rect_h - 2 * mpx);
+        cr->stroke();
+      }
+    }
+  }
+
+  // Canvas border.
+  cr->set_source_rgba(0.55, 0.55, 0.55, 0.9);
+  cr->set_line_width(1.0);
+  cr->rectangle(rect_x + 0.5, rect_y + 0.5, rect_w - 1, rect_h - 1);
   cr->stroke();
 }
 
@@ -1055,11 +1204,38 @@ void NewDocumentDialog::refresh_preview() {
 
 void NewDocumentDialog::show(Gtk::Window &parent,
                              const std::vector<theme::Theme>& available_themes,
+                             templates::MotifTag motif,
+                             double workspace_r, double workspace_g, double workspace_b,
+                             double artboard_r,  double artboard_g,  double artboard_b,
                              Callback cb) {
   m_callback = std::move(cb);
   set_transient_for(parent);
   curvz::utils::apply_motif_class_from_parent(*this, parent);  // s117 m18 v2
   set_modal(true);
+
+  // Cache motif colours for thumb rendering (draw funcs read these).
+  m_workspace_r = workspace_r;
+  m_workspace_g = workspace_g;
+  m_workspace_b = workspace_b;
+  m_artboard_r  = artboard_r;
+  m_artboard_g  = artboard_g;
+  m_artboard_b  = artboard_b;
+  m_motif       = motif;
+
+  // m4: bump regen generation. Any in-flight worker from a prior show()
+  // will tag results with the old generation; the dispatcher drains and
+  // discards them. The PNG file write still completes — a stale callback's
+  // only side effect is on-disk, which is the correct outcome for next time.
+  m_regen_generation.fetch_add(1, std::memory_order_release);
+
+  // First-time wire-up of the regen dispatcher. The Glib::Dispatcher is
+  // safe to emit() from any thread; the connected slot runs on the UI
+  // thread. One-shot connect — survives across show() calls.
+  if (!m_regen_dispatcher_connected) {
+    m_regen_dispatcher.connect(
+        sigc::mem_fun(*this, &NewDocumentDialog::on_regen_dispatch));
+    m_regen_dispatcher_connected = true;
+  }
 
   // Reset name state — each show() starts fresh.
   m_updating       = true;
@@ -1226,5 +1402,155 @@ void NewDocumentDialog::on_create() {
 }
 
 void NewDocumentDialog::on_cancel() { hide(); }
+
+// ── Disk-template thumb regen pipeline (m4) ──────────────────────────────────
+//
+// Thread story:
+//   - kickoff_disk_regens() runs on the UI thread at populate_template_grid
+//     end. For each tile, it spawns a detached std::thread running
+//     regen_worker(). Stagger via Glib::signal_timeout so threads start
+//     ~80ms apart — the user sees tiles fill in left-to-right rather than
+//     a clump at once.
+//   - regen_worker() runs off-UI. It calls templates::ensure_thumb_for_motif()
+//     which is cache-or-render: instant on cache hit, slow (SVG parse + Cairo
+//     render + PNG write) on cache miss. Pushes a RegenResult to m_regen_results
+//     under m_regen_mutex, then emit()s m_regen_dispatcher.
+//   - on_regen_dispatch() runs on the UI thread (Glib::Dispatcher's only
+//     contract). Drains m_regen_results, loads each non-empty path into a
+//     Pixbuf, writes it onto the matching DiskTileState, kicks off the
+//     crossfade tick.
+//   - tick_crossfade() runs on the UI thread via Glib::signal_timeout. Bumps
+//     alpha, queue_draws the area, returns false when alpha hits 1.0.
+//
+// Generation guard: every kickoff records the current m_regen_generation
+// value. on_regen_dispatch compares the result's generation against the
+// current value; if they differ (the dialog was closed and reopened during
+// the in-flight regen), the result is dropped. The PNG write still happened
+// — that's the right outcome, the cache is just warmed for next open.
+
+void NewDocumentDialog::kickoff_disk_regens() {
+  uint64_t gen = m_regen_generation.load(std::memory_order_acquire);
+  int delay_ms = 0;
+  for (int i = 0; i < (int)m_disk_templates.size(); ++i) {
+    m_disk_tile_state[i].generation = gen;
+
+    // Snapshot everything the worker needs by VALUE — the worker runs on a
+    // detached thread that may outlive the next populate_template_grid()
+    // call, which would reassign m_disk_templates and m_motif. The snapshot
+    // is small and cheap; the templated copy of TemplateEntry holds owned
+    // strings only.
+    templates::TemplateEntry entry_snap = m_disk_templates[i];
+    templates::MotifTag motif_snap = m_motif;
+    double wr = m_workspace_r, wg = m_workspace_g, wb = m_workspace_b;
+    double ar = m_artboard_r,  ag = m_artboard_g,  ab = m_artboard_b;
+
+    // Glib::signal_timeout takes a slot returning bool (true = re-arm).
+    // We capture by value so the slot survives the loop.
+    Glib::signal_timeout().connect_once(
+        [this, i, gen, entry_snap, motif_snap, wr, wg, wb, ar, ag, ab]() {
+          // Re-check generation in case show() was called again during the
+          // stagger window. If so, our gen is stale and we skip — the new
+          // show() will have queued its own kickoffs.
+          if (gen != m_regen_generation.load(std::memory_order_acquire)) return;
+          std::thread([this, i, gen, entry_snap, motif_snap,
+                       wr, wg, wb, ar, ag, ab]() {
+            this->regen_worker(i, gen, entry_snap, motif_snap,
+                               wr, wg, wb, ar, ag, ab);
+          }).detach();
+        },
+        delay_ms);
+    delay_ms += k_regen_stagger_ms;
+  }
+}
+
+void NewDocumentDialog::regen_worker(int tile_index, uint64_t generation,
+                                     templates::TemplateEntry entry,
+                                     templates::MotifTag motif,
+                                     double wr, double wg, double wb,
+                                     double ar, double ag, double ab) {
+  std::string out_path = templates::ensure_thumb_for_motif(
+      entry, motif, wr, wg, wb, ar, ag, ab);
+
+  // Push result + emit dispatcher. Even on failure (empty out_path) we
+  // emit so on_regen_dispatch can log and move on.
+  {
+    std::lock_guard<std::mutex> lk(m_regen_mutex);
+    m_regen_results.push(RegenResult{tile_index, generation, out_path});
+  }
+  m_regen_dispatcher.emit();
+}
+
+void NewDocumentDialog::on_regen_dispatch() {
+  // Drain the queue. emit() may coalesce — we may get one dispatch for
+  // several queued results. That's fine; we drain all available.
+  std::queue<RegenResult> drained;
+  {
+    std::lock_guard<std::mutex> lk(m_regen_mutex);
+    drained.swap(m_regen_results);
+  }
+
+  uint64_t cur_gen = m_regen_generation.load(std::memory_order_acquire);
+
+  while (!drained.empty()) {
+    RegenResult r = drained.front();
+    drained.pop();
+
+    // Stale callback — dialog was closed and reopened during regen. PNG
+    // is on disk for next time; nothing to do here.
+    if (r.generation != cur_gen) {
+      LOG_DEBUG("on_regen_dispatch: dropping stale result for tile {} (gen {} != {})",
+                r.tile_index, r.generation, cur_gen);
+      continue;
+    }
+
+    if (r.tile_index < 0 || r.tile_index >= (int)m_disk_tile_state.size()) {
+      LOG_WARN("on_regen_dispatch: tile_index {} out of range", r.tile_index);
+      continue;
+    }
+
+    if (r.out_path.empty()) {
+      // Render failed; placeholder stays. Already logged inside the worker.
+      continue;
+    }
+
+    Glib::RefPtr<Gdk::Pixbuf> pb;
+    try {
+      pb = Gdk::Pixbuf::create_from_file(r.out_path);
+    } catch (const Glib::Error &err) {
+      LOG_WARN("on_regen_dispatch: pixbuf load failed for '{}': {}",
+               r.out_path, err.what());
+      continue;
+    }
+
+    auto &state = m_disk_tile_state[r.tile_index];
+    state.pb     = pb;
+    state.alpha  = 0.0;
+    state.fading = true;
+
+    // Kick off the crossfade tick. Capture by value so the slot is
+    // self-contained.
+    int idx = r.tile_index;
+    Glib::signal_timeout().connect(
+        [this, idx]() -> bool { return this->tick_crossfade(idx); },
+        k_crossfade_tick_ms);
+  }
+}
+
+bool NewDocumentDialog::tick_crossfade(int tile_index) {
+  if (tile_index < 0 || tile_index >= (int)m_disk_tile_state.size()) return false;
+  auto &state = m_disk_tile_state[tile_index];
+  if (!state.fading) return false;
+
+  // Linear ramp would feel a touch mechanical. Use a cheap ease-out by
+  // squaring the inverse delta — gives a soft settle at the end.
+  double inc = (double)k_crossfade_tick_ms / (double)k_crossfade_ms;
+  state.alpha += inc;
+  if (state.alpha >= 1.0) {
+    state.alpha = 1.0;
+    state.fading = false;
+  }
+  if (state.area) state.area->queue_draw();
+  return state.fading;
+}
 
 } // namespace Curvz

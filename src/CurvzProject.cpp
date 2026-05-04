@@ -221,7 +221,16 @@ bool CurvzProject::save() const {
             {"artboard_light_b",  artboard_light_b},
             {"workspace_light_r", workspace_light_r},
             {"workspace_light_g", workspace_light_g},
-            {"workspace_light_b", workspace_light_b}
+            {"workspace_light_b", workspace_light_b},
+            // s137 m5: Creation colour pair (per-motif). Missing in
+            // pre-m5 project.json files — load() falls back to the
+            // struct defaults defined in CurvzProject.hpp.
+            {"creation_dark_r",  creation_dark_r},
+            {"creation_dark_g",  creation_dark_g},
+            {"creation_dark_b",  creation_dark_b},
+            {"creation_light_r", creation_light_r},
+            {"creation_light_g", creation_light_g},
+            {"creation_light_b", creation_light_b}
         }},
         {"editor_state", {
             {"active_doc",          active_file},
@@ -385,6 +394,16 @@ bool CurvzProject::load(const std::string& dir) {
         workspace_light_r = w.value("workspace_light_r", workspace_light_r);
         workspace_light_g = w.value("workspace_light_g", workspace_light_g);
         workspace_light_b = w.value("workspace_light_b", workspace_light_b);
+
+        // s137 m5: Creation colour pair. Pre-m5 project.json files don't
+        // carry these — value() falls through to the struct defaults
+        // defined in CurvzProject.hpp.
+        creation_dark_r   = w.value("creation_dark_r",   creation_dark_r);
+        creation_dark_g   = w.value("creation_dark_g",   creation_dark_g);
+        creation_dark_b   = w.value("creation_dark_b",   creation_dark_b);
+        creation_light_r  = w.value("creation_light_r",  creation_light_r);
+        creation_light_g  = w.value("creation_light_g",  creation_light_g);
+        creation_light_b  = w.value("creation_light_b",  creation_light_b);
 
         // m6-format single-pair migration: if the dark pair didn't show
         // up by name but the legacy artboard_bg_*/workspace_bg_* keys

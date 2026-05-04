@@ -177,6 +177,13 @@ private:
     // Wired to Canvas::signal_request_save_to_library, fired from the
     // canvas right-click "Save to Library…" entry.
     void on_request_save_selection_to_library();
+    // s136 m4: actual library file write. Pure helper — takes a destination
+    // directory and a base name (without extension), writes
+    // `<dest_dir>/<base_name>.svg`. Returns true on success. The orchestrator
+    // (on_save_selection_to_library) handles the name prompt and any
+    // collision resolution; this helper assumes base_name is final.
+    bool write_library_item(const std::string& dest_dir,
+                            const std::string& base_name);
     void on_step_repeat();
     // Blend orchestrator (M3) — validates selection, reads A/B node counts
     // and stroke widths, shows BlendDialog, forwards dialog Result to
@@ -361,6 +368,16 @@ private:
     Glib::RefPtr<Gio::SimpleAction> m_act_warp_release;
     Glib::RefPtr<Gio::SimpleAction> m_act_warp_flatten;
     void update_warp_action_sensitive();
+
+    // Group / Ungroup (s138) — Make enabled iff >=2 nodes are selected;
+    // Release enabled iff the primary selection is a Group. Wraps the
+    // Canvas::group_selection / ungroup_selection methods that have
+    // existed in the engine for some time but were never reachable from
+    // the UI (no menu item, no action, no keybind). Surfaced when the
+    // s138 m2 menu-accel fix made the Path submenu's gaps visible.
+    Glib::RefPtr<Gio::SimpleAction> m_act_group_make;
+    Glib::RefPtr<Gio::SimpleAction> m_act_group_release;
+    void update_group_actions_sensitive();
 
     // Boolean path ops (s122 m2) — Union/Subtract/Intersect enabled iff
     // exactly 2 Path or Compound nodes are selected. Deeper preconditions

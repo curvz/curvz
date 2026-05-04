@@ -24,7 +24,13 @@ using json   = nlohmann::json;
 static constexpr const char* k_bundle_ext     = ".curvztpl";
 static constexpr const char* k_svg_name       = "template.svg";
 static constexpr const char* k_meta_name      = "template.json";
+// Legacy single-motif filename. Treated as the dark variant when scan() finds
+// it without motif-suffixed siblings; never written by current code.
 static constexpr const char* k_thumb_name     = "thumbnail.png";
+// Motif-suffixed names — current write format. read_bundle() prefers these
+// over the legacy name when both are present.
+static constexpr const char* k_thumb_name_dark  = "thumbnail-dark.png";
+static constexpr const char* k_thumb_name_light = "thumbnail-light.png";
 static constexpr const char* k_defaults_name  = "defaults.json";
 static constexpr int         k_thumb_size_px  = 256;
 static constexpr int         k_schema_version = 1;
@@ -76,6 +82,50 @@ static std::string now_utc_iso8601() {
     char buf[32];
     std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
     return std::string(buf);
+}
+
+// ── Cheap viewBox peek ────────────────────────────────────────────────────────
+// Reads up to the first 2KB of an SVG file looking for the root `viewBox`
+// attribute and returns width/height as an aspect ratio (w/h). Avoids the full
+// SvgParser cost — scan() runs every dialog open, so this stays light. Returns
+// 0.0 on any failure (file not readable, no viewBox, malformed numbers); the
+// dialog falls back to a 1:1 placeholder when the cached ratio is zero.
+static double peek_svg_aspect(const std::string& svg_path) {
+    std::ifstream f(svg_path);
+    if (!f) return 0.0;
+    char buf[2048];
+    f.read(buf, sizeof(buf) - 1);
+    std::streamsize n = f.gcount();
+    if (n <= 0) return 0.0;
+    buf[n] = '\0';
+    std::string head(buf);
+
+    // Find viewBox attribute, accept either case (SVGs are typically lowercase
+    // but tolerate the camelCase form too).
+    auto pos = head.find("viewBox");
+    if (pos == std::string::npos) pos = head.find("viewbox");
+    if (pos == std::string::npos) return 0.0;
+
+    // Skip ahead to the opening quote.
+    pos = head.find_first_of("\"'", pos);
+    if (pos == std::string::npos) return 0.0;
+    char quote = head[pos];
+    auto end = head.find(quote, pos + 1);
+    if (end == std::string::npos) return 0.0;
+
+    // viewBox = "min-x min-y width height" — four numbers, whitespace or
+    // comma separated. We only need width and height (the 3rd and 4th).
+    std::string vb = head.substr(pos + 1, end - pos - 1);
+    double a, b, w, h;
+    if (std::sscanf(vb.c_str(), "%lf %lf %lf %lf", &a, &b, &w, &h) != 4) {
+        // Try comma-separated.
+        for (char& c : vb) if (c == ',') c = ' ';
+        if (std::sscanf(vb.c_str(), "%lf %lf %lf %lf", &a, &b, &w, &h) != 4) {
+            return 0.0;
+        }
+    }
+    if (h <= 0.0 || w <= 0.0) return 0.0;
+    return w / h;
 }
 
 // ── Built-in entry helpers ────────────────────────────────────────────────────
@@ -153,9 +203,11 @@ static bool read_bundle(const std::string& bundle, bool is_user,
         slug.resize(slug.size() - ext.size());
     }
 
-    std::string svg   = (base / k_svg_name).string();
-    std::string meta  = (base / k_meta_name).string();
-    std::string thumb = (base / k_thumb_name).string();
+    std::string svg          = (base / k_svg_name).string();
+    std::string meta         = (base / k_meta_name).string();
+    std::string thumb_legacy = (base / k_thumb_name).string();
+    std::string thumb_dark   = (base / k_thumb_name_dark).string();
+    std::string thumb_light  = (base / k_thumb_name_light).string();
 
     std::error_code ec;
     if (!fs::is_regular_file(svg, ec))  return false;
@@ -167,12 +219,25 @@ static bool read_bundle(const std::string& bundle, bool is_user,
     if (!dir_category.empty()) m.category = dir_category;
     if (m.name.empty()) m.name = slug;
 
+    // Thumb path resolution: prefer motif-suffixed files, fall back to the
+    // legacy single-thumb name (treated as the dark variant). When only the
+    // legacy file exists, the light slot stays empty and the regen path
+    // produces it on first view in light motif. The legacy file is left in
+    // place — it remains valid as the dark variant.
     out.bundle_path = bundle;
     out.svg_path    = svg;
-    out.thumb_path  = fs::is_regular_file(thumb, ec) ? thumb : std::string{};
-    out.slug        = slug;
-    out.meta        = std::move(m);
-    out.is_user     = is_user;
+    if (fs::is_regular_file(thumb_dark, ec)) {
+        out.thumb_path_dark = thumb_dark;
+    } else if (fs::is_regular_file(thumb_legacy, ec)) {
+        out.thumb_path_dark = thumb_legacy;
+    }
+    if (fs::is_regular_file(thumb_light, ec)) {
+        out.thumb_path_light = thumb_light;
+    }
+    out.aspect_ratio = peek_svg_aspect(svg);  // 0.0 on parse failure
+    out.slug         = slug;
+    out.meta         = std::move(m);
+    out.is_user      = is_user;
     return true;
 }
 
@@ -420,6 +485,10 @@ static std::string dimensions_label_for(const CurvzDocument& doc) {
 // ── Save ──────────────────────────────────────────────────────────────────────
 
 bool save(const CurvzDocument& doc, TemplateMeta meta,
+          double dark_workspace_r,  double dark_workspace_g,  double dark_workspace_b,
+          double dark_artboard_r,   double dark_artboard_g,   double dark_artboard_b,
+          double light_workspace_r, double light_workspace_g, double light_workspace_b,
+          double light_artboard_r,  double light_artboard_g,  double light_artboard_b,
           std::string* out_bundle_path) {
     if (meta.name.empty()) {
         LOG_ERROR("TemplateLibrary::save: empty name");
@@ -443,26 +512,39 @@ bool save(const CurvzDocument& doc, TemplateMeta meta,
         return false;
     }
 
-    std::string svg_path   = (fs::path(bundle) / k_svg_name).string();
-    std::string meta_path  = (fs::path(bundle) / k_meta_name).string();
-    std::string thumb_path = (fs::path(bundle) / k_thumb_name).string();
+    std::string svg_path         = (fs::path(bundle) / k_svg_name).string();
+    std::string meta_path        = (fs::path(bundle) / k_meta_name).string();
+    std::string thumb_dark_path  = (fs::path(bundle) / k_thumb_name_dark).string();
+    std::string thumb_light_path = (fs::path(bundle) / k_thumb_name_light).string();
 
     if (!write_svg_file(doc, svg_path)) {
         LOG_ERROR("TemplateLibrary::save: write_svg_file failed for '{}'", svg_path);
         return false;
     }
-    // S63 M4a: magenta bisect test. Thumb renderer currently paints the
-    // surface solid magenta to verify the write-to-PNG pipeline works for
-    // every seed. Will be replaced with real annotations once we confirm
-    // the pipeline is sound.
-    if (!export_template_thumbnail(doc, thumb_path, k_thumb_size_px,
+    // m4: write BOTH motif thumbs eagerly. Save is already a slow user-
+    // initiated operation, so doubling thumbnail render cost is invisible
+    // and means the dialog never has to lazy-regen for newly-saved templates.
+    if (!export_template_thumbnail(doc, thumb_dark_path, k_thumb_size_px,
                                    meta.name,
                                    dimensions_label_for(doc),
                                    meta.grid_divisions,
                                    meta.margin_ratio,
-                                   meta.grid_offset_ratio)) {
-        LOG_WARN("TemplateLibrary::save: thumbnail render failed for '{}'",
-                 thumb_path);
+                                   meta.grid_offset_ratio,
+                                   dark_workspace_r, dark_workspace_g, dark_workspace_b,
+                                   dark_artboard_r,  dark_artboard_g,  dark_artboard_b)) {
+        LOG_WARN("TemplateLibrary::save: dark thumbnail render failed for '{}'",
+                 thumb_dark_path);
+    }
+    if (!export_template_thumbnail(doc, thumb_light_path, k_thumb_size_px,
+                                   meta.name,
+                                   dimensions_label_for(doc),
+                                   meta.grid_divisions,
+                                   meta.margin_ratio,
+                                   meta.grid_offset_ratio,
+                                   light_workspace_r, light_workspace_g, light_workspace_b,
+                                   light_artboard_r,  light_artboard_g,  light_artboard_b)) {
+        LOG_WARN("TemplateLibrary::save: light thumbnail render failed for '{}'",
+                 thumb_light_path);
     }
     if (!write_meta(meta_path, meta)) {
         LOG_ERROR("TemplateLibrary::save: write_meta failed for '{}'", meta_path);
@@ -480,6 +562,66 @@ bool user_bundle_exists(const std::string& category, const std::string& name) {
     std::string bundle = bundle_path_for(user_dir(), category, slug);
     std::error_code ec;
     return fs::is_directory(bundle, ec);
+}
+
+// ── Lazy thumbnail regen ─────────────────────────────────────────────────────
+// Cache-or-regen: if the bundle already has a PNG for the requested motif,
+// returns its path immediately. Otherwise loads the SVG, renders the thumbnail
+// at the bundle's per-motif filename, returns that path. Returns empty on any
+// failure so the caller falls back to a procedural placeholder.
+//
+// Safe to call from a worker thread — no GTK widget access, only filesystem
+// + Cairo + the SvgParser used by load_document. The PNG cache write is
+// last-write-wins; if two threads race on the same template+motif (unlikely
+// in practice — the dialog stages its kickoffs), the second write just
+// replaces the first and both threads return the same path.
+
+std::string ensure_thumb_for_motif(const TemplateEntry& entry,
+                                   MotifTag motif,
+                                   double workspace_r, double workspace_g, double workspace_b,
+                                   double artboard_r,  double artboard_g,  double artboard_b) {
+    if (is_builtin(entry)) {
+        // Builtins have no bundle directory; the dialog draws them
+        // procedurally via NewDocumentDialog::draw_builtin_thumb.
+        return {};
+    }
+    if (entry.bundle_path.empty()) {
+        LOG_WARN("ensure_thumb_for_motif: empty bundle_path for '{}'", entry.slug);
+        return {};
+    }
+
+    const char* fname = (motif == MotifTag::Light) ? k_thumb_name_light
+                                                    : k_thumb_name_dark;
+    std::string out_path = (fs::path(entry.bundle_path) / fname).string();
+
+    // Cache hit — file already on disk.
+    std::error_code ec;
+    if (fs::is_regular_file(out_path, ec)) {
+        return out_path;
+    }
+
+    // Cache miss — render. load_document does the SVG parse + applies the
+    // S63 proportional rules from meta; the rendered thumb sees the full
+    // grid/margin layers as configured by the template.
+    auto doc = load_document(entry);
+    if (!doc) {
+        LOG_ERROR("ensure_thumb_for_motif: load_document failed for '{}'",
+                  entry.svg_path);
+        return {};
+    }
+    if (!export_template_thumbnail(*doc, out_path, k_thumb_size_px,
+                                   entry.meta.name,
+                                   dimensions_label_for(*doc),
+                                   entry.meta.grid_divisions,
+                                   entry.meta.margin_ratio,
+                                   entry.meta.grid_offset_ratio,
+                                   workspace_r, workspace_g, workspace_b,
+                                   artboard_r,  artboard_g,  artboard_b)) {
+        LOG_ERROR("ensure_thumb_for_motif: render failed for '{}'", out_path);
+        return {};
+    }
+    LOG_INFO("ensure_thumb_for_motif: regenerated '{}'", out_path);
+    return out_path;
 }
 
 // ── Proportional rules (S63) ──────────────────────────────────────────────────

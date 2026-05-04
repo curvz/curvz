@@ -53,7 +53,18 @@ public:
 
     ManageTemplatesDialog();
 
-    void show(Gtk::Window& parent, ChangedCb on_changed);
+    // Show modal, attached to parent. on_changed fires on any successful
+    // template/category mutation.
+    //
+    // motif tells the dialog which of each bundle's two PNG thumbnails to
+    // display. If the requested motif's PNG doesn't exist yet (legacy bundle
+    // pre-m4, or new bundle whose other-motif variant hasn't regen'd), the
+    // dialog falls back to the available variant. The ManageTemplates dialog
+    // doesn't need to lazy-regenerate — it's an admin tool, not a picker —
+    // and a slightly mismatched thumb here is acceptable. (NewDocumentDialog
+    // is where regen happens, and that path keeps the cache fresh on its own.)
+    void show(Gtk::Window& parent, templates::MotifTag motif,
+              ChangedCb on_changed);
 
 private:
     // ── Layout ────────────────────────────────────────────────────────────
@@ -135,6 +146,9 @@ private:
     // cleanly because the restore-UI step assumes a 1:1 entry/label pair
     // per rename session.
     bool      m_rename_in_progress = false;
+    // Motif under which to display thumbnails. Set by show(). Used by
+    // append_template_row() to pick between thumb_path_dark/light.
+    templates::MotifTag m_motif = templates::MotifTag::Dark;
     ChangedCb m_on_changed;
 };
 
