@@ -1358,24 +1358,26 @@ private:
   // no longer reachable from the running app: no flag, no action, no
   // menu, no dispatch branch.
 
-  // ── Boolean-op cleanup post-pass (s139 m2) ───────────────────────────
-  // When true, Canvas::boolean_op runs the keeper-set + cleanup_loop
-  // post-pass on Clipper2 output (see math/BooleanOpsRefit.hpp).
-  // Reduces ~30× node-count inflation that Clipper2's polyline output
-  // produces. Default false during proof phase; flipped via the
-  // hamburger menu's "Clean Boolean Output" toggle, persisted by
-  // AppPreferences. MainWindow keeps this synced to the app preference
-  // on startup and on user toggle.
-  bool m_boolean_cleanup_enabled = false;
-
-  // ── Boolean-op reduce pass (s139 m4 — pass 2) ────────────────────────
-  // When true AND m_boolean_cleanup_enabled is true, Canvas::boolean_op
-  // runs reduce_loop on each cleaned result loop after cleanup_loop.
-  // Reduces the C-C-C triplet structure to one survivor per triple
-  // (two-from-three reduction). Effective node count drops by ~2/3
-  // compared to cleanup-only output. Has no effect when cleanup itself
-  // is off; the dependency is enforced at the call site.
-  bool m_boolean_reduce_enabled = false;
+  // ── Boolean-op cleanup quality (s143 m1) ─────────────────────────────
+  // Replaces the s139 m2 boolean_cleanup_enabled bool with an int 0..10
+  // quality knob. Canvas::boolean_op maps it to the two cleanup_loop_v4
+  // tunables (apex_min_turn_deg, max_untagged_run) — see the mapping
+  // at the top of Canvas.cpp's boolean_op implementation.
+  //
+  //   q = 0   → most aggressive cleanup  (apex=30°, max_run=20)
+  //   q = 5   → default                  (apex=15°, max_run=10  — s142 m6)
+  //   q = 10  → no cleanup, raw Clipper2 polyline (algorithm bypassed)
+  //
+  // q=10 is the "off" position: enrichment skipped, cleanup_loop_v4
+  // not called, Clipper2 output passed through verbatim.  Higher q
+  // means more nodes preserved; q=10 preserves all of them by not
+  // running the algorithm at all.
+  //
+  // Persisted via AppPreferences::boolean_cleanup_quality. MainWindow
+  // keeps this synced on startup and on every signal_changed emission
+  // from AppPreferences (the inspector's slider drives the pref; the
+  // pref drives this field).
+  int m_boolean_cleanup_quality = 5;
 
 public:
   void toggle_outline_mode() {
@@ -1391,19 +1393,19 @@ public:
     return m_sig_outline_mode_changed;
   }
 
-  // s139 m2: boolean-op cleanup post-pass setter. MainWindow calls this
-  // on startup (from the loaded AppPreferences value) and on every
-  // user toggle of the "Clean Boolean Output" menu item. Cheap setter —
-  // no signal, no redraw; the flag is consulted only on the next
-  // boolean_op invocation.
-  void set_boolean_cleanup_enabled(bool v) { m_boolean_cleanup_enabled = v; }
-  bool boolean_cleanup_enabled() const { return m_boolean_cleanup_enabled; }
-
-  // s139 m4: boolean-op reduce setter. Same pattern as cleanup. The flag
-  // is consulted alongside cleanup on the next boolean_op invocation;
-  // reduce only runs if cleanup is also on.
-  void set_boolean_reduce_enabled(bool v) { m_boolean_reduce_enabled = v; }
-  bool boolean_reduce_enabled() const { return m_boolean_reduce_enabled; }
+  // s143 m1: boolean-op cleanup quality setter (replaces the s139 m2
+  // bool toggle). MainWindow calls this on startup (from the loaded
+  // AppPreferences value) and on every AppPreferences::signal_changed
+  // emission. Cheap setter — no signal, no redraw; the value is read
+  // only at the next boolean_op invocation. Range 0..10; out-of-range
+  // values are clamped here so callers can't accidentally pass a slider
+  // mid-drag value out of band.
+  void set_boolean_cleanup_quality(int v) {
+    if (v < 0)  v = 0;
+    if (v > 10) v = 10;
+    m_boolean_cleanup_quality = v;
+  }
+  int boolean_cleanup_quality() const { return m_boolean_cleanup_quality; }
 
 
   // s113 m2: preview-mode safety threshold.

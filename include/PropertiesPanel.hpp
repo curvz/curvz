@@ -169,6 +169,13 @@ private:
     void add_row(const char* label, const std::string& value);
     void build_canvas_section(std::shared_ptr<CanvasModel> cm, Gtk::Box* parent = nullptr);
     void build_project_section(CurvzProject* project, Gtk::Box* parent = nullptr);
+    // s143 m1 — Application group section: user-tier app preferences
+    // surfaced from AppPreferences. First inhabitant: boolean cleanup
+    // quality slider. Future additions (recent-projects max, autosave
+    // debounce, log path, custom CSS path) land here as additional rows
+    // or sibling sections under the same Application group. Doesn't
+    // depend on a project/document — reads/writes AppPreferences::instance.
+    void build_app_section(Gtk::Box* parent = nullptr);
     void build_guide_section(CurvzDocument* doc, Gtk::Box* parent = nullptr);
     void build_snap_section(CurvzDocument* doc, Gtk::Box* parent = nullptr);
     void build_measure_section(CurvzDocument* doc, Gtk::Box* parent = nullptr);

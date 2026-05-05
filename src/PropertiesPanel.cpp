@@ -1,4 +1,5 @@
 #include "PropertiesPanel.hpp"
+#include "AppPreferences.hpp"      // s143 m1 — Application group section
 #include "Canvas.hpp"
 #include "CoordSpace.hpp"
 #include "CurvzEntry.hpp"
@@ -38,6 +39,7 @@
 #include <gtkmm/grid.h>
 #include <gtkmm/label.h>
 #include <gtkmm/popover.h>
+#include <gtkmm/scale.h>           // s143 m1 — quality slider in Application section
 #include <gtkmm/separator.h>
 #include <gtkmm/spinbutton.h>
 #include <gtkmm/stringlist.h>
@@ -1435,6 +1437,109 @@ void PropertiesPanel::set_selected_guide(SceneNode *g) {
 void PropertiesPanel::set_guide_selection(const std::vector<SceneNode *> &sel) {
   m_selected_guide = sel.empty() ? nullptr : sel[0];
   m_guide_selection = sel;
+}
+
+// ── Application section (s143 m1) ────────────────────────────────────────────
+// User-tier app preferences surfaced from AppPreferences::instance().
+// Lives under the "Application" group at the top of the inspector,
+// sibling of Project / Document / Object.
+//
+// Current contents — single row:
+//   - Boolean cleanup quality:  Gtk::Scale, range 0..10.
+//     0      = most aggressive cleanup  (apex=30°, max_run=20)
+//     5      = default                  (apex=15°, max_run=10  — s142 m6 anchor)
+//     9      = gentlest cleanup         (apex= 5°, max_run= 5)
+//     10     = no cleanup, raw Clipper2 polyline
+//     End labels: "Approximate (fewer nodes)" left — "Faithful (more nodes)" right
+//
+// Future inhabitants of this section (one row each, planned):
+//   - Recent projects: max count               (SpinButton 0..50)
+//   - Autosave debounce                        (SpinButton, seconds)
+//   - Log file path                            (Entry + Browse, restart req'd)
+//   - Custom CSS path                          (Entry + Browse, restart req'd)
+//
+// Mutation pattern: every input writes to AppPreferences, which fires
+// AppPreferences::signal_changed; MainWindow's wiring catches that and
+// pushes the new value into Canvas. The section is read-mostly — no
+// emit_prop_changed because nothing here is a document property.
+//
+// m_loading guard: refresh() sets m_loading=true around builds; we
+// honour it when handling user input so programmatic widget setup
+// during refresh doesn't loop back into a setter.
+void PropertiesPanel::build_app_section(Gtk::Box *parent) {
+  uint32_t gen = m_build_gen;
+  auto *body  = add_collapsible("Boolean cleanup", false, parent);
+
+  auto *box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
+  box->set_spacing(2);
+  box->set_margin_start(6);
+  box->set_margin_end(6);
+  box->set_margin_top(2);
+  box->set_margin_bottom(4);
+  body->append(*box);
+
+  // ── End-label row ─────────────────────────────────────────────────────────
+  // Two equal-width labels span the slider's track. Parentheticals do
+  // the lifting — "Approximate" / "Faithful" alone are abstract; the
+  // (fewer/more nodes) phrase tells the user what they're trading.
+  auto *labels = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  labels->set_spacing(0);
+  auto *lbl_lo = Gtk::make_managed<Gtk::Label>("Approximate (fewer nodes)");
+  lbl_lo->set_xalign(0.0f);
+  lbl_lo->set_hexpand(true);
+  lbl_lo->add_css_class("dim-label");
+  auto *lbl_hi = Gtk::make_managed<Gtk::Label>("Faithful (more nodes)");
+  lbl_hi->set_xalign(1.0f);
+  lbl_hi->set_hexpand(true);
+  lbl_hi->add_css_class("dim-label");
+  labels->append(*lbl_lo);
+  labels->append(*lbl_hi);
+  box->append(*labels);
+
+  // ── Quality slider ────────────────────────────────────────────────────────
+  // Range 0..10, integer steps. Current value comes from AppPreferences;
+  // on user-driven change we write back through set_boolean_cleanup_quality
+  // (which saves and emits signal_changed). MainWindow's connection to
+  // that signal is what gets the new value into Canvas — we don't touch
+  // Canvas here.
+  //
+  // No inline value readout (set_draw_value=false) — the inspector
+  // column is narrow and the right-side value would crowd the
+  // "Faithful" end label off-screen. Slider position + tick marks
+  // already communicate the value visually.
+  auto adj = Gtk::Adjustment::create(
+      double(AppPreferences::instance().boolean_cleanup_quality()),
+      0.0, 10.0, 1.0, 1.0, 0.0);
+  auto *scale = Gtk::make_managed<Gtk::Scale>(
+      adj, Gtk::Orientation::HORIZONTAL);
+  curvz::utils::set_name(scale, "ins_app_bcq",
+                         "inspector_app_boolean_cleanup_quality_scale");
+  scale->set_digits(0);            // integer values only
+  scale->set_round_digits(0);
+  scale->set_draw_value(false);    // no inline number — keeps Faithful onscreen
+  scale->set_hexpand(true);
+  // Tooltip explains the tradeoff. The end labels carry the words but
+  // not what the right end actually does — the tooltip is where the
+  // user finds out that q=10 means "no cleanup, raw Clipper2 output."
+  scale->set_tooltip_text(
+      "Boolean cleanup quality.\n"
+      "Approximate (left): fewer nodes, looser shape match.\n"
+      "Faithful (right): more nodes, tighter shape match.\n"
+      "Far right: no cleanup — raw Clipper2 output.");
+  // Marks: tick at the default position (5), and a labeled "Raw" mark
+  // at the right end so q=10's special meaning is visible without
+  // hovering. Keeping it short ("Raw" not "Clipper2") so the label
+  // doesn't push neighbouring marks around.
+  scale->add_mark(5.0,  Gtk::PositionType::BOTTOM, "");
+  scale->add_mark(10.0, Gtk::PositionType::BOTTOM, "Raw");
+  box->append(*scale);
+
+  scale->signal_value_changed().connect([this, scale, gen]() mutable {
+    if (m_build_gen != gen || m_loading) return;
+    int q = static_cast<int>(std::lround(scale->get_value()));
+    AppPreferences::instance().set_boolean_cleanup_quality(q);
+    LOG_INFO("PropertiesPanel: boolean cleanup quality → {}", q);
+  });
 }
 
 void PropertiesPanel::build_guide_section(CurvzDocument *doc, Gtk::Box *parent) {
@@ -4118,6 +4223,17 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
     build_project_section(m_project, proj_grp);
   }
 
+  // ── Application group (s143 m1) ──────────────────────────────
+  // User-tier app preferences (AppPreferences::instance) — sits
+  // alongside Project because both are "above the document" — the
+  // Project group is per-project, the Application group is per-user
+  // and persists across projects. First inhabitant: boolean cleanup
+  // quality slider.
+  {
+    auto *app_grp = add_group_collapsible("Application", false);
+    build_app_section(app_grp);
+  }
+
   // ── Document group ───────────────────────────────────────────
   {
     auto *doc_grp = add_group_collapsible("Document", false);
@@ -5269,6 +5385,15 @@ void PropertiesPanel::refresh_node(CanvasModel *canvas, SceneNode *obj,
   if (m_project) {
     auto *proj_grp = add_group_collapsible("Project", false);
     build_project_section(m_project, proj_grp);
+  }
+
+  // ── Application group (s143 m1) ──────────────────────────────
+  // User-tier app preferences. Mirrored from the selection-empty
+  // assembly above so the slider persists/visible across both
+  // refresh paths.
+  {
+    auto *app_grp = add_group_collapsible("Application", false);
+    build_app_section(app_grp);
   }
 
   // ── Document group ───────────────────────────────────────────

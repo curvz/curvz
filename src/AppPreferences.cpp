@@ -44,19 +44,38 @@ void AppPreferences::load() {
         nlohmann::json j;
         f >> j;
 
-        if (j.contains("boolean_cleanup_enabled") &&
-            j["boolean_cleanup_enabled"].is_boolean()) {
-            m_boolean_cleanup_enabled = j["boolean_cleanup_enabled"].get<bool>();
+        // s143 m1 — boolean cleanup is a quality int 0..10.
+        //   0  = most aggressive cleanup
+        //   5  = default
+        //   10 = no cleanup — raw Clipper2
+        // Legacy boolean_cleanup_enabled bool migrates as:
+        //   true  → 5  (cleanup on at default — what they asked for)
+        //   false → 10 (cleanup off — raw Clipper2, what they had)
+        if (j.contains("boolean_cleanup_quality") &&
+            j["boolean_cleanup_quality"].is_number_integer()) {
+            int q = j["boolean_cleanup_quality"].get<int>();
+            if (q < 0)  q = 0;
+            if (q > 10) q = 10;
+            m_boolean_cleanup_quality = q;
+        } else if (j.contains("boolean_cleanup_enabled") &&
+                   j["boolean_cleanup_enabled"].is_boolean()) {
+            m_boolean_cleanup_quality =
+                j["boolean_cleanup_enabled"].get<bool>() ? 5 : 10;
+            LOG_INFO("AppPreferences: migrated legacy "
+                     "boolean_cleanup_enabled → quality={}",
+                     m_boolean_cleanup_quality);
         }
 
-        if (j.contains("boolean_reduce_enabled") &&
-            j["boolean_reduce_enabled"].is_boolean()) {
-            m_boolean_reduce_enabled = j["boolean_reduce_enabled"].get<bool>();
+        if (j.contains("library_defaults_seeded") &&
+            j["library_defaults_seeded"].is_boolean()) {
+            m_library_defaults_seeded =
+                j["library_defaults_seeded"].get<bool>();
         }
 
         LOG_INFO("AppPreferences: loaded from {} — "
-                 "boolean_cleanup_enabled={}, boolean_reduce_enabled={}",
-                 path, m_boolean_cleanup_enabled, m_boolean_reduce_enabled);
+                 "boolean_cleanup_quality={}, library_defaults_seeded={}",
+                 path, m_boolean_cleanup_quality,
+                 m_library_defaults_seeded);
     } catch (const std::exception& e) {
         LOG_WARN("AppPreferences: failed to parse {}: {} — using defaults",
                  path, e.what());
@@ -75,8 +94,8 @@ void AppPreferences::save() const {
     }
 
     nlohmann::json j;
-    j["boolean_cleanup_enabled"] = m_boolean_cleanup_enabled;
-    j["boolean_reduce_enabled"]  = m_boolean_reduce_enabled;
+    j["boolean_cleanup_quality"] = m_boolean_cleanup_quality;
+    j["library_defaults_seeded"] = m_library_defaults_seeded;
 
     std::ofstream f(path);
     if (f) {
@@ -88,16 +107,18 @@ void AppPreferences::save() const {
 }
 
 // ── Setters ──────────────────────────────────────────────────────────────────
-void AppPreferences::set_boolean_cleanup_enabled(bool v) {
-    if (m_boolean_cleanup_enabled == v) return;
-    m_boolean_cleanup_enabled = v;
+void AppPreferences::set_boolean_cleanup_quality(int v) {
+    if (v < 0)  v = 0;
+    if (v > 10) v = 10;
+    if (m_boolean_cleanup_quality == v) return;
+    m_boolean_cleanup_quality = v;
     save();
     m_sig_changed.emit();
 }
 
-void AppPreferences::set_boolean_reduce_enabled(bool v) {
-    if (m_boolean_reduce_enabled == v) return;
-    m_boolean_reduce_enabled = v;
+void AppPreferences::set_library_defaults_seeded(bool v) {
+    if (m_library_defaults_seeded == v) return;
+    m_library_defaults_seeded = v;
     save();
     m_sig_changed.emit();
 }

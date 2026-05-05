@@ -21,15 +21,28 @@ namespace Curvz {
 // writer.
 //
 // Currently houses:
-//   - boolean_cleanup_enabled — controls whether boolean op output goes
-//     through the s139 keeper-set + cleanup-walk post-pass. Default false
-//     during proof phase; flipped to true once the cleanup is trusted on
-//     real workloads.
+//   - boolean_cleanup_quality — int 0..10. Controls the boolean-op cleanup
+//     post-pass (s142 m6: keeper-set + apex pinning + span filler). The
+//     slider exposes the algorithm's two tunables (apex_min_turn_deg,
+//     max_untagged_run) as one user-facing knob, plus a "raw" position
+//     at the high end:
+//       0  = most aggressive cleanup (most node reduction)
+//       5  = balanced (s142 m6 default)
+//       10 = no cleanup — raw Clipper2 output (most faithful to Clipper2,
+//            hundreds of nodes, no algorithm intervention)
+//     Higher = more faithful to Clipper2 = more nodes preserved.
+//     Migrated from the old boolean_cleanup_enabled bool: true→5, false→10
+//     (the bool's "false" meant "use raw Clipper2," which is q=10's role).
+//   - library_defaults_seeded — internal one-shot first-launch flag,
+//     not user-facing.
 //
-// Design intent: this file is a *first* preference, not a *last* one. The
-// API shape (one getter + one setter per pref) scales cleanly. When the
-// number of prefs grows past 4-5, consider a dedicated Settings inspector
-// section that binds to the same backing store.
+// Design intent: this file is the home for application-tier user
+// preferences. The s143 inspector "Application" group surfaces the
+// user-facing prefs here as a top-level inspector category alongside
+// Project / Document / Object. Future additions land as new sections
+// under that group: recent-projects max count, autosave debounce,
+// log file path, custom CSS path. Each new pref: one getter + one
+// setter + one row in build_app_section.
 // ══════════════════════════════════════════════════════════════════════════════
 
 class AppPreferences {
@@ -45,15 +58,29 @@ public:
     void save() const;
 
     // ── Preferences ──────────────────────────────────────────────────────────
-    bool boolean_cleanup_enabled() const { return m_boolean_cleanup_enabled; }
-    void set_boolean_cleanup_enabled(bool v);
+    // Boolean cleanup quality (s143 m1) — replaces the s139 m2
+    // boolean_cleanup_enabled bool.  Range 0..10:
+    //   0   → most aggressive cleanup  (apex=30°, max_run=20)
+    //   5   → default                  (apex=15°, max_run=10  — s142 m6 anchor)
+    //   10  → no cleanup, raw Clipper2 polyline output (most faithful to
+    //         Clipper2; algorithm is bypassed entirely)
+    //
+    // Higher = more nodes preserved. The slider goes left-to-right from
+    // "Approximate (fewer nodes)" to "Faithful (more nodes)" — and the
+    // most-faithful end is no algorithm at all. The mapping itself
+    // lives in Canvas (single source of truth at the point of use); this
+    // layer just stores the int.
+    int  boolean_cleanup_quality() const { return m_boolean_cleanup_quality; }
+    void set_boolean_cleanup_quality(int v);
 
-    // s139 m4: pass-2 triplet collapse on cleaned boolean output. Requires
-    // boolean_cleanup_enabled to be on (Canvas::boolean_op gates this);
-    // when set without cleanup, has no effect. Default off until the
-    // user opts in via the menu.
-    bool boolean_reduce_enabled() const { return m_boolean_reduce_enabled; }
-    void set_boolean_reduce_enabled(bool v);
+    // s141: one-shot first-launch flag. LibraryPanel checks this on every
+    // scan; if false, it creates the default category folders (arrows,
+    // shapes, icons, ui) under the user library dir and flips this true.
+    // Subsequent scans skip the seed pass, so a user who deletes a
+    // default category via the context menu doesn't see it auto-recreated
+    // on the next refresh.
+    bool library_defaults_seeded() const { return m_library_defaults_seeded; }
+    void set_library_defaults_seeded(bool v);
 
     // Emitted when any preference changes. Subscribers re-read the relevant
     // getter; the signal is intentionally parameterless to keep the ABI
@@ -67,8 +94,10 @@ private:
 
     std::string prefs_path() const;
 
-    bool m_boolean_cleanup_enabled = false;
-    bool m_boolean_reduce_enabled  = false;
+    // s143 m1 — quality slider replaces the s139 m2 enabled toggle.
+    // Default 5 = the s142 m6 hardcoded values (apex=15°, max_run=10).
+    int  m_boolean_cleanup_quality = 5;
+    bool m_library_defaults_seeded = false;
     sigc::signal<void()> m_sig_changed;
 };
 

@@ -5690,13 +5690,40 @@ void Canvas::boolean_op(BooleanOpType op) {
     return;
   }
 
-  // ── Sort candidates by layer index ascending (bottom-up = render order) ──
+  // ── Sort candidates by layer index DESCENDING ───────────────────────────
+  //
+  // Convention in this codebase (see paste handler at ~line 2862,
+  // "Insert into target layer (front = top of layer)"): new SceneNodes
+  // are inserted at children.begin() — i.e. the **top of the LayersPanel
+  // is index 0**, and higher indices are progressively older / further
+  // back in z-order. So children[0] is the most recently added shape,
+  // visually on top of everything below it; children.back() is the
+  // foundational, oldest, back-most shape in the layer.
+  //
+  // For boolean ops, the user's mental model is "the back-most thing is
+  // the subject (the dough); the front-most thing is the operator (the
+  // cookie cutter pressed down through it)" — Affinity / Illustrator
+  // convention. Subject = highest index; operator(s) = lower indices.
+  //
+  // Sort descending so candidates[0] is the highest index = back-most
+  // = subject. The Clipper2 wrapper takes operands[0] as subject for
+  // Subtract; for Union and Intersect order doesn't affect geometry but
+  // does affect style donation (operands[0] donates fill/stroke).
+  //
+  // (Earlier versions of this code sorted ascending and called the
+  // result "lowest-Z" — wrong, because in this codebase index 0 is
+  // front-most, not back-most. Symptom: little-oval-inside-big-rect
+  // Subtract produced an empty result because the oval was being
+  // treated as subject.)
   std::sort(
       candidates.begin(), candidates.end(),
-      [](const Candidate &a, const Candidate &b) { return a.index < b.index; });
+      [](const Candidate &a, const Candidate &b) { return a.index > b.index; });
 
   SceneNode *parent = common_parent;
-  int insert_idx = candidates[0].index; // result goes at lowest position
+  // Result lands at the highest index = back-most = where the subject
+  // was. After the descending erase loop below shifts everything, the
+  // clamp ensures we're never out of bounds.
+  int insert_idx = candidates[0].index;
 
   // ── Snapshot all originals for undo before any mutation ──────────────────
   std::vector<BooleanOpCommand::Original> originals;
@@ -5704,9 +5731,9 @@ void Canvas::boolean_op(BooleanOpType op) {
     originals.push_back({clone_node(*c.node), c.index});
 
   // ── Build per-operand subpath vectors ────────────────────────────────────
-  // s122 m3: walk all candidates (sorted bottom-up), produce one subpath
-  // vector per operand. Operand[0] is the lowest-Z; for Subtract that's
-  // the kept subject (Affinity convention).
+  // Walk all candidates (sorted descending = back-to-front), produce one
+  // subpath vector per operand. operand[0] is the back-most shape (the
+  // foundational subject for Subtract; the style donor for all ops).
   // A simple Path → 1 subpath. A Compound → N subpaths, one per child.
   auto collect_subpaths = [](SceneNode *n) -> std::vector<BezierPath> {
     std::vector<BezierPath> out;
@@ -5722,9 +5749,12 @@ void Canvas::boolean_op(BooleanOpType op) {
     return out;
   };
 
-  // Style source: lowest-Z candidate for Path; lowest-Z candidate's topmost
-  // child for Compound (Compound's own fill/stroke are ignored by convention
-  // in the rendering code — see SceneNode comment).
+  // Style source: candidates[0] is the back-most candidate (the subject)
+  // by the descending sort above. For a Path candidate that's it; for a
+  // Compound candidate we walk into its bottom-most child (Compound's
+  // own fill/stroke are ignored by rendering convention — see SceneNode
+  // comment).
+  //
   // s122 m5: capture the style as VALUES here, before the originals are
   // erased below. Holding `style_source` as a raw pointer through the
   // erase would dangle — for Compound candidates, style_source pointed
@@ -5770,9 +5800,22 @@ void Canvas::boolean_op(BooleanOpType op) {
            op_name, operands.size(), total_subs);
 
   // ── s140 m3 — ENRICH + CLIPPER2 + CLEANUP ───────────────────────────────
-  // When cleanup is on, run enrichment on the input operands (s140 m1
-  // validated), hand to Clipper2 (s140 m2 validated), then run
-  // cleanup_loop on each result.
+  // s143 m1: the user-facing quality slider (0..10) controls how
+  // aggressive the cleanup is, and includes a "raw Clipper2" position
+  // at the high end.
+  //
+  // Mapping is piecewise-linear with three anchor points so the slider's
+  // default position (q=5) lands exactly on the s142 m6 hardcoded
+  // defaults the algorithm was tuned around. q=10 short-circuits the
+  // algorithm entirely — most faithful to Clipper2 means not touching
+  // its output:
+  //
+  //   q = 0   → (apex=30°, max_run=20)   most aggressive cleanup
+  //   q = 5   → (apex=15°, max_run=10)   default — the s142 m6 anchor
+  //   q = 9   → (apex= 5°, max_run= 5)   gentlest cleanup the algo runs
+  //   q = 10  → cleanup bypassed entirely (raw Clipper2 polyline)
+  //
+  // Two linear segments cover [0..5] and [5..9]; q=10 is a hard cutoff.
   //
   // Cleanup walk (s140 m3 — single pass, no pass 2):
   //   - Compute keeper set from ORIGINAL (un-enriched) operand geometry.
@@ -5786,33 +5829,78 @@ void Canvas::boolean_op(BooleanOpType op) {
   //     authored handles + type — corner stays corner, smooth stays
   //     smooth). Intersections retract to Corner.
   //   - Delete every untagged node.
-  //
-  // Toggle off → no enrichment, no cleanup, raw Clipper2 path
-  // (pre-s139 behaviour).
+  int q = m_boolean_cleanup_quality;
+  if (q < 0)  q = 0;
+  if (q > 10) q = 10;
+  const bool cleanup_on = (q < 10);   // q=10 → raw Clipper2 (algo bypassed)
+  double apex_min_turn_deg = 0.0;
+  int    max_untagged_run  = 0;
+  if (cleanup_on) {
+    if (q <= 5) {
+      // [0..5]: 30°→15°,  20→10
+      const double t = double(q) / 5.0;              // 0 at q=0, 1 at q=5
+      apex_min_turn_deg = 30.0 - 15.0 * t;
+      max_untagged_run  =
+          static_cast<int>(std::lround(20.0 - 10.0 * t));
+    } else {
+      // [5..9]: 15°→5°,  10→5  (q=9 is gentlest the algo runs;
+      //                         q=10 doesn't reach this branch)
+      const double t = double(q - 5) / 4.0;          // 0 at q=5, 1 at q=9
+      apex_min_turn_deg = 15.0 - 10.0 * t;
+      max_untagged_run  =
+          static_cast<int>(std::lround(10.0 - 5.0 * t));
+    }
+  }
+
   std::vector<std::vector<BezierPath>> enriched_operands;
-  Curvz::refit::KeeperSet synthetic_guards;
+  Curvz::refit::KeeperSet m3_keepers;
   const auto* operands_for_clipper = &operands;
-  if (m_boolean_cleanup_enabled) {
-    Curvz::refit::enrich_operands(operands, enriched_operands, synthetic_guards);
+  if (cleanup_on) {
+    // s142 m4 — targeted enrichment on BOTH sides of every intersection.
+    // Inject intersection anchors + flanking triplet guards into every
+    // operand at its analytic intersection points. Originals away from
+    // intersections are not touched. Keepers built in the same call.
+    m3_keepers = Curvz::refit::enrich_at_intersections_and_build_keepers(
+        operands, enriched_operands, op);
     operands_for_clipper = &enriched_operands;
-    LOG_INFO("Canvas: boolean {} — s140 m3: enrichment ON, {} synthetic "
-             "guards across {} operands; handing enriched operands to Clipper2.",
-             op_name, synthetic_guards.size(), enriched_operands.size());
+    LOG_INFO("Canvas: boolean {} — s142 m4 targeted enrichment ON "
+             "(quality={}, apex={:.1f}°, max_run={}); "
+             "{} operands modified at their intersection points; "
+             "{} keepers ready for cleanup_loop_v4.",
+             op_name, q, apex_min_turn_deg, max_untagged_run,
+             (int)operands.size(), m3_keepers.size());
+  } else {
+    LOG_INFO("Canvas: boolean {} — quality={} → raw Clipper2 mode "
+             "(enrichment + cleanup both bypassed).",
+             op_name, q);
   }
 
   final_loops = Curvz::boolean_op_clipper(*operands_for_clipper, op);
 
-  if (m_boolean_cleanup_enabled && !final_loops.empty()) {
-    // Keepers from the ORIGINAL operand geometry (pre-enrichment).
-    // compute_keeper_set returns originals + intersections only — the
-    // SyntheticGuard category is not produced here. Guards are
-    // intentionally absent: they're transport, not destination.
-    auto keepers = Curvz::refit::compute_keeper_set(operands, op);
-    LOG_INFO("Canvas: boolean {} — s140 m3 cleanup: {} keepers across "
-             "{} loops",
-             op_name, keepers.size(), final_loops.size());
+  if (cleanup_on && !final_loops.empty()) {
+    // s142 m6 — keepers from m4 (both-sides intersection triplets) +
+    // apex pinning (m5) + span filler (m6).
+    //
+    // s143 m1 — apex_min_turn_deg and max_untagged_run are no longer
+    // hardcoded; they're derived from m_boolean_cleanup_quality (the
+    // user-facing slider).  See the mapping at the top of this block.
+    LOG_INFO("Canvas: boolean {} — cleanup: {} keepers across {} loops "
+             "(s142 m6 — apex+span_filler at apex>={:.1f}°, max_run={} "
+             "from quality={} via cleanup_loop_v4)",
+             op_name, m3_keepers.size(), final_loops.size(),
+             apex_min_turn_deg, max_untagged_run, q);
     for (auto &loop : final_loops) {
-      loop = Curvz::refit::cleanup_loop(std::move(loop), keepers);
+      // s142 m6 — using cleanup_loop_v4 with both promotion passes.
+      // Rollback options:
+      //   - To s142 m5 (apex only): hardcode max_untagged_run = 0 below.
+      //   - To s142 m4 (no promotion): change v4 → v3, drop tunables.
+      //   - To s142 m3 (subject-only triplets): also revert m4's
+      //     enrich_at_intersections_and_build_keepers loop.
+      //   - To s140 m3 (byte-for-byte): change v4 → cleanup_loop and
+      //     use compute_keeper_set instead.
+      loop = Curvz::refit::cleanup_loop_v4(std::move(loop), m3_keepers,
+                                           apex_min_turn_deg,
+                                           max_untagged_run);
     }
   }
 

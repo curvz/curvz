@@ -1,5 +1,5 @@
 #include "MainWindow.hpp"
-#include "AppPreferences.hpp"  // s139 m2 — boolean-cleanup pref + sync
+#include "AppPreferences.hpp"  // s139 m2 / s143 m1 — boolean-cleanup quality pref + sync
 #include <functional>
 #include <gtkmm/application.h>
 #include <gtkmm/separator.h>
@@ -625,21 +625,11 @@ void MainWindow::setup_menu() {
   path_menu->append("Union", "win.bool-union");
   path_menu->append("Subtract", "win.bool-subtract");
   path_menu->append("Intersect", "win.bool-intersect");
-  // s139 m2: post-pass cleanup toggle. Stateful (renders with checkmark).
-  // Lives in the same menu section as the boolean ops because it modifies
-  // their behaviour. Action is registered in the stateful-actions block
-  // below; persistence is via AppPreferences (~/.config/curvz/preferences.json).
-  // Default off during proof phase — flip on via this menu item; the next
-  // boolean op will run the keeper-set + cleanup_loop walk
-  // (math/BooleanOpsRefit.hpp) instead of returning the raw 139-node
-  // Clipper2 polyline output.
-  path_menu->append("Clean Boolean Output", "win.boolean-cleanup");
-  // s139 m4: pass-2 triplet collapse, gated on Clean Boolean Output also
-  // being on. Sits next to its prerequisite. The two toggles together
-  // produce the load-bearing-only minimum descriptive boolean output;
-  // either alone or both off are valid configurations for diagnostic
-  // and proof-phase work.
-  path_menu->append("Reduce Boolean Nodes", "win.boolean-reduce");
+  // s143 m1 — "Clean Boolean Output" menu toggle (s139 m2) removed.
+  // The boolean cleanup post-pass is now controlled by a quality slider
+  // in the inspector's Application group (build_app_section): slider at
+  // 0 disables cleanup, 1..10 scales faithfulness. No menu surface for
+  // this anymore — the inspector is the single point of control.
   auto path_compound = Gio::Menu::create();
   path_compound->append("Make Compound Path", "win.make-compound");
   path_compound->append("Split Compound Path", "win.split-compound");
@@ -1158,52 +1148,24 @@ void MainWindow::setup_menu() {
   // exclusively through Clipper2; hand-rolled engine is retained on
   // disk for reference but no longer wired to the action system.
 
-  // Path — boolean cleanup toggle (s139 m2, stateful).
-  // Persisted in AppPreferences. The initial state is read from the
-  // already-loaded preferences blob; the toggle handler updates the
-  // pref (which triggers a save) and syncs the canvas flag.
-  // The same cosmetic-accel rule applies as everywhere else here:
-  // there is no hotkey on this action, only a menu item.
+  // Path — boolean cleanup quality (s143 m1, replaces s139 m2 toggle).
+  // The user-facing control is a slider in the inspector's Application
+  // group (PropertiesPanel::build_app_section). This block does two
+  // things:
+  //   1. Seeds the Canvas's quality field from the loaded AppPreferences
+  //      value at startup (so the first boolean op uses the pref).
+  //   2. Connects to AppPreferences::signal_changed so any later slider
+  //      tug updates the Canvas before the next boolean op.
+  // The signal is parameterless and re-fires for every pref change
+  // (including ones that aren't quality), so we just re-read.
+  // No GAction, no menu item — the slider is the only surface.
   {
-    const bool initial =
-        AppPreferences::instance().boolean_cleanup_enabled();
-    m_canvas.set_boolean_cleanup_enabled(initial);
-    auto act_clean = Gio::SimpleAction::create_bool("boolean-cleanup", initial);
-    act_clean->signal_activate().connect(
-        [this, act_clean](const Glib::VariantBase &) {
-          const bool now =
-              !AppPreferences::instance().boolean_cleanup_enabled();
-          AppPreferences::instance().set_boolean_cleanup_enabled(now);
-          act_clean->set_state(Glib::Variant<bool>::create(now));
-          m_canvas.set_boolean_cleanup_enabled(now);
-          LOG_INFO("MainWindow: boolean cleanup toggled → {}", now);
-        });
-    add_action(act_clean);
-  }
-
-  // Path — boolean reduce toggle (s139 m4, stateful, pass 2).
-  // Same shape as the cleanup toggle. Reduces the C-C-C triplet structure
-  // produced by cleanup down to one node per triple. Gated at the call
-  // site (Canvas::boolean_op) on cleanup also being on; flipping reduce
-  // without cleanup has no effect on output, so we don't enforce the
-  // dependency here in the UI — the action is independently toggle-able
-  // and persisted, and the user can have any combination of (cleanup,
-  // reduce) without surprises.
-  {
-    const bool initial =
-        AppPreferences::instance().boolean_reduce_enabled();
-    m_canvas.set_boolean_reduce_enabled(initial);
-    auto act_reduce = Gio::SimpleAction::create_bool("boolean-reduce", initial);
-    act_reduce->signal_activate().connect(
-        [this, act_reduce](const Glib::VariantBase &) {
-          const bool now =
-              !AppPreferences::instance().boolean_reduce_enabled();
-          AppPreferences::instance().set_boolean_reduce_enabled(now);
-          act_reduce->set_state(Glib::Variant<bool>::create(now));
-          m_canvas.set_boolean_reduce_enabled(now);
-          LOG_INFO("MainWindow: boolean reduce toggled → {}", now);
-        });
-    add_action(act_reduce);
+    auto& prefs = AppPreferences::instance();
+    m_canvas.set_boolean_cleanup_quality(prefs.boolean_cleanup_quality());
+    prefs.signal_changed().connect([this]() {
+      m_canvas.set_boolean_cleanup_quality(
+          AppPreferences::instance().boolean_cleanup_quality());
+    });
   }
 
   auto act_zoom_in = Gio::SimpleAction::create("zoom-in");
@@ -1382,15 +1344,20 @@ Gtk::Box *MainWindow::make_section(const char *title, Gtk::Widget &child,
   // shared_ptr bool — owned by the closure, no raw new/delete needed
   auto open_flag = std::make_shared<bool>(expanded);
 
-  // Click anywhere on the header row to toggle
+  // s141: factor out the "apply this on/off state to the widgets and to
+  // the project field" logic into one closure. The click handler calls
+  // it with schedule_save=true; load_project calls it via m_sec_apply
+  // with schedule_save=false (we just loaded, no need to save right
+  // back). Keeping this in one place fixes a stale-state bug where
+  // load_project's sync_flag only flipped the in-memory bool, leaving
+  // the widget visibility from whatever setup_layout built it as.
   std::string sec_title = title;
-  auto gesture = Gtk::GestureClick::create();
-  gesture->signal_pressed().connect(
-      [this, arrow, body, sec_title, open_flag](int, double, double) {
-        bool on = !(*open_flag);
+  auto apply_state =
+      [this, arrow, body, sec_title, open_flag](bool on, bool save) {
         *open_flag = on;
         body->set_visible(on);
         arrow->set_text(on ? "▾" : "▸");
+        if (!m_project) return;
         if (sec_title == "Preview")
           m_project->sec_preview_open = on;
         else if (sec_title == "Layers")
@@ -1399,9 +1366,24 @@ Gtk::Box *MainWindow::make_section(const char *title, Gtk::Widget &child,
           m_project->sec_library_open = on;
         else if (sec_title == "Swatches")
           m_project->sec_swatches_open = on;
+        else if (sec_title == "Styles")
+          m_project->sec_styles_open = on;
         else if (sec_title == "Documents")
           m_project->sec_documents_open = on;
-        schedule_save();
+        if (save) schedule_save();
+      };
+
+  // Register a load-time setter so sync_flag in load_project can drive
+  // the widgets to match the saved state. The setter writes back to the
+  // project field but does NOT schedule_save — we just loaded, the
+  // value is already on disk.
+  m_sec_apply[sec_title] = [apply_state](bool on) { apply_state(on, false); };
+
+  // Click anywhere on the header row to toggle
+  auto gesture = Gtk::GestureClick::create();
+  gesture->signal_pressed().connect(
+      [apply_state, open_flag](int, double, double) {
+        apply_state(!(*open_flag), /*save=*/true);
       });
   hdr->add_controller(gesture);
 
@@ -1450,17 +1432,27 @@ MainWindow::make_group_section(const char *title, bool expanded,
 
   auto open_flag = std::make_shared<bool>(expanded);
 
+  // s141: same apply_state factoring as make_section. Group toggles only
+  // know about Content today; if more groups land later, add their
+  // sec_*_open writes here.
   std::string sec_title = title;
-  auto gesture = Gtk::GestureClick::create();
-  gesture->signal_pressed().connect(
-      [this, arrow, container, sec_title, open_flag](int, double, double) {
-        bool on = !(*open_flag);
+  auto apply_state =
+      [this, arrow, container, sec_title, open_flag](bool on, bool save) {
         *open_flag = on;
         container->set_visible(on);
         arrow->set_text(on ? "▾" : "▸");
+        if (!m_project) return;
         if (sec_title == "Content")
           m_project->sec_content_open = on;
-        schedule_save();
+        if (save) schedule_save();
+      };
+
+  m_sec_apply[sec_title] = [apply_state](bool on) { apply_state(on, false); };
+
+  auto gesture = Gtk::GestureClick::create();
+  gesture->signal_pressed().connect(
+      [apply_state, open_flag](int, double, double) {
+        apply_state(!(*open_flag), /*save=*/true);
       });
   hdr->add_controller(gesture);
 
@@ -1641,6 +1633,12 @@ void MainWindow::setup_layout() {
       [this](const std::string &dest_dir) {
         on_save_selection_to_library(dest_dir);
       });
+  // s141: per-project library category expansion state. LibraryPanel
+  // writes m_project->library_expanded_categories on each toggle and
+  // emits this signal; we route to schedule_save through the existing
+  // debounce so multiple rapid toggles coalesce into one save.
+  m_library.signal_request_save().connect(
+      [this]() { schedule_save(); });
   content.container->append(
       *make_section("Library", m_library, false, false, &m_sec_open_library));
 
@@ -1779,6 +1777,26 @@ void MainWindow::setup_layout() {
 
   // Initial ruler state (will also be refreshed when canvas draws first frame)
   update_rulers();
+
+  // s141: apply saved section open-state to the section widgets. The
+  // sections were just built with hardcoded expanded=false; without this
+  // pass, a returning user always sees their inspector sections collapsed
+  // regardless of how they left them. setup_project ran before
+  // setup_layout, so m_project carries the loaded values; m_sec_apply
+  // was registered as each section was built above.
+  if (m_project) {
+    auto apply_sec = [this](const std::string& title, bool on) {
+      auto it = m_sec_apply.find(title);
+      if (it != m_sec_apply.end()) it->second(on);
+    };
+    apply_sec("Content",   m_project->sec_content_open);
+    apply_sec("Layers",    m_project->sec_layers_open);
+    apply_sec("Library",   m_project->sec_library_open);
+    apply_sec("Swatches",  m_project->sec_swatches_open);
+    apply_sec("Styles",    m_project->sec_styles_open);
+    apply_sec("Documents", m_project->sec_documents_open);
+    apply_sec("Preview",   m_project->sec_preview_open);
+  }
 
   // Populate inspector from restored project state once widget is realized
   Glib::signal_idle().connect_once([this]() { refresh_inspector(); });
@@ -4058,6 +4076,26 @@ void MainWindow::load_project(std::unique_ptr<CurvzProject> project) {
   sync_flag(m_sec_open_styles,   m_project->sec_styles_open);
   sync_flag(m_sec_open_content, m_project->sec_content_open);
 
+  // s141: drive each section's widgets to match the loaded state. Without
+  // this, the bool flags above are correct but the body visibility and
+  // arrow glyphs stay in whatever state setup_layout built them — which
+  // is collapsed for everything since the section ctors hardcoded
+  // expanded=false. Apply via m_sec_apply (registered by make_section
+  // and make_group_section) so the visual state matches the saved
+  // state on every project load. The setters intentionally do not
+  // schedule_save — we just loaded, the value is already on disk.
+  auto apply_sec = [this](const std::string& title, bool on) {
+    auto it = m_sec_apply.find(title);
+    if (it != m_sec_apply.end()) it->second(on);
+  };
+  apply_sec("Content",   m_project->sec_content_open);
+  apply_sec("Layers",    m_project->sec_layers_open);
+  apply_sec("Library",   m_project->sec_library_open);
+  apply_sec("Swatches",  m_project->sec_swatches_open);
+  apply_sec("Styles",    m_project->sec_styles_open);
+  apply_sec("Documents", m_project->sec_documents_open);
+  apply_sec("Preview",   m_project->sec_preview_open);
+
   // Restore pane position — defer until after allocation
   Glib::signal_idle().connect_once([this]() {
     m_pane_ready = false;
@@ -4081,6 +4119,12 @@ void MainWindow::load_project(std::unique_ptr<CurvzProject> project) {
   });
 
   m_properties.set_project(m_project.get());
+
+  // s141: re-seed LibraryPanel from the new project's saved category
+  // expansion list. set_project clears m_expanded and repopulates it
+  // from m_project->library_expanded_categories. The next refresh
+  // (triggered by update_all_panels below) renders with the new state.
+  m_library.set_project(m_project.get());
 
   // Propagate project-wide snap to all docs on load
   for (auto &doc : m_project->documents)
@@ -4198,6 +4242,11 @@ void MainWindow::update_all_panels() {
   m_styles.set_library(&m_project->styles);   // S80 m4c
   m_styles.set_swatch_library(&m_project->swatches);  // S85 cont-3
   m_toolbar.set_swatch_library(&m_project->swatches);  // S91
+  // s141: refresh library so the freshly-seeded m_expanded (set by
+  // load_project's m_library.set_project call) takes visual effect.
+  // Without this, the panel still shows the previous project's
+  // expansion state — set_project only updates the in-memory map.
+  m_library.refresh();
   // S87 — restore the dropdown selection on project switch.
   m_styles.set_active_category(m_project->style_active_category,
                                m_project->style_active_is_app_tier);
