@@ -20,13 +20,17 @@
 #include <gtkmm/checkbutton.h>
 #include <gtkmm/dropdown.h>
 #include <gtkmm/entry.h>
+#include <gtkmm/eventcontrollerfocus.h>  // s145 m4 — focus-leave commit in path-row
 #include <gtkmm/eventcontrollerkey.h>
+#include <gtkmm/filedialog.h>    // s145 m4 — Browse button in path-override row
 #include <gtkmm/grid.h>
 #include <gtkmm/label.h>
 #include <gtkmm/spinbutton.h>
 #include <gtkmm/stringlist.h>
+#include <giomm/file.h>          // s145 m4 — FileDialog set_initial_folder/file
 #include <gdk/gdkkeysyms.h>      // GDK_KEY_Escape, GDK_KEY_Return
 #include <glibmm/main.h>         // s126: Glib::signal_idle for deferred delete
+#include <filesystem>            // s145 m4 — initial-folder seed in path-row
 
 namespace curvz::utils {
 
@@ -1009,6 +1013,329 @@ void show_form(Gtk::Window& parent,
                    callback) {
     build_dialog(parent, title, detail, fields, buttons,
                  default_button, cancel_button, std::move(callback));
+}
+
+// ── make_path_override_row ────────────────────────────────────────────
+// s145 m4 — single helper for path-override pref rows. The four
+// path-override prefs (library, templates, log, custom CSS) all share
+// this exact shape: label + Entry (current value, placeholder = default)
+// + Browse + Reset.
+//
+// Async lifetime note: the FileDialog is created locally and captured
+// by value into the callback lambda. The capture extends its lifetime
+// past the create_file/select_folder return. Same idiom as the
+// existing on_open / on_import_svg sites in MainWindow.cpp; works
+// because Glib::RefPtr is shared-ownership and the dialog's GTK
+// internals keep it alive while the dialog is showing.
+//
+// (FileDialog is NOT subject to the ColorDialog member-RefPtr rule
+// from s139 m1 — that rule is specific to ColorDialog's lifetime
+// quirk. Lambda-capture is the canonical FileDialog idiom.)
+Gtk::Widget* make_path_override_row(
+    const char* label_text,
+    const std::string& current_value,
+    const std::string& default_path,
+    const char* tooltip,
+    bool pick_folder,
+    Gtk::Window* dialog_parent,
+    std::function<void(const std::string&)> on_commit) {
+
+    auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+    row->add_css_class("prop-row");
+    row->set_spacing(6);
+    row->set_margin_start(6);
+    row->set_margin_end(6);
+    row->set_margin_top(2);
+    row->set_margin_bottom(2);
+
+    auto* key = Gtk::make_managed<Gtk::Label>(label_text);
+    key->add_css_class("prop-lbl");
+    key->set_xalign(0.0f);
+    row->append(*key);
+
+    auto* entry = Gtk::make_managed<Gtk::Entry>();
+    entry->set_text(current_value);
+    entry->set_placeholder_text(default_path);
+    entry->set_hexpand(true);
+    if (tooltip && *tooltip) entry->set_tooltip_text(tooltip);
+    row->append(*entry);
+
+    auto* browse = Gtk::make_managed<Gtk::Button>("Browse…");
+    browse->set_valign(Gtk::Align::CENTER);
+    browse->set_tooltip_text(pick_folder
+        ? "Browse for a folder"
+        : "Browse for a file");
+    row->append(*browse);
+
+    auto* reset = Gtk::make_managed<Gtk::Button>("Reset");
+    reset->set_valign(Gtk::Align::CENTER);
+    reset->set_tooltip_text("Clear the override and use the default path");
+    row->append(*reset);
+
+    // Commit on Enter / focus loss. Both routes funnel through here so
+    // the trim-and-store contract in AppPreferences setters does the
+    // actual normalisation; this layer is a dumb pass-through.
+    auto commit = [entry, on_commit]() {
+        on_commit(entry->get_text());
+    };
+    entry->signal_activate().connect(commit);
+    auto focus = Gtk::EventControllerFocus::create();
+    focus->signal_leave().connect(commit);
+    entry->add_controller(focus);
+
+    // Browse — async FileDialog, write result back into Entry then
+    // commit. The pick_folder flag picks select_folder vs open. If
+    // the user cancels, no commit happens (Entry stays as-is).
+    browse->signal_clicked().connect(
+        [dialog_parent, pick_folder, entry, on_commit, default_path]() {
+            auto dialog = Gtk::FileDialog::create();
+            dialog->set_title(pick_folder ? "Choose folder" : "Choose file");
+
+            // Initial folder: prefer the current Entry value's parent if
+            // it exists; else the default path's parent; else nothing.
+            std::string seed;
+            const std::string entry_text = entry->get_text();
+            if (!entry_text.empty())      seed = entry_text;
+            else if (!default_path.empty()) seed = default_path;
+            if (!seed.empty()) {
+                try {
+                    namespace fs = std::filesystem;
+                    fs::path p(seed);
+                    fs::path init = pick_folder ? p : p.parent_path();
+                    if (!init.empty() && fs::exists(init)) {
+                        dialog->set_initial_folder(
+                            Gio::File::create_for_path(init.string()));
+                    }
+                } catch (...) {}
+            }
+
+            auto handler = [dialog, entry, on_commit, pick_folder]
+                (Glib::RefPtr<Gio::AsyncResult>& result) {
+                try {
+                    auto file = pick_folder
+                        ? dialog->select_folder_finish(result)
+                        : dialog->open_finish(result);
+                    if (!file) return;
+                    const std::string path = file->get_path();
+                    // Defensive: PropertiesPanel rebuilds on every
+                    // selection change. If the row was destroyed
+                    // between Browse-click and dialog-confirm, the
+                    // managed Entry is gone. Detect by checking the
+                    // widget is still parented into a tree. If it
+                    // isn't, we still call on_commit — the
+                    // AppPreferences setter is a singleton, always
+                    // valid — but skip the Entry write.
+                    if (entry->get_parent() != nullptr) {
+                        entry->set_text(path);
+                    }
+                    on_commit(path);
+                } catch (...) {
+                    // User cancelled or platform error — nothing to do.
+                }
+            };
+
+            if (pick_folder) {
+                if (dialog_parent)
+                    dialog->select_folder(*dialog_parent, handler);
+                // else: no-op — dialog_parent is required for FileDialog
+                // in this codebase (no precedent for the no-parent overload).
+                // PropertiesPanel always has a parent window available.
+            } else {
+                if (dialog_parent)
+                    dialog->open(*dialog_parent, handler);
+            }
+        });
+
+    // Reset — clear and commit empty.
+    reset->signal_clicked().connect([entry, on_commit]() {
+        entry->set_text("");
+        on_commit("");
+    });
+
+    return row;
+}
+
+// ── Warp envelope presets ───────────────────────────────────────────────
+//
+// s146 m2: lifted from WarpDialog.cpp's anonymous namespace. See the
+// header for design notes.
+//
+// Anonymous-helper namespace below scopes the build_* helpers to this
+// translation unit. Only generate_warp_preset and the warp_presets
+// metadata API are exposed.
+namespace {
+
+using ::Curvz::BezierNode;
+using ::Curvz::PathData;
+
+// Helper to build a single anchor with colinear handles at distance dx
+// left and right. Produces a straight-segment cubic.
+BezierNode mk_straight(double x, double y, double dx_in, double dx_out) {
+    BezierNode n;
+    n.x = x; n.y = y;
+    n.cx1 = x - dx_in;  n.cy1 = y;
+    n.cx2 = x + dx_out; n.cy2 = y;
+    n.type = BezierNode::Type::Smooth;
+    return n;
+}
+
+// Build a flat (straight horizontal) envelope at y=fixed_y across
+// [bx, bx+bw] with `count` evenly-spaced anchors.
+PathData build_flat(double bx, double bw, double fixed_y, int count) {
+    PathData pd;
+    pd.closed = false;
+    if (count < 2) count = 2;
+    if (count > 4) count = 4;
+    double seg_span = bw / (count - 1);
+    double h = seg_span / 3.0;
+    for (int i = 0; i < count; ++i) {
+        double x = bx + (bw * i) / (count - 1);
+        double dx_in  = (i == 0)         ? 0.0 : h;
+        double dx_out = (i == count - 1) ? 0.0 : h;
+        pd.nodes.push_back(mk_straight(x, fixed_y, dx_in, dx_out));
+    }
+    return pd;
+}
+
+// Build an arced envelope: `count` anchors along the base y, with the
+// interior (non-endpoint) anchors displaced vertically by `amplitude`
+// (+ = down in Y-down, - = up). count==2 returns flat (no arc possible).
+PathData build_arc(double bx, double bw, double base_y,
+                   double amplitude, int count) {
+    if (count <= 2)
+        return build_flat(bx, bw, base_y, count);
+    PathData pd;
+    pd.closed = false;
+    if (count > 4) count = 4;
+    double seg_span = bw / (count - 1);
+    double h = seg_span / 3.0;
+    for (int i = 0; i < count; ++i) {
+        double x = bx + (bw * i) / (count - 1);
+        bool interior = (i != 0 && i != count - 1);
+        double y = interior ? (base_y + amplitude) : base_y;
+        BezierNode n;
+        n.x = x; n.y = y;
+        n.cx1 = (i == 0)         ? x : (x - h);
+        n.cy1 = y;
+        n.cx2 = (i == count - 1) ? x : (x + h);
+        n.cy2 = y;
+        n.type = BezierNode::Type::Smooth;
+        pd.nodes.push_back(n);
+    }
+    return pd;
+}
+
+// Build a perspective-trapezoidal envelope side: straight-line top or
+// bottom, but with x-span reduced by inset_factor on each end.
+PathData build_trapezoid_side(double bx, double bw, double fixed_y,
+                              double inset_factor, int count) {
+    double inset = bw * inset_factor * 0.5;
+    return build_flat(bx + inset, bw - 2.0 * inset, fixed_y, count);
+}
+
+// Build a wavy envelope using alternating vertical displacement.
+// Endpoints stay on base; interior anchors alternate +amp/-amp.
+// count<=2 falls back to flat (single segment can't wave).
+PathData build_wave(double bx, double bw, double base_y,
+                    double amplitude, int count) {
+    if (count <= 2)
+        return build_flat(bx, bw, base_y, count);
+    PathData pd;
+    pd.closed = false;
+    if (count > 4) count = 4;
+    double seg_span = bw / (count - 1);
+    double h = seg_span / 3.0;
+    for (int i = 0; i < count; ++i) {
+        double x = bx + (bw * i) / (count - 1);
+        bool interior = (i != 0 && i != count - 1);
+        double y = base_y;
+        if (interior) {
+            int interior_idx = i - 1;
+            y = base_y + ((interior_idx % 2 == 0) ? amplitude : -amplitude);
+        }
+        BezierNode n;
+        n.x = x; n.y = y;
+        n.cx1 = (i == 0)         ? x : (x - h);
+        n.cy1 = y;
+        n.cx2 = (i == count - 1) ? x : (x + h);
+        n.cy2 = y;
+        n.type = BezierNode::Type::Smooth;
+        pd.nodes.push_back(n);
+    }
+    return pd;
+}
+
+} // anonymous namespace
+
+namespace warp_presets {
+
+const char* const* preset_names() {
+    static const char* names[PRESET_COUNT] = {
+        "Flat", "Arc Up", "Arc Down", "Bulge",
+        "Squeeze", "Perspective Near", "Perspective Far", "Wave"
+    };
+    return names;
+}
+
+bool requires_three_anchors(int preset_idx) {
+    return preset_idx == WAVE;
+}
+
+} // namespace warp_presets
+
+void generate_warp_preset(int preset_idx,
+                          double bx, double by, double bw, double bh,
+                          int top_count, int bot_count,
+                          ::Curvz::PathData& top_env,
+                          ::Curvz::PathData& bot_env) {
+    double y_top    = by;             // smaller y (up in Y-down)
+    double y_bottom = by + bh;        // larger y (down in Y-down)
+    double amp      = bh * 0.25;      // 25% bbox height as arc amplitude
+    double insetF   = 0.30;           // 30% side-inset for perspective
+
+    using namespace warp_presets;
+    switch (preset_idx) {
+    case FLAT:
+    default:
+        top_env = build_flat(bx, bw, y_top,    top_count);
+        bot_env = build_flat(bx, bw, y_bottom, bot_count);
+        break;
+    case ARC_UP:
+        // Top curves up (smaller y), bottom straight
+        top_env = build_arc(bx, bw, y_top, -amp, top_count);
+        bot_env = build_flat(bx, bw, y_bottom, bot_count);
+        break;
+    case ARC_DOWN:
+        // Top straight, bottom curves down (larger y)
+        top_env = build_flat(bx, bw, y_top, top_count);
+        bot_env = build_arc(bx, bw, y_bottom, +amp, bot_count);
+        break;
+    case BULGE:
+        // Top curves up, bottom curves down → balloon
+        top_env = build_arc(bx, bw, y_top,    -amp, top_count);
+        bot_env = build_arc(bx, bw, y_bottom, +amp, bot_count);
+        break;
+    case SQUEEZE:
+        // Top curves down, bottom curves up → pinch
+        top_env = build_arc(bx, bw, y_top,    +amp, top_count);
+        bot_env = build_arc(bx, bw, y_bottom, -amp, bot_count);
+        break;
+    case PERSPECTIVE_NEAR:
+        // Top narrower than bottom (wide base, vanishing top)
+        top_env = build_trapezoid_side(bx, bw, y_top, insetF, top_count);
+        bot_env = build_flat(bx, bw, y_bottom, bot_count);
+        break;
+    case PERSPECTIVE_FAR:
+        // Bottom narrower than top
+        top_env = build_flat(bx, bw, y_top, top_count);
+        bot_env = build_trapezoid_side(bx, bw, y_bottom, insetF, bot_count);
+        break;
+    case WAVE:
+        // Both curves wave — requires count >= 3 to look like anything
+        top_env = build_wave(bx, bw, y_top,    -amp * 0.6, top_count);
+        bot_env = build_wave(bx, bw, y_bottom, +amp * 0.6, bot_count);
+        break;
+    }
 }
 
 } // namespace curvz::utils

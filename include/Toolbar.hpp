@@ -60,7 +60,10 @@ enum class ActiveTool {
   Corner,
   Polygon,
   Spiral,
-  Ruler,
+  Measure,   // s150: was "Ruler". The tool measures; the canvas
+             // edge strips that show tick marks are still rulers.
+             // Industry convention (Illustrator, Affinity, AutoCAD,
+             // Inkscape) names this tool "Measure".
   TextOnPath
 };
 
@@ -134,6 +137,16 @@ public:
 
   using SnapPopOpenSignal = sigc::signal<void()>;
   SnapPopOpenSignal &signal_snap_pop_open() { return m_sig_snap_pop_open; }
+
+  // s150 — Ruler / Measure settings signal. Fires when the user toggles
+  // either of the two measure prefs in the Ruler tool's right-click
+  // popover. Writes already happened directly on m_doc; this signal
+  // exists so MainWindow can schedule_save() and perform any cross-doc
+  // mirroring (currently none — measure prefs are per-doc only).
+  using MeasureSettingsSignal = sigc::signal<void()>;
+  MeasureSettingsSignal &signal_measure_settings_changed() {
+      return m_sig_measure_settings;
+  }
 
   // ── Align & Distribute ───────────────────────────────────────────────
   using AlignSignal = sigc::signal<void(AlignOp)>;
@@ -281,6 +294,18 @@ private:
   Gtk::Label* m_spiral_unit_lbl = nullptr;
   void build_polygon_popover(Gtk::ToggleButton *btn);
   void build_spiral_popover(Gtk::ToggleButton *btn);
+
+  // s150 — Measure tool right-click popover. Houses the two measure
+  // behaviour settings (save_to_layer, destruct_after_copy) that used
+  // to live in the inspector ▸ Document ▸ Measure section. Per
+  // ARC.md design rule 1: behaviour at the tool, not in the inspector.
+  // Writes go directly to m_doc->measure_*; signal_measure_settings_changed
+  // fires so MainWindow can schedule_save.
+  Gtk::Popover m_measure_pop;
+  Gtk::CheckButton* m_measure_save_chk = nullptr;
+  Gtk::CheckButton* m_measure_del_chk = nullptr;
+  Gtk::Label* m_measure_del_lbl = nullptr;
+  void build_measure_popover(Gtk::ToggleButton *measure_btn);
 
   // Line placement popover (Ctrl+click)
   Gtk::Popover m_line_pop;
@@ -452,6 +477,7 @@ private:
   SnapToggleSignal m_sig_snap;
   SnapSettingsSignal m_sig_snap_settings;
   SnapPopOpenSignal m_sig_snap_pop_open;
+  MeasureSettingsSignal m_sig_measure_settings;  // s150
   CurvzSwitch m_snap_switch;
 
   // Snap settings popover

@@ -1218,6 +1218,20 @@ button.tb-type-btn.tb-type-btn-active {
     text-transform: uppercase;
 }
 
+/* s147 m3: ThemesPanel library row. The themes-row class gives a small
+   bit of layout breathing room around each row. The selected state
+   tints the row with the accent colour — ToggleButton's built-in
+   active visual is too subtle in this theme to read as "this is the
+   apply source," so we add an explicit background tint via this
+   class which the panel toggles on/off based on the selected id. */
+.themes-row {
+    border-radius: 3px;
+    padding: 1px;
+}
+.themes-row-selected {
+    background-color: var(--accent-bg);
+}
+
 /* Group-level titles (Document / Object / Content) — bolder and brighter
    than inner section titles so top-level hierarchy reads at a glance. */
 .inspector-group-title {
@@ -1232,6 +1246,18 @@ button.tb-type-btn.tb-type-btn-active {
    so the collapsible hierarchy reads visually. */
 .inspector-group-container {
     padding-left: 15px;
+}
+
+/* s148 m2 fix3: indent the body of a nested disclosure (e.g. the
+   "Motif" disclosure in the Document group, which contains Canvas /
+   Margins / Grid / Guides as inner sections). 12px reads as a
+   distinct indent level beyond the group container's 15px without
+   stacking too deeply — the inner sections clearly belong to the
+   disclosure but don't run off the right edge. Apply via
+   add_css_class("inspector-disclosure-body") on the body returned
+   by add_collapsible() at the disclosure-builder call site. */
+.inspector-disclosure-body {
+    padding-left: 12px;
 }
 
 /* ── Right panels (Properties, Preview, Layers, Library) ─── */
@@ -1340,6 +1366,13 @@ label.accent {
     font-size: 11px;
     color: var(--fg-muted);
     font-family: monospace;
+}
+/* s150 — active display unit lives next to zoom in the status bar.
+   Bold + slightly more saturated colour so it reads at a glance,
+   peripheral-vision feedback for "what unit are my numbers in." */
+.statusbar-units-label {
+    font-weight: bold;
+    color: var(--fg-secondary);
 }
 
 /* ── Typography classes ──────────────────────────────────── */
@@ -1533,6 +1566,16 @@ list.navigation-sidebar > row:selected:hover { background-color: var(--hover-bg)
 .help-content scrolledwindow > viewport,
 scrolledwindow > viewport > .help-content {
     background-color: transparent;
+    color: var(--fg-primary);
+}
+
+/* s150: symbolic tool icons in help-page headings (e.g. the Pen / Measure
+   / Selection icons next to chapter titles). Rendered via icon-theme
+   set_from_icon_name so GTK applies symbolic recolouring; the
+   `color: ...` here is what GTK substitutes for the SVG's currentColor.
+   Without it, dark mode shows black-on-black because the raster path
+   would have baked in the SVG's native fill. */
+.help-symbolic-icon {
     color: var(--fg-primary);
 }
 

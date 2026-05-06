@@ -5,6 +5,7 @@
 #include "DocumentGallery.hpp"
 #include <functional>
 #include <map>      // s125 m1e: m_last_folders
+#include <unordered_map>  // s141: m_sec_apply
 #include <optional>
 #include <vector>
 #include "PropertiesPanel.hpp"
@@ -13,6 +14,7 @@
 #include "LibraryPanel.hpp"
 #include "SwatchesPanel.hpp"
 #include "StylesPanel.hpp"
+#include "ThemesPanel.hpp"
 #include "ContextBar.hpp"
 #include "DocTabBar.hpp"
 #include "CurvzProject.hpp"
@@ -21,7 +23,9 @@
 #include "ExportDialog.hpp"
 #include "StepRepeatDialog.hpp"
 #include "BlendDialog.hpp"
-#include "WarpDialog.hpp"
+// s146 m3 — WarpDialog removed; warp creation seeds from AppPreferences
+// (Application ▸ Warp inspector subsection) and editing happens entirely
+// in the Object ▸ Warp inspector section.
 #include "MacroManagerWindow.hpp"
 #include "MacroEditorWindow.hpp"
 #include "PrintManager.hpp"
@@ -83,6 +87,13 @@ private:
     void update_title();
     void update_rulers();
     void refresh_inspector();
+
+    // s144 m3 — Open Recent submenu rebuild. Called on every
+    // RecentProjects::signal_changed emit (project open, save-as,
+    // clear). remove_all() the stored m_recent_menu, then re-append
+    // one item per recents path plus a Clear Recent Projects entry.
+    // Cheap: typical list is 0..10 entries.
+    void rebuild_recents_menu();
     // s132 m2: single funnel for the StatusBar's "N objects · N nodes"
     // readout. Replaces five duplicated "iterate doc.layers, sum
     // children.size()" loops that all hardcoded `nodes=0`. Computes
@@ -134,7 +145,8 @@ private:
     void on_save_as();
     void on_save_as_template();
     void on_manage_templates();
-    void on_show_themes();             // S103 m3 — Project → Themes…
+    // s147 m3: on_show_themes removed — ThemesPanel in Content is the
+    // canonical surface, no menu entry / dialog version remains.
     void on_export_docs();             // S104 m1 — Project → Export Documents…
 
     // S104 m1 follow-on — NewDocumentDialog "Theme" dropdown helpers.
@@ -229,7 +241,6 @@ private:
     ExportDialog                  m_export_dialog;
     StepRepeatDialog              m_step_repeat_dialog;
     BlendDialog                   m_blend_dialog;
-    WarpDialog                    m_warp_dialog;
     MacroManagerWindow            m_macro_manager;
     MacroEditorWindow             m_macro_editor;
     PrintManager                  m_print_manager;
@@ -260,6 +271,17 @@ private:
     Gtk::HeaderBar      m_headerbar;
     Gtk::MenuButton     m_hamburger;   // ☰ — opens the app menu popover
     Gtk::Button         m_logo_btn;    // App logo — opens About dialog
+
+    // s144 m3 — Open Recent submenu. Held as a member so
+    // rebuild_recents_menu() can remove_all() and re-append on every
+    // RecentProjects::signal_changed emit. Same Gio::Menu instance for
+    // the lifetime of the window; only its contents churn.
+    Glib::RefPtr<Gio::Menu> m_recents_menu;
+    // Captured at action-creation so rebuild_recents_menu() can toggle
+    // the Clear Recent Projects entry's enabled state without a
+    // lookup_action_group() round-trip — that API has no precedent in
+    // this codebase, the direct ref is simpler and verifiable.
+    Glib::RefPtr<Gio::SimpleAction> m_recents_clear_action;
     Gtk::Box            m_root{Gtk::Orientation::VERTICAL};
     DocumentGallery     m_gallery;   // kept for thumbnail rendering only
     DocTabBar           m_doc_tabs;
@@ -318,6 +340,7 @@ private:
     LibraryPanel    m_library;
     SwatchesPanel   m_swatches;
     StylesPanel     m_styles;
+    ThemesPanel     m_themes;
     StatusBar       m_statusbar;
 
     // Inspector section open-state flags — set by make_section, used by load_project
@@ -327,7 +350,17 @@ private:
     std::shared_ptr<bool> m_sec_open_documents;
     std::shared_ptr<bool> m_sec_open_swatches;
     std::shared_ptr<bool> m_sec_open_styles;
+    std::shared_ptr<bool> m_sec_open_themes;
     std::shared_ptr<bool> m_sec_open_content;
+
+    // s141: per-section "apply visual state" setters keyed by section title.
+    // make_section / make_group_section register a closure here that flips
+    // body->set_visible + arrow text in lock-step with the open_flag.
+    // load_project calls each setter after sync_flag so the widgets match
+    // the just-loaded project's saved state. Without this, sync_flag only
+    // updates the in-memory bool — the widget tree stays in whatever state
+    // setup_layout built it in (collapsed by default).
+    std::unordered_map<std::string, std::function<void(bool)>> m_sec_apply;
 
     // App-level config (last opened project path)
     std::string config_path() const;

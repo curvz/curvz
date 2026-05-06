@@ -133,7 +133,6 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   r = add_row(m_keyboard_grid, "Ctrl+V", "Paste", r);
   r = add_row(m_keyboard_grid, "Ctrl+D", "Duplicate", r);
   r = add_row(m_keyboard_grid, "Alt+D", "Clone (duplicate, original stays)", r);
-  r = add_row(m_keyboard_grid, "Ctrl+Alt+D", "Step and Repeat…", r);
   r = add_row(m_keyboard_grid, "Del / Backspace", "Delete selected object or guide", r);
 
   // ── File ──────────────────────────────────────────────────────────────
@@ -215,6 +214,7 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   r = add_row(m_keyboard_grid, "Ctrl+Shift+U", "Union", r);
   r = add_row(m_keyboard_grid, "Ctrl+Shift+E", "Subtract", r);
   r = add_row(m_keyboard_grid, "Ctrl+Shift+I", "Intersect", r);
+  r = add_row(m_keyboard_grid, "Ctrl+Alt+D", "Step and Repeat…", r);
   r = add_row(m_keyboard_grid, "Ctrl+Shift+O", "Offset Path…", r);
   r = add_row(m_keyboard_grid, "Ctrl+Shift+X", "Expand Stroke", r);
   r = add_row(m_keyboard_grid, "Ctrl+Alt+T", "Convert Text to Path", r);
@@ -230,9 +230,9 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   r = add_row(m_keyboard_grid, "Enter", "Commit open path", r);
   r = add_row(m_keyboard_grid, "Escape", "Cancel / discard path", r);
 
-  // ── Ruler Tool ────────────────────────────────────────────────────────
+  // ── Measure Tool ──────────────────────────────────────────────────────
   r = add_spacer(m_keyboard_grid, r);
-  r = add_heading(m_keyboard_grid, "Ruler Tool", r);
+  r = add_heading(m_keyboard_grid, "Measure Tool", r);
   r = add_row(m_keyboard_grid, "Enter", "Place measurement annotation", r);
   r = add_row(m_keyboard_grid, "Space", "Clear and start new measurement", r);
 
@@ -265,7 +265,7 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   r = add_row(m_keyboard_grid, "K", "Corner tool", r);
   r = add_row(m_keyboard_grid, "G", "Polygon / Star tool", r);
   r = add_row(m_keyboard_grid, "W", "Spiral tool", r);
-  r = add_row(m_keyboard_grid, "M", "Ruler / Measure tool", r);
+  r = add_row(m_keyboard_grid, "M", "Measure tool", r);
   r = add_row(m_keyboard_grid, "Z", "Zoom tool", r);
   r = add_row(m_keyboard_grid, "Q", "Toggle snap", r);
   r = add_row(m_keyboard_grid, "↑ / ↓", "Cycle through toolbar tools (when nothing selected)", r);
@@ -411,9 +411,9 @@ Gtk::Widget &ShortcutsDialog::build_mouse_tab() {
   r = add_row(m_mouse_grid, "Right-click toolbar", "Place precisely (popover)", r);
   r = add_row(m_mouse_grid, "Properties panel", "Position precisely via X / Y", r);
 
-  // ── Ruler / Measure Tool ──────────────────────────────────────────────
+  // ── Measure Tool ──────────────────────────────────────────────────────
   r = add_spacer(m_mouse_grid, r);
-  r = add_heading(m_mouse_grid, "Ruler / Measure Tool  (M)", r);
+  r = add_heading(m_mouse_grid, "Measure Tool  (M)", r);
   r = add_row(m_mouse_grid, "Click node", "Select first point", r);
   r = add_row(m_mouse_grid, "Shift+click node", "Add second point", r);
   r = add_row(m_mouse_grid, "Drag", "Marquee-select two nodes", r);

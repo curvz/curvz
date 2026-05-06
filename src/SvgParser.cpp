@@ -1,5 +1,6 @@
 #include "SvgParser.hpp"
 #include "CurvzLog.hpp"
+#include "curvz_utils.hpp"  // s147 m2: warp_presets::PRESET_COUNT for preset clamp
 #include <fstream>
 #include <unordered_map>
 #include <map>
@@ -1386,6 +1387,17 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
             auto w_attr = attr(tag, "width");
             auto h_attr = attr(tag, "height");
 
+            // s150 fix1: measure behaviour prefs read from root <svg>
+            // attributes. Legacy files (pre-s150) carry these on the
+            // measure-layer wrapper instead; the layer-side read below
+            // is preserved as a fallback for that case. New writes
+            // always go to the root, so over time legacy files re-saved
+            // by a post-s150 binary migrate naturally.
+            if (attr(tag, "data-curvz-measure-save-to-layer") == "1")
+                doc->measure_save_to_layer = true;
+            if (attr(tag, "data-curvz-measure-destruct-after-copy") == "1")
+                doc->measure_destruct_after_copy = true;
+
             // Detect a physical-unit suffix on width/height ("1in", "25.4mm",
             // "2.54cm").  If present alongside a viewBox, the file was
             // exported from a Physical-mode canvas — reconstruct phys_width,
@@ -1688,6 +1700,38 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 } else {
                     wp->warp_quality = 4;
                 }
+                // s147 m2: preset provenance. Three attrs, all optional
+                // for forward-compat with older files. Defaults: preset
+                // = -1 (Custom), counts = 2 (matches default-constructed
+                // SceneNode values, set as fallback so older files
+                // without the attrs land on something sane).
+                auto pstr = attr(tag, "data-curvz-warp-preset");
+                if (!pstr.empty()) {
+                    int p = (int)dbl(pstr, -1.0);
+                    // Clamp to known preset range; out-of-range values
+                    // collapse to -1 (Custom) rather than crash on
+                    // future-format files with newer preset indices.
+                    if (p >= 0 && p < curvz::utils::warp_presets::PRESET_COUNT)
+                        wp->warp_preset_idx = p;
+                    else
+                        wp->warp_preset_idx = -1;
+                } else {
+                    wp->warp_preset_idx = -1;
+                }
+                auto tcstr = attr(tag, "data-curvz-warp-top-count");
+                if (!tcstr.empty()) {
+                    int tc = (int)dbl(tcstr, 2.0);
+                    wp->warp_top_count = std::clamp(tc, 2, 4);
+                } else {
+                    wp->warp_top_count = 2;
+                }
+                auto bcstr = attr(tag, "data-curvz-warp-bot-count");
+                if (!bcstr.empty()) {
+                    int bc = (int)dbl(bcstr, 2.0);
+                    wp->warp_bot_count = std::clamp(bc, 2, 4);
+                } else {
+                    wp->warp_bot_count = 2;
+                }
                 // Envelopes — decode attrs if present. Malformed input
                 // leaves the envelope empty; rebuild_warp_caches will
                 // seed a default identity from bbox on first draw.
@@ -1781,6 +1825,12 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 ml->color = "#22C55E";
                 if (attr(tag, "display") == "none") ml->visible = false;
                 if (attr(tag, "data-curvz-locked") == "1") ml->locked = true;
+                // s150 fix1: legacy fallback for pre-s150 files. New
+                // writes go to the root <svg> attrs (see svg-root parse
+                // above). Reading both sides means a pre-s150 file with
+                // the prefs on the layer still loads correctly; on next
+                // save the writer puts them on the root, completing the
+                // migration silently.
                 if (attr(tag, "data-curvz-save-to-layer") == "1")
                     doc->measure_save_to_layer = true;
                 if (attr(tag, "data-curvz-destruct-after-copy") == "1")

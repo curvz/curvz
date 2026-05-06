@@ -523,9 +523,14 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
     //   data-curvz-warp-quality="N"              — subdivision density (1..16)
     //   data-curvz-warp-env-top="..."            — encoded top envelope
     //   data-curvz-warp-env-bottom="..."         — encoded bottom envelope
+    //   data-curvz-warp-preset="N"               — last-applied preset (s147)
+    //   data-curvz-warp-top-count="N"            — anchor count fed to preset
+    //   data-curvz-warp-bot-count="N"            — anchor count fed to preset
     // Envelope attrs are omitted when empty so M1-stub files and newly-
     // constructed Warps (before first Apply of a dialog preset) round-
-    // trip as identity-warp fallbacks, matching pre-M6 behavior.
+    // trip as identity-warp fallbacks, matching pre-M6 behavior. Preset
+    // attr is omitted when warp_preset_idx == -1 (Custom — the implicit
+    // default), keeping hand-edited warps' SVG attribute set minimal.
     //
     // Single child: the source, tagged data-curvz-warp-role="source".
     // Caches (glyph_cache, warp_cache) are NOT emitted — derived-not-
@@ -538,6 +543,14 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         if (!obj.visible)              out << " display=\"none\"";
         if (obj.opacity < 0.999)       out << " opacity=\"" << fmt2(obj.opacity) << "\"";
         out << " data-curvz-warp-quality=\"" << obj.warp_quality << "\"";
+        // s147 m2: preset provenance. Emit preset only when set
+        // (Custom is the unmarked default). Counts always emit so a
+        // saved (Custom) warp still records what counts the inspector
+        // should show on reload.
+        if (obj.warp_preset_idx >= 0)
+            out << " data-curvz-warp-preset=\"" << obj.warp_preset_idx << "\"";
+        out << " data-curvz-warp-top-count=\"" << obj.warp_top_count << "\"";
+        out << " data-curvz-warp-bot-count=\"" << obj.warp_bot_count << "\"";
         std::string top_enc = encode_warp_envelope(obj.warp_env_top);
         std::string bot_enc = encode_warp_envelope(obj.warp_env_bottom);
         if (!top_enc.empty())
@@ -862,8 +875,17 @@ std::string write_svg(const CurvzDocument& doc) {
     out << "<svg xmlns=\"http://www.w3.org/2000/svg\""
         << " viewBox=\"" << vb << "\""
         << " width=\""  << wh << "\""
-        << " height=\"" << hh << "\""
-        << ">\n";
+        << " height=\"" << hh << "\"";
+    // s150 fix1: measure behaviour prefs are document-level, persist on
+    // the root <svg> rather than piggy-backing on the measure layer
+    // (which doesn't exist until the user saves a measurement). Pre-fix,
+    // toggling the popover before any measurement existed wrote to
+    // memory but never persisted.
+    if (doc.measure_save_to_layer)
+        out << " data-curvz-measure-save-to-layer=\"1\"";
+    if (doc.measure_destruct_after_copy)
+        out << " data-curvz-measure-destruct-after-copy=\"1\"";
+    out << ">\n";
 
     // ── S90 Stage 2 — gradient pre-pass ───────────────────────────────
     // Walk the tree once to collect every gradient FillStyle (fill +
@@ -1031,10 +1053,15 @@ std::string write_svg(const CurvzDocument& doc) {
             out << "  <g data-curvz-measure-layer=\"1\"";
             if (!layer.visible) out << " display=\"none\"";
             if (layer.locked)   out << " data-curvz-locked=\"1\"";
-            if (doc.measure_save_to_layer)
-                out << " data-curvz-save-to-layer=\"1\"";
-            if (doc.measure_destruct_after_copy)
-                out << " data-curvz-destruct-after-copy=\"1\"";
+            // s150 fix1: data-curvz-save-to-layer / data-curvz-destruct-
+            // after-copy moved off the measure-layer wrapper onto the
+            // root <svg> element. They're document-level prefs, not
+            // layer attributes, and the layer doesn't exist until the
+            // user saves a measurement (so emitting them here meant
+            // toggling the popover before any measurement existed
+            // didn't persist). Parser still reads the legacy
+            // layer-level attributes for backward compatibility — see
+            // SvgParser.cpp.
             // S110 m4: see guide-layer comment above — same fix here.
             if (!layer.internal_id.empty())
                 out << " data-curvz-iid=\"" << layer.internal_id << "\"";

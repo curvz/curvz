@@ -1,4 +1,5 @@
 #include "TemplateLibrary.hpp"
+#include "AppPreferences.hpp"  // s145 m4 — templates_path_override
 #include "CurvzLog.hpp"
 #include "PngExporter.hpp"
 #include "SvgParser.hpp"
@@ -40,8 +41,14 @@ static const char* k_default_categories[] = {
 };
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
-
+// s145 m4: consult AppPreferences::templates_path_override first; empty
+// override falls through to the historical built-in default. The seed
+// marker (.seeds_v1) and defaults.json all live under user_dir(), so a
+// path override naturally relocates the entire user-templates tier.
 std::string user_dir() {
+    const std::string& override_path =
+        AppPreferences::instance().templates_path_override();
+    if (!override_path.empty()) return override_path;
     return Glib::get_user_config_dir() + std::string("/curvz/templates");
 }
 

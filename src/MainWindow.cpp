@@ -1,6 +1,8 @@
 #include "MainWindow.hpp"
 #include "AppPreferences.hpp"  // s139 m2 / s143 m1 — boolean-cleanup quality pref + sync
+#include "RecentProjects.hpp"  // s144 m3 — Open Recent submenu
 #include <functional>
+#include <giomm/simpleactiongroup.h>  // s144 m3 — recents action group
 #include <gtkmm/application.h>
 #include <gtkmm/separator.h>
 #include "ContextBar.hpp"
@@ -14,7 +16,10 @@
 #include "SvgParser.hpp"
 #include "SvgWriter.hpp"
 #include "TemplateLibrary.hpp"
-#include "ThemesDialog.hpp"
+// s147 m3: ThemesDialog include removed — surface is now ThemesPanel
+// (already pulled in via MainWindow.hpp). The dialog source files
+// remain in the tree until Scott deletes them on his end; CMake no
+// longer references them in this milestone.
 #include "ExportDocsDialog.hpp"
 #include "UnitSystem.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2: apply_motif_class_from_parent
@@ -90,15 +95,27 @@ MainWindow::MainWindow(Application & /*app*/) {
   Gtk::StyleContext::add_provider_for_display(
       get_display(), css, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-  // User stylesheet — ~/.config/curvz/styles.css
+  // User stylesheet — default ~/.config/curvz/styles.css, or the
+  // user's custom_css_path_override if set (s145 m4). When the
+  // override is in effect we skip the dir-create and stub-seed
+  // steps: the user has explicitly pointed at a file they own,
+  // so we read it if present and silently fall through if not.
+  const std::string& css_override =
+      AppPreferences::instance().custom_css_path_override();
+  const bool css_is_override = !css_override.empty();
+
   fs::path user_css_dir  = fs::path(Glib::get_user_config_dir()) / "curvz";
-  fs::path user_css_path = user_css_dir / "styles.css";
+  fs::path user_css_path = css_is_override
+                               ? fs::path(css_override)
+                               : (user_css_dir / "styles.css");
   std::error_code ec;
-  fs::create_directories(user_css_dir, ec);
-  if (ec) {
+  if (!css_is_override) {
+    fs::create_directories(user_css_dir, ec);
+  }
+  if (!css_is_override && ec) {
     LOG_WARN("User CSS: cannot create '{}': {}",
              user_css_dir.string(), ec.message());
-  } else if (!fs::exists(user_css_path)) {
+  } else if (!css_is_override && !fs::exists(user_css_path)) {
     // First-run seed — commented stub that explains usage.
     static const char *USER_CSS_STUB =
       "/* Curvz user stylesheet\n"
@@ -129,6 +146,9 @@ MainWindow::MainWindow(Application & /*app*/) {
     } else {
       LOG_WARN("User CSS: cannot write '{}'", user_css_path.string());
     }
+  }
+  if (css_is_override) {
+    LOG_INFO("User CSS: using override path '{}'", user_css_path.string());
   }
 
   if (fs::exists(user_css_path)) {
@@ -180,6 +200,15 @@ MainWindow::MainWindow(Application & /*app*/) {
   setup_menu();
   setup_layout();
   connect_signals();
+
+  // s145 m1 — apply boot-time ruler visibility to the actual widgets.
+  // setup_menu() seeded m_rulers_visible from AppPreferences, and
+  // setup_layout() built the ruler widgets (which default visible).
+  // Push the seeded value through to the widgets so a pref of `false`
+  // boots with rulers hidden. The action's state was already set
+  // correctly when it was created in setup_menu, so the menu checkmark
+  // matches.
+  toggle_rulers(m_rulers_visible);
 
   LOG_INFO("MainWindow created");
 }
@@ -530,6 +559,15 @@ void MainWindow::setup_headerbar() {
 }
 
 void MainWindow::setup_menu() {
+  // s145 m1 — seed ruler visibility from the user pref before the
+  // toggle-rulers action below picks up its initial state. AppPreferences
+  // is loaded by Application::on_activate before MainWindow is
+  // constructed, so the value is available here. Per-session Ctrl+R
+  // toggling flips m_rulers_visible without writing back to the pref;
+  // the pref controls only the boot state. The actual ruler-widget
+  // visibility is applied after setup_layout() runs (see constructor).
+  m_rulers_visible = AppPreferences::instance().show_rulers_by_default();
+
   // ── Build Gio::Menu ────────────────────────────────────────────────────
   auto menu = Gio::Menu::create();
 
@@ -538,6 +576,12 @@ void MainWindow::setup_menu() {
   file_menu->append("New Project…", "win.new-project");
   file_menu->append("Add to Project…", "win.new");
   file_menu->append("Open…", "win.open");
+  // s144 m3 — Open Recent submenu. Sits right after Open… to match
+  // Photoshop / Illustrator / VS Code conventions. Built empty here;
+  // populated by rebuild_recents_menu() which runs at construction
+  // time below and on every RecentProjects::signal_changed emit.
+  m_recents_menu = Gio::Menu::create();
+  file_menu->append_submenu("Open Recent", m_recents_menu);
   // s125 m1d: "Open Image…" sits next to "Open…" because the user model
   // is "open this image as a document" — both verbs create a new doc.
   // Earlier m1c put this in the I/O section as "Place Image as Document…",
@@ -577,7 +621,11 @@ void MainWindow::setup_menu() {
   edit_sep->append("Paste", "win.paste");
   edit_sep->append("Duplicate", "win.duplicate");
   edit_sep->append("Clone", "win.clone");
-  edit_sep->append("Step and Repeat…", "win.step-repeat");
+  // s146 m1: Step and Repeat moved to Path submenu. It's a destructive
+  // transform (selection + params → N new objects, no persistent
+  // re-editable container, atomic undo) — same shape as Boolean ops, so
+  // it now sits with them in Path. Action name (win.step-repeat) and
+  // hotkey (Ctrl+Alt+D) are unchanged; only the menu position moved.
   edit_menu->append_section("", edit_sep);
   auto edit_section = Gio::Menu::create();
   edit_section->append_submenu("Edit", edit_menu);
@@ -625,6 +673,11 @@ void MainWindow::setup_menu() {
   path_menu->append("Union", "win.bool-union");
   path_menu->append("Subtract", "win.bool-subtract");
   path_menu->append("Intersect", "win.bool-intersect");
+  // s146 m1: Step and Repeat lives with the Booleans because it has the
+  // same shape — destructive transform on the selection that produces N
+  // new objects, no persistent re-editable container, single atomic undo.
+  // Was in Edit menu's clipboard section through s145; honest home is here.
+  path_menu->append("Step and Repeat…", "win.step-repeat");
   // s143 m1 — "Clean Boolean Output" menu toggle (s139 m2) removed.
   // The boolean cleanup post-pass is now controlled by a quality slider
   // in the inspector's Application group (build_app_section): slider at
@@ -707,7 +760,10 @@ void MainWindow::setup_menu() {
   // here. Future tenants might include "Project Settings…" or
   // "Migrate project…" if we ever need them.
   auto project_menu = Gio::Menu::create();
-  project_menu->append("Themes…", "win.show-themes");
+  // s147 m3: "Themes…" entry removed — the Themes Content panel
+  // (always-visible in the right pane) IS the surface. A menu entry
+  // that opened a dialog version of a panel makes no sense under the
+  // discovery-not-commit reframe.
   project_menu->append("Export Documents…", "win.export-docs");
   auto project_section = Gio::Menu::create();
   project_section->append_submenu("Project", project_menu);
@@ -774,11 +830,8 @@ void MainWindow::setup_menu() {
       [this](const Glib::VariantBase &) { on_manage_templates(); });
   add_action(act_manage_templates);
 
-  // S103 m3 — Project → Themes…
-  auto act_show_themes = Gio::SimpleAction::create("show-themes");
-  act_show_themes->signal_activate().connect(
-      [this](const Glib::VariantBase &) { on_show_themes(); });
-  add_action(act_show_themes);
+  // s147 m3: show-themes action removed alongside the menu entry.
+  // ThemesPanel in Content is the canonical surface.
 
   // S104 m1 — Project → Export Documents…
   auto act_export_docs = Gio::SimpleAction::create("export-docs");
@@ -1239,6 +1292,54 @@ void MainWindow::setup_menu() {
       [this](const Glib::VariantBase &) { on_quit(); });
   add_action(act_quit);
 
+  // ── s144 m3: Open Recent action group ─────────────────────────────────
+  // Recents items invoke recents.open(<path>) — a parameterised string
+  // action. Using an action group (rather than win.open-recent) mirrors
+  // SwatchesPanel's load-bundled / load-user pattern, which is the only
+  // proven parameterised-action shape in this codebase.
+  //
+  // The path is the .curvz directory (matches CurvzProject::open).
+  // Missing-on-disk pruning happens at RecentProjects::load (boot) and
+  // at the action handler (defensive — file could be deleted while the
+  // menu is open). Either way, a clean log line, no crash.
+  auto recents_group = Gio::SimpleActionGroup::create();
+  recents_group->add_action_with_parameter(
+      "open", Glib::VariantType("s"),
+      [this](const Glib::VariantBase& param) {
+        auto str_v = Glib::VariantBase::cast_dynamic<
+            Glib::Variant<Glib::ustring>>(param);
+        std::string path = str_v.get();
+        if (path.empty()) return;
+        if (!fs::exists(path)) {
+          LOG_WARN("recents.open: '{}' no longer exists — pruning", path);
+          RecentProjects::instance().remove(path);
+          return;
+        }
+        auto project = CurvzProject::open(path);
+        if (!project) {
+          LOG_ERROR("recents.open: failed to open '{}'", path);
+          return;
+        }
+        load_project(std::move(project));
+      });
+  // Build clear as a SimpleAction directly so we can hold a ref and
+  // toggle enabled state from rebuild_recents_menu without touching
+  // group-lookup machinery.
+  m_recents_clear_action = Gio::SimpleAction::create("clear");
+  m_recents_clear_action->signal_activate().connect(
+      [](const Glib::VariantBase&) { RecentProjects::instance().clear(); });
+  recents_group->add_action(m_recents_clear_action);
+  insert_action_group("recents", recents_group);
+
+  // Subscribe to recents-list churn so the submenu stays in sync. The
+  // signal is parameterless; we just rebuild from the current paths().
+  RecentProjects::instance().signal_changed().connect(
+      [this]() { rebuild_recents_menu(); });
+
+  // Initial population — list was loaded at Application::on_activate, so
+  // the in-memory state is already correct; this just paints it.
+  rebuild_recents_menu();
+
   // ── Attach popover to hamburger button ────────────────────────────────
   auto popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
   m_hamburger.set_popover(*popover);
@@ -1270,9 +1371,83 @@ void MainWindow::toggle_rulers(bool visible) {
   LOG_DEBUG("Rulers {}", visible ? "shown" : "hidden");
 }
 
+// s144 m3 — Open Recent submenu rebuild.
+//
+// Called from setup_menu (initial population) and from
+// RecentProjects::signal_changed (every list churn — add, remove, clear).
+// Same Gio::Menu instance is recycled — remove_all() then re-append.
+//
+// Display name policy: strip trailing ".curvz" from the folder basename
+// because every project is a .curvz folder and the suffix is noise.
+// /home/scott/icons/Folio.curvz → "Folio".
+//
+// Disambiguation: when two entries have identical display names but
+// different parent paths (e.g. ~/work/Folio.curvz and ~/personal/Folio.curvz),
+// append a parenthesised parent path to both so the user can tell them
+// apart. Cheap O(N²) check; N ≤ 50 by max-count clamp.
+//
+// Clear Recent Projects sits in its own Gio::Menu section so the
+// separator renders without manual styling. The action is greyed via
+// recents.clear's enabled state — toggled here based on list emptiness.
+void MainWindow::rebuild_recents_menu() {
+  if (!m_recents_menu) return;
+
+  m_recents_menu->remove_all();
+
+  const auto& paths = RecentProjects::instance().paths();
+
+  // Build display names with disambiguation.
+  std::vector<std::string> names(paths.size());
+  for (size_t i = 0; i < paths.size(); ++i) {
+    std::string stem = fs::path(paths[i]).filename().string();
+    // Strip ".curvz" suffix if present.
+    const std::string ext = ".curvz";
+    if (stem.size() > ext.size() &&
+        stem.compare(stem.size() - ext.size(), ext.size(), ext) == 0)
+      stem.resize(stem.size() - ext.size());
+    names[i] = stem;
+  }
+  // Disambiguate collisions by appending the parent dir.
+  for (size_t i = 0; i < names.size(); ++i) {
+    for (size_t j = i + 1; j < names.size(); ++j) {
+      if (names[i] == names[j]) {
+        // Only annotate the ones that collide; leave others bare.
+        std::string p_i = fs::path(paths[i]).parent_path().filename().string();
+        std::string p_j = fs::path(paths[j]).parent_path().filename().string();
+        if (!p_i.empty()) names[i] += "  (" + p_i + ")";
+        if (!p_j.empty()) names[j] += "  (" + p_j + ")";
+      }
+    }
+  }
+
+  // Append items. Each item carries the path as a string Variant target so
+  // recents.open(<path>) receives it directly via the action handler.
+  for (size_t i = 0; i < paths.size(); ++i) {
+    auto item = Gio::MenuItem::create(names[i], "");
+    item->set_action_and_target("recents.open",
+                                Glib::Variant<Glib::ustring>::create(paths[i]));
+    m_recents_menu->append_item(item);
+  }
+
+  // Clear Recent Projects — only meaningful when there's something to clear.
+  // append_section with an empty heading renders the separator.
+  auto clear_section = Gio::Menu::create();
+  clear_section->append("Clear Recent Projects", "recents.clear");
+  m_recents_menu->append_section("", clear_section);
+
+  // Toggle the clear action's enabled state to grey out the row when empty.
+  if (m_recents_clear_action)
+    m_recents_clear_action->set_enabled(!paths.empty());
+}
+
 void MainWindow::setup_project() {
+  // s144 m2 — Reopen-last-project pref. When false, skip the
+  // last-project lookup entirely and fall through to the blank-project
+  // branch. The pref defaults to true so existing users (and anyone
+  // without preferences.json yet) keep the historical behaviour.
+  bool reopen = AppPreferences::instance().reopen_last_project();
   // Try to reopen last project
-  std::string last = load_last_project_path();
+  std::string last = reopen ? load_last_project_path() : std::string{};
   if (!last.empty() && fs::exists(last)) {
     auto project = CurvzProject::open(last);
     if (project) {
@@ -1289,6 +1464,11 @@ void MainWindow::setup_project() {
       // a later trigger (active-doc switch, inspector edit) — meaning
       // the app boots dark even when the project says Light.
       apply_motif_to_window();
+      // s144 m3 — startup auto-reopen routes around load_project(), so
+      // record-recent here too. add() promotes the entry to front (it's
+      // probably already at index 0 from last session, but make-it-so).
+      if (!m_project->directory.empty())
+        RecentProjects::instance().add(m_project->directory);
       return;
     }
   }
@@ -1368,6 +1548,8 @@ Gtk::Box *MainWindow::make_section(const char *title, Gtk::Widget &child,
           m_project->sec_swatches_open = on;
         else if (sec_title == "Styles")
           m_project->sec_styles_open = on;
+        else if (sec_title == "Themes")
+          m_project->sec_themes_open = on;
         else if (sec_title == "Documents")
           m_project->sec_documents_open = on;
         if (save) schedule_save();
@@ -1745,6 +1927,40 @@ void MainWindow::setup_layout() {
   content.container->append(
       *make_section("Styles", m_styles, false, false, &m_sec_open_styles));
 
+  // Themes panel — s147 m3 replacement for ThemesDialog. Project-scoped
+  // library + apply-to-targets flow, always-visible. on_changed routes
+  // canvas redraw + inspector refresh + save schedule, same as the
+  // dialog's callback used to.
+  //
+  // s147 m3 fix1: set_project must run HERE, at setup_layout time —
+  // sister panels call set_library on their respective project members
+  // here too. Without this, m_project stays null until update_all_panels
+  // fires (which only happens on doc add/delete or project switch — not
+  // initial startup), so the [+] button silently early-returns. Setup
+  // order matters: history first (stable address), project last (which
+  // also runs the initial refresh via set_project's body).
+  m_themes.set_history(&m_history);
+  m_themes.set_on_changed([this]() {
+    // s147 m3 fix8: themes can mutate scene structure (grid/margin
+    // layers added or removed by apply_theme_to_doc) and shift fields
+    // the canvas reads live (guide colors, snap settings). queue_draw
+    // alone repaints, but doesn't run the structural cascade — the
+    // layers panel, status counts, ruler ticks, etc. need
+    // notify_document_changed to refresh. Without it, the active
+    // doc's canvas keeps showing pre-apply state until the user
+    // switches docs or makes an unrelated edit. Same fix the dialog
+    // version probably needed too — Scott reports it surfaced once
+    // themes moved to a panel where the user stays on the same doc
+    // through apply.
+    m_canvas.queue_draw();
+    m_canvas.notify_document_changed();
+    refresh_inspector();
+    schedule_save();
+  });
+  m_themes.set_project(m_project.get());
+  content.container->append(
+      *make_section("Themes", m_themes, false, false, &m_sec_open_themes));
+
   content.container->append(*make_section("Documents", m_gallery, false, false,
                                           &m_sec_open_documents));
 
@@ -1794,6 +2010,7 @@ void MainWindow::setup_layout() {
     apply_sec("Library",   m_project->sec_library_open);
     apply_sec("Swatches",  m_project->sec_swatches_open);
     apply_sec("Styles",    m_project->sec_styles_open);
+    apply_sec("Themes",    m_project->sec_themes_open);
     apply_sec("Documents", m_project->sec_documents_open);
     apply_sec("Preview",   m_project->sec_preview_open);
   }
@@ -1822,11 +2039,22 @@ void MainWindow::connect_signals() {
   m_doc_tabs.signal_add_doc().connect([this]() {
     if (!m_project)
       return;
+    // s148 m1: preview colours from active doc (re-promoted to per-doc).
+    // Falls back to dark struct defaults when no active doc — the new-
+    // doc dialog won't have a meaningful "match what user is looking
+    // at" reference in that case anyway.
+    auto *active = m_project->active_doc();
+    double pv_ws_r = 0.09,  pv_ws_g = 0.09,  pv_ws_b = 0.09;
+    double pv_ab_r = 0.157, pv_ab_g = 0.157, pv_ab_b = 0.157;
+    if (active) {
+      pv_ws_r = active->workspace_bg_r; pv_ws_g = active->workspace_bg_g; pv_ws_b = active->workspace_bg_b;
+      pv_ab_r = active->artboard_bg_r;  pv_ab_g = active->artboard_bg_g;  pv_ab_b = active->artboard_bg_b;
+    }
     m_new_doc_dialog.show(*this, ndd_available_themes(),
         m_project->motif == Motif::Light ? templates::MotifTag::Light
                                          : templates::MotifTag::Dark,
-        m_project->workspace_r(), m_project->workspace_g(), m_project->workspace_b(),
-        m_project->artboard_r(),  m_project->artboard_g(),  m_project->artboard_b(),
+        pv_ws_r, pv_ws_g, pv_ws_b,
+        pv_ab_r, pv_ab_g, pv_ab_b,
         [this](std::unique_ptr<CurvzDocument> seed,
                std::string name,
                std::optional<theme::ThemeId> theme_id) {
@@ -1892,12 +2120,21 @@ void MainWindow::connect_signals() {
   m_gallery.signal_add_doc().connect([this]() {
     if (!m_project)
       return;
-    // Show canvas settings dialog then add new doc to project
+    // Show canvas settings dialog then add new doc to project.
+    // s148 m1: preview colours from active doc (see twin block above
+    // at signal_add_doc — same pattern).
+    auto *active = m_project->active_doc();
+    double pv_ws_r = 0.09,  pv_ws_g = 0.09,  pv_ws_b = 0.09;
+    double pv_ab_r = 0.157, pv_ab_g = 0.157, pv_ab_b = 0.157;
+    if (active) {
+      pv_ws_r = active->workspace_bg_r; pv_ws_g = active->workspace_bg_g; pv_ws_b = active->workspace_bg_b;
+      pv_ab_r = active->artboard_bg_r;  pv_ab_g = active->artboard_bg_g;  pv_ab_b = active->artboard_bg_b;
+    }
     m_new_doc_dialog.show(*this, ndd_available_themes(),
         m_project->motif == Motif::Light ? templates::MotifTag::Light
                                          : templates::MotifTag::Dark,
-        m_project->workspace_r(), m_project->workspace_g(), m_project->workspace_b(),
-        m_project->artboard_r(),  m_project->artboard_g(),  m_project->artboard_b(),
+        pv_ws_r, pv_ws_g, pv_ws_b,
+        pv_ab_r, pv_ab_g, pv_ab_b,
         [this](std::unique_ptr<CurvzDocument> seed,
                std::string name,
                std::optional<theme::ThemeId> theme_id) {
@@ -2172,6 +2409,15 @@ void MainWindow::connect_signals() {
   m_properties.signal_request_release_blend().connect(
       [this]() { m_canvas.release_blend(); });
 
+  // s146 m2 — Warp section's Release / Flatten buttons. Same single-
+  // source-of-truth approach: route to the existing on_warp_release /
+  // on_warp_flatten handlers used by the Path menu entries. Selection
+  // is guaranteed to be a Warp when these buttons exist.
+  m_properties.signal_request_release_warp().connect(
+      [this]() { on_warp_release(); });
+  m_properties.signal_request_flatten_warp().connect(
+      [this]() { on_warp_flatten(); });
+
   // S91 Inspector → Edit gradient → open the modal GradientDialog.
   // The inspector packages "what to do on Apply" as the apply_cb
   // closure (writes back via mutate_appearance + EditAppearanceCommand
@@ -2276,6 +2522,10 @@ void MainWindow::connect_signals() {
     m_canvas.zoom_fit();
     m_canvas.queue_draw();
     schedule_save();
+    // s150: status bar carries the active unit; refresh on any
+    // canvas change (the Units dropdown is the trigger that matters,
+    // but other CanvasModel edits land here too — cheap to refresh).
+    update_title();
     LOG_INFO("Canvas changed: {}×{} quality={} ratio={:.4g}:{:.4g}",
              cm.canvas_width(), cm.canvas_height(), cm.quality, cm.ratio_w,
              cm.ratio_h);
@@ -2539,6 +2789,16 @@ void MainWindow::connect_signals() {
     m_canvas.queue_draw();
     schedule_save();
     Glib::signal_idle().connect_once([this]() { refresh_inspector(); });
+  });
+
+  // s150 — Ruler / Measure settings popover signal. Toolbar wrote
+  // directly to doc->measure_* already; we just need to schedule_save.
+  // No project mirror, no cross-doc apply (measure prefs are per-doc).
+  // No inspector refresh (the inspector Measure section was deleted in
+  // s150; no remaining UI surface to refresh).
+  m_toolbar.signal_measure_settings_changed().connect([this]() {
+    if (!m_project) return;
+    schedule_save();
   });
 
   // ── Align & Distribute ───────────────────────────────────────────────────
@@ -3027,7 +3287,7 @@ void MainWindow::connect_signals() {
         // ── Space press — forward to canvas for Space+drag pan ──────────────
         // In Ruler tool, space clears the current measurement for a fresh pick.
         if (kv == GDK_KEY_space) {
-          if (m_canvas.active_tool() == ActiveTool::Ruler) {
+          if (m_canvas.active_tool() == ActiveTool::Measure) {
             m_canvas.ruler_clear();
             return true;
           }
@@ -3209,7 +3469,7 @@ void MainWindow::connect_signals() {
           m_canvas.commit_pen_path();
           m_canvas.commit_line_path();
           m_canvas.commit_text_edit();
-          if (m_canvas.active_tool() == ActiveTool::Ruler)
+          if (m_canvas.active_tool() == ActiveTool::Measure)
             m_canvas.ruler_place_measurement();
           return true;
         }
@@ -3373,7 +3633,7 @@ void MainWindow::connect_signals() {
             return true;
           case GDK_KEY_m:
           case GDK_KEY_M:
-            switch_tool(ActiveTool::Ruler);
+            switch_tool(ActiveTool::Measure);
             return true;
           case GDK_KEY_u:
           case GDK_KEY_U:
@@ -4002,6 +4262,7 @@ void MainWindow::on_doc_activated(int index) {
   }
   m_gallery.refresh();
   m_doc_tabs.refresh();
+  m_themes.on_documents_changed();   // s147 m3 — active marker + targets list
   update_rulers();
   update_title();
   apply_motif_to_window();
@@ -4074,6 +4335,7 @@ void MainWindow::load_project(std::unique_ptr<CurvzProject> project) {
   sync_flag(m_sec_open_documents, m_project->sec_documents_open);
   sync_flag(m_sec_open_swatches, m_project->sec_swatches_open);
   sync_flag(m_sec_open_styles,   m_project->sec_styles_open);
+  sync_flag(m_sec_open_themes,   m_project->sec_themes_open);
   sync_flag(m_sec_open_content, m_project->sec_content_open);
 
   // s141: drive each section's widgets to match the loaded state. Without
@@ -4093,6 +4355,7 @@ void MainWindow::load_project(std::unique_ptr<CurvzProject> project) {
   apply_sec("Library",   m_project->sec_library_open);
   apply_sec("Swatches",  m_project->sec_swatches_open);
   apply_sec("Styles",    m_project->sec_styles_open);
+  apply_sec("Themes",    m_project->sec_themes_open);
   apply_sec("Documents", m_project->sec_documents_open);
   apply_sec("Preview",   m_project->sec_preview_open);
 
@@ -4134,6 +4397,12 @@ void MainWindow::load_project(std::unique_ptr<CurvzProject> project) {
   update_project_sensitive();
   update_title();
   save_config();
+  // s144 m3 — track this project as a recent. add() is move-to-front +
+  // dedupe; safe to call on every load including the startup auto-reopen
+  // (which just re-promotes the entry it was already at index 0). Skips
+  // empty (unsaved) projects naturally — directory is "" and add() bails.
+  if (m_project && !m_project->directory.empty())
+    RecentProjects::instance().add(m_project->directory);
   LOG_INFO("Project loaded: '{}'", m_project->directory);
 }
 
@@ -4241,6 +4510,7 @@ void MainWindow::update_all_panels() {
   m_swatches.set_library(&m_project->swatches);
   m_styles.set_library(&m_project->styles);   // S80 m4c
   m_styles.set_swatch_library(&m_project->swatches);  // S85 cont-3
+  m_themes.set_project(m_project.get());      // s147 m3
   m_toolbar.set_swatch_library(&m_project->swatches);  // S91
   // s141: refresh library so the freshly-seeded m_expanded (set by
   // load_project's m_library.set_project call) takes visual effect.
@@ -4375,6 +4645,16 @@ void MainWindow::update_title() {
   } else {
     m_statusbar.set_doc_name("untitled");
   }
+  // s150: active display unit, upper-cased for emphasis (matches the
+  // Inspector ▸ Dimensions header accessory). When no doc is active,
+  // fall back to PX (the default unit).
+  if (doc) {
+    std::string u = UnitSystem::label(doc->canvas.display_unit);
+    for (char &c : u) c = std::toupper(static_cast<unsigned char>(c));
+    m_statusbar.set_units(u);
+  } else {
+    m_statusbar.set_units("PX");
+  }
 }
 
 // ── File operations (GTK4 async FileDialog)
@@ -4461,6 +4741,7 @@ void MainWindow::on_close_project() {
     m_preview.set_document(nullptr);
     m_layers.set_document(nullptr);
     m_library.set_document(nullptr);
+    m_themes.set_project(nullptr);   // s147 m3
     m_doc_tabs.set_project(nullptr);
     m_doc_tabs.refresh();
     m_gallery.set_project(nullptr);
@@ -4481,11 +4762,19 @@ void MainWindow::on_close_project() {
 // Same behavior as the DocTabBar "+" button.
 void MainWindow::on_new() {
   if (!m_project) return;  // guarded by menu sensitivity, belt-and-braces
+  // s148 m1: preview colours from active doc (re-promoted to per-doc).
+  auto *active = m_project->active_doc();
+  double pv_ws_r = 0.09,  pv_ws_g = 0.09,  pv_ws_b = 0.09;
+  double pv_ab_r = 0.157, pv_ab_g = 0.157, pv_ab_b = 0.157;
+  if (active) {
+    pv_ws_r = active->workspace_bg_r; pv_ws_g = active->workspace_bg_g; pv_ws_b = active->workspace_bg_b;
+    pv_ab_r = active->artboard_bg_r;  pv_ab_g = active->artboard_bg_g;  pv_ab_b = active->artboard_bg_b;
+  }
   m_new_doc_dialog.show(*this, ndd_available_themes(),
       m_project->motif == Motif::Light ? templates::MotifTag::Light
                                        : templates::MotifTag::Dark,
-      m_project->workspace_r(), m_project->workspace_g(), m_project->workspace_b(),
-      m_project->artboard_r(),  m_project->artboard_g(),  m_project->artboard_b(),
+      pv_ws_r, pv_ws_g, pv_ws_b,
+      pv_ab_r, pv_ab_g, pv_ab_b,
       [this](std::unique_ptr<CurvzDocument> seed,
              std::string name,
              std::optional<theme::ThemeId> theme_id) {
@@ -4694,27 +4983,11 @@ void MainWindow::on_manage_templates() {
   });
 }
 
-// S103 m3 — Project → Themes… The dialog manages its own lifetime
-// (self-deleting on close, same pattern as StyleEditorDialog). Apply
-// is non-undoable per design; library mutations push commands onto
-// our m_history. The on_changed callback wires canvas redraw +
-// inspector refresh after any successful apply or library mutation
-// (renames bubble through too — they don't visually change anything
-// on canvas, but the inspector's snap section reads doc->snap which
-// the apply path may have rewritten, so a refresh keeps the panel
-// aligned).
-void MainWindow::on_show_themes() {
-  if (!m_project) {
-    LOG_INFO("on_show_themes: no project, ignoring");
-    return;
-  }
-  new ThemesDialog(*this, m_project.get(), &m_history,
-                   [this]() {
-                     m_canvas.queue_draw();
-                     refresh_inspector();
-                     schedule_save();
-                   });
-}
+// s147 m3 — on_show_themes removed. ThemesPanel in the right pane's
+// Content group is the canonical surface; there is no dialog version
+// any longer. Library mutations push commands onto m_history via the
+// panel; apply is non-undoable per design (same as the dialog used
+// to be).
 
 void MainWindow::on_export_docs() {
   if (!m_project) {
@@ -4774,7 +5047,10 @@ void MainWindow::ndd_apply_chosen_theme(
              "creating doc without theme", *id);
     return;
   }
-  theme::apply_theme_to_doc(*t, seed);
+  // s149 m1: apply needs the current motif so the right colour pair from
+  // the theme's MotifSettings sub-bundle lands on the seed. Sub-ship 2
+  // swaps m_project->motif for AppPreferences::appearance_mode.
+  theme::apply_theme_to_doc(*t, seed, m_project->motif);
   LOG_INFO("ndd_apply_chosen_theme: applied '{}' to new doc", t->header.name);
 }
 
@@ -5855,16 +6131,16 @@ void MainWindow::on_blend() {
 }
 
 // ── on_warp_make ────────────────────────────────────────────────────────────
-// Orchestrates: single-selection validation → build a scratch Warp in
-// the tree without pushing a command → show WarpDialog with live
-// preview callbacks → on Apply, push MakeWarpCommand to make the
-// mutation undoable → on Cancel, rip the scratch out and restore the
-// original source.
+// s146 m3: dialog-free flow. The user's preferred warp shape lives in the
+// inspector's Application ▸ Warp subsection (AppPreferences). When they
+// invoke Path ▸ Warp, we read those defaults, generate the envelope from
+// the chosen preset against the source's bbox, build a Warp node, and
+// push MakeWarpCommand. The Warp is selected on success; the inspector's
+// Object ▸ Warp section then takes over for fine-tuning.
 //
-// The scratch Warp is a real node in the tree during the dialog
-// session, so the canvas shows live warp updates as the user tweaks
-// controls. Without this the user would stare at an unchanged canvas
-// until Apply.
+// No scratch+restore dance: there's nothing to "cancel" because there's
+// no dialog session. If the user doesn't like the result, Ctrl+Z undoes
+// the MakeWarpCommand atomically and restores the original source.
 void MainWindow::on_warp_make() {
   if (!m_project || !m_project->active_doc()) return;
   CurvzDocument *doc = m_project->active_doc();
@@ -5882,14 +6158,11 @@ void MainWindow::on_warp_make() {
     return;
   }
 
-  // Find the source's parent and its index. We'll need both for the
-  // scratch tree mutation and for the eventual MakeWarpCommand.
+  // Find the source's parent and its index. Same walk as before — the
+  // tree-walk logic is unchanged, only the post-walk action differs.
   int src_idx = -1;
   SceneNode *parent = nullptr;
   {
-    // Walk the doc to find src's parent. Same logic find_parent uses in
-    // Canvas — but MainWindow doesn't have direct access, so we mirror
-    // it inline. Could factor to a helper later.
     std::function<bool(SceneNode*)> walk = [&](SceneNode *n) -> bool {
       if (!n) return false;
       for (int i = 0; i < (int)n->children.size(); ++i) {
@@ -5918,12 +6191,31 @@ void MainWindow::on_warp_make() {
     return;
   }
 
-  // Snapshot the original for the eventual undo restoration.
+  // Read AppPreferences defaults (these are the inspector ▸ Application
+  // ▸ Warp subsection's controls). Wave preset auto-bumps anchor counts
+  // to >=3 so the wave is actually visible — same logic the dialog
+  // used to enforce, applied here at the seam between defaults and
+  // create.
+  const auto &prefs = AppPreferences::instance();
+  int top_n  = std::clamp(prefs.warp_default_top_count(), 2, 4);
+  int bot_n  = std::clamp(prefs.warp_default_bot_count(), 2, 4);
+  int preset = std::clamp(prefs.warp_default_preset(), 0, 7);
+  int qual   = std::clamp(prefs.warp_default_quality(), 1, 16);
+  if (curvz::utils::warp_presets::requires_three_anchors(preset)) {
+    if (top_n < 3) top_n = 3;
+    if (bot_n < 3) bot_n = 3;
+  }
+
+  // Snapshot the original for the eventual undo restoration. This is
+  // the "source_snap" that MakeWarpCommand stores so undo can put the
+  // path back exactly as it was. Done BEFORE we mutate the tree.
   auto source_snap = clone_node(*src);
   int source_index = src_idx;
 
-  // Build the scratch Warp. Identical setup to Canvas::make_warp but
-  // WITHOUT the m_history->push — dialog commit/cancel controls that.
+  // Build the Warp directly. Same setup the old scratch path used —
+  // type, ids, name, source clone, dirty flags. The difference is we
+  // populate envelope and quality up-front from the defaults, so the
+  // first draw pass produces the user's chosen shape.
   auto warp = std::make_unique<SceneNode>();
   warp->type = SceneNode::Type::Warp;
   warp->id = m_canvas.mint_id();
@@ -5935,178 +6227,81 @@ void MainWindow::on_warp_make() {
   warp->warp_source = clone_node(*src);
   warp->warp_glyph_cache_dirty = true;
   warp->warp_cache_dirty = true;
-  warp->warp_quality = 4;
+  warp->warp_quality = qual;
+  // s147 m2: stamp preset provenance on the new warp so the inspector
+  // dropdown shows the right name immediately, and so save/load
+  // round-trips correctly. preset_idx, top/bot counts come from the
+  // AppPreferences defaults; auto-bump for Wave already happened
+  // upstream when we read top_n/bot_n from prefs.
+  warp->warp_preset_idx = preset;
+  warp->warp_top_count  = top_n;
+  warp->warp_bot_count  = bot_n;
 
-  // Remove original, insert scratch at same index.
+  // Replace source with warp temporarily to compute the bbox the
+  // preset envelope is generated against. We need a real glyph_cache
+  // for object_bbox_query, so build it now. Insert-then-bbox-then-
+  // generate is the order — the envelope is sized to the source's
+  // bbox, not the empty-warp's.
   parent->children.erase(parent->children.begin() + src_idx);
   parent->children.insert(parent->children.begin() + src_idx,
                           std::move(warp));
-  SceneNode *scratch = parent->children[src_idx].get();
+  SceneNode *wp = parent->children[src_idx].get();
 
-  // Select the scratch so inspector/bbox reflect it.
-  m_canvas.set_selection_single(scratch);
-  m_canvas.queue_draw();
-
-  // Compute the glyph_cache bbox for the dialog's preset shape math.
-  // At this point warp_glyph_cache is still null — rebuild_warp_caches
-  // runs lazy-on-draw. Force a rebuild now so the bbox is available.
-  m_canvas.rebuild_warp_caches(scratch);
-
+  m_canvas.rebuild_warp_caches(wp);
   double gbx = 0, gby = 0, gbw = 1, gbh = 1;
-  m_canvas.object_bbox_query(*scratch, gbx, gby, gbw, gbh, false);
+  m_canvas.object_bbox_query(*wp, gbx, gby, gbw, gbh, false);
   if (gbw < 1e-9) gbw = 1.0;
   if (gbh < 1e-9) gbh = 1.0;
 
-  // Capture parent/scratch/source_snap into the callbacks by value.
-  SceneNode *parent_cap = parent;
-  SceneNode *scratch_ptr = scratch;
-  // Move source_snap into a shared_ptr wrapper so both callbacks can
-  // reference it (only one fires per show, but the lambda types need
-  // matching captures).
-  auto src_snap_shared =
-      std::make_shared<std::unique_ptr<SceneNode>>(std::move(source_snap));
+  // Generate envelope from preset+counts+bbox using the lifted preset
+  // pump (same code path the inspector's Object ▸ Warp section uses
+  // when the user picks a preset).
+  curvz::utils::generate_warp_preset(preset, gbx, gby, gbw, gbh,
+                                     top_n, bot_n,
+                                     wp->warp_env_top,
+                                     wp->warp_env_bottom);
+  wp->warp_cache_dirty = true;
 
-  // Update callback: write dialog's envelope/quality to live scratch
-  // and redraw.
-  auto update_cb = [this, scratch_ptr](WarpDialog::Result r) {
-    if (!scratch_ptr) return;
-    scratch_ptr->warp_env_top    = std::move(r.env_top);
-    scratch_ptr->warp_env_bottom = std::move(r.env_bottom);
-    scratch_ptr->warp_quality    = r.quality;
-    scratch_ptr->warp_cache_dirty = true;
-    m_canvas.queue_draw();
-  };
+  // Push MakeWarpCommand against the post-state. The command's execute()
+  // re-runs cleanly on redo because warp_snap is a clone, not the live
+  // pointer. source_snap restores the original on undo.
+  auto warp_snap = clone_node(*wp);
+  if (auto *hist = m_canvas.history()) {
+    hist->push(std::make_unique<MakeWarpCommand>(
+        parent, std::move(source_snap), source_index,
+        std::move(warp_snap), src_idx));
+  }
 
-  // Apply callback: scratch is already in final state (last update_cb
-  // has been applied). Push MakeWarpCommand with warp_snap cloned from
-  // the current scratch state, source_snap from the pre-mutation
-  // snapshot.
-  auto apply_cb = [this, parent_cap, scratch_ptr, src_snap_shared,
-                   source_index](WarpDialog::Result r) {
-    if (!scratch_ptr || !parent_cap) return;
-    // Write final state once more in case update_cb didn't fire.
-    scratch_ptr->warp_env_top    = std::move(r.env_top);
-    scratch_ptr->warp_env_bottom = std::move(r.env_bottom);
-    scratch_ptr->warp_quality    = r.quality;
-    scratch_ptr->warp_cache_dirty = true;
-    // Find the scratch's current index (should still be source_index
-    // but may have shifted if anything weird happened).
-    int ins = -1;
-    for (int i = 0; i < (int)parent_cap->children.size(); ++i) {
-      if (parent_cap->children[i].get() == scratch_ptr) { ins = i; break; }
-    }
-    if (ins < 0) {
-      LOG_WARN("MainWindow::on_warp_make apply: scratch not in parent");
-      return;
-    }
-    auto warp_snap = clone_node(*scratch_ptr);
-    if (auto *hist = m_canvas.history()) {
-      hist->push(std::make_unique<MakeWarpCommand>(
-          parent_cap, clone_node(**src_snap_shared), source_index,
-          std::move(warp_snap), ins));
-    }
-    m_canvas.queue_draw();
-    refresh_inspector();
-  };
-
-  // Cancel callback: tear scratch out, restore original source at its
-  // original index. No command pushed — the whole session is as if it
-  // never happened.
-  auto cancel_cb = [this, parent_cap, scratch_ptr, src_snap_shared,
-                    source_index]() {
-    if (!parent_cap) return;
-    int idx = -1;
-    for (int i = 0; i < (int)parent_cap->children.size(); ++i) {
-      if (parent_cap->children[i].get() == scratch_ptr) { idx = i; break; }
-    }
-    if (idx >= 0) {
-      parent_cap->children.erase(parent_cap->children.begin() + idx);
-    }
-    int ins = std::clamp(source_index, 0,
-                         (int)parent_cap->children.size());
-    parent_cap->children.insert(parent_cap->children.begin() + ins,
-                                clone_node(**src_snap_shared));
-    SceneNode *restored = parent_cap->children[ins].get();
-    m_canvas.set_selection_single(restored);
-    m_canvas.queue_draw();
-    refresh_inspector();
-  };
-
-  m_warp_dialog.show(*this, scratch, gbx, gby, gbw, gbh,
-                     std::move(update_cb),
-                     std::move(apply_cb),
-                     std::move(cancel_cb));
+  // Select the new Warp so the inspector's Object ▸ Warp section binds
+  // to it for fine-tuning. queue_draw kicks the canvas to refresh with
+  // the new envelope baked in.
+  m_canvas.set_selection_single(wp);
+  m_canvas.queue_draw();
+  refresh_inspector();
 }
 
 // ── on_warp_edit ────────────────────────────────────────────────────────────
-// Opens the dialog against an already-committed Warp. Snapshots the
-// pre-edit envelope + quality so Cancel can restore; on Apply, pushes
-// EditWarpCommand carrying pre/post snapshots for atomic undo.
+// s146 m3: dialog removed. Editing a Warp now happens entirely in the
+// inspector's Object ▸ Warp section, which is always shown when a Warp
+// is selected. The menu entry "Path ▸ Edit Warp" stays as a verb (per
+// s146 design discussion) but does no real work — it just makes sure
+// the selection is a Warp and refreshes the inspector. If a non-Warp
+// is selected, it warns and returns. If a Warp is already selected,
+// refresh_inspector is the affordance: the user's attention follows
+// to the now-visible Object ▸ Warp section.
 void MainWindow::on_warp_edit() {
   SceneNode *warp = m_canvas.selected_object();
   if (!warp || !warp->is_warp()) {
     LOG_WARN("MainWindow::on_warp_edit: selection is not a Warp");
     return;
   }
-
-  // Ensure glyph_cache is current so bbox math is meaningful.
+  // Ensure glyph_cache is current — selection-driven inspector refresh
+  // reads bbox-derived state, so we want it accurate. Also a defensive
+  // queue_draw in case the caller arrived here from a state where the
+  // canvas hadn't redrawn since the last envelope mutation.
   m_canvas.rebuild_warp_caches(warp);
-
-  double gbx = 0, gby = 0, gbw = 1, gbh = 1;
-  m_canvas.object_bbox_query(*warp, gbx, gby, gbw, gbh, false);
-  if (gbw < 1e-9) gbw = 1.0;
-  if (gbh < 1e-9) gbh = 1.0;
-
-  // Snapshot pre-state for undo and for cancel-revert.
-  auto pre_top    = std::make_shared<PathData>(warp->warp_env_top);
-  auto pre_bottom = std::make_shared<PathData>(warp->warp_env_bottom);
-  int pre_quality = warp->warp_quality;
-  SceneNode *warp_ptr = warp;
-
-  auto update_cb = [this, warp_ptr](WarpDialog::Result r) {
-    if (!warp_ptr) return;
-    warp_ptr->warp_env_top    = std::move(r.env_top);
-    warp_ptr->warp_env_bottom = std::move(r.env_bottom);
-    warp_ptr->warp_quality    = r.quality;
-    warp_ptr->warp_cache_dirty = true;
-    m_canvas.queue_draw();
-  };
-
-  auto apply_cb = [this, warp_ptr, pre_top, pre_bottom,
-                   pre_quality](WarpDialog::Result r) {
-    if (!warp_ptr) return;
-    // Live state already reflects r via the last update_cb. Push edit
-    // command with pre/post snapshots.
-    warp_ptr->warp_env_top    = std::move(r.env_top);
-    warp_ptr->warp_env_bottom = std::move(r.env_bottom);
-    warp_ptr->warp_quality    = r.quality;
-    warp_ptr->warp_cache_dirty = true;
-    if (auto *hist = m_canvas.history()) {
-      hist->push(std::make_unique<EditWarpCommand>(
-          warp_ptr,
-          *pre_top, *pre_bottom, pre_quality,
-          warp_ptr->warp_env_top,
-          warp_ptr->warp_env_bottom,
-          warp_ptr->warp_quality));
-    }
-    m_canvas.queue_draw();
-    refresh_inspector();
-  };
-
-  auto cancel_cb = [this, warp_ptr, pre_top, pre_bottom, pre_quality]() {
-    if (!warp_ptr) return;
-    warp_ptr->warp_env_top    = *pre_top;
-    warp_ptr->warp_env_bottom = *pre_bottom;
-    warp_ptr->warp_quality    = pre_quality;
-    warp_ptr->warp_cache_dirty = true;
-    m_canvas.queue_draw();
-    refresh_inspector();
-  };
-
-  m_warp_dialog.show(*this, warp, gbx, gby, gbw, gbh,
-                     std::move(update_cb),
-                     std::move(apply_cb),
-                     std::move(cancel_cb));
+  m_canvas.queue_draw();
+  refresh_inspector();
 }
 
 // ── on_warp_release ─────────────────────────────────────────────────────────

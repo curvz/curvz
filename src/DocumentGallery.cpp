@@ -346,21 +346,22 @@ DocumentGallery::render_thumb(CurvzDocument *doc, int size) {
       Cairo::ImageSurface::create(Cairo::Surface::Format::ARGB32, size, size);
   auto cr = Cairo::Context::create(surf);
 
-  // S117 m14: thumbnail bg reads project artboard colour (per-motif),
-  // not the old hardcoded #282828. Falls back to the dark default if
-  // we don't have a project yet (early gallery rebuilds during boot).
-  // Same applies to the currentColor sites below — light icon on a dark
-  // artboard, dark icon on a light artboard, picked from project motif.
+  // s148 m1: thumb bg reads the doc's OWN artboard colour (re-promoted
+  // to per-doc). Each doc's thumb shows that doc's actual tone, which
+  // is more honest than the s116 m6 project-wide rendering.
+  // currentColor luminance derives from the doc's own bg luminance:
+  // if the doc's artboard is bright (max > 0.6), paint a dark icon
+  // body; else paint a light icon body. Same threshold Canvas uses
+  // for grid-line tinting, so library / gallery / canvas all flip
+  // currentColor at the same point.
   double bg_r = 0.157, bg_g = 0.157, bg_b = 0.157;  // #282828 fallback
-  bool light_motif = false;
-  if (m_project) {
-    bg_r = m_project->artboard_r();
-    bg_g = m_project->artboard_g();
-    bg_b = m_project->artboard_b();
-    light_motif = (m_project->motif == Motif::Light);
+  if (doc) {
+    bg_r = doc->artboard_bg_r;
+    bg_g = doc->artboard_bg_g;
+    bg_b = doc->artboard_bg_b;
   }
-  // currentColor sample: dark on light motif, light on dark motif.
-  double cc = light_motif ? 0.10 : 0.88;
+  bool light_bg = std::max({bg_r, bg_g, bg_b}) > 0.60;
+  double cc = light_bg ? 0.10 : 0.88;
 
   // Background
   cr->set_source_rgb(bg_r, bg_g, bg_b);

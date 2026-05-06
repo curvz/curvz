@@ -3,9 +3,13 @@
 #include "CurvzLog.hpp"
 #include "MacroSystem.hpp"
 #include "MainWindow.hpp"
+#include "RecentProjects.hpp"  // s144 m3 — load recents list at startup
 #include "TemplateLibrary.hpp"
 #include "color/SwatchLibrary.hpp"  // color::load_app_defaults (s69 M2)
+#include <cstdlib>             // s145 m4 — getenv for early prefs.json lookup
 #include <filesystem>
+#include <fstream>             // s145 m4 — read prefs.json before singleton loads
+#include <nlohmann/json.hpp>   // s145 m4 — parse log_path_override pre-spdlog
 extern "C" {
 #include "curvz-resources.h"
 }
@@ -16,6 +20,43 @@ extern "C" {
 
 namespace Curvz {
 
+// s145 m4 — read the log_path_override key directly from preferences.json,
+// without going through AppPreferences::instance().load(). Necessary
+// because spdlog must be initialised before any LOG_* call can fire,
+// and that has to happen in the Application constructor — which runs
+// before on_activate, which is where the AppPreferences singleton
+// loads. The two cannot coexist on the AppPreferences-singleton path,
+// so this helper short-circuits.
+//
+// Robustness: missing file, missing key, wrong type, and parse errors
+// all return empty string. The caller falls through to the default
+// log path. No logging from this function (no logger yet); failures
+// are silent. The same key is also loaded later by the singleton
+// proper, so the inspector-side getter still works.
+namespace {
+std::string read_log_path_override_from_disk() {
+    namespace fs = std::filesystem;
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    std::string base = xdg ? xdg
+                           : (std::string(std::getenv("HOME")
+                                              ? std::getenv("HOME")
+                                              : ".") +
+                              "/.config");
+    const std::string prefs_path = base + "/curvz/preferences.json";
+    std::ifstream f(prefs_path);
+    if (!f) return {};
+    try {
+        nlohmann::json j;
+        f >> j;
+        if (j.contains("log_path_override") &&
+            j["log_path_override"].is_string()) {
+            return j["log_path_override"].get<std::string>();
+        }
+    } catch (...) {}
+    return {};
+}
+} // anon
+
 Glib::RefPtr<Application> Application::create() {
   return Glib::make_refptr_for_instance<Application>(new Application());
 }
@@ -25,16 +66,31 @@ Application::Application()
                        Gio::Application::Flags::HANDLES_OPEN) {
   try {
     namespace fs = std::filesystem;
-    std::string data_dir = Glib::get_user_data_dir();
-    std::string log_dir = (fs::path(data_dir) / "curvz").string();
-    fs::create_directories(log_dir);
-    std::string log_path = (fs::path(log_dir) / "curvz.log").string();
+
+    // s145 m4 — consult log_path_override before falling through to the
+    // default location. The override is read directly from disk because
+    // the AppPreferences singleton hasn't loaded yet at this point; see
+    // read_log_path_override_from_disk() above. Empty override = use
+    // default. We also create the parent directory either way.
+    std::string log_path;
+    const std::string override_path = read_log_path_override_from_disk();
+    if (!override_path.empty()) {
+        log_path = override_path;
+        fs::path parent = fs::path(log_path).parent_path();
+        if (!parent.empty()) fs::create_directories(parent);
+    } else {
+        std::string data_dir = Glib::get_user_data_dir();
+        std::string log_dir = (fs::path(data_dir) / "curvz").string();
+        fs::create_directories(log_dir);
+        log_path = (fs::path(log_dir) / "curvz.log").string();
+    }
 
     auto logger = spdlog::basic_logger_mt("curvz", log_path, true);
     logger->set_level(spdlog::level::debug);
     logger->flush_on(spdlog::level::debug);
     spdlog::set_default_logger(logger);
-    LOG_INFO("Curvz starting — log: {}", log_path);
+    LOG_INFO("Curvz starting — log: {}{}", log_path,
+             override_path.empty() ? "" : " (from log_path_override)");
   } catch (...) {
   }
 }
@@ -178,6 +234,13 @@ void Application::on_activate() {
   LOG_INFO("Icon theme has curvz-select-symbolic: {}",
            icon_theme->has_icon("curvz-select-symbolic"));
 
+  // s139 m2 (moved earlier in s145 m1): load app-tier preferences before
+  // the GTK settings block so the tooltip-delay pref can be applied below.
+  // None of the pre-load callers (icon-theme registration above) consult
+  // AppPreferences, so moving this up is safe; the original placement
+  // before MainWindow construction is still preserved.
+  AppPreferences::instance().load();
+
   // Request dark color scheme — affects headerbar CSD and all GTK widgets.
   // This uses the system's dark variant if available (Adwaita-dark on GNOME).
   // User can override via GNOME Settings → Appearance later (Phase 4).
@@ -193,19 +256,27 @@ void Application::on_activate() {
     // and only call set_property() when the property still exists; on
     // builds that have dropped it, we silently fall back to the default
     // tooltip timeout.
+    // s145 m1: the literal 150 is now the tooltip_delay_ms user pref
+    // (default 150 preserves historical behaviour). Range 0..2000 is
+    // enforced by the setter; we don't double-clamp here.
     GObjectClass* settings_class =
         G_OBJECT_GET_CLASS(settings->gobj());
     if (g_object_class_find_property(settings_class,
                                      "gtk-tooltip-timeout") != nullptr) {
-      settings->set_property<int>("gtk-tooltip-timeout", 150);
+      const int delay_ms =
+          AppPreferences::instance().tooltip_delay_ms();
+      settings->set_property<int>("gtk-tooltip-timeout", delay_ms);
+      LOG_INFO("Application: tooltip delay set to {} ms (pref)", delay_ms);
     }
   }
 
   MacroManager::instance().load();
 
-  // s139 m2: load app-tier preferences (boolean-cleanup toggle, etc.) before
-  // MainWindow construction so its action initial state matches disk.
-  AppPreferences::instance().load();
+  // s144 m3: load recents list. Order matters — AppPreferences first (now
+  // loaded above) so RecentProjects::load can read recent_projects_max_count
+  // if it ever grows trim-on-load logic. Missing file is fine; empty list
+  // is the first-run state.
+  RecentProjects::instance().load();
 
   // S69 M2: load app-global swatch defaults once at startup. Each project
   // that subsequently opens or is created gets these seeded into its

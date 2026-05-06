@@ -35,6 +35,22 @@ StatusBar::StatusBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL) {
     sep2->set_margin_start(8);
     sep2->set_margin_end(8);
 
+    // s150: active display unit. Refreshed by MainWindow when the unit
+    // dropdown changes or when the active doc switches. Lives next to
+    // zoom because both are "what am I looking at" view state. Bold via
+    // CSS class so it reads at a glance — peripheral-vision feedback
+    // for the unit your numbers are in.
+    m_units_label.set_text("PX");
+    m_units_label.set_width_chars(4);
+    m_units_label.set_xalign(0.0f);
+    m_units_label.add_css_class("statusbar-label");
+    m_units_label.add_css_class("statusbar-units-label");
+    curvz::utils::set_name(m_units_label, "sb_un", "status_bar_units_lbl");
+
+    auto* sep_un = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::VERTICAL);
+    sep_un->set_margin_start(8);
+    sep_un->set_margin_end(8);
+
     m_count_label.set_text("0 objects  0 nodes");
     m_count_label.set_xalign(0.0f);
     m_count_label.add_css_class("statusbar-label");
@@ -44,6 +60,8 @@ StatusBar::StatusBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL) {
     append(*sep1);
     append(m_zoom_label);
     append(*sep2);
+    append(m_units_label);
+    append(*sep_un);
     append(m_count_label);
 
     auto* sep3 = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::VERTICAL);
@@ -93,6 +111,10 @@ void StatusBar::set_zoom(double pct) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%.0f%%", pct);
     m_zoom_label.set_text(buf);
+}
+
+void StatusBar::set_units(const std::string& units) {
+    m_units_label.set_text(units);
 }
 
 void StatusBar::set_counts(int objects, int nodes) {

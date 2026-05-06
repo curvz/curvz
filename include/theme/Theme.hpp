@@ -115,16 +115,61 @@ struct UnitSettings {
     Unit display_unit = Unit::Px;
 };
 
-// Editor presentation backgrounds (REMOVED in s116 m6).
+// Editor-presentation colours (s149 m1 — re-added after s116 m6 removal).
 //
-// Originally a per-doc theme field. Removed when the workspace appearance
-// (artboard / workspace bg / motif) moved to CurvzProject. Themes describe
-// reusable doc-level settings (units, guides, grid, margins, snap) — bg
-// is project-scope and lives on CurvzProject, not in themes.
+// History: this sub-bundle existed pre-s116 as BackgroundSettings, was
+// removed in s116 m6 when the artboard/workspace fields moved up to
+// project-scope per-motif, and is re-added now that s148 m1 walked them
+// back down to per-doc. Theme captures and applies them again — the
+// "themes are doc-scope only, project owns these" rationale reverses.
 //
-// Old theme JSON files (if any exist) carrying a "background" key load
-// fine: ThemeLibrary's bg_from_json was removed and the read site now
-// just ignores the key.
+// Why two pairs and not one: a Theme is a reusable preset that the user
+// expects to look right whether they're working in Dark or Light mode.
+// Capturing only the current mode's colours and then applying that
+// theme in the other mode would either (a) write Dark colours into a
+// Light-mode workspace (visually wrong) or (b) silently skip the colour
+// fields (apply does nothing visible — exactly the s149 diagnostic
+// outcome). Carrying both pairs keeps apply meaningful in either mode;
+// the funnel reads AppPreferences::appearance_mode (m_project->motif
+// during sub-ship 1) and writes the matching pair to the doc's single
+// triple.
+//
+// Capture fills the *current* mode's slots with the doc's actual
+// values; the *other* mode's slots receive sensible factory defaults
+// (the same values a fresh-out-of-the-box doc gets in that mode). The
+// user can later capture the same doc in the other mode to overwrite
+// the off-mode pair with their preferred values for that mode.
+//
+// Field defaults match CurvzDocument's struct defaults (Dark) and the
+// app's light-mode defaults (Light, sourced from the same factory
+// constants the m4 mode-aware Reset will eventually use).
+struct MotifSettings {
+    // Dark mode triple
+    double dark_artboard_r  = 0.157;  // #282828
+    double dark_artboard_g  = 0.157;
+    double dark_artboard_b  = 0.157;
+    double dark_workspace_r = 0.09;   // #171717
+    double dark_workspace_g = 0.09;
+    double dark_workspace_b = 0.09;
+    double dark_creation_r  = 0.30;   // light blue, reads on dark artboard
+    double dark_creation_g  = 0.60;
+    double dark_creation_b  = 1.0;
+
+    // Light mode triple. Defaults are the factory light-mode tone:
+    // off-white artboard, slightly cooler workspace surround, mid-blue
+    // creation tint that reads on light. These mirror the values the
+    // m4 mode-aware Reset is expected to seed; if those constants ever
+    // get extracted into named symbols, this struct adopts them too.
+    double light_artboard_r  = 1.0;   // #FFFFFF
+    double light_artboard_g  = 1.0;
+    double light_artboard_b  = 1.0;
+    double light_workspace_r = 0.91;  // #E8E8E8
+    double light_workspace_g = 0.91;
+    double light_workspace_b = 0.91;
+    double light_creation_r  = 0.10;  // dark blue, reads on light artboard
+    double light_creation_g  = 0.35;
+    double light_creation_b  = 0.85;
+};
 
 // Guide line colour and visibility.
 //
@@ -210,7 +255,7 @@ using ThemeSnapSettings = SnapSettings;
 struct Theme {
     ThemeHeader        header;
     UnitSettings       units;
-    // BackgroundSettings background; — removed in s116 m6 (moved to CurvzProject)
+    MotifSettings      motif;        // s149 m1 — re-added after s116 m6 removal
     GuideSettings      guides;
     GridSettings       grid;
     MarginSettings     margins;
@@ -243,6 +288,28 @@ inline bool operator==(const UnitSettings& a, const UnitSettings& b) {
     return a.display_unit == b.display_unit;
 }
 inline bool operator!=(const UnitSettings& a, const UnitSettings& b) { return !(a == b); }
+
+inline bool operator==(const MotifSettings& a, const MotifSettings& b) {
+    return a.dark_artboard_r  == b.dark_artboard_r
+        && a.dark_artboard_g  == b.dark_artboard_g
+        && a.dark_artboard_b  == b.dark_artboard_b
+        && a.dark_workspace_r == b.dark_workspace_r
+        && a.dark_workspace_g == b.dark_workspace_g
+        && a.dark_workspace_b == b.dark_workspace_b
+        && a.dark_creation_r  == b.dark_creation_r
+        && a.dark_creation_g  == b.dark_creation_g
+        && a.dark_creation_b  == b.dark_creation_b
+        && a.light_artboard_r  == b.light_artboard_r
+        && a.light_artboard_g  == b.light_artboard_g
+        && a.light_artboard_b  == b.light_artboard_b
+        && a.light_workspace_r == b.light_workspace_r
+        && a.light_workspace_g == b.light_workspace_g
+        && a.light_workspace_b == b.light_workspace_b
+        && a.light_creation_r  == b.light_creation_r
+        && a.light_creation_g  == b.light_creation_g
+        && a.light_creation_b  == b.light_creation_b;
+}
+inline bool operator!=(const MotifSettings& a, const MotifSettings& b) { return !(a == b); }
 
 inline bool operator==(const GuideSettings& a, const GuideSettings& b) {
     return a.color_r == b.color_r
@@ -306,7 +373,7 @@ inline bool operator!=(const ThemeSnapSettings& a, const ThemeSnapSettings& b) {
 inline bool operator==(const Theme& a, const Theme& b) {
     return a.header     == b.header
         && a.units      == b.units
-        // a.background — removed in s116 m6 (bg moved to CurvzProject).
+        && a.motif      == b.motif       // s149 m1 — re-added after s116 m6 removal
         && a.guides     == b.guides
         && a.grid       == b.grid
         && a.margins    == b.margins
@@ -337,7 +404,13 @@ inline bool operator!=(const Theme& a, const Theme& b) { return !(a == b); }
 // Pure read of doc — no mutation. Returns a value-typed Theme that the
 // caller can either apply directly or mutate further (e.g. set a name
 // before passing to add_theme).
-Theme capture_theme_from_doc(const CurvzDocument& doc);
+//
+// s149 m1: the `current_motif` argument tells capture which slot of
+// MotifSettings receives the doc's actual artboard/workspace/creation
+// values; the off-mode slot keeps factory defaults. Themes carry both
+// pairs so apply produces a sensible result regardless of the
+// appearance mode the user is in at apply time.
+Theme capture_theme_from_doc(const CurvzDocument& doc, Motif current_motif);
 
 // Write theme's settings into doc. Atomic — no diffing, no skip-unchanged
 // at this layer (the dialog handles "did anything change at all" before
@@ -346,7 +419,15 @@ Theme capture_theme_from_doc(const CurvzDocument& doc);
 //
 // NOT undoable. The dialog warns the user before invoking apply on a
 // target list. See top-of-file rationale.
-void apply_theme_to_doc(const Theme& theme, CurvzDocument& doc);
+//
+// s149 m1: `current_motif` selects which pair of MotifSettings (Dark or
+// Light) is written to the doc's artboard/workspace/creation fields.
+// The doc carries one triple at a time; the theme carries both; the
+// motif arg picks. Storage of the motif itself moves from m_project
+// to AppPreferences in sub-ship 2 — the funnel signature stays the
+// same, only the call sites change which value they pass.
+void apply_theme_to_doc(const Theme& theme, CurvzDocument& doc,
+                        Motif current_motif);
 
 } // namespace theme
 } // namespace Curvz

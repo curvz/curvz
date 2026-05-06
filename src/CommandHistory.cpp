@@ -1,15 +1,24 @@
 #include "CommandHistory.hpp"
+#include "AppPreferences.hpp"  // s145 m1 — undo depth is a user pref
 #include "CurvzLog.hpp"
 #include <algorithm>
 
 namespace Curvz {
 
+// s145 m1 — undo depth is now a user pref (AppPreferences::undo_history_depth),
+// read on every push. The MAX_HISTORY constant in the header is retained as a
+// compile-time hard ceiling and as the default if the pref ever fails to load,
+// but the live trim consults the pref. Reducing the pref trims the live stack
+// at the next push (does not retroactively prune); increasing the pref simply
+// allows the stack to grow further from that point on.
 void CommandHistory::push(std::unique_ptr<CurvzCommand> cmd) {
     m_redo_stack.clear();
     m_undo_stack.push_back(std::move(cmd));
-    if ((int)m_undo_stack.size() > MAX_HISTORY)
+    const int cap = AppPreferences::instance().undo_history_depth();
+    while ((int)m_undo_stack.size() > cap)
         m_undo_stack.pop_front();
-    LOG_DEBUG("History push — undo depth={}", m_undo_stack.size());
+    LOG_DEBUG("History push — undo depth={} cap={}",
+              m_undo_stack.size(), cap);
 }
 
 void CommandHistory::undo() {

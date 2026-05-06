@@ -125,10 +125,23 @@ bool CurvzProject::save() const {
             {"canvas",         canvas_j},
             {"export_name",     doc->export_name},
             {"export_category", doc->export_category},
-            // s116 m6: artboard / workspace bg / motif moved to the project
-            // root's "workspace" block — they're project-wide, not per-doc.
-            // Legacy doc-level bg fields are still read on load (load()
-            // hoists doc[0]'s values to the project) but no longer written.
+            // s148 m1: artboard / workspace / creation re-promoted to
+            // per-doc (single slot per doc; was project-level per-motif
+            // in s116 m6). Each doc carries its own editor-presentation
+            // tone — flipping app appearance no longer alters the canvas.
+            //
+            // The project-root "workspace" block continues to be written
+            // (with motif + per-motif slots) during m1 as a downgrade-
+            // safety net. m2 will trim those once doc-scope is settled.
+            {"artboard_bg_r",  doc->artboard_bg_r},
+            {"artboard_bg_g",  doc->artboard_bg_g},
+            {"artboard_bg_b",  doc->artboard_bg_b},
+            {"workspace_bg_r", doc->workspace_bg_r},
+            {"workspace_bg_g", doc->workspace_bg_g},
+            {"workspace_bg_b", doc->workspace_bg_b},
+            {"creation_color_r", doc->creation_color_r},
+            {"creation_color_g", doc->creation_color_g},
+            {"creation_color_b", doc->creation_color_b},
             // S98: persist guide colour. Pre-S98 it was a per-session-
             // only field — defaults seeded from CurvzDocument, lost on
             // every project close. Per-doc since guides are doc-scope
@@ -248,6 +261,7 @@ bool CurvzProject::save() const {
             {"sec_documents_open",  sec_documents_open},
             {"sec_swatches_open",   sec_swatches_open},
             {"sec_styles_open",     sec_styles_open},
+            {"sec_themes_open",     sec_themes_open},
             {"sec_content_open",    sec_content_open},
             {"snap_enabled",        snap.enabled},
             {"snap_guides",         snap.snap_guides},
@@ -259,7 +273,8 @@ bool CurvzProject::save() const {
             {"active_palette",      swatches.active_palette()},
             {"recents",             swatches.recents()},
             {"style_active_category",     style_active_category},
-            {"style_active_is_app_tier",  style_active_is_app_tier}
+            {"style_active_is_app_tier",  style_active_is_app_tier},
+            {"library_expanded_categories", library_expanded_categories}
         }}
     };
 
@@ -447,6 +462,7 @@ bool CurvzProject::load(const std::string& dir) {
         sec_documents_open   = es.value("sec_documents_open",   false);
         sec_swatches_open    = es.value("sec_swatches_open",    false);
         sec_styles_open      = es.value("sec_styles_open",      false);
+        sec_themes_open      = es.value("sec_themes_open",      false);
         sec_content_open     = es.value("sec_content_open",     false);
         snap.enabled         = es.value("snap_enabled",         true);
         snap.snap_guides     = es.value("snap_guides",          true);
@@ -461,6 +477,18 @@ bool CurvzProject::load(const std::string& dir) {
         style_active_category    = es.value("style_active_category",
                                             std::string{});
         style_active_is_app_tier = es.value("style_active_is_app_tier", false);
+
+        // s141: per-project library category expansion list. Absent on
+        // legacy projects → empty vector → all categories collapsed,
+        // matching the in-memory default behaviour of LibraryPanel.
+        if (es.contains("library_expanded_categories") &&
+            es["library_expanded_categories"].is_array()) {
+            library_expanded_categories.clear();
+            for (const auto& v : es["library_expanded_categories"]) {
+                if (v.is_string())
+                    library_expanded_categories.push_back(v.get<std::string>());
+            }
+        }
         // S69 M2: per-project swatch working state moved out of the old
         // color_system block into editor_state. Absence = legacy project
         // (or a new one that never touched swatches).
@@ -567,6 +595,13 @@ bool CurvzProject::load(const std::string& dir) {
     // hoist sees it — bg fields are read into doc->artboard_bg_* directly
     // and read off doc[0] after the loop.
     std::string legacy_doc0_motif;
+    // s148 m1: parallel to documents[], records whether each doc's JSON
+    // entry carried per-doc artboard_bg_* keys at load time. Used by the
+    // s116→s148 post-loop seed step to fill doc fields from the
+    // project's active-motif slot for files that pre-date the doc-scope
+    // promotion. Reserved up front to keep parallel indexing reliable.
+    std::vector<bool> migration_doc_had_bg;
+    migration_doc_had_bg.reserve(j["documents"].size());
     for (auto& entry : j["documents"]) {
         std::string fname = entry.value("file", "");
         if (fname.empty()) continue;
@@ -622,19 +657,38 @@ bool CurvzProject::load(const std::string& dir) {
         doc->export_name     = entry.value("export_name",     std::string{});
         doc->export_category = entry.value("export_category", std::string{});
 
-        // ── Legacy per-doc bg load (s116 m6) ──────────────────────────
-        // Pre-m6 projects stored artboard/workspace bg per-doc. We still
-        // read them here into the doc-level legacy fields so that — when
-        // the project root has no "workspace" block — the doc loop below
-        // hoists doc[0]'s values to the project. Once a project saves
-        // post-m6, these doc-entry keys stop being written and the
-        // project-level "workspace" block is canonical.
+        // ── Per-doc editor-presentation tone load ─────────────────────
+        //
+        // s148 m1 promotes artboard/workspace/creation back to per-doc
+        // (single slot). Three input scenarios:
+        //
+        //   • Pre-s116 file: per-doc keys present, no project workspace
+        //     block — keys read directly into doc fields (line below).
+        //     creation_color_* absent → falls through to struct defaults.
+        //
+        //   • s116-s147 file: doc-level keys absent, project root carries
+        //     per-motif slots. We detect the absence here (had_doc_bg=
+        //     false), then post-loop seed doc fields from project's
+        //     active-motif slot.
+        //
+        //   • s148+ file: per-doc keys present (including creation_color)
+        //     → read directly. Project root may also carry the legacy
+        //     per-motif block as a downgrade-safety net but those slots
+        //     are no longer canonical for paint.
+        const bool had_doc_bg = entry.contains("artboard_bg_r");
         doc->artboard_bg_r  = entry.value("artboard_bg_r",  doc->artboard_bg_r);
         doc->artboard_bg_g  = entry.value("artboard_bg_g",  doc->artboard_bg_g);
         doc->artboard_bg_b  = entry.value("artboard_bg_b",  doc->artboard_bg_b);
         doc->workspace_bg_r = entry.value("workspace_bg_r", doc->workspace_bg_r);
         doc->workspace_bg_g = entry.value("workspace_bg_g", doc->workspace_bg_g);
         doc->workspace_bg_b = entry.value("workspace_bg_b", doc->workspace_bg_b);
+        doc->creation_color_r = entry.value("creation_color_r", doc->creation_color_r);
+        doc->creation_color_g = entry.value("creation_color_g", doc->creation_color_g);
+        doc->creation_color_b = entry.value("creation_color_b", doc->creation_color_b);
+        // Track per-doc whether the bg key set was present, for the
+        // post-loop s116→s148 seed step. Stored on the bool vector
+        // declared just above the doc loop (see migration_doc_had_bg).
+        migration_doc_had_bg.push_back(had_doc_bg);
         // Pre-m6 m4-only files briefly stored a per-doc "motif" key. If
         // the project root has no "workspace" block but a doc carried
         // a motif key, hoist that one too (handled below post-loop).
@@ -716,6 +770,39 @@ bool CurvzProject::load(const std::string& dir) {
         workspace_dark_b = d0.workspace_bg_b;
         if (!legacy_doc0_motif.empty()) {
             motif = (legacy_doc0_motif == "light") ? Motif::Light : Motif::Dark;
+        }
+    }
+
+    // ── s148 m1 seed step: project per-motif → per-doc ────────────────
+    //
+    // For docs whose JSON entry lacked the per-doc artboard_bg_* keys,
+    // fill the doc fields from the project's active-motif slot so the
+    // first paint after load matches what the user had in s116-s147.
+    // The accessors artboard_r() etc. resolve to whichever pair (dark
+    // or light) is currently active per `motif`.
+    //
+    // Skipped for docs that did have per-doc keys (already loaded
+    // canonical above) and for the pre-s116 hoist case (had_project_
+    // workspace==false: project's dark slots were just seeded from
+    // doc[0]'s legacy bg, which means project's active-motif accessor
+    // returns those same values — so the seed would be a no-op for
+    // doc[0] but might silently overwrite doc[N]'s differing legacy
+    // bg. Skip the seed entirely in that case to preserve per-doc
+    // distinctions present in pre-s116 files).
+    if (had_project_workspace) {
+        for (size_t i = 0; i < documents.size(); ++i) {
+            if (i < migration_doc_had_bg.size() && migration_doc_had_bg[i])
+                continue;  // doc had its own keys, leave them
+            auto& d = *documents[i];
+            d.artboard_bg_r  = artboard_r();
+            d.artboard_bg_g  = artboard_g();
+            d.artboard_bg_b  = artboard_b();
+            d.workspace_bg_r = workspace_r();
+            d.workspace_bg_g = workspace_g();
+            d.workspace_bg_b = workspace_b();
+            d.creation_color_r = creation_r();
+            d.creation_color_g = creation_g();
+            d.creation_color_b = creation_b();
         }
     }
 

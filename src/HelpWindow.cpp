@@ -180,6 +180,28 @@ Gtk::Widget *make_heading_with_icon(const std::string &icon_url,
                                     int heading_level) {
   static constexpr int kIconSizePx = 36;
 
+  // s150: detect "img/icons/curvz-<name>-symbolic.svg" — these are GTK
+  // symbolic icons registered via Application.cpp's icon-theme
+  // add_resource_path. Rendering them via set_from_icon_name lets GTK
+  // honour `-gtk-icon-style: symbolic` and recolour with the active
+  // theme (the icons are black-on-black on dark mode otherwise — the
+  // raster Gdk::Texture path bakes the SVG's native fill colour). For
+  // non-symbolic / non-icon images (screenshots, diagrams), keep the
+  // existing texture path.
+  std::string icon_name;
+  {
+    constexpr const char* kPrefix = "img/icons/";
+    constexpr const char* kSuffix = ".svg";
+    if (icon_url.rfind(kPrefix, 0) == 0 &&
+        icon_url.size() > std::strlen(kPrefix) + std::strlen(kSuffix) &&
+        icon_url.compare(icon_url.size() - std::strlen(kSuffix),
+                         std::strlen(kSuffix), kSuffix) == 0) {
+      icon_name = icon_url.substr(
+          std::strlen(kPrefix),
+          icon_url.size() - std::strlen(kPrefix) - std::strlen(kSuffix));
+    }
+  }
+
   // Resolve URL the same way make_image_block does.
   std::string res_path;
   if (!icon_url.empty() && icon_url[0] == '/') {
@@ -190,27 +212,30 @@ Gtk::Widget *make_heading_with_icon(const std::string &icon_url,
 
   // Probe-then-load (same defensive pattern as make_image_block — see
   // its comment block on why g_resources_get_info has to gate the load
-  // call).
+  // call). Skipped when icon_name is set (symbolic path below renders
+  // via icon-theme instead of texture).
   Glib::RefPtr<Gdk::Texture> tex;
-  GError *probe_err = nullptr;
-  if (g_resources_get_info(res_path.c_str(), G_RESOURCE_LOOKUP_FLAGS_NONE,
-                           nullptr, nullptr, &probe_err)) {
-    try {
-      tex = Gdk::Texture::create_from_resource(res_path);
-    } catch (const Glib::Error &e) {
-      LOG_WARN("HelpWindow: heading icon '{}' load failed: {}",
-               res_path, e.what());
-    } catch (const std::exception &e) {
-      LOG_WARN("HelpWindow: heading icon '{}' load threw std::exception: {}",
-               res_path, e.what());
-    } catch (...) {
-      LOG_WARN("HelpWindow: heading icon '{}' load threw unknown exception",
-               res_path);
+  if (icon_name.empty()) {
+    GError *probe_err = nullptr;
+    if (g_resources_get_info(res_path.c_str(), G_RESOURCE_LOOKUP_FLAGS_NONE,
+                             nullptr, nullptr, &probe_err)) {
+      try {
+        tex = Gdk::Texture::create_from_resource(res_path);
+      } catch (const Glib::Error &e) {
+        LOG_WARN("HelpWindow: heading icon '{}' load failed: {}",
+                 res_path, e.what());
+      } catch (const std::exception &e) {
+        LOG_WARN("HelpWindow: heading icon '{}' load threw std::exception: {}",
+                 res_path, e.what());
+      } catch (...) {
+        LOG_WARN("HelpWindow: heading icon '{}' load threw unknown exception",
+                 res_path);
+      }
+    } else {
+      LOG_WARN("HelpWindow: heading icon resource '{}' not found: {}",
+               res_path, probe_err ? probe_err->message : "?");
+      if (probe_err) g_error_free(probe_err);
     }
-  } else {
-    LOG_WARN("HelpWindow: heading icon resource '{}' not found: {}",
-             res_path, probe_err ? probe_err->message : "?");
-    if (probe_err) g_error_free(probe_err);
   }
 
   // Build the row: HBox [icon | title] vertically centred.
@@ -246,7 +271,20 @@ Gtk::Widget *make_heading_with_icon(const std::string &icon_url,
   // ones balloon. Gtk::Image with set_pixel_size FORCES the rendered
   // size regardless of intrinsic — same behaviour Toolbar uses for
   // its tool icons via set_from_icon_name.
-  if (tex) {
+  //
+  // s150: symbolic icons render via set_from_icon_name so GTK applies
+  // the symbolic-recolour pipeline (`-gtk-icon-style: symbolic` +
+  // `color: currentColor`). Without it, dark mode shows black-on-black.
+  if (!icon_name.empty()) {
+    auto *img = Gtk::make_managed<Gtk::Image>();
+    img->set_from_icon_name(icon_name);
+    img->set_pixel_size(kIconSizePx);
+    img->set_valign(Gtk::Align::CENTER);
+    img->set_halign(Gtk::Align::START);
+    img->set_tooltip_text(alt);
+    img->add_css_class("help-symbolic-icon");
+    row->append(*img);
+  } else if (tex) {
     auto *img = Gtk::make_managed<Gtk::Image>();
     img->set(tex);
     img->set_pixel_size(kIconSizePx);
@@ -628,7 +666,7 @@ void HelpWindow::build_topic_list() {
     { RowKind::Group, 1, false, "", "4.6 Utility tools" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/4-6-1-eyedropper.md",           "4.6.1 Eyedropper" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/4-6-2-zoom.md",                 "4.6.2 Zoom" },
-    { RowKind::Leaf, 2, true,  "/com/curvz/app/help/4-6-3-ruler.md",                "4.6.3 Ruler" },
+    { RowKind::Leaf, 2, true,  "/com/curvz/app/help/4-6-3-measure.md",              "4.6.3 Measure" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/4-7-reference-points.md",       "4.7 Reference points" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/4-8-corner.md",                 "4.8 Corner" },
 

@@ -1,4 +1,5 @@
 #include "LibraryPanel.hpp"
+#include "AppPreferences.hpp"
 #include "CurvzLog.hpp"
 #include "SvgParser.hpp"
 #include "curvz_utils.hpp"  // s121 m5: curvz::utils::set_name
@@ -92,8 +93,50 @@ void LibraryPanel::refresh() {
     rebuild_ui();
 }
 
+// s141: seed m_expanded from the project's saved category-expansion list
+// when a project is wired (or re-wired on project switch). Refresh after
+// so the visual state matches the freshly-seeded map. Setting to nullptr
+// (project unload) clears m_expanded so a stale entry doesn't leak into
+// the next loaded project.
+void LibraryPanel::set_project(CurvzProject* project) {
+    m_project = project;
+    m_expanded.clear();
+    if (m_project) {
+        for (const auto& key : m_project->library_expanded_categories) {
+            m_expanded[key] = true;
+        }
+    }
+    // Don't unconditionally refresh here — set_project may be called
+    // before the panel is realized (during MainWindow::setup_layout).
+    // The realize-driven refresh in the ctor will pick up the seeded
+    // m_expanded state on the next rebuild_ui() pass. Subsequent
+    // project switches that happen post-realize get refreshed by
+    // MainWindow's load_project path which calls refresh() explicitly.
+}
+
+// s141: write the current expanded set back into the project. Sparse —
+// only entries with value true are emitted, sorted for stable diffs in
+// the project.json file. Called from the category click handler after
+// each toggle; pairs with signal_request_save so MainWindow triggers a
+// save through its existing schedule_save debounce.
+void LibraryPanel::sync_expanded_to_project() {
+    if (!m_project) return;
+    std::vector<std::string> keys;
+    keys.reserve(m_expanded.size());
+    for (const auto& [k, v] : m_expanded) {
+        if (v) keys.push_back(k);
+    }
+    std::sort(keys.begin(), keys.end());
+    m_project->library_expanded_categories = std::move(keys);
+}
+
 // ── Paths ─────────────────────────────────────────────────────────────────────
+// s145 m4: consult AppPreferences::library_path_override first; empty
+// override falls through to the historical built-in default.
 std::string LibraryPanel::user_library_dir() const {
+    const std::string& override_path =
+        AppPreferences::instance().library_path_override();
+    if (!override_path.empty()) return override_path;
     return Glib::get_user_config_dir() + "/curvz/library";
 }
 
@@ -157,17 +200,33 @@ void LibraryPanel::scan_library() {
         }
     };
 
-    // ── Ensure user library dir exists with default categories ──────────
+    // ── First-launch seeding of default categories ──────────────────────
+    // s141: previously this seeded on every scan, which made deletion of
+    // a default category (via the new context menu) impossible — the
+    // folder reappeared empty on the next refresh. Now it runs once,
+    // gated by AppPreferences::library_defaults_seeded. After the seed
+    // succeeds the flag flips true and persists to preferences.json, so
+    // subsequent launches skip the seed pass entirely.
     std::string user_dir = user_library_dir();
     std::error_code ec_mk;
-    static const char* default_categories[] = {
-        "arrows", "shapes", "icons", "ui", nullptr
-    };
-    for (int i = 0; default_categories[i]; ++i) {
-        fs::create_directories(user_dir + "/" + default_categories[i], ec_mk);
-        if (ec_mk)
-            LOG_WARN("LibraryPanel: could not create '{}': {}",
-                     user_dir + "/" + default_categories[i], ec_mk.message());
+    fs::create_directories(user_dir, ec_mk);
+
+    auto& prefs = AppPreferences::instance();
+    if (!prefs.library_defaults_seeded()) {
+        static const char* default_categories[] = {
+            "arrows", "shapes", "icons", "ui", nullptr
+        };
+        for (int i = 0; default_categories[i]; ++i) {
+            std::error_code ec_cat;
+            fs::create_directories(user_dir + "/" + default_categories[i],
+                                   ec_cat);
+            if (ec_cat)
+                LOG_WARN("LibraryPanel: could not create '{}': {}",
+                         user_dir + "/" + default_categories[i],
+                         ec_cat.message());
+        }
+        prefs.set_library_defaults_seeded(true);
+        LOG_INFO("LibraryPanel: seeded default categories (first launch)");
     }
 
     scan_dir(system_library_dir(), false);
@@ -191,18 +250,22 @@ LibraryPanel::render_thumb(const std::string& svg_path, int size) {
         Cairo::Surface::Format::ARGB32, size, size);
     auto cr = Cairo::Context::create(surf);
 
-    // S117 m14 v2: read background + currentColor from project motif
-    // (mirrors DocumentGallery::render_thumb fix). Falls back to dark
-    // defaults if no project is wired (early boot, tests).
+    // s148 m1: thumb bg reads the active doc's artboard colour (re-
+    // promoted from project per-motif to per-doc). Library icons preview
+    // as they would look if dropped into the active doc — intuitive
+    // alignment with what the user sees on canvas. currentColor
+    // luminance derives from the bg luminance; same 0.6 threshold
+    // Canvas/Gallery use, so the cc decision is uniform across surfaces.
     double bg_r = 0.157, bg_g = 0.157, bg_b = 0.157;
-    bool light_motif = false;
     if (m_project) {
-        bg_r = m_project->artboard_r();
-        bg_g = m_project->artboard_g();
-        bg_b = m_project->artboard_b();
-        light_motif = (m_project->motif == Motif::Light);
+        if (auto *active = m_project->active_doc()) {
+            bg_r = active->artboard_bg_r;
+            bg_g = active->artboard_bg_g;
+            bg_b = active->artboard_bg_b;
+        }
     }
-    double cc = light_motif ? 0.10 : 0.88;
+    bool light_bg = std::max({bg_r, bg_g, bg_b}) > 0.60;
+    double cc = light_bg ? 0.10 : 0.88;
 
     cr->set_source_rgb(bg_r, bg_g, bg_b);
     cr->paint();
@@ -568,7 +631,7 @@ Gtk::Widget* LibraryPanel::make_category_section(const Category& cat) {
     hdr->set_margin_bottom(2);
     hdr->add_css_class("library-category-header");
 
-    auto* arrow = Gtk::make_managed<Gtk::Label>("▾");
+    auto* arrow = Gtk::make_managed<Gtk::Label>("▸");
     arrow->add_css_class("dim-label");
     hdr->append(*arrow);
 
@@ -583,8 +646,13 @@ Gtk::Widget* LibraryPanel::make_category_section(const Category& cat) {
     section->append(*hdr);
 
     // ── Revealer containing the FlowBox ──────────────────────────────────
+    // s141: default to collapsed. Library starts as a list of category
+    // headers; the user opens the ones they want to use. Affinity / Sketch
+    // / Figma asset libraries follow the same convention. The persisted
+    // state below overrides this default for any category the user has
+    // explicitly expanded this session.
     auto* rev = Gtk::make_managed<Gtk::Revealer>();
-    rev->set_reveal_child(true);
+    rev->set_reveal_child(false);
     rev->set_transition_type(Gtk::RevealerTransitionType::SLIDE_DOWN);
 
     auto* flow = Gtk::make_managed<Gtk::FlowBox>();
@@ -612,16 +680,293 @@ Gtk::Widget* LibraryPanel::make_category_section(const Category& cat) {
     section->append(*rev);
 
     // ── Toggle collapse on header click ──────────────────────────────────
+    // s141: pin the collapse gesture to the primary (left) button so a
+    // right-click on a user-category header doesn't double-fire — collapse
+    // toggle and context-menu popup would otherwise both run from the same
+    // press. The default GestureClick::set_button(0) means "any button."
+    //
+    // Expanded-state persistence: keyed by "sys:<name>" / "usr:<name>"
+    // in m_expanded. Lookup of a missing key returns false (= use default,
+    // which is collapsed). User clicks to expand → entry flips true and
+    // stays expanded across refresh()/rebuild_ui() rebuilds. In-memory
+    // only — closing the app resets every category back to collapsed,
+    // which matches the "fresh launch starts quiet" intent.
+    const std::string expand_key =
+        (cat.is_user ? std::string("usr:") : std::string("sys:")) + cat.name;
+    const bool start_expanded = m_expanded[expand_key];
+    if (start_expanded) {
+        rev->set_reveal_child(true);
+        arrow->set_text("▾");
+    }
+
     auto click = Gtk::GestureClick::create();
-    bool* revealed = new bool(true); // leaked intentionally — lifetime = widget
+    click->set_button(GDK_BUTTON_PRIMARY);
     click->signal_pressed().connect(
-        [rev, arrow, revealed](int, double, double) {
-            *revealed = !(*revealed);
-            rev->set_reveal_child(*revealed);
-            arrow->set_text(*revealed ? "▾" : "▸");
+        [this, rev, arrow, expand_key](int, double, double) {
+            // Flip stored state, then drive the UI from the stored state.
+            // Reading the map back rather than tracking a local bool keeps
+            // the source of truth in one place.
+            const bool now_expanded = !m_expanded[expand_key];
+            m_expanded[expand_key] = now_expanded;
+            rev->set_reveal_child(now_expanded);
+            arrow->set_text(now_expanded ? "▾" : "▸");
+            // s141: persist the new expansion state to the project file.
+            // sync_expanded_to_project writes m_project's vector; the
+            // signal asks MainWindow to schedule a save through its
+            // existing debounce. Pair runs even if m_project is null
+            // (no-op inside sync); the signal still fires but with no
+            // listener attached during early bring-up.
+            sync_expanded_to_project();
+            m_sig_request_save.emit();
         });
     hdr->add_controller(click);
     hdr->set_cursor(Gdk::Cursor::create("pointer"));
+
+    // ── Right-click context menu on user categories ─────────────────────
+    // s141: mirrors the item-card context menu (s136 m4). System
+    // categories (read-only, under /usr/share/curvz/library) get no
+    // menu — gating at the gesture level is the same "honest at the
+    // menu, not on click" discipline the item card already uses.
+    if (cat.is_user) {
+        const std::string cat_name  = cat.name;
+        const std::string user_dir  = user_library_dir();
+        const std::string cat_dir   = user_dir + "/" + cat_name;
+        const std::size_t item_count = cat.items.size();
+
+        // s141: capture item names for the delete confirm preview. Showing
+        // names rather than just a count makes the destructive nature
+        // concrete — "delete arrow-left, arrow-right, +3 more" is harder
+        // to dismiss than "delete 5 items."
+        std::vector<std::string> item_names;
+        item_names.reserve(cat.items.size());
+        for (const auto& it : cat.items) item_names.push_back(it.name);
+
+        auto rclick = Gtk::GestureClick::create();
+        rclick->set_button(GDK_BUTTON_SECONDARY);
+        rclick->signal_pressed().connect(
+            [this, hdr, cat_name, cat_dir, item_count, item_names](
+                int, double x, double y) {
+                auto menu = Gio::Menu::create();
+                menu->append("Rename folder…",  "libcatctx.rename");
+                menu->append("Delete folder",   "libcatctx.del");
+
+                auto ag = Gio::SimpleActionGroup::create();
+
+                // ── Rename folder ─────────────────────────────────────
+                auto act_rename = Gio::SimpleAction::create("rename");
+                act_rename->signal_activate().connect(
+                    [this, hdr, cat_name, cat_dir](
+                        const Glib::VariantBase&) {
+                        Gtk::Window* win = nullptr;
+                        for (Gtk::Widget* w = hdr->get_parent(); w;
+                             w = w->get_parent()) {
+                            win = dynamic_cast<Gtk::Window*>(w);
+                            if (win) break;
+                        }
+                        if (!win) {
+                            LOG_WARN("LibraryPanel: rename folder — "
+                                     "no parent window");
+                            return;
+                        }
+
+                        const std::string parent_dir =
+                            fs::path(cat_dir).parent_path().string();
+
+                        std::vector<curvz::utils::FormField> fields = {
+                            {"name", "Name",
+                             curvz::utils::TextField{cat_name,
+                                                     "Folder name"}}};
+                        std::vector<std::string> buttons = {"Cancel",
+                                                            "Rename"};
+
+                        curvz::utils::show_form(
+                            *win, "Rename library folder",
+                            "New name for this folder.",
+                            fields, buttons,
+                            /*default_button=*/1, /*cancel_button=*/0,
+                            [this, win, cat_name, cat_dir, parent_dir](
+                                int btn,
+                                const std::map<std::string,
+                                               curvz::utils::FormFieldValue>&
+                                    values) {
+                                if (btn != 1) return; // Cancel
+
+                                std::string name;
+                                auto it = values.find("name");
+                                if (it != values.end())
+                                    name = it->second.text();
+
+                                // Trim (matches item-rename behaviour)
+                                auto trim = [](std::string s) {
+                                    size_t i = 0;
+                                    while (i < s.size() &&
+                                           std::isspace(
+                                               (unsigned char)s[i]))
+                                        ++i;
+                                    s = s.substr(i);
+                                    size_t j = s.size();
+                                    while (j > 0 &&
+                                           std::isspace(
+                                               (unsigned char)s[j - 1]))
+                                        --j;
+                                    return s.substr(0, j);
+                                };
+                                name = trim(name);
+
+                                // Empty / unchanged → silent no-op.
+                                if (name.empty()) return;
+                                if (name == cat_name) return;
+
+                                // Reject path separators — folder names
+                                // map to single dir entries under user
+                                // library, not subpaths.
+                                if (name.find('/') != std::string::npos ||
+                                    name.find('\\') != std::string::npos) {
+                                    curvz::utils::show_alert(
+                                        *win, "Invalid name",
+                                        "Folder names cannot contain "
+                                        "slashes.");
+                                    return;
+                                }
+                                // Reject leading dot — would create a
+                                // hidden folder the panel would skip on
+                                // its next scan.
+                                if (name[0] == '.') {
+                                    curvz::utils::show_alert(
+                                        *win, "Invalid name",
+                                        "Folder names cannot start with "
+                                        "a dot.");
+                                    return;
+                                }
+
+                                const std::string new_path =
+                                    parent_dir + "/" + name;
+
+                                std::error_code ec;
+                                if (fs::exists(new_path, ec)) {
+                                    curvz::utils::show_alert(
+                                        *win, "Folder already exists",
+                                        "A folder named \"" + name +
+                                            "\" already exists. Choose a "
+                                            "different name.");
+                                    return;
+                                }
+
+                                fs::rename(cat_dir, new_path, ec);
+                                if (ec) {
+                                    LOG_WARN("LibraryPanel: folder "
+                                             "rename failed for '{}': {}",
+                                             cat_dir, ec.message());
+                                    curvz::utils::show_alert(
+                                        *win, "Rename failed",
+                                        "Could not rename folder to \"" +
+                                            name + "\".");
+                                    return;
+                                }
+                                LOG_INFO("LibraryPanel: renamed folder "
+                                         "'{}' → '{}'",
+                                         cat_dir, new_path);
+                                Glib::signal_idle().connect_once(
+                                    [this]() { refresh(); });
+                            });
+                    });
+                ag->add_action(act_rename);
+
+                // ── Delete folder ─────────────────────────────────────
+                auto act_del = Gio::SimpleAction::create("del");
+                act_del->signal_activate().connect(
+                    [this, hdr, cat_name, cat_dir, item_count, item_names](
+                        const Glib::VariantBase&) {
+                        Gtk::Window* win = nullptr;
+                        for (Gtk::Widget* w = hdr->get_parent(); w;
+                             w = w->get_parent()) {
+                            win = dynamic_cast<Gtk::Window*>(w);
+                            if (win) break;
+                        }
+                        if (!win) {
+                            LOG_WARN("LibraryPanel: delete folder — "
+                                     "no parent window");
+                            return;
+                        }
+
+                        // s141: build a louder, content-aware confirm
+                        // message. Empty folder is a small commitment;
+                        // folder with items lists up to 5 of them so the
+                        // user sees concrete content before confirming.
+                        // The "+ N more" tail keeps the dialog from
+                        // ballooning on big folders without hiding the
+                        // total count.
+                        constexpr std::size_t PREVIEW_CAP = 5;
+                        std::string detail;
+                        if (item_count == 0) {
+                            detail = "Delete the empty folder \"" +
+                                     cat_name + "\"?";
+                        } else {
+                            detail = "Delete the folder \"" + cat_name +
+                                     "\" and ";
+                            if (item_count == 1) {
+                                detail += "the 1 item inside it?";
+                            } else {
+                                detail += "all " +
+                                          std::to_string(item_count) +
+                                          " items inside it?";
+                            }
+                            detail += "\n\nItems that will be permanently "
+                                      "lost:\n";
+                            const std::size_t shown =
+                                std::min(item_count, PREVIEW_CAP);
+                            for (std::size_t i = 0; i < shown; ++i) {
+                                detail += "  • " + item_names[i] + "\n";
+                            }
+                            if (item_count > PREVIEW_CAP) {
+                                detail += "  • …and " +
+                                          std::to_string(item_count -
+                                                         PREVIEW_CAP) +
+                                          " more\n";
+                            }
+                            detail += "\nThis cannot be undone.";
+                        }
+
+                        std::vector<std::string> buttons = {"Cancel",
+                                                            "Delete"};
+
+                        curvz::utils::show_confirm(
+                            *win, "Delete library folder",
+                            detail, buttons,
+                            /*default_button=*/0, /*cancel_button=*/0,
+                            [this, cat_dir, cat_name](int btn) {
+                                if (btn != 1) return; // Cancel
+
+                                std::error_code ec;
+                                fs::remove_all(cat_dir, ec);
+                                if (ec) {
+                                    LOG_WARN("LibraryPanel: delete "
+                                             "folder failed for '{}': {}",
+                                             cat_dir, ec.message());
+                                } else {
+                                    LOG_INFO("LibraryPanel: deleted "
+                                             "folder '{}' ('{}')",
+                                             cat_dir, cat_name);
+                                }
+                                Glib::signal_idle().connect_once(
+                                    [this]() { refresh(); });
+                            });
+                    });
+                ag->add_action(act_del);
+
+                hdr->insert_action_group("libcatctx", ag);
+
+                auto* popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
+                popover->set_parent(*hdr);
+                popover->set_has_arrow(false);
+                Gdk::Rectangle rect;
+                rect.set_x((int)x); rect.set_y((int)y);
+                rect.set_width(1);  rect.set_height(1);
+                popover->set_pointing_to(rect);
+                popover->popup();
+            });
+        hdr->add_controller(rclick);
+    }
 
     // Separator below each category
     auto* sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);

@@ -453,6 +453,39 @@ struct SceneNode {
   //   unaffected). Serialized as data-curvz-warp-quality="N" (M6).
   int                        warp_quality = 4;
 
+  // ── Warp preset provenance (s147 m2) ────────────────────────────────
+  // Three fields capture "what preset was last applied to this warp,
+  // and what counts." Persisted across save/load; survive clone; reset
+  // on envelope drift (handle drag, arrow-key nudge — the inspector's
+  // dropdown then shows (Custom) honestly).
+  //
+  // warp_preset_idx: -1 = Custom (envelope is hand-edited or no preset
+  //   has ever been applied). 0..warp_presets::PRESET_COUNT-1 = a
+  //   real preset value (FLAT, ARC_UP, ...). Inspector dropdown
+  //   reads this directly and biases its initial selection.
+  //
+  // warp_top_count / warp_bot_count: anchor counts last fed to the
+  //   preset generator. Range [2, 4]. Used by inspector spinners on
+  //   refresh so a saved Bulge with top=4, bot=2 reloads with those
+  //   numbers showing — not envelope-size-derived (which would also
+  //   work for preset-conformant envelopes but loses provenance for
+  //   the "saved Custom-edited shape" case).
+  //
+  // Clearing rule: when the envelope is mutated by anything other than
+  //   a preset application (handle drag commit, arrow nudge, future
+  //   inspector hand-edits), the editing command sets warp_preset_idx
+  //   = -1 in the post-state so undo restores both envelope shape AND
+  //   preset label atomically. Translation of the whole warp object
+  //   does NOT count as drift — source moves with envelope, the
+  //   preset relationship is preserved.
+  //
+  // Serialized as data-curvz-warp-preset / data-curvz-warp-top-count /
+  // data-curvz-warp-bot-count. preset attr omitted when -1 (Custom is
+  // the implicit default).
+  int                        warp_preset_idx = -1;
+  int                        warp_top_count  = 2;
+  int                        warp_bot_count  = 2;
+
   // ── Drop shadow ──────────────────────────────────────────────────────
   // S97 m1. A presentational effect on the host node, in the same family
   // as fill / stroke / opacity. Meaningful on Path, Text, Group, Compound,
@@ -771,6 +804,12 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->warp_env_top           = src.warp_env_top;
   dst->warp_env_bottom        = src.warp_env_bottom;
   dst->warp_quality           = src.warp_quality;
+  // s147 m2: preset provenance fields — survive clone so undo
+  // snapshots and copy/paste preserve the "this came from preset X"
+  // metadata.
+  dst->warp_preset_idx        = src.warp_preset_idx;
+  dst->warp_top_count         = src.warp_top_count;
+  dst->warp_bot_count         = src.warp_bot_count;
   if (src.warp_source)
     dst->warp_source = clone_node(*src.warp_source);
   if (src.warp_glyph_cache)

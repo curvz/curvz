@@ -31,7 +31,7 @@ static ToolMeta tool_meta(ActiveTool t) {
         case ActiveTool::Corner:     return {"⌐",   "Corner"};
         case ActiveTool::Eyedropper: return {"⊕",   "Eyedropper"};
         case ActiveTool::Zoom:       return {"⊙",   "Zoom"};
-        case ActiveTool::Ruler:      return {"⊢",   "Ruler"};
+        case ActiveTool::Measure:      return {"⊢",   "Measure"};
         default:                     return {"?",   "Unknown"};
     }
 }
@@ -59,7 +59,7 @@ static const char* tool_help_resource(ActiveTool t) {
         case ActiveTool::TextOnPath: return "/com/curvz/app/help/4-5-2-text-on-path.md";
         case ActiveTool::Eyedropper: return "/com/curvz/app/help/4-6-1-eyedropper.md";
         case ActiveTool::Zoom:       return "/com/curvz/app/help/4-6-2-zoom.md";
-        case ActiveTool::Ruler:      return "/com/curvz/app/help/4-6-3-ruler.md";
+        case ActiveTool::Measure:      return "/com/curvz/app/help/4-6-3-measure.md";
         case ActiveTool::Ref:        return "/com/curvz/app/help/4-7-reference-points.md";
         case ActiveTool::Corner:     return "/com/curvz/app/help/4-8-corner.md";
         default:                     return "/com/curvz/app/help/4-1-tools-overview.md";
@@ -396,7 +396,7 @@ void ContextBar::rebuild(ActiveTool tool) {
         add_hint("Right-click toolbar — set zoom level (popover)");
         break;
 
-    case ActiveTool::Ruler:
+    case ActiveTool::Measure:
         add_hint("Click node — first point"); add_sep();
         add_key("Shift"); add_hint("+ click — second point"); add_sep();
         add_hint("Drag — marquee select 2 nodes"); add_sep();

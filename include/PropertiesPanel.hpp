@@ -102,6 +102,14 @@ public:
     // inspector. MainWindow connects this to Canvas::release_blend.
     using RequestReleaseBlendSignal = sigc::signal<void()>;
     RequestReleaseBlendSignal& signal_request_release_blend() { return m_sig_request_release_blend; }
+    // s146 m2 — Emitted when the user clicks Release / Flatten in the
+    // Warp section of the inspector. MainWindow connects these to its
+    // existing on_warp_release / on_warp_flatten handlers (same code
+    // path as the Path menu entries — single source of truth).
+    using RequestReleaseWarpSignal = sigc::signal<void()>;
+    using RequestFlattenWarpSignal = sigc::signal<void()>;
+    RequestReleaseWarpSignal& signal_request_release_warp() { return m_sig_request_release_warp; }
+    RequestFlattenWarpSignal& signal_request_flatten_warp() { return m_sig_request_flatten_warp; }
     DocRenamedSignal&       signal_doc_renamed()         { return m_sig_doc_renamed;         }
     RequestCanvasFocusSignal& signal_request_canvas_focus(){ return m_sig_request_canvas_focus;}
     GuideSelectedSignal&           signal_guide_selected()           { return m_sig_guide_selected;           }
@@ -161,14 +169,37 @@ private:
 
     // Child section collapsible.  If parent != nullptr, appends into that box
     // instead of m_inner (used for sections inside a group).
+    //
+    // accessory: optional dim text appended to the right of the section
+    // title (e.g. "Dimensions  IN" — the IN is the accessory). Useful for
+    // sections that carry an at-a-glance state read-out in the header.
+    // Pass nullptr (default) for no accessory.
     Gtk::Box* add_collapsible(const char* title, bool expanded = true,
-                              Gtk::Box* parent = nullptr);
+                              Gtk::Box* parent = nullptr,
+                              const char* accessory = nullptr);
     void      add_collapsible_disabled(const char* title, const char* placeholder,
                                        Gtk::Box* parent = nullptr);
 
     void add_row(const char* label, const std::string& value);
     void build_canvas_section(std::shared_ptr<CanvasModel> cm, Gtk::Box* parent = nullptr);
-    void build_project_section(CurvzProject* project, Gtk::Box* parent = nullptr);
+    // s150 — Theme disclosure (renamed from build_motif_disclosure in s148 m2).
+    // Wraps the four "draftsman setup" facets of a doc (Canvas colours,
+    // Margins, Grid, Guides) under a single nested collapsible. The
+    // wrapper is labelled "Theme" because that's now the user-facing
+    // word for the saveable doc-style bundle (Themes panel saves and
+    // applies what's inside this disclosure). Lives in the Document
+    // group between Metadata and Dimensions. ARC.md vocabulary: Motif
+    // is now internal-only (the Motif enum + the MotifSettings colour
+    // sub-bundle inside a Theme); Theme is the user-facing word.
+    void build_theme_disclosure(CurvzDocument* doc, Gtk::Box* parent = nullptr);
+    // s148 m2 — Canvas-colours section (header label "Canvas"; was
+    // "Motif" in m1/early m2). Per-document artboard / workspace /
+    // creation chips + Reset. Lives inside the Theme disclosure built
+    // by build_theme_disclosure. s150 renamed the builder from
+    // build_motif_section → build_canvas_colours_section to match
+    // what it actually builds, after the user-facing "Motif" word
+    // went internal-only.
+    void build_canvas_colours_section(CurvzDocument* doc, Gtk::Box* parent = nullptr);
     // s143 m1 — Application group section: user-tier app preferences
     // surfaced from AppPreferences. First inhabitant: boolean cleanup
     // quality slider. Future additions (recent-projects max, autosave
@@ -176,9 +207,23 @@ private:
     // or sibling sections under the same Application group. Doesn't
     // depend on a project/document — reads/writes AppPreferences::instance.
     void build_app_section(Gtk::Box* parent = nullptr);
+    // s148 m2 — Application ▸ Appearance subsection. Currently houses
+    // the Dark/Light Theme switch only. Sorted first alphabetically
+    // within the App group (Appearance / Boolean cleanup / Editing /
+    // Paths / Startup / Warp). m2 sub-ship 1 reads/writes
+    // m_project->motif (existing project-level state); sub-ship 2
+    // migrates the source to AppPreferences::instance for true
+    // app-tier persistence. Takes CurvzProject* during sub-ship 1
+    // for that reason; sub-ship 2 will drop the parameter.
+    void build_app_appearance_section(CurvzProject* project, Gtk::Box* parent = nullptr);
     void build_guide_section(CurvzDocument* doc, Gtk::Box* parent = nullptr);
-    void build_snap_section(CurvzDocument* doc, Gtk::Box* parent = nullptr);
-    void build_measure_section(CurvzDocument* doc, Gtk::Box* parent = nullptr);
+    // s150: build_snap_section deleted — Snap behaviour now lives at the
+    // toolbar Snap switch + its right-click popover. Storage on doc.snap
+    // is unchanged; only the inspector surface went away.
+    // s150: build_measure_section deleted — Measure behaviour now lives
+    // at the toolbar Ruler button + its right-click popover. Storage on
+    // doc.measure_save_to_layer / doc.measure_destruct_after_copy is
+    // unchanged; only the inspector surface went away.
     void build_grid_section(CurvzDocument* doc, Gtk::Box* parent = nullptr);
     void build_margin_section(CurvzDocument* doc, Gtk::Box* parent = nullptr);
     void update_grid_margin_units();  // called in-place when display unit changes
@@ -190,6 +235,16 @@ private:
     //   Emits prop_changed on every change so Canvas redraws and the cache
     //   gets invalidated via mark_all_blends_dirty in MainWindow.
     void build_blend_section(SceneNode* obj, Gtk::Box* parent = nullptr);
+    // s146 m2 — Warp inspector section. Mirrors WarpDialog's controls
+    // (top/bot anchor counts, preset dropdown, quality slider) but lives
+    // in the Object group so a selected Warp is editable in place rather
+    // than via a re-opened dialog. Same preset machinery (lifted to
+    // curvz::utils::generate_warp_preset) feeds both surfaces. Edits
+    // write directly to obj.warp_env_top / warp_env_bottom / warp_quality
+    // and flag warp_cache_dirty; canvas redraws on emit_prop_changed.
+    // Like build_blend_section, this section's edits don't push undo —
+    // future milestone may add coalesced EditWarpCommand pushes here.
+    void build_warp_section(SceneNode* obj, Gtk::Box* parent = nullptr);
     // S97 m3 — drop shadow inspector section. Shown for any node that
     // can_have_shadow() (Path, Compound, Group, Text, Image, ClipGroup,
     // Blend, Warp). Controls: enable toggle, dx/dy/blur spinbuttons,
@@ -326,6 +381,8 @@ private:
     RequestFlipSignal        m_sig_request_flip;
     RequestDetachTextSignal  m_sig_request_detach_text;
     RequestReleaseBlendSignal m_sig_request_release_blend;
+    RequestReleaseWarpSignal m_sig_request_release_warp;
+    RequestFlattenWarpSignal m_sig_request_flatten_warp;
     DocRenamedSignal         m_sig_doc_renamed;
     RequestCanvasFocusSignal m_sig_request_canvas_focus;
     GuideSelectedSignal              m_sig_guide_selected;

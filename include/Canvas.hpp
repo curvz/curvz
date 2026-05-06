@@ -117,8 +117,8 @@ public:
   std::string last_minted_iid();
 
   // Public bbox query. Wraps the private object_bbox so non-Canvas
-  // callers (MainWindow's WarpDialog orchestration needs the glyph
-  // bbox to scale preset envelopes) can ask "what's this node's
+  // callers (MainWindow::on_warp_make needs the glyph bbox to scale
+  // preset envelopes for new Warps) can ask "what's this node's
   // axis-aligned extent?" without duplicating the bbox walker. x/y/
   // w/h written through; returns false if the node has no meaningful
   // bbox (e.g. a Ref point). include_stroke defaults to true to match
@@ -257,6 +257,29 @@ public:
   //   call on a Warp with null source: clears caches and logs a warn.
   void rebuild_warp_caches(SceneNode *w);
 
+  // warp_source_bbox(): canonical "what bbox does the warp interpret
+  //   the envelope against." This is the SAME rectangle that
+  //   rebuild_warp_caches feeds into warp_subtree as the source
+  //   reference space — derived from walking the actual path data in
+  //   warp_glyph_cache (NOT from object_bbox, which can include
+  //   stroke/recipe metadata and produce a slightly different rect).
+  //
+  //   Inspector preset-pick uses this so the envelope it generates
+  //   is sized to the same rectangle warp_subtree will remap against;
+  //   any mismatch produces a warp that "looks like nothing happened"
+  //   because envelope and source disagree on coordinate frame.
+  //
+  //   Side-effect: ensures warp_glyph_cache is current (rebuilds if
+  //   dirty or missing). The cache is the only place the source bbox
+  //   can be measured the same way warp_subtree will measure it, so
+  //   currency is required for a correct answer.
+  //
+  //   Returns false if w is null/non-Warp, has null source, or if the
+  //   glyph_cache contains no path data (degenerate). Callers should
+  //   bail without disturbing envelope on false.
+  bool warp_source_bbox(SceneNode &w, double &bx, double &by, double &bw,
+                        double &bh);
+
   // make_warp(): create a Warp container around the single selected
   //   Path / Compound / Group. The selected node is cloned into the
   //   Warp's warp_source slot and replaced in its parent's children
@@ -328,6 +351,22 @@ public:
   CursorMovedSignal &signal_cursor_moved() { return m_sig_cursor; }
   SelectionChangedSignal &signal_selection_changed() { return m_sig_selection; }
   DocumentChangedSignal &signal_document_changed() { return m_sig_doc_changed; }
+
+  // notify_document_changed(): public trigger for the doc-changed
+  // cascade. Internally emits m_sig_doc_changed, the same signal
+  // canvas-driven structural mutations (drag-move, transform, etc.)
+  // already raise. External callers that mutate the doc tree without
+  // going through Canvas (theme apply, future bulk ops, plugins)
+  // should call this after their mutation so the cascade — layers
+  // panel rebuild, status count refresh, gallery thumb refresh,
+  // blend cache invalidate — runs uniformly.
+  //
+  // s147 m3: required by ThemesPanel apply path. apply_theme_to_doc
+  // can add/remove grid/margin layers; without this notification,
+  // the active doc's canvas keeps drawing the pre-apply scene
+  // structure until something else triggers a structural redraw
+  // (doc switch, object edit, etc.).
+  void notify_document_changed() { m_sig_doc_changed.emit(); }
   // S89: fired after a measurement is appended to or modified within the
   // measure layer (auto-save on completion, Enter commit). Listeners refresh
   // the inspector's saved-measurements list and the layers panel. Distinct
@@ -983,6 +1022,11 @@ private:
   PathData     m_warp_drag_pre_top;
   PathData     m_warp_drag_pre_bottom;
   int          m_warp_drag_pre_quality = 4;
+  // s147 m2: capture preset_idx at drag start so undo can restore the
+  // preset label that was in effect before drift. Drag commit clears
+  // live preset_idx to -1 (envelope no longer matches preset shape);
+  // undo restores both envelope AND the original preset_idx atomically.
+  int          m_warp_drag_pre_preset_idx = -1;
   // Anchor drag offset: when dragging an anchor, the click point is
   // usually not exactly on the anchor center, so we capture the offset
   // to avoid a jump on first motion.

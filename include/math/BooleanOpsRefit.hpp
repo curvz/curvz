@@ -8,10 +8,10 @@
 namespace Curvz {
 
 // ══════════════════════════════════════════════════════════════════════════════
-// BooleanOpsRefit — Clipper2 output reconstruction (s139, multi-session)
+// BooleanOpsRefit — Clipper2 output reconstruction (s140 final shape)
 //
-// The Clipper2 boolean engine produces topologically-correct results, but
-// the geometric output is a polyline with ~100 vertices per circle-equivalent
+// Clipper2 produces topologically-correct boolean results, but the
+// geometric output is a polyline with ~100 vertices per circle-equivalent
 // curve. The first-cut refit in BooleanOpsClipper.cpp turns each polyline
 // edge into a straight cubic, preserving the polyline shape exactly but
 // inflating node count by ~30×.
@@ -19,92 +19,100 @@ namespace Curvz {
 // This module is the post-pass that walks the refitted PathData and
 // reduces it to the minimum node set that reproduces the original cubic
 // curves: original-anchor survivors with their original handles, and
-// curve-curve intersections as Cusp anchors with renegotiated handles.
+// curve-curve intersections as Corner anchors with retracted handles.
 //
-// Design (s137 + s139 refinement; preserved in
-// docs/clipper-reconstruction-integration.md):
+// Three-phase pipeline (s140):
 //
-//   1. Pre-pass — compute keeper set:
-//        * Every input anchor's position becomes a candidate keeper
-//          (filtered later by Clipper2-survival check).
-//        * Every analytical curve-curve intersection between distinct
-//          subpaths becomes a Cusp keeper.
+//   1. ENRICH (pre-Clipper2):
+//        Insert smooth on-curve guard anchors around every original
+//        anchor via BezierPath::insert_node_at — same primitive used
+//        interactively when the user clicks on a curve to add a node.
+//        Guards carry curve-shape information through Clipper2's
+//        polyline phase. Geometry is preserved exactly; re-running the
+//        enriched path through Clipper2 produces the same polyline as
+//        the un-enriched input would have.
 //
-//   2. Walk-and-sweep — for each cleanup target loop:
-//        * Tag refit nodes as keeper / deletable by position match
-//          against the keeper set.
-//        * Apply GUARD BAND: a node is deletable only if it AND both
-//          its neighbours are non-keepers. This protects keeper handles
-//          from being renegotiated by delete_node when adjacent nodes
-//          are removed — without the guard, sharp corners and
-//          intersection cusps drag the curve away from the original
-//          shape (s139, surfaced from warp-cleanup workflow).
-//        * Delete deletable nodes high-index-first via the existing
-//          BezierPath::delete_node — its built-in least-squares refit
-//          handles handle renegotiation between the surviving guards.
-//        * Restore the original BezierNode for surviving anchors with
-//          a known source; retype Intersection keepers to Cusp.
+//   2. KEEPER SET (post-Clipper2):
+//        Build the keeper set from the ORIGINAL operands (not enriched).
+//        Two categories: OriginalAnchor (with back-pointer to source
+//        BezierNode) and Intersection (analytic curve-curve crossing,
+//        same transversality filters as the retired Sederberg-Nishita
+//        engine). Synthetic guards are NOT keepers — they're transport,
+//        not destination, and get deleted with the rest of the polyline
+//        noise.
 //
-// Validation criterion: rect (4 cusps) + circle (4 symmetrics) Union
-// produces 9 nodes (test-case/03-hand-cleaned-9-nodes.png). The guard
-// band doesn't break this — keepers are spread far enough around the
-// loop that their guards don't double-protect any shared interior, and
-// most "deletable" runs between keepers are short enough to be covered
-// by guards in either case.
+//   3. CLEANUP WALK:
+//        For each keeper, find its closest match in the polyline output
+//        and tag that node. Delete every untagged node descending. For
+//        each surviving tag: OriginalAnchor restores byte-for-byte from
+//        KeeperPoint::source (corner stays Corner, smooth stays Smooth,
+//        original handles preserved); Intersection retracts handles and
+//        becomes Corner.
 //
-// As of s139 this header is published but NOT WIRED into
-// boolean_op_clipper. The wiring + cleanup_loop body will land in a
-// subsequent session, behind a feature flag for at least one round of
-// diagnostic comparison against the current 139-node behavior.
+// Validation: rect+circle Union → 9 nodes (matches hand-clean target);
+// complex freeform-plus-ellipse → 20 nodes with all authored types
+// preserved, clean intersections, correct path direction.
+//
+// All three phases are wired into Canvas::boolean_op behind
+// AppPreferences::boolean_cleanup_enabled. Off → behaviour identical
+// to pre-s139 (raw Clipper2 polyline output via BooleanOpsClipper's
+// straight-cubic refit).
 // ══════════════════════════════════════════════════════════════════════════════
 
 namespace refit {
 
-// A single point on the keeper-set wishlist. Three categories (s139 m5):
+// A single point on the keeper-set wishlist. Two categories (s140 m3):
 //
 //   - OriginalAnchor: a user-authored anchor in the input geometry.
-//     `source` points back into the operand's BezierPath::nodes.
+//     `source` points back into the operand's BezierPath::nodes so the
+//     cleanup pass can restore the authored handles + type byte-for-
+//     byte (corner stays Corner, smooth stays Smooth — originals are
+//     already what they are).
 //
 //   - Intersection: an analytic curve-curve intersection found by
 //     compute_keeper_set walking distinct subpath pairs. No source.
+//     Cleanup retracts handles and types the survivor as Corner —
+//     intersections are direction changes by definition.
 //
-//   - SyntheticGuard: a synthetic anchor inserted by enrich_operands
-//     immediately before/after every original anchor, to normalize the
-//     cleanup output into uniform Corner-Corner-Corner triples regardless
-//     of how Clipper2 packs the result. Synthetic guards survive Clipper2
-//     as polyline samples and survive cleanup as keepers; they are NOT
-//     retracted by cleanup_loop because their renegotiated handles after
-//     delete_node carry the curve shape into the triple's middle (which
-//     IS retracted).
-//
-//     Type is Smooth (s140 m1, was Corner in s139 m5). Each guard is
-//     placed by exact De Casteljau split of the original input curve
-//     (CubicSegment::split) at a small parameter t — so the guard sits
-//     ON the curve and its handles are tangent to it by construction.
-//     Same primitive that insert_node_at uses interactively when the
-//     user clicks on a curve to add a node. Placement is per-side: the
-//     post-guard splits the segment going OUT of an anchor (in-side
-//     untouched at that moment), the pre-guard splits the segment
-//     coming IN to an anchor (out-side already settled). Each split
-//     touches one side of an anchor in isolation.
-//
-//     `source` is null; `parent_pos` records the position of the
-//     original anchor this guard flanks (informational; not currently
-//     used in matching).
+// Synthetic guards inserted by the enrich phase are NOT keepers. They
+// exist purely to carry curve-shape information through Clipper2's
+// polyline phase; once the boolean is done they're transport noise
+// and get deleted with everything else untagged.
 struct KeeperPoint {
     Vec2 pos;
-    enum class Origin { OriginalAnchor, Intersection, SyntheticGuard } origin;
+    // Five categories (s142 m6):
+    //   - OriginalAnchor: a user-authored anchor in the input geometry.
+    //   - Intersection:   analytic curve-curve crossing.
+    //   - SyntheticGuard: smooth on-curve anchor inserted by enrich() to
+    //                     scaffold the curve shape near originals through
+    //                     Clipper2's polyline phase. In v3+ these survive
+    //                     into the output as Smooth anchors, guaranteeing
+    //                     curve shape near intersections without depending
+    //                     on byte-for-byte handle preservation.
+    //   - CurvatureApex:  promoted-from-untagged node at a local maximum
+    //                     of polyline turning angle. Pins shape at rapid-
+    //                     curvature features that delete_node's least-
+    //                     squares fit cannot reconstruct from sparse
+    //                     surviving keepers. Runtime-detected in
+    //                     cleanup_loop_v4. Added in s142 m5.
+    //   - SpanFiller:     promoted midpoint of a too-long untagged run
+    //                     between consecutive keepers. Long gentle arcs
+    //                     produce no apexes (no local turning-angle
+    //                     maximum), but delete_node's 2-handle fit can't
+    //                     honestly express many doc-units of curve in
+    //                     one cubic — it over-extends handles. Span
+    //                     fillers break long runs into shorter ones so
+    //                     each delete_node span is fit-able. NEW IN s142 m6.
+    enum class Origin {
+        OriginalAnchor, Intersection, SyntheticGuard, CurvatureApex, SpanFiller
+    } origin;
     // Raw pointer back into the operand input. Lifetime: callers must
     // keep the operands alive across compute_keeper_set ... cleanup_loop
     // calls. The Canvas integration keeps both alive for the duration
     // of boolean_op_clipper (operands are stored by value into a local
     // vector that outlives the call).
+    // Set for OriginalAnchor; nullptr for Intersection and SyntheticGuard.
     const BezierNode* source = nullptr;
-    // For SyntheticGuard: the original anchor this guard was inserted
-    // adjacent to, by position. Recorded for diagnostic/structural use;
-    // not consulted by the cleanup match logic (which is purely
-    // position-based via KEEPER_MATCH_TOL_SQ).
-    Vec2 parent_pos{0.0, 0.0};
 };
 
 using KeeperSet = std::vector<KeeperPoint>;
@@ -138,19 +146,16 @@ constexpr double ISECT_CROSS_EPS = 1e-3;
 // match tolerance.
 constexpr double ISECT_DEDUP_TOL_SQ = 0.25 * 0.25;
 
-// ── Enrichment tunables (s139 m5) ────────────────────────────────────────────
-// enrich_operands inserts synthetic guard anchors immediately before
-// and after every original anchor. The guards sit a small distance
-// along the chord toward each neighbour, so they survive Clipper2
-// quantization but do not visibly perturb the boolean result.
+// ── Enrichment tunables ──────────────────────────────────────────────────────
+// enrich() inserts smooth on-curve guard anchors immediately before and
+// after every original anchor via De Casteljau split (insert_node_at).
+// The guards sit a small distance along each adjacent segment, exactly
+// on the curve with tangent handles by construction.
 //
-// ENRICH_OFFSET is the default chord-fraction offset. Set to 20.0 doc
-// units during s140 m1 visual inspection so guards are clearly
-// distinguishable from each original anchor at normal zoom. Will likely
-// drop back down once enrichment is validated end-to-end and we want
-// guards invisible at typical canvas scales — but the math is offset-
-// agnostic, so this constant is purely a UX knob for the diagnostic
-// phase.
+// ENRICH_OFFSET is the default per-side offset in doc units. 5.0 was
+// settled in s140 m1 visual inspection — large enough to survive
+// Clipper2's Int64 quantization, small enough not to perturb the
+// boolean output.
 constexpr double ENRICH_OFFSET = 20.0;
 // Cap the offset at this fraction of segment length so very short
 // segments do not produce overlapping guards.
@@ -161,33 +166,33 @@ constexpr double ENRICH_OFFSET_MIN = 1e-3;
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
-// Enrich operand subpaths for boolean processing (s139 m5 — pre-Clipper2).
+// Enrich operand subpaths for boolean processing (pre-Clipper2).
 //
-// For every anchor in every input subpath, insert two synthetic guard
-// anchors: one at offset along the chord toward the previous anchor,
-// one at offset along the chord toward the next anchor. The synthetic
-// guards have Corner type and handles meeting at their anchor (no
-// curvature contribution). They survive Clipper2 as polyline vertices
-// and the cleanup walk picks them up via the keeper-set position match.
+// For every anchor in every input subpath, insert two smooth on-curve
+// guard anchors via BezierPath::insert_node_at — one on the segment
+// going OUT of the anchor, one on the segment coming IN. Same primitive
+// the user invokes interactively when clicking on a curve to add a
+// node: De Casteljau split at small parameter t, on-curve position,
+// tangent handles by construction, type Smooth.
 //
-// Returns the enriched operands paired with the synthetic-guard keeper
-// points. The caller hands the enriched operands to Clipper2 and the
-// guard list to compute_keeper_set (which augments the original
-// keeper-set with the synthetic guards).
+// Two-pass per-side insertion (s140 m1):
+//   - Pass 1 splits each segment going OUT of every anchor in
+//     descending order. The anchor's in-handle stays untouched; the
+//     out-handle gets renegotiated by insert_node_at to preserve
+//     the curve shape together with the new post-guard.
+//   - Pass 2 splits each segment coming IN to every original anchor.
+//     The out-side is now already settled from pass 1; pass 2 only
+//     affects the in-side.
 //
-// Architectural role: this is stage 1 of the four-stage boolean
-// pipeline (enrich, clip, remove-constant, remove-refined). Its job
-// is to guarantee that every original anchor sits at the middle of
-// a Corner-Corner-Corner triple in the cleanup output, regardless of
-// where Clipper2 places its polyline samples or its seam.
-//
-// `operands_out` is filled with the enriched subpaths. `guards_out` is
-// filled with the synthetic guards' KeeperPoints (Origin::SyntheticGuard,
-// source=nullptr, parent_pos=the original anchor's position).
-void enrich_operands(
+// Each side of every anchor is touched in isolation. No segment is
+// ever split twice. Guards exist purely to carry tangent information
+// through Clipper2's polyline phase — they're transport, not
+// destination, and are deleted by the cleanup walk along with the
+// rest of the polyline noise. The keeper set passed to cleanup is
+// originals + intersections only.
+void enrich(
     const std::vector<std::vector<BezierPath>>& operands_in,
-    std::vector<std::vector<BezierPath>>&       operands_out,
-    KeeperSet&                                  guards_out);
+    std::vector<std::vector<BezierPath>>&       operands_out);
 
 // Build the keeper set from the input operands of a boolean op.
 //
@@ -207,35 +212,164 @@ KeeperSet compute_keeper_set(
     const std::vector<std::vector<BezierPath>>& operands,
     BooleanOpType op);
 
-// Apply the cleanup walk to a single refitted result loop. (Pass 1.)
+// s142 m2 — extended keeper-set builder. Same as compute_keeper_set
+// but also emits SyntheticGuard keepers from the enriched operands.
+//
+// The enriched operands carry the smooth on-curve guard anchors that
+// enrich() injected around every original. We compare enriched against
+// pre-enrich to identify which anchors are guards (positions that are
+// in `enriched` but not in `originals`). Each guard becomes a keeper
+// with origin=SyntheticGuard. Guards survive cleanup_loop_v3 and emit
+// as Smooth anchors in the output, scaffolding the curve shape near
+// intersections without needing byte-for-byte handle preservation.
+//
+// Originals + intersections are handled identically to compute_keeper_set.
+KeeperSet compute_keeper_set_with_guards(
+    const std::vector<std::vector<BezierPath>>& originals,
+    const std::vector<std::vector<BezierPath>>& enriched,
+    BooleanOpType op);
+
+// ══════════════════════════════════════════════════════════════════════════════
+// s142 m3/m4 — targeted enrichment: triplets only at intersections
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// m1 + m2 enriched broadly — every original anchor on every operand got
+// flanking guards. This was overkill: original-anchor regions away from
+// intersections were already clean (m1 confirmed), and the extra guards
+// inflated the output node count without earning their keep.
+//
+// m3 was targeted but injected on operand[0] only (subject). Symptom:
+// at intersections where Clipper2 routed the boundary through the OTHER
+// side, that side had no scaffolding → keeper match failed → drift /
+// notch / missing intersection.
+//
+// m4 — inject on BOTH crossing curves at every intersection. Each
+// physical intersection appears as a triplet on each parent. Whichever
+// side the boolean output traverses, surviving smooth anchors anchor
+// the local curve shape.
+//
+// Algorithm:
+//   1. Compute analytic intersections between every cross-operand pair.
+//   2. For each hit, inject a triplet (pre-guard + intersection-anchor
+//      + post-guard) on BOTH parent subpaths at their respective
+//      (seg, t) parameters. Per-subpath dedup against ISECT_DEDUP_TOL_SQ
+//      so shared-endpoint cases don't double-inject.
+//   3. Single Clipper2 pass on the both-sides-modified operands.
+//   4. Cleanup walk (cleanup_loop_v3): keepers = every operand's
+//      anchors (originals tagged OriginalAnchor; injected intersections
+//      tagged Intersection; injected guards tagged SyntheticGuard).
+//      Strip everything else; delete_node renegotiates handles.
+
+// Run targeted enrichment on every operand (m4 — both sides of every
+// intersection). Mutates `operands_out` in place with the same shape
+// as `operands_in`, where each operand subpath has triplets injected
+// at its analytic intersection points with every other operand's
+// subpaths.
+//
+// Returns the keeper set ready for cleanup_loop_v3.
+//
+// Caller must keep `operands_in` alive across the cleanup walk because
+// the keeper set holds raw pointers into it for OriginalAnchor source.
+KeeperSet enrich_at_intersections_and_build_keepers(
+    const std::vector<std::vector<BezierPath>>& operands_in,
+    std::vector<std::vector<BezierPath>>&       operands_out,
+    BooleanOpType op);
+// ── End m3/m4 API ────────────────────────────────────────────────────────────
+
+// Apply the per-keeper claim-and-restore walk to a single refitted
+// result loop.
 //
 // `refit_pd` is the output of refit_path_straight_cubics: a closed
 // PathData with one Corner cubic per Clipper2 polyline edge. Caller
 // should pass loops with >=3 nodes; smaller inputs are returned
 // unchanged.
 //
-// Returns a new PathData with deletable nodes removed (subject to the
-// guard-band rule), OriginalAnchor keepers retracted to handles-at-anchor
-// with type Corner (s139 m2 fix1+fix2), and Intersection keepers left
-// untouched. The output has a recognizable C-C-C structure: every
-// keeper sits at the middle of a Corner-Corner-Corner triple with one
-// guard on each side. The middle's handle topology encodes the keeper
-// origin: retracted handles → OriginalAnchor (a position pin), extended
-// handles toward siblings → Intersection (a curve transition cusp).
-//
-// STATUS s139 m2 fix2: shipped and tested. Wired in Canvas::boolean_op
-// behind AppPreferences::boolean_cleanup_enabled.
+// Walk:
+//   - For each keeper, find its closest match in refit_pd within
+//     KEEPER_MATCH_TOL_SQ and tag that node.
+//   - Delete every untagged node descending (subject to a 3-node
+//     floor so delete_node never opens the path).
+//   - For each surviving tag: OriginalAnchor restores byte-for-byte
+//     from KeeperPoint::source (authored type and handles preserved);
+//     Intersection retracts handles and types as Corner.
 PathData cleanup_loop(PathData refit_pd, const KeeperSet& keepers);
 
-// Apply the geometric reduction pass to a cleaned loop. (Pass 2.)
+// s142 m1 — probe variant of cleanup_loop. Same delete walk, NO
+// byte-for-byte handle restoration. Hypothesis: the s140 byte-for-byte
+// restore step writes the originally-authored handles back over the
+// shape-preserving handles BezierPath::delete_node had renegotiated,
+// causing the spike/over-extension symptoms on complex shapes.
 //
-// STATUS s139 m5: STUB — returns input unchanged. The replacement
-// geometric classifier (collinear / sharp / smooth detection) ships
-// in s140 (Ship B). See implementation comment for the rationale —
-// the m4 stride-3 rule no longer fits the new pass-1 contract under
-// enrichment, and the geometric classifier is the right replacement
-// rather than a quick-fix to m4's rule.
-PathData reduce_loop(PathData cleaned_pd);
+// v2 algorithm:
+//   1. Tag keepers (same as v1).
+//   2. Delete every untagged node descending — delete_node's
+//      shape-preserving fit (least-squares 2-handle) renegotiates
+//      surviving neighbours' handles correctly through each removal.
+//   3. For surviving keepers:
+//        - OriginalAnchor: restore *type only* from KeeperPoint::source.
+//          Handles stay exactly where delete_node put them.
+//        - Intersection: retract handles, type Corner (same as v1).
+//
+// Wired temporarily as the cleanup function called by Canvas. v1 is
+// preserved adjacent for rollback. If the probe succeeds we keep v2
+// and retire v1; if it fails we revert by flipping the call site.
+PathData cleanup_loop_v2(PathData refit_pd, const KeeperSet& keepers);
+
+// s142 m2 — guards-as-keepers cleanup. Same delete walk as v2, but
+// SyntheticGuard keepers survive into the output as Smooth on-curve
+// anchors. The guard's *position* is what's matched (from
+// KeeperPoint::pos); after the delete walk, the surviving guard's
+// type is set to Smooth. delete_node has already renegotiated handles
+// during the walk; v3 leaves them as-is for guards (no source byte to
+// restore), preserving the smooth-on-curve scaffolding the enrich
+// phase set up.
+//
+// Hypothesis (s142 m1 result + Scott's "save the triplets" insight):
+// v2's improvement was real but incomplete. v2 leaves originals as
+// type-only restored — handles via delete_node fit. Where v2 still
+// drifts is at intersections where originals' renegotiated handles
+// have lost their local curve constraint (no nearby scaffolding to
+// pin shape). v3 keeps the enrich-phase guards through cleanup so
+// the local curve shape on either side of every intersection has
+// surviving smooth anchors holding it; originals' handles renegotiate
+// against neighbours that include guards, not just other originals
+// or retracted intersection-corners.
+//
+// Output node count: O(N_originals + N_intersections + 2*N_originals)
+// per loop, vs v2's O(N_originals + N_intersections). Higher node
+// count, but type-honest (Smooth is Smooth by construction, not by
+// "Corner with smooth-looking handles").
+PathData cleanup_loop_v3(PathData refit_pd, const KeeperSet& keepers);
+
+// s142 m5/m6 — apex-pinning + span-filler cleanup. Builds on v3.
+// Two promotion passes run between the keeper claim and the delete walk:
+//
+//   1. Apex promotion (m5): scan untagged polyline nodes for local
+//      maxima of turning angle; promote each apex above
+//      `apex_min_turn_deg` to a CurvatureApex keeper. Pins shape at
+//      rapid-curvature features.
+//
+//   2. Span filler promotion (m6): walk between consecutive tagged
+//      nodes (keepers + just-promoted apexes); if the untagged run
+//      between two tagged nodes exceeds `max_untagged_run` length,
+//      promote the midpoint of that run to a SpanFiller keeper.
+//      Single-pass — recurse not yet implemented (added later if
+//      visual evidence demands). Breaks long gentle arcs so each
+//      delete_node span is short enough for least-squares 2-handle
+//      fit to express honestly.
+//
+// Both promotions tag as Smooth in finalisation (handles via
+// delete_node fit, identical to SyntheticGuard finalisation).
+//
+// Quality tunables (one slider may drive both in s142 future work):
+//   - apex_min_turn_deg: lower → more apexes saved → faithful (more nodes)
+//   - max_untagged_run:  lower → more span fillers → faithful (more nodes)
+//
+// Pass `max_untagged_run = 0` (or any value <= 1) to disable span
+// filling and run pure m5 apex-only cleanup.
+PathData cleanup_loop_v4(PathData refit_pd, const KeeperSet& keepers,
+                         double apex_min_turn_deg,
+                         int max_untagged_run);
 
 } // namespace refit
 

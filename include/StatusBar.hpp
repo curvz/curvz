@@ -12,6 +12,7 @@ public:
 
     void set_cursor_pos(double x, double y);
     void set_zoom(double pct);
+    void set_units(const std::string& units);  // s150: active display unit
     void set_counts(int objects, int nodes);
     void set_project_name(const std::string& name);
     void set_doc_name(const std::string& name);  // active document filename
@@ -20,6 +21,7 @@ public:
 private:
     Gtk::Label m_pos_label;
     Gtk::Label m_zoom_label;
+    Gtk::Label m_units_label;  // s150: active display unit ("IN", "MM", etc.)
     Gtk::Label m_count_label;
     Gtk::Label m_project_label;
     Gtk::Label m_doc_label;    // active document name — right-aligned

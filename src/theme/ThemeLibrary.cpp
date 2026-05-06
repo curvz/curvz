@@ -267,10 +267,59 @@ UnitSettings units_from_json(const json& j) {
     return u;
 }
 
-// bg_to_json / bg_from_json removed in s116 m6. Background colours
-// (artboard / workspace) moved to CurvzProject and are no longer part
-// of a theme. Old theme JSON with a "background" key still loads — the
-// read site below silently ignores the key.
+// bg_to_json / bg_from_json removed in s116 m6. Replaced in s149 m1 by
+// motif_to_json / motif_from_json below — the new sub-bundle carries
+// both Dark and Light triples (artboard / workspace / creation), where
+// the old single triple lived on the project. Old theme JSON files
+// carrying a "background" key still load fine: the read site below
+// silently ignores unknown keys.
+
+json motif_to_json(const MotifSettings& m) {
+    return json{
+        {"dark_artboard_r",  m.dark_artboard_r},
+        {"dark_artboard_g",  m.dark_artboard_g},
+        {"dark_artboard_b",  m.dark_artboard_b},
+        {"dark_workspace_r", m.dark_workspace_r},
+        {"dark_workspace_g", m.dark_workspace_g},
+        {"dark_workspace_b", m.dark_workspace_b},
+        {"dark_creation_r",  m.dark_creation_r},
+        {"dark_creation_g",  m.dark_creation_g},
+        {"dark_creation_b",  m.dark_creation_b},
+        {"light_artboard_r",  m.light_artboard_r},
+        {"light_artboard_g",  m.light_artboard_g},
+        {"light_artboard_b",  m.light_artboard_b},
+        {"light_workspace_r", m.light_workspace_r},
+        {"light_workspace_g", m.light_workspace_g},
+        {"light_workspace_b", m.light_workspace_b},
+        {"light_creation_r",  m.light_creation_r},
+        {"light_creation_g",  m.light_creation_g},
+        {"light_creation_b",  m.light_creation_b},
+    };
+}
+
+MotifSettings motif_from_json(const json& j) {
+    MotifSettings m;
+    if (!j.is_object()) return m;
+    m.dark_artboard_r  = j.value("dark_artboard_r",  m.dark_artboard_r);
+    m.dark_artboard_g  = j.value("dark_artboard_g",  m.dark_artboard_g);
+    m.dark_artboard_b  = j.value("dark_artboard_b",  m.dark_artboard_b);
+    m.dark_workspace_r = j.value("dark_workspace_r", m.dark_workspace_r);
+    m.dark_workspace_g = j.value("dark_workspace_g", m.dark_workspace_g);
+    m.dark_workspace_b = j.value("dark_workspace_b", m.dark_workspace_b);
+    m.dark_creation_r  = j.value("dark_creation_r",  m.dark_creation_r);
+    m.dark_creation_g  = j.value("dark_creation_g",  m.dark_creation_g);
+    m.dark_creation_b  = j.value("dark_creation_b",  m.dark_creation_b);
+    m.light_artboard_r  = j.value("light_artboard_r",  m.light_artboard_r);
+    m.light_artboard_g  = j.value("light_artboard_g",  m.light_artboard_g);
+    m.light_artboard_b  = j.value("light_artboard_b",  m.light_artboard_b);
+    m.light_workspace_r = j.value("light_workspace_r", m.light_workspace_r);
+    m.light_workspace_g = j.value("light_workspace_g", m.light_workspace_g);
+    m.light_workspace_b = j.value("light_workspace_b", m.light_workspace_b);
+    m.light_creation_r  = j.value("light_creation_r",  m.light_creation_r);
+    m.light_creation_g  = j.value("light_creation_g",  m.light_creation_g);
+    m.light_creation_b  = j.value("light_creation_b",  m.light_creation_b);
+    return m;
+}
 
 json guides_to_json(const GuideSettings& g) {
     return json{
@@ -399,11 +448,12 @@ json theme_to_json(const Theme& t) {
         {"category", t.header.category}
     };
     entry["units"]      = units_to_json(t.units);
-    // entry["background"] removed in s116 m6 — bg moved to CurvzProject.
+    entry["motif"]      = motif_to_json(t.motif);   // s149 m1
     entry["guides"]     = guides_to_json(t.guides);
     entry["grid"]       = grid_to_json(t.grid);
     entry["margins"]    = margins_to_json(t.margins);
     entry["snap"]       = snap_to_json(t.snap);
+
     return entry;
 }
 
@@ -437,8 +487,11 @@ std::optional<Theme> theme_from_json(const json& entry) {
     // how older project.json files written before some sub-block existed
     // load with the new fields at struct-default values.
     if (entry.contains("units"))      t.units      = units_from_json(entry["units"]);
-    // "background" sub-block was removed in s116 m6 (bg moved to project).
-    // Old theme JSON carrying it loads fine — the key is silently ignored.
+    // s149 m1: motif sub-block. Pre-s149 themes have no "motif" key —
+    // the struct defaults supply a sensible Dark + Light pair so apply
+    // doesn't write zeros into the doc. Old "background" sub-block
+    // (s116-pre) is silently ignored if encountered.
+    if (entry.contains("motif"))      t.motif      = motif_from_json(entry["motif"]);
     if (entry.contains("guides"))     t.guides     = guides_from_json(entry["guides"]);
     if (entry.contains("grid"))       t.grid       = grid_from_json(entry["grid"]);
     if (entry.contains("margins"))    t.margins    = margins_from_json(entry["margins"]);
@@ -496,7 +549,7 @@ void ThemeLibrary::from_user_json(const json& j) {
 // the dependency clear: ThemeLibrary itself is pure data; the bridge
 // to documents is named, scoped, and easy to find.
 
-Theme capture_theme_from_doc(const CurvzDocument& doc) {
+Theme capture_theme_from_doc(const CurvzDocument& doc, Motif current_motif) {
     Theme t;
     // header is left empty — caller (the m3 dialog's "Save current as
     // theme…" path, or the dual-source apply path that uses this as a
@@ -504,8 +557,36 @@ Theme capture_theme_from_doc(const CurvzDocument& doc) {
 
     t.units.display_unit = doc.canvas.display_unit;
 
-    // Background capture removed in s116 m6 — bg fields moved to
-    // CurvzProject; themes are doc-scope only.
+    // s149 m1: motif sub-bundle. The doc carries one triple at a time
+    // (the active mode's). Capture writes those values into the matching
+    // slot of MotifSettings; the off-mode slot keeps its struct-default
+    // factory values so apply-in-the-other-mode produces a sensible
+    // result rather than the wrong-mode tone. The user can re-capture
+    // in the other mode to overwrite the off-mode slot if they want a
+    // custom Light look paired with their custom Dark look.
+    if (current_motif == Motif::Light) {
+        t.motif.light_artboard_r  = doc.artboard_bg_r;
+        t.motif.light_artboard_g  = doc.artboard_bg_g;
+        t.motif.light_artboard_b  = doc.artboard_bg_b;
+        t.motif.light_workspace_r = doc.workspace_bg_r;
+        t.motif.light_workspace_g = doc.workspace_bg_g;
+        t.motif.light_workspace_b = doc.workspace_bg_b;
+        t.motif.light_creation_r  = doc.creation_color_r;
+        t.motif.light_creation_g  = doc.creation_color_g;
+        t.motif.light_creation_b  = doc.creation_color_b;
+        // dark_* slots stay at MotifSettings struct defaults.
+    } else {
+        t.motif.dark_artboard_r  = doc.artboard_bg_r;
+        t.motif.dark_artboard_g  = doc.artboard_bg_g;
+        t.motif.dark_artboard_b  = doc.artboard_bg_b;
+        t.motif.dark_workspace_r = doc.workspace_bg_r;
+        t.motif.dark_workspace_g = doc.workspace_bg_g;
+        t.motif.dark_workspace_b = doc.workspace_bg_b;
+        t.motif.dark_creation_r  = doc.creation_color_r;
+        t.motif.dark_creation_g  = doc.creation_color_g;
+        t.motif.dark_creation_b  = doc.creation_color_b;
+        // light_* slots stay at MotifSettings struct defaults.
+    }
 
     t.guides.color_r = doc.guide_color_r;
     t.guides.color_g = doc.guide_color_g;
@@ -556,7 +637,8 @@ Theme capture_theme_from_doc(const CurvzDocument& doc) {
     return t;
 }
 
-void apply_theme_to_doc(const Theme& theme, CurvzDocument& doc) {
+void apply_theme_to_doc(const Theme& theme, CurvzDocument& doc,
+                        Motif current_motif) {
     // ── Order matters ─────────────────────────────────────────────────
     //
     // Layer-presence changes go FIRST so subsequent per-layer field
@@ -624,8 +706,37 @@ void apply_theme_to_doc(const Theme& theme, CurvzDocument& doc) {
 
     doc.canvas.display_unit = theme.units.display_unit;
 
-    // Background apply removed in s116 m6 — bg fields moved to
-    // CurvzProject; themes are doc-scope only.
+    // s149 m1: motif sub-bundle. The doc carries a single triple of
+    // artboard/workspace/creation values; the theme carries both Dark
+    // and Light pairs. Write the matching pair for the user's current
+    // appearance mode. The off-mode pair is preserved in the theme but
+    // not written here — flipping appearance mode later doesn't re-run
+    // apply, so a doc currently in Dark gets the theme's dark_* values
+    // and stays with those even if the user later switches to Light.
+    // Switching appearance modes is a workspace-wide CSS flip; per-doc
+    // colour pairs are independent of it (see the s148 m1 demotion
+    // rationale on CurvzDocument::artboard_bg_*).
+    if (current_motif == Motif::Light) {
+        doc.artboard_bg_r  = theme.motif.light_artboard_r;
+        doc.artboard_bg_g  = theme.motif.light_artboard_g;
+        doc.artboard_bg_b  = theme.motif.light_artboard_b;
+        doc.workspace_bg_r = theme.motif.light_workspace_r;
+        doc.workspace_bg_g = theme.motif.light_workspace_g;
+        doc.workspace_bg_b = theme.motif.light_workspace_b;
+        doc.creation_color_r = theme.motif.light_creation_r;
+        doc.creation_color_g = theme.motif.light_creation_g;
+        doc.creation_color_b = theme.motif.light_creation_b;
+    } else {
+        doc.artboard_bg_r  = theme.motif.dark_artboard_r;
+        doc.artboard_bg_g  = theme.motif.dark_artboard_g;
+        doc.artboard_bg_b  = theme.motif.dark_artboard_b;
+        doc.workspace_bg_r = theme.motif.dark_workspace_r;
+        doc.workspace_bg_g = theme.motif.dark_workspace_g;
+        doc.workspace_bg_b = theme.motif.dark_workspace_b;
+        doc.creation_color_r = theme.motif.dark_creation_r;
+        doc.creation_color_g = theme.motif.dark_creation_g;
+        doc.creation_color_b = theme.motif.dark_creation_b;
+    }
 
     doc.guide_color_r = theme.guides.color_r;
     doc.guide_color_g = theme.guides.color_g;
@@ -640,11 +751,12 @@ void apply_theme_to_doc(const Theme& theme, CurvzDocument& doc) {
 
     doc.snap = theme.snap;
     // The project-wide doc.snap mirror lives on CurvzProject::snap (set
-    // by the Inspector / Toolbar handlers; see PropertiesPanel
-    // build_snap_section). The apply funnel doesn't have a project
-    // pointer; the dialog driver in m3 is responsible for syncing the
-    // project mirror after applying to the active doc, same way the
-    // existing snap edit paths do.
+    // by the Toolbar's snap switch + popover handlers; see s150 — the
+    // inspector Snap section was deleted, Toolbar is now the canonical
+    // writer). The apply funnel doesn't have a project pointer; the
+    // dialog driver in m3 is responsible for syncing the project mirror
+    // after applying to the active doc, same way the existing snap edit
+    // paths do.
 }
 
 } // namespace theme

@@ -20,16 +20,16 @@ deliberate, not duplication.
   Icon, Place Image, Export Icon Theme, Print). See chapters 2.1,
   2.2, and 2.3.
 - **Edit** — the conventional edit verbs (Undo, Redo, Cut, Copy,
-  Paste, Duplicate, Clone, Step and Repeat).
+  Paste, Duplicate, Clone).
 - **Arrange** — z-order operations (Bring to Front, Bring Forward,
   Send Backward, Send to Back) and per-axis flips (Flip Horizontal,
   Flip Vertical).
 - **Path** — vector operations grouped into sections: boolean
-  (Union, Subtract, Intersect), compound paths (Make / Split),
-  derived paths (Offset Path, Expand Stroke, Convert Text to
-  Path), clipping (Clip, Release Clip), blends (Blend, Release
-  Blend), and warps (Warp, Edit Warp, Release Warp, Flatten Warp).
-  See chapter 8.
+  (Union, Subtract, Intersect, Step and Repeat), compound paths
+  (Make / Split), derived paths (Offset Path, Expand Stroke,
+  Convert Text to Path), clipping (Clip, Release Clip), blends
+  (Blend, Release Blend), and warps (Warp, Edit Warp, Release
+  Warp, Flatten Warp). See chapter 8.
 - **View** — toggles for Rulers and Outline Mode, plus a **Zoom**
   submenu (Zoom In, Zoom Out, Zoom to 100%, Zoom to 200%, Zoom to
   Selection, Fit to Window). See chapter 10.
@@ -101,7 +101,6 @@ lives in **Keyboard shortcuts** (11.2).
 - `Ctrl+A` — Select all
 - `Ctrl+D` — Duplicate
 - `Alt+D` — Clone
-- `Ctrl+Alt+D` — Step and Repeat
 
 #### Arrange
 
@@ -115,6 +114,7 @@ lives in **Keyboard shortcuts** (11.2).
 - `Ctrl+Shift+U` — Union
 - `Ctrl+Shift+E` — Subtract
 - `Ctrl+Shift+I` — Intersect
+- `Ctrl+Alt+D` — Step and Repeat
 - `Ctrl+Shift+O` — Offset Path
 - `Ctrl+Shift+X` — Expand Stroke
 - `Ctrl+8` — Make Compound Path

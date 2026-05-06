@@ -82,13 +82,47 @@ project to a new location, leaving the original untouched on disk
 but switching the in-memory project to the new directory. You end
 up working in the copy, not the original.
 
-Curvz also saves automatically at quit if the project has a
-directory. Crashes and force-quits are the cases where unsaved work
-can be lost; no autosave runs continuously today.
+## Autosave
+
+Curvz autosaves continuously while you work, with one limit worth
+knowing about.
+
+The mechanism is simple: every change you make — moving a node,
+nudging a value in the inspector, dragging a tab — schedules a save
+that fires shortly after you stop. The save runs in the background;
+there is no progress bar, no "Saved" toast, no perceptible pause.
+Open your project directory in a file manager while you work and
+you will see file timestamps tick forward as you edit.
+
+Two refinements to that behaviour:
+
+- **Saves coalesce.** A burst of rapid changes — scrubbing a
+  spinner, dragging a slider, holding an arrow key — produce one
+  save at the end of the burst, not one save per change. The save
+  fires once the changes settle, typically within a fraction of a
+  second of your last input.
+- **Drags hold the save.** While you are actively dragging a node
+  or handle, Curvz waits to save. The save runs as soon as you
+  release the mouse, never mid-drag. This keeps the on-disk SVG
+  consistent — you never get a snapshot of geometry caught
+  half-way through a transformation.
+
+The autosave only runs once a project has a directory on disk —
+which means a brand-new, never-saved project does not autosave.
+The first **Ctrl+S** establishes the directory; everything after
+that is automatic. Curvz also performs a final save at quit, so
+exiting normally will not lose work.
+
+The case where unsaved changes can be lost is a hard crash or
+force-quit on a project that has never been saved. Save once after
+**File → New Project** and you have continuous autosave coverage
+for the rest of the session.
 
 ## Project-scoped vs document-scoped
 
 A useful mental model when looking at the inspector: settings under
+the **Application** group are user preferences that persist across
+projects (recent-projects cap, undo depth, ruler defaults), under
 the **Project** group apply once across the project (Motif), under
 the **Document** group apply to the active document only (Canvas,
 Guides, Grid, Margins, Snap, Measure, Metadata), and under the

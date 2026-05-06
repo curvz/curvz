@@ -1032,7 +1032,7 @@ void Canvas::set_active_tool(ActiveTool tool) {
   case ActiveTool::Line:
     set_cursor("crosshair");
     break;
-  case ActiveTool::Ruler:
+  case ActiveTool::Measure:
     set_cursor("crosshair");
     break;
   case ActiveTool::TextOnPath:
@@ -1046,12 +1046,12 @@ void Canvas::set_active_tool(ActiveTool tool) {
   }
 
   // Entering Ruler tool — try to inherit a 2-node selection from Node tool
-  if (tool == ActiveTool::Ruler) {
+  if (tool == ActiveTool::Measure) {
     ruler_try_inherit_node_selection();
   }
 
   // Leaving Ruler tool — clear ruler node refs (pointers may dangle)
-  if (m_prev_tool == ActiveTool::Ruler && tool != ActiveTool::Ruler) {
+  if (m_prev_tool == ActiveTool::Measure && tool != ActiveTool::Measure) {
     m_ruler_node_a_obj = nullptr;
     m_ruler_node_a_idx = -1;
     m_ruler_node_b_obj = nullptr;
@@ -4492,6 +4492,44 @@ void Canvas::rebuild_warp_caches(SceneNode *w) {
                                  w->warp_env_bottom, bx, by, bw, bh, q);
     w->warp_cache_dirty = false;
   }
+}
+
+// ── Canvas::warp_source_bbox ─────────────────────────────────────────────────
+// Public canonical answer to "what rectangle does this Warp's envelope
+// describe a remapping over?" Single source of truth, shared by
+// rebuild_warp_caches' internal use of subtree_path_bbox(glyph_cache)
+// and any caller (notably the inspector's preset regen) that needs to
+// produce envelope nodes in the same coordinate frame warp_subtree
+// will interpret them against.
+//
+// Why not object_bbox_query? Because object_bbox can include recipe
+// metadata, stroke padding, transform-aware bounds — none of which
+// warp_subtree sees. The math layer walks the actual path nodes via
+// subtree_path_bbox; we expose the same path-node bbox here so the
+// inspector's envelope-generation rectangle matches the warp
+// renderer's interpretation rectangle exactly.
+//
+// Side-effect: brings warp_glyph_cache current if dirty/null. The
+// glyph_cache is what subtree_path_bbox walks, and it's a clone of
+// warp_source — measuring source directly via subtree_path_bbox would
+// produce the same answer for typical content, but going through the
+// cache mirrors exactly what rebuild_warp_caches does, eliminating
+// any divergence under future caching changes.
+bool Canvas::warp_source_bbox(SceneNode &w, double &bx, double &by,
+                              double &bw, double &bh) {
+  if (!w.is_warp() || !w.warp_source)
+    return false;
+  // Ensure glyph_cache is current. rebuild_warp_caches will phase-1
+  // clone source into glyph_cache when dirty, then proceed; we only
+  // need the glyph_cache to exist for the bbox call below. Letting
+  // it run all phases is safe and keeps caches coherent for the next
+  // draw — cheaper than duplicating the phase-1 logic here.
+  if (w.warp_glyph_cache_dirty || !w.warp_glyph_cache) {
+    rebuild_warp_caches(&w);
+  }
+  if (!w.warp_glyph_cache)
+    return false;
+  return subtree_path_bbox(w.warp_glyph_cache.get(), bx, by, bw, bh);
 }
 
 // ── Canvas::hit_test_warp_envelope ───────────────────────────────────────────
@@ -8799,6 +8837,7 @@ void Canvas::on_draw_begin(double x, double y) {
         m_warp_drag_pre_top = m_selected->warp_env_top;
         m_warp_drag_pre_bottom = m_selected->warp_env_bottom;
         m_warp_drag_pre_quality = m_selected->warp_quality;
+        m_warp_drag_pre_preset_idx = m_selected->warp_preset_idx;  // s147 m2
         screen_to_doc(x, y, m_warp_drag_press_doc_x, m_warp_drag_press_doc_y);
         m_warp_drag_click_offset_x = 0.0;
         m_warp_drag_click_offset_y = 0.0;
@@ -8816,6 +8855,7 @@ void Canvas::on_draw_begin(double x, double y) {
       m_warp_drag_pre_top = m_selected->warp_env_top;
       m_warp_drag_pre_bottom = m_selected->warp_env_bottom;
       m_warp_drag_pre_quality = m_selected->warp_quality;
+      m_warp_drag_pre_preset_idx = m_selected->warp_preset_idx;  // s147 m2
       // Compute click offset from the hit's doc-space center so first
       // motion doesn't jump. For anchors the offset is click-minus-
       // anchor; for handles it's click-minus-handle.
@@ -9018,7 +9058,7 @@ void Canvas::on_draw_begin(double x, double y) {
     return;
   } else if (m_tool == ActiveTool::Node) {
     on_node_begin(x, y);
-  } else if (m_tool == ActiveTool::Ruler) {
+  } else if (m_tool == ActiveTool::Measure) {
     on_ruler_begin(x, y);
   } else if (m_tool == ActiveTool::TextOnPath) {
     on_top_begin(x, y);
@@ -9447,7 +9487,7 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
     queue_draw();
   } else if (m_tool == ActiveTool::Node) {
     on_node_update(delta_x, delta_y);
-  } else if (m_tool == ActiveTool::Ruler) {
+  } else if (m_tool == ActiveTool::Measure) {
     on_ruler_motion(m_draw_cur_dx, m_draw_cur_dy);
   } else if (m_tool == ActiveTool::TextOnPath) {
     // TOP drag does not set m_drawing, so m_draw_cur_dx/dy are never
@@ -9513,11 +9553,19 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
       m_warp_env_picks.push_back({m_warp_drag_is_top, m_warp_drag_idx, part});
       m_warp_env_picks_owner = m_selected;
     } else if (!no_motion) {
+      // s147 m2: drag drift clears preset_idx — envelope no longer
+      // matches the preset shape. Set live BEFORE snapshotting post,
+      // so post_preset_idx (which we pass below as
+      // m_selected->warp_preset_idx via the default field read) is
+      // -1, and undo restores both the original envelope AND the
+      // pre-drag preset label atomically.
+      m_selected->warp_preset_idx = -1;
       if (m_history) {
         m_history->push(std::make_unique<EditWarpCommand>(
             m_selected, m_warp_drag_pre_top, m_warp_drag_pre_bottom,
             m_warp_drag_pre_quality, m_selected->warp_env_top,
-            m_selected->warp_env_bottom, m_selected->warp_quality));
+            m_selected->warp_env_bottom, m_selected->warp_quality,
+            m_warp_drag_pre_preset_idx, /*post_preset=*/-1));
       }
     }
     m_warp_drag_kind = WarpDragKind::None;
@@ -9876,7 +9924,7 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
     queue_draw();
   } else if (m_tool == ActiveTool::Node) {
     on_node_end();
-  } else if (m_tool == ActiveTool::Ruler) {
+  } else if (m_tool == ActiveTool::Measure) {
     on_ruler_end(m_draw_cur_dx, m_draw_cur_dy);
   } else if (m_tool == ActiveTool::TextOnPath) {
     on_top_end(m_draw_cur_dx, m_draw_cur_dy);
@@ -11298,9 +11346,20 @@ void Canvas::on_select_end(double /*dx*/, double /*dy*/) {
                            wsnap.orig_env_top.nodes[0].y) > 0.001;
         }
         if (moved) {
+          // s147 m2: translation moves envelope but not warp_source —
+          // the renderer's coordinate frame and the preset's natural
+          // frame (source bbox) diverge. Picking the same preset
+          // again afterwards would teleport the envelope back over
+          // the source, which is visually surprising. Treat
+          // translation as drift: clear preset_idx so the inspector
+          // honestly shows (Custom). Capture pre_preset_idx before
+          // clearing so undo restores both position AND preset label.
+          int pre_preset = w->warp_preset_idx;
+          w->warp_preset_idx = -1;
           m_history->push(std::make_unique<EditWarpCommand>(
               w, wsnap.orig_env_top, wsnap.orig_env_bottom, w->warp_quality,
-              w->warp_env_top, w->warp_env_bottom, w->warp_quality));
+              w->warp_env_top, w->warp_env_bottom, w->warp_quality,
+              pre_preset, /*post_preset=*/-1));
         }
       }
     }
@@ -13451,10 +13510,15 @@ bool Canvas::selection_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
     }
     m_selected->warp_cache_dirty = true;
     if (m_history) {
+      // s147 m2: arrow-key nudge of envelope handles is drift —
+      // capture pre-preset before clearing, push the swap atomically.
+      int pre_preset = m_selected->warp_preset_idx;
+      m_selected->warp_preset_idx = -1;
       m_history->push(std::make_unique<EditWarpCommand>(
           m_selected, pre_top, pre_bottom, pre_quality,
           m_selected->warp_env_top, m_selected->warp_env_bottom,
-          m_selected->warp_quality));
+          m_selected->warp_quality,
+          pre_preset, /*post_preset=*/-1));
     }
     queue_draw();
     return true;
@@ -14848,15 +14912,11 @@ void Canvas::set_selected_nodes_type(BezierNode::Type type) {
 }
 void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   // ── Outer background — workspace colour around the artboard ─────────
-  // Project-wide field (s116 m6) — every doc/tab in this project shares
-  // the same workspace tone. Falls back to the active doc's legacy
-  // bg field if the project pointer hasn't been wired (early boot),
-  // and finally to the historical #171717 grey if neither is set.
-  if (m_project) {
-    cr->set_source_rgb(m_project->workspace_r(),
-                       m_project->workspace_g(),
-                       m_project->workspace_b());
-  } else if (m_doc) {
+  // Doc-level field (s148 m1 — re-promoted from project per-motif).
+  // Each document carries its own workspace surround tone; switching
+  // tabs intentionally re-paints the surround. Falls back to the
+  // historical #171717 grey only if no doc is wired (early boot).
+  if (m_doc) {
     cr->set_source_rgb(m_doc->workspace_bg_r,
                        m_doc->workspace_bg_g,
                        m_doc->workspace_bg_b);
@@ -14892,23 +14952,18 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   cr->save();
   cr->translate(ox, oy);
 
-  // ── Artboard surface — project-wide editor presentation (s116 m6) ────
+  // ── Artboard surface — doc-level editor presentation (s148 m1) ───────
   // Outline mode previously kept the same grey; that branch was a no-op
   // even before S98 (both arms set the same colour). Keep the gate in
   // case outline mode wants a different treatment in future, but read
   // the same artboard_bg_* either way for now.
   //
-  // s116 m6: read from project (project-wide) instead of doc. Falls back
-  // to legacy doc field if project pointer is unwired.
-  if (m_project) {
-    cr->set_source_rgb(m_project->artboard_r(),
-                       m_project->artboard_g(),
-                       m_project->artboard_b());
-  } else {
-    cr->set_source_rgb(m_doc->artboard_bg_r,
-                       m_doc->artboard_bg_g,
-                       m_doc->artboard_bg_b);
-  }
+  // s148 m1: read from doc (re-promoted from project per-motif). Each
+  // doc carries its own artboard tone — flipping app appearance no
+  // longer alters the canvas, the doc owns its colour.
+  cr->set_source_rgb(m_doc->artboard_bg_r,
+                     m_doc->artboard_bg_g,
+                     m_doc->artboard_bg_b);
   cr->rectangle(0, 0, cw, ch);
   cr->fill();
 
@@ -15133,13 +15188,13 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     cr->save();
     cr->translate(ox, oy);
     cr->scale(m_zoom, m_zoom);
-    // s137 m5: pass project's motif-resolved Creation colour through.
-    // PenTool stays project-agnostic; receives values, doesn't reach
-    // back into the project.
+    // s148 m1: pass doc's Creation colour through (re-promoted from
+    // project per-motif). PenTool stays document-agnostic; receives
+    // values, doesn't reach back into the doc.
     m_pen_tool.draw_preview(cr, m_zoom,
-                            m_project->creation_r(),
-                            m_project->creation_g(),
-                            m_project->creation_b());
+                            m_doc->creation_color_r,
+                            m_doc->creation_color_g,
+                            m_doc->creation_color_b);
     cr->restore();
   }
 
@@ -15314,7 +15369,7 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     draw_corner_tool_overlay(cr);
 
   // ── Ruler tool overlay ────────────────────────────────────────────────
-  if (m_tool == ActiveTool::Ruler)
+  if (m_tool == ActiveTool::Measure)
     draw_ruler_overlay(cr, w, h);
 
   // ── Text-on-Path tool overlay ─────────────────────────────────────────
@@ -15335,7 +15390,7 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   if (m_doc) {
     SceneNode *ml = m_doc->measure_layer();
     if (ml && ml->visible) {
-      bool ruler_active = (m_tool == ActiveTool::Ruler);
+      bool ruler_active = (m_tool == ActiveTool::Measure);
       for (auto &ch : ml->children) {
         if (!ch->is_measurement())
           continue;
@@ -16796,20 +16851,12 @@ void Canvas::draw_objects(const Cairo::RefPtr<Cairo::Context> &cr) {
       // bg's own V somewhere and vanish there. Bg threshold uses HSV V
       // (max channel) to match the user's intuition about brightness,
       // not perceptual luminance.
-      // Read artboard bg via the project accessor — picks dark or
-      // light pair based on current motif. Falls back to doc-level
-      // legacy field if the project pointer hasn't been wired (early
-      // boot, before set_project is called).
-      double ab_r, ab_g, ab_b;
-      if (m_project) {
-          ab_r = m_project->artboard_r();
-          ab_g = m_project->artboard_g();
-          ab_b = m_project->artboard_b();
-      } else {
-          ab_r = m_doc->artboard_bg_r;
-          ab_g = m_doc->artboard_bg_g;
-          ab_b = m_doc->artboard_bg_b;
-      }
+      // s148 m1: read artboard bg from doc (re-promoted from project
+      // per-motif). Each doc owns its tone; the V-flip threshold below
+      // adapts to whichever colour the author chose for THIS doc.
+      double ab_r = m_doc->artboard_bg_r;
+      double ab_g = m_doc->artboard_bg_g;
+      double ab_b = m_doc->artboard_bg_b;
       double bg_v = std::max({ab_r, ab_g, ab_b});
       double target_v;
       if (bg_v < 0.60) {
@@ -17525,10 +17572,10 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
   if (m_tool == ActiveTool::Line && m_line_tool.active()) {
     double ox = doc_origin_x(), oy = doc_origin_y();
     cr->save();
-    // s137 m5: creation colour (motif-aware), per-project user setting.
-    cr->set_source_rgba(m_project->creation_r(),
-                        m_project->creation_g(),
-                        m_project->creation_b(), 0.9);
+    // s148 m1: creation colour (per-doc, re-promoted from project per-motif).
+    cr->set_source_rgba(m_doc->creation_color_r,
+                        m_doc->creation_color_g,
+                        m_doc->creation_color_b, 0.9);
     cr->set_line_width(1.5);
     std::vector<double> dashes = {4.0, 3.0};
     cr->set_dash(dashes, 0);
@@ -17547,9 +17594,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
 
     // Draw placed anchor points
     cr->set_dash(std::vector<double>{}, 0);
-    cr->set_source_rgba(m_project->creation_r(),
-                        m_project->creation_g(),
-                        m_project->creation_b(), 1.0);
+    cr->set_source_rgba(m_doc->creation_color_r,
+                        m_doc->creation_color_g,
+                        m_doc->creation_color_b, 1.0);
     for (auto [px, py] : m_line_tool.points) {
       cr->arc(px * m_zoom + ox, py * m_zoom + oy, 3.0, 0, 2 * M_PI);
       cr->fill();
@@ -17596,13 +17643,13 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
         polygon_to_path(cx, cy, radius, sides, inflection, m_poly_drag_angle);
 
     cr->save();
-    // s137 m5: creation colour (motif-aware) for both fill and outline.
+    // s148 m1: creation colour (per-doc) for both fill and outline.
     // Fill alpha 0.12 / outline alpha 0.9 are role-coded — fills always
     // dimmer than outlines at every construction site.
     // Fill
-    cr->set_source_rgba(m_project->creation_r(),
-                        m_project->creation_g(),
-                        m_project->creation_b(), 0.12);
+    cr->set_source_rgba(m_doc->creation_color_r,
+                        m_doc->creation_color_g,
+                        m_doc->creation_color_b, 0.12);
     bool first = true;
     for (const auto &n : pd.nodes) {
       double sx = n.x * m_zoom + ox;
@@ -17617,9 +17664,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
     cr->fill();
 
     // Outline
-    cr->set_source_rgba(m_project->creation_r(),
-                        m_project->creation_g(),
-                        m_project->creation_b(), 0.9);
+    cr->set_source_rgba(m_doc->creation_color_r,
+                        m_doc->creation_color_g,
+                        m_doc->creation_color_b, 0.9);
     cr->set_line_width(1.0);
     std::vector<double> dashes = {4.0, 3.0};
     cr->set_dash(dashes, 0);
@@ -17656,10 +17703,10 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
                                  m_spiral_turns, m_spiral_drag_angle);
 
     cr->save();
-    // s137 m5: creation colour (motif-aware).
-    cr->set_source_rgba(m_project->creation_r(),
-                        m_project->creation_g(),
-                        m_project->creation_b(), 0.9);
+    // s148 m1: creation colour (per-doc).
+    cr->set_source_rgba(m_doc->creation_color_r,
+                        m_doc->creation_color_g,
+                        m_doc->creation_color_b, 0.9);
     cr->set_line_width(1.0);
     std::vector<double> dashes = {4.0, 3.0};
     cr->set_dash(dashes, 0);
@@ -17701,10 +17748,10 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
 
   cr->save();
 
-  // Fill preview — s137 m5: creation colour (motif-aware), dim alpha for fill.
-  cr->set_source_rgba(m_project->creation_r(),
-                      m_project->creation_g(),
-                      m_project->creation_b(), 0.12);
+  // Fill preview — s148 m1: creation colour (per-doc), dim alpha for fill.
+  cr->set_source_rgba(m_doc->creation_color_r,
+                      m_doc->creation_color_g,
+                      m_doc->creation_color_b, 0.12);
   if (m_tool == ActiveTool::Ellipse) {
     cr->save();
     cr->translate(x1 + w * 0.5, y1 + h * 0.5);
@@ -17716,10 +17763,10 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
   }
   cr->fill();
 
-  // Outline — s137 m5: creation colour (motif-aware), bold alpha for outline.
-  cr->set_source_rgba(m_project->creation_r(),
-                      m_project->creation_g(),
-                      m_project->creation_b(), 0.9);
+  // Outline — s148 m1: creation colour (per-doc), bold alpha for outline.
+  cr->set_source_rgba(m_doc->creation_color_r,
+                      m_doc->creation_color_g,
+                      m_doc->creation_color_b, 0.9);
   cr->set_line_width(1.0);
   std::vector<double> dashes = {4.0, 3.0};
   cr->set_dash(dashes, 0);

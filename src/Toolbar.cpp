@@ -161,9 +161,15 @@ Toolbar::Toolbar() : Gtk::Box(Gtk::Orientation::VERTICAL) {
                   "Spiral (W)  —  Right-click to configure", ActiveTool::Spiral);
   Gtk::ToggleButton *spiral_tool_btn = m_buttons.back();
   curvz::utils::set_name(spiral_tool_btn, "tb_spi", "main_toolbar_spiral_tool_btn");
+  // Icon stays curvz-ruler-symbolic — the visual glyph is a ruler, fine
+  // as an icon. Tool name is Measure; canvas-edge ruler strips are
+  // separately still rulers.
   add_tool_button("curvz-ruler-symbolic",
-                  "Ruler (M)  —  Measure between two nodes", ActiveTool::Ruler);
-  curvz::utils::set_name(m_buttons.back(), "tb_rul", "main_toolbar_ruler_tool_btn");
+                  "Measure (M)  —  Measure between two nodes; "
+                  "right-click to configure",
+                  ActiveTool::Measure);
+  Gtk::ToggleButton *measure_tool_btn = m_buttons.back();
+  curvz::utils::set_name(measure_tool_btn, "tb_meas", "main_toolbar_measure_tool_btn");
   add_tool_button("curvz-zoom-symbolic", "Zoom (Z)  —  Right-click to set level",
                   ActiveTool::Zoom);
   // Zoom tool button is always the last added — capture for popover anchor
@@ -189,6 +195,7 @@ Toolbar::Toolbar() : Gtk::Box(Gtk::Orientation::VERTICAL) {
   build_text_popover(text_tool_btn);
   build_polygon_popover(polygon_tool_btn);
   build_spiral_popover(spiral_tool_btn);
+  build_measure_popover(measure_tool_btn);   // s150
 
   if (!m_buttons.empty())
     m_buttons[0]->set_active(true);
@@ -2296,6 +2303,122 @@ void Toolbar::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
   outer->append(*btn_row);
 
   m_zoom_pop.set_child(*outer);
+}
+
+// ── s150 — Measure tool right-click popover ─────────────────────────────
+// Houses the two measure-behaviour settings (save_to_layer,
+// destruct_after_copy) that used to live in the Inspector ▸ Document ▸
+// Measure section. The section was deleted in s150 per ARC.md design
+// rule 1: behaviour at the tool, not in the inspector.
+//
+// State source: m_doc (set via set_document). On popover open, checkbox
+// states are synced from doc->measure_*. On toggle, writes go directly
+// to doc->measure_*; signal_measure_settings_changed fires so MainWindow
+// can schedule_save. No project-level mirror — measure prefs are per-doc.
+//
+// Mirrors the snap popover shape: open syncs from doc, toggles write
+// back through. Mirrors the deleted Inspector Measure section's
+// interaction: the two checkboxes have a sensitivity coupling
+// (delete-on-copy is greyed out when save-to-layer is on).
+void Toolbar::build_measure_popover(Gtk::ToggleButton *measure_btn) {
+  // ── Right-click on Measure tool button opens popover ──────────────────
+  auto rclick = Gtk::GestureClick::create();
+  rclick->set_button(3);
+  rclick->signal_pressed().connect([this](int, double, double) {
+    // Sync checkboxes from current doc state on every open. Same pattern
+    // as the snap popover (signal_snap_pop_open in the inspector path).
+    if (m_doc && m_measure_save_chk && m_measure_del_chk && m_measure_del_lbl) {
+      m_measure_save_chk->set_active(m_doc->measure_save_to_layer);
+      m_measure_del_chk->set_active(m_doc->measure_destruct_after_copy);
+      m_measure_del_chk->set_sensitive(!m_doc->measure_save_to_layer);
+      if (m_doc->measure_save_to_layer)
+        m_measure_del_lbl->add_css_class("dim-label");
+      else
+        m_measure_del_lbl->remove_css_class("dim-label");
+    }
+    m_measure_pop.popup();
+  });
+  measure_btn->add_controller(rclick);
+
+  // ── Popover content ───────────────────────────────────────────────────
+  curvz::utils::set_name(m_measure_pop, "pop_tb_meas", "popover_toolbar_measure_root");
+  m_measure_pop.set_parent(*measure_btn);
+  m_measure_pop.set_position(Gtk::PositionType::RIGHT);
+
+  auto *outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
+  outer->set_spacing(8);
+  outer->set_margin_top(12);
+  outer->set_margin_bottom(12);
+  outer->set_margin_start(14);
+  outer->set_margin_end(14);
+
+  // Title
+  auto *title = Gtk::make_managed<Gtk::Label>("Measure");
+  title->add_css_class("tb-pop-title");
+  title->set_xalign(0.0f);
+  outer->append(*title);
+
+  // Helper — make a [checkbox][label] row with consistent spacing.
+  // Mirrors the deleted build_measure_section's row helper.
+  auto make_chk_row = [](Gtk::CheckButton *chk, Gtk::Label *lbl) -> Gtk::Box * {
+    auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+    row->set_spacing(6);
+    row->set_margin_top(2);
+    row->set_margin_bottom(2);
+    row->append(*chk);
+    row->append(*lbl);
+    return row;
+  };
+
+  // ── "Save measurements" checkbox row ────────────────────────────────────
+  m_measure_save_chk = Gtk::make_managed<Gtk::CheckButton>();
+  curvz::utils::set_name(m_measure_save_chk, "pop_tb_meas_sv",
+                         "popover_toolbar_measure_save_check");
+  m_measure_save_chk->set_tooltip_text(
+      "When enabled, every completed measurement is appended to the "
+      "Measurements layer and persists in the document.");
+  auto *save_lbl = Gtk::make_managed<Gtk::Label>("Save measurements");
+  save_lbl->set_xalign(0.0f);
+  save_lbl->set_hexpand(true);
+  save_lbl->add_css_class("tb-pop-label");
+  outer->append(*make_chk_row(m_measure_save_chk, save_lbl));
+
+  // ── "Delete on copy" checkbox row ───────────────────────────────────────
+  m_measure_del_chk = Gtk::make_managed<Gtk::CheckButton>();
+  curvz::utils::set_name(m_measure_del_chk, "pop_tb_meas_dc",
+                         "popover_toolbar_measure_destruct_check");
+  m_measure_del_chk->set_tooltip_text(
+      "When enabled, copying a transient measurement label dismisses it "
+      "from the canvas. Only applies when 'Save measurements' is off — "
+      "saved entries are permanent.");
+  m_measure_del_lbl = Gtk::make_managed<Gtk::Label>("Delete on copy");
+  m_measure_del_lbl->set_xalign(0.0f);
+  m_measure_del_lbl->set_hexpand(true);
+  m_measure_del_lbl->add_css_class("tb-pop-label");
+  outer->append(*make_chk_row(m_measure_del_chk, m_measure_del_lbl));
+
+  // ── Save toggle handler ─────────────────────────────────────────────────
+  // Writes through to m_doc, updates Delete-on-copy sensitivity inline,
+  // emits signal_measure_settings_changed for MainWindow to schedule_save.
+  m_measure_save_chk->signal_toggled().connect([this]() {
+    if (!m_doc) return;
+    bool on = m_measure_save_chk->get_active();
+    m_doc->measure_save_to_layer = on;
+    if (m_measure_del_chk) m_measure_del_chk->set_sensitive(!on);
+    if (m_measure_del_lbl) {
+      if (on) m_measure_del_lbl->add_css_class("dim-label");
+      else    m_measure_del_lbl->remove_css_class("dim-label");
+    }
+    m_sig_measure_settings.emit();
+  });
+
+  m_measure_del_chk->signal_toggled().connect([this]() {
+    if (!m_doc) return;
+    m_doc->measure_destruct_after_copy = m_measure_del_chk->get_active();
+    m_sig_measure_settings.emit();
+  });
+
+  m_measure_pop.set_child(*outer);
 }
 
 void Toolbar::build_ref_popover(Gtk::ToggleButton *ref_btn) {

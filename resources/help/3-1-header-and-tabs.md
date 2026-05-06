@@ -33,9 +33,10 @@ The tab strip runs from the Documents label to wherever the menu
 button starts. Each tab is one document in the active project.
 
 - **Click** a tab to make that document active. The canvas, the
-  layer stack, and the inspector's Object section all switch to the
-  clicked document. The Project group, Document group, Library,
-  Swatches, and Styles do not change — those are project-wide.
+  layer stack, and the inspector's Document and Object groups all
+  switch to the clicked document. The Application group, the
+  Project group, the Library, the Swatches, and the Styles do not
+  change — those are project-wide or broader.
 - **Right-click** a tab for its context menu:
   - **New Document** — same as the Documents-label right-click.
   - **Remove This Document** — removes the document from the

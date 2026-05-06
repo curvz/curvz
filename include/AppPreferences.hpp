@@ -33,6 +33,38 @@ namespace Curvz {
 //     Higher = more faithful to Clipper2 = more nodes preserved.
 //     Migrated from the old boolean_cleanup_enabled bool: true→5, false→10
 //     (the bool's "false" meant "use raw Clipper2," which is q=10's role).
+//   - reopen_last_project — bool, default true. When true, startup
+//     auto-reopens the last-saved project path; when false, startup
+//     falls through to a blank project. Read once at boot; no live
+//     effect.
+//   - recent_projects_max_count — int 1..50, default 10. Cap on the
+//     recents list managed by RecentProjects (separate file). Surfaced
+//     for users who want a longer or shorter Open Recent submenu.
+//   - show_rulers_by_default — bool, default true. Boot-time ruler
+//     visibility. The Ctrl+R toggle still flips per-session; this
+//     pref controls the initial state on launch.
+//   - undo_history_depth — int 50..10000, default 500. Maximum number
+//     of undo steps. CommandHistory reads on every push, so reducing
+//     the value trims the stack at the next operation.
+//   - tooltip_delay_ms — int 0..2000, default 150. Delay before a
+//     tooltip appears under a hovered widget. Applied to the GTK
+//     "gtk-tooltip-timeout" property at startup; takes effect on next
+//     launch. (Note: the property is deprecated in modern GTK and may
+//     be a no-op on builds that have removed it — see Application.cpp.)
+//   - library_path_override — string, default empty. Empty = use the
+//     built-in default (~/.config/curvz/library). Non-empty = use this
+//     directory for the user library tier. Takes effect on next launch.
+//   - templates_path_override — string, default empty. Empty = use the
+//     built-in default (~/.config/curvz/templates). Takes effect on
+//     next launch.
+//   - log_path_override — string, default empty. Empty = use the
+//     built-in default (~/.local/share/curvz/curvz.log). Takes effect
+//     on next launch. The override is consulted directly from JSON in
+//     the Application constructor (before the AppPreferences singleton
+//     loads) because spdlog needs a path before any log call can run.
+//   - custom_css_path_override — string, default empty. Empty = use the
+//     built-in default (~/.config/curvz/styles.css). Takes effect on
+//     next launch.
 //   - library_defaults_seeded — internal one-shot first-launch flag,
 //     not user-facing.
 //
@@ -73,6 +105,102 @@ public:
     int  boolean_cleanup_quality() const { return m_boolean_cleanup_quality; }
     void set_boolean_cleanup_quality(int v);
 
+    // s144 m2 — Reopen last project on startup.
+    // Default true preserves the original boot path (auto-reopen the
+    // last-saved project). When false, MainWindow::setup_project()
+    // skips the load_last_project_path() check and falls through to
+    // the blank-project branch. The pref is read once at startup;
+    // changing it has no live effect, only takes hold on next launch.
+    bool reopen_last_project() const { return m_reopen_last_project; }
+    void set_reopen_last_project(bool v);
+
+    // s144 m3 — Cap on the Open Recent submenu length, in entries.
+    // Range 1..50; clamped on set. Default 10. RecentProjects::add()
+    // re-reads this every insert, so changing the pref takes effect
+    // immediately on the next project open (no relaunch needed).
+    int  recent_projects_max_count() const { return m_recent_projects_max_count; }
+    void set_recent_projects_max_count(int v);
+
+    // s145 m1 — Show rulers by default on startup.
+    // Default true preserves the historical boot state. MainWindow's
+    // setup_menu reads this once to seed m_rulers_visible before the
+    // toggle-rulers action is created; setup_layout then applies it
+    // to the ruler widgets. Per-session Ctrl+R toggling is unaffected
+    // — that flips the state in-memory without writing back to the
+    // pref. The pref controls the initial state only.
+    bool show_rulers_by_default() const { return m_show_rulers_by_default; }
+    void set_show_rulers_by_default(bool v);
+
+    // s145 m1 — Maximum number of undo steps.
+    // Range 50..10000; clamped on set. Default 500.
+    // CommandHistory::push reads this every operation, so reducing
+    // the value trims the live stack at the next push (does not
+    // retroactively prune). Increasing the value just allows the
+    // stack to grow further from that point on.
+    int  undo_history_depth() const { return m_undo_history_depth; }
+    void set_undo_history_depth(int v);
+
+    // s145 m1 — Tooltip delay in milliseconds.
+    // Range 0..2000; clamped on set. Default 150 (Curvz historical
+    // override of GTK's 500ms default — closer to Illustrator/Affinity
+    // feel). Applied to the GTK "gtk-tooltip-timeout" property in
+    // Application::on_activate. The property is deprecated in modern
+    // GTK and dropped on some builds; the application probes for it
+    // and silently no-ops if absent. Takes effect on next launch.
+    int  tooltip_delay_ms() const { return m_tooltip_delay_ms; }
+    void set_tooltip_delay_ms(int v);
+
+    // s146 m3 — Warp creation defaults. When the user invokes Path ▸ Warp
+    // on a selection, the resulting Warp's envelope is generated from
+    // these settings rather than via a modal dialog. The inspector's
+    // Application ▸ Warp subsection edits these values; the inspector's
+    // Object ▸ Warp section binds to the live selected Warp's own state
+    // (a separate concern). Both surfaces share the same controls, so
+    // the values feel continuous: tweak defaults to taste, then Path ▸
+    // Warp produces that shape; the just-created Warp is selected and
+    // its live state is editable in the Object section.
+    //
+    //   warp_default_top_count  / warp_default_bot_count : 2..4 anchors
+    //     per envelope. Default 2 (single-segment, the simplest shape).
+    //   warp_default_preset : 0..7 index into curvz::utils::warp_presets
+    //     names. Default 0 (Flat) — straight envelopes, the identity
+    //     warp; user picks a preset deliberately when they want shape.
+    //   warp_default_quality : 1..16. Default 4 (matches the historical
+    //     dialog default).
+    int  warp_default_top_count() const { return m_warp_default_top_count; }
+    void set_warp_default_top_count(int v);
+    int  warp_default_bot_count() const { return m_warp_default_bot_count; }
+    void set_warp_default_bot_count(int v);
+    int  warp_default_preset() const { return m_warp_default_preset; }
+    void set_warp_default_preset(int v);
+    int  warp_default_quality() const { return m_warp_default_quality; }
+    void set_warp_default_quality(int v);
+
+    // s145 m4 — Path overrides for built-in directories and files.
+    // All four default to empty string; empty = "use the built-in
+    // default" (each consumer falls through to its hardcoded default
+    // when the override is empty). Non-empty = use this exact path.
+    // Setters do no validation beyond trim; users may type a path
+    // that doesn't exist yet, and consumers are expected to create
+    // directories on demand the same way they do for the defaults.
+    // All four take effect on next launch.
+    const std::string& library_path_override() const { return m_library_path_override; }
+    void set_library_path_override(const std::string& v);
+
+    const std::string& templates_path_override() const { return m_templates_path_override; }
+    void set_templates_path_override(const std::string& v);
+
+    // Read directly from preferences.json by Application constructor —
+    // see Application.cpp::read_log_path_override_from_disk(). The
+    // singleton getter is provided here for symmetry and inspector
+    // round-tripping; the constructor cannot use it because the
+    // singleton hasn't loaded yet at that point.
+    const std::string& log_path_override() const { return m_log_path_override; }
+    void set_log_path_override(const std::string& v);
+
+    const std::string& custom_css_path_override() const { return m_custom_css_path_override; }
+    void set_custom_css_path_override(const std::string& v);
+
     // s141: one-shot first-launch flag. LibraryPanel checks this on every
     // scan; if false, it creates the default category folders (arrows,
     // shapes, icons, ui) under the user library dir and flips this true.
@@ -97,6 +225,35 @@ private:
     // s143 m1 — quality slider replaces the s139 m2 enabled toggle.
     // Default 5 = the s142 m6 hardcoded values (apex=15°, max_run=10).
     int  m_boolean_cleanup_quality = 5;
+    // s144 m2 — default true preserves the historical auto-reopen
+    // behaviour for users with an existing preferences.json that
+    // doesn't yet have this key. Users opt out via the inspector.
+    bool m_reopen_last_project = true;
+    // s144 m3 — cap on Open Recent submenu length. 10 matches Photoshop /
+    // Illustrator / VS Code defaults; range 1..50 per set_recent_projects_max_count.
+    int  m_recent_projects_max_count = 10;
+    // s145 m1 — boot-time ruler visibility. Default true preserves the
+    // historical "rulers visible on launch" behaviour.
+    bool m_show_rulers_by_default = true;
+    // s145 m1 — undo history depth. 500 was the historical hardcoded
+    // CommandHistory::MAX_HISTORY value. Range 50..10000 per setter.
+    int  m_undo_history_depth = 500;
+    // s145 m1 — tooltip delay in ms. 150 was the s85 cont-6 hardcoded
+    // override of GTK's 500ms default. Range 0..2000 per setter.
+    int  m_tooltip_delay_ms = 150;
+    // s146 m3 — Warp creation defaults. See public docs above.
+    int  m_warp_default_top_count = 2;
+    int  m_warp_default_bot_count = 2;
+    int  m_warp_default_preset    = 0;   // Flat
+    int  m_warp_default_quality   = 4;
+    // s145 m4 — path overrides. Empty = "use the built-in default"
+    // (each consumer falls through to its own default). Non-empty
+    // = use this exact path. Stored as plain strings; no path-shape
+    // validation here.
+    std::string m_library_path_override;
+    std::string m_templates_path_override;
+    std::string m_log_path_override;
+    std::string m_custom_css_path_override;
     bool m_library_defaults_seeded = false;
     sigc::signal<void()> m_sig_changed;
 };

@@ -17,6 +17,7 @@
 #include "style/StyleLibrary.hpp"  // S80 m4b: find_style for "Bound: <n>" indicator
 #include <array>
 #include <algorithm>
+#include <cctype>
 #include <cairomm/cairomm.h>
 #include <chrono>
 #include <cmath>
@@ -521,8 +522,13 @@ Gtk::Box *PropertiesPanel::add_group_collapsible(const char *title, bool expande
 // ── Collapsible section ───────────────────────────────────────────────────────
 // Returns the body box — append rows into it.
 // If parent != nullptr, appends into that box instead of m_inner.
+//
+// s150: optional `accessory` text — when non-null, appended to the right
+// of the title with dim styling. Used for at-a-glance state read-outs in
+// the section header (e.g. Dimensions showing the active unit).
 Gtk::Box *PropertiesPanel::add_collapsible(const char *title, bool expanded,
-                                           Gtk::Box *parent) {
+                                           Gtk::Box *parent,
+                                           const char *accessory) {
   // Restore remembered state; use caller default on first appearance.
   auto it = m_section_open.find(title);
   bool open_now = (it != m_section_open.end()) ? it->second : expanded;
@@ -545,6 +551,17 @@ Gtk::Box *PropertiesPanel::add_collapsible(const char *title, bool expanded,
   lbl->add_css_class("inspector-section-title");
   hdr->append(*arrow);
   hdr->append(*lbl);
+  // s150: optional accessory text — right-aligned, dim. Used by
+  // build_canvas_section to announce the active display unit so the
+  // user sees "Dimensions  IN" / "MM" / etc. at a glance without
+  // scanning into the section.
+  if (accessory && *accessory) {
+    auto *acc = Gtk::make_managed<Gtk::Label>(accessory);
+    acc->add_css_class("inspector-section-accessory");
+    acc->add_css_class("dim-label");
+    acc->set_xalign(1.0f);
+    hdr->append(*acc);
+  }
   outer->append(*hdr);
 
   auto *sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
@@ -685,10 +702,28 @@ box_add_spin(Gtk::Box *box, const char *label, double val, double lo, double hi,
   return adj;
 }
 
-// ── Canvas section
-// ────────────────────────────────────────────────────────────
+// ── Dimensions section (was "Canvas" pre-s148 m2 fix2) ──────────────────
+// The doc's measurable geometric properties: ratio, quality, DPI,
+// physical/pixel size, ruler origin. The CanvasModel class and the
+// "Canvas" terminology elsewhere in the codebase (function name,
+// member fields, comments) are kept — only the user-facing section
+// header label changed in s148 m2 fix2 to free "Canvas" for the new
+// colours section under Document ▸ Theme (renamed from Motif in s150,
+// which is more honestly "the canvas you draw on" than the geometry
+// data here).
+//
+// s150: header now announces the active display unit as an accessory
+// (e.g. "Dimensions  IN") so the user sees what unit they're typing in
+// at a glance, without scanning into the section. The Units dropdown
+// inside the section is the editor; the accessory is the readout.
 void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm, Gtk::Box *parent) {
-  auto *body = add_collapsible("Canvas", false, parent);
+  // s150: announce the active unit in the section header. UnitSystem::label
+  // returns short labels ("px", "in", "mm", "pt"); we upper-case for header
+  // emphasis (matches the GNOME-style "INCHES" announcement intent).
+  std::string unit_label_upper = UnitSystem::label(cm->display_unit);
+  for (char &c : unit_label_upper) c = std::toupper(static_cast<unsigned char>(c));
+  auto *body = add_collapsible("Dimensions", false, parent,
+                               unit_label_upper.c_str());
 
   // ── Display units dropdown (governs inspector readouts, not canvas geometry)
   {
@@ -1126,106 +1161,144 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm, Gtk:
   }
 }
 
-// ── Project / Motif section (s116 m6) ───────────────────────────────────
-// Per-project workspace appearance — every doc/tab in this project shares
-// these settings so switching tabs never flickers the canvas tone.
+// ── Document ▸ Theme disclosure (s150; was "Motif" s148 m2 fix2) ──────
+// A nested collapsible that wraps the four draftsman-setup facets of a
+// document under a single header. The wrapper is labelled "Theme" —
+// post-s150 the user-facing word for the saveable doc-style bundle
+// (the Themes panel saves and applies what's inside this disclosure).
+// Pre-s150 this disclosure was labelled "Motif"; that word is now
+// internal-only (Motif enum + MotifSettings sub-bundle within Theme).
+//
+//   Theme ▸
+//     Canvas    — surface colours (artboard / workspace / creation chips,
+//                 plus Reset). The colours describe the canvas the user
+//                 draws on; this label was freed in s148 m2 fix2 by
+//                 renaming the geometry section to "Dimensions."
+//     Margins   — page-edge boundaries (the frame within).
+//     Grid      — regular mesh, if needed (background scaffold).
+//     Guides    — custom alignment landmarks (placed relative to
+//                 margins/grid).
+//
+// The order inside the disclosure mirrors a draftsman's setup
+// chronology: surface → edges → mesh → custom landmarks. Each step
+// depends on the previous step's setup — the order is causal, not
+// alphabetical.
+//
+// Why nest rather than keep the four sections flat as siblings of
+// Metadata/Dimensions: the four together are a coherent "saveable
+// style preset" — what a Theme actually is. The disclosure makes the
+// bundle visible to the user; the Themes panel saves and applies
+// exactly what's inside this disclosure (plus a few hidden fields
+// like Snap and Units that round-trip silently).
+//
+// Visual nesting: build_canvas_section is intentionally NOT in this
+// disclosure — Dimensions (geometric bones) is set-and-forget at doc
+// creation, lives at the bottom of the Document group adjacent to the
+// Object group. Geometry is geometry; style is what's in the Theme
+// disclosure (per ARC.md design rule 1).
+//
+// s150 note: m_section_open key changed from "Motif" to "Theme" with
+// this rename. First launch after upgrade strands the old "Motif" key
+// (harmless — it just means Theme starts collapsed by default, the
+// add_collapsible default).
+void PropertiesPanel::build_theme_disclosure(CurvzDocument *doc,
+                                             Gtk::Box *parent) {
+  if (!doc) return;
+  auto *body = add_collapsible("Theme", false, parent);
+  // s148 m2 fix3: indent the four inner sections so the nesting
+  // reads as a distinct level. See css.hpp::.inspector-disclosure-body.
+  body->add_css_class("inspector-disclosure-body");
+  // Pass the disclosure body as parent to the four inner section
+  // builders. add_collapsible appends the inner outer-box (header +
+  // separator + body) into the disclosure's body, producing a nested
+  // collapsible visually indented inside the Theme disclosure.
+  build_canvas_colours_section(doc, body);   // labelled "Canvas" inside the function
+  build_margin_section(doc, body);
+  build_grid_section(doc, body);
+  build_guide_section(doc, body);
+}
+
+// ── Document ▸ Motif ▸ Canvas section (was Document ▸ Motif pre-fix2) ──
+// Per-document workspace appearance — each document carries its own
+// artboard/workspace/creation tone. Switching tabs intentionally
+// re-paints the canvas with the new doc's colours.
 //
 // Three knobs:
-//   • Theme — Dark/Light toggle, drives which CSS fork the app paints in.
-//   • Artboard — colour of the rectangle the icon sits on.
-//   • Workspace — colour of the area around the artboard.
+//   • Artboard — colour of the rectangle the icon sits on (per-doc).
+//   • Workspace — colour of the area around the artboard (per-doc).
+//   • Creation — colour of construction previews (rubber-band, drag
+//     preview, etc.) (per-doc).
 //
 // All three are editor-only — never reach the exported SVG. Round-trip
-// through project.json's project-level "workspace" block on save/load.
-// The Theme toggle emits prop_changed so MainWindow re-applies the
-// curvz-light CSS class.
+// through project.json's per-doc record on save/load.
+//
+// The Theme (Dark/Light) switch moved out of this section in s148 m2
+// and lives under Application ▸ Appearance now. Theme is app-tier
+// (GNOME convention) — flipping it no longer alters per-doc canvas
+// colours, only the app chrome's CSS fork.
 //
 // Section history:
 //   S98          — added as "Background" (per-doc).
 //   s116 m5      — renamed to "Motif"; added Theme toggle (per-doc).
-//   s116 m6      — moved to project scope; lives under a top-level
-//                  "Project" group in the inspector.
+//   s116 m6      — moved to project scope (per-motif: dark + light slots).
+//   s148 m1      — demoted back to per-doc (single slot per doc); chips
+//                  read/write doc fields, motif-aware getter/setter
+//                  pairs collapsed.
+//   s148 m2      — relocated from Project group to Document group; the
+//                  in-disclosure builder for the Canvas-colours section
+//                  was originally called build_motif_section. Theme
+//                  switch extracted to Application ▸ Appearance.
+//   s148 m2 fix2 — user-facing label changed from "Motif" to "Canvas"
+//                  (the colours describe the canvas the user draws on).
+//                  Function name still build_motif_section in s148.
+//                  The geometry section that previously owned the
+//                  "Canvas" label was simultaneously renamed to
+//                  "Dimensions."
+//   s150         — disclosure renamed user-facing from "Motif" to
+//                  "Theme" (the saveable doc-style bundle); Motif goes
+//                  internal-only (Motif enum + MotifSettings sub-bundle).
+//                  This builder renamed build_motif_section →
+//                  build_canvas_colours_section to match what it
+//                  actually builds. Lives inside the Theme disclosure
+//                  (build_theme_disclosure), alongside Margins / Grid /
+//                  Guides.
 //
 // Same idiom as the inspector's existing colour swatches (build_guide_
 // section, the shadow swatch in build_shadow_section): a small clickable
 // DrawingArea opens m_color_popover with the current colour, the apply
-// callback writes the new rgb back to the project and queues a panel
+// callback writes the new rgb back to the doc and queues a panel
 // redraw + emits prop_changed so Canvas repaints.
 //
 // No undo coverage — matches the precedent set by guide_color_*. Undo
 // for editor-presentation prefs is not consistently applied across the
 // codebase; we keep the simpler scope here. A user can revert by re-
 // picking, and project.json can be hand-edited.
-void PropertiesPanel::build_project_section(CurvzProject *project,
-                                                Gtk::Box *parent) {
-  if (!project) return;
-  auto *body = add_collapsible("Motif", false, parent);
+void PropertiesPanel::build_canvas_colours_section(CurvzDocument *doc,
+                                          Gtk::Box *parent) {
+  if (!doc) return;
+  // s148 m2 fix2: header label is "Canvas" (the colours describe the
+  // canvas the user draws on); see history block above.
+  auto *body = add_collapsible("Canvas", false, parent);
   uint32_t gen = m_build_gen;
 
-  // Chip pointers are populated by add_color_row below. Both the motif
-  // Switch handler and the Reset button handler need to queue_draw the
-  // chips when the active motif changes (motif flip) or chip values are
-  // overwritten (reset). Pre-s127 those handlers relied on a panel
-  // rebuild that the prop_changed handler in MainWindow does not
-  // actually trigger — so chips kept showing stale colours and clicks
-  // wrote to the wrong per-motif slot. s127 fix: chips read/write
-  // through a motif-aware getter/setter pair, and the handlers do an
-  // explicit chip queue_draw — no rebuild required.
+  // Chip pointers are populated by add_color_row below. The Reset
+  // button handler queue_draws the chips after writing fresh defaults.
   //
-  // Lifetime note: the Switch's signal_toggled is connected AFTER the
-  // chips are built so we can capture the chip pointers BY VALUE.
-  // Capturing &proj_artboard_da (address of a local) into a lambda
-  // outliving the stack frame is a UAF; capturing by value works
-  // because the chip widget pointer itself is stable for the lifetime
-  // of the panel build (Gtk::DrawingArea is heap-allocated by
+  // Lifetime note: chip pointers captured BY VALUE into the Reset
+  // lambda. Capturing &motif_artboard_da (address of a local) into a
+  // lambda outliving the stack frame is a UAF; capturing by value
+  // works because the chip widget pointer itself is stable for the
+  // lifetime of the panel build (Gtk::DrawingArea is heap-allocated by
   // make_managed; the local just stores the same address).
-  Gtk::DrawingArea *proj_artboard_da = nullptr;
-  Gtk::DrawingArea *proj_workspace_da = nullptr;
-  Gtk::DrawingArea *proj_creation_da = nullptr;  // s137 m5
-  CurvzSwitch *theme_sw = nullptr;
-  Gtk::Label *theme_value_lbl = nullptr;
+  Gtk::DrawingArea *motif_artboard_da = nullptr;
+  Gtk::DrawingArea *motif_workspace_da = nullptr;
+  Gtk::DrawingArea *motif_creation_da = nullptr;
 
-  // ── Theme row (Dark / Light) ─────────────────────────────────────
-  // CurvzSwitch is the project's Cairo-drawn toggle (same widget the
-  // Toolbar uses for the snap toggle). Single label "Theme" + state
-  // value + switch. Tapping the switch flips dark↔light, emits
-  // prop_changed, and MainWindow's apply_motif_to_window swaps the
-  // CSS class on the next idle. Signal wiring happens at the bottom
-  // of this function (after chips exist).
-  {
-    auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-    row->add_css_class("prop-row");
-    row->set_spacing(6);
-
-    auto *key = Gtk::make_managed<Gtk::Label>("Theme");
-    key->add_css_class("prop-lbl");
-    key->set_width_chars(10);
-    key->set_xalign(0.0f);
-    row->append(*key);
-
-    auto *value_lbl = Gtk::make_managed<Gtk::Label>(
-        project->motif == Motif::Light ? "Light" : "Dark");
-    value_lbl->add_css_class("prop-val");
-    value_lbl->set_xalign(0.0f);
-    value_lbl->set_hexpand(true);
-    row->append(*value_lbl);
-    theme_value_lbl = value_lbl;
-
-    auto *sw = Gtk::make_managed<CurvzSwitch>();
-    curvz::utils::set_name(sw, "ins_proj_th", "inspector_project_theme_switch");
-    sw->set_state(project->motif == Motif::Light);
-    sw->set_valign(Gtk::Align::CENTER);
-    row->append(*sw);
-    body->append(*row);
-    theme_sw = sw;
-  }
-
-  // Helper: build one labelled colour-row. Captures motif-aware getter
-  // and setter callables instead of raw field pointers — see the s127
-  // comment above the chip pointer decls. The getter returns the
-  // currently-active motif's RGB triple; the setter writes back to the
-  // same motif's slots. Motif flip → chip queue_draw is enough; no
-  // rebuild, no stale-binding hazard.
+  // Helper: build one labelled colour-row. Captures plain getter/setter
+  // callables that read/write doc fields directly. (s127's motif-aware
+  // pair was collapsed in s148 m1 when the per-motif structure was
+  // removed; the helper signature stayed the same — generic callables
+  // still work.)
   using GetRGB = std::function<std::tuple<double,double,double>()>;
   using SetRGB = std::function<void(double,double,double)>;
   auto add_color_row =
@@ -1282,82 +1355,61 @@ void PropertiesPanel::build_project_section(CurvzProject *project,
     if (out_swatch) *out_swatch = swatch;
   };
 
-  // s127: motif-aware getter/setter pairs. The getter reads via the
-  // project's artboard_*() / workspace_*() accessors which already
-  // switch on project->motif, so the chip always shows the active
-  // motif's colour. The setter writes to whichever per-motif slot is
-  // active at call time — clicking a chip in Light mode edits the
-  // light slots, in Dark mode edits the dark slots. Pre-s127 the
-  // pointer-trio binding froze the chip to one motif at panel build
-  // time, which broke after a motif flip without a panel rebuild
-  // (and there is no rebuild on motif flip; the prop_changed handler
-  // doesn't trigger one).
+  // s148 m1: chip getter/setter lambdas read/write the active doc's
+  // single-slot fields. The motif-aware switch logic from s127 is gone
+  // because each doc carries one set of values — flipping the Theme
+  // switch (Dark/Light) no longer alters chip colours; it only drives
+  // the CSS fork. Capture `doc` by value: panel rebuilds on doc-switch
+  // (via update_all_panels), so a stale `doc` pointer in a still-live
+  // lambda is prevented by the m_build_gen guard already in place at
+  // each lambda entry.
   add_color_row(
       "Artboard",
-      [project]() { return std::make_tuple(project->artboard_r(),
-                                           project->artboard_g(),
-                                           project->artboard_b()); },
-      [project](double r, double g, double b) {
-        if (project->motif == Motif::Light) {
-          project->artboard_light_r = r;
-          project->artboard_light_g = g;
-          project->artboard_light_b = b;
-        } else {
-          project->artboard_dark_r = r;
-          project->artboard_dark_g = g;
-          project->artboard_dark_b = b;
-        }
+      [doc]() { return std::make_tuple(doc->artboard_bg_r,
+                                       doc->artboard_bg_g,
+                                       doc->artboard_bg_b); },
+      [doc](double r, double g, double b) {
+        doc->artboard_bg_r = r;
+        doc->artboard_bg_g = g;
+        doc->artboard_bg_b = b;
       },
-      &proj_artboard_da);
+      &motif_artboard_da);
   add_color_row(
       "Workspace",
-      [project]() { return std::make_tuple(project->workspace_r(),
-                                           project->workspace_g(),
-                                           project->workspace_b()); },
-      [project](double r, double g, double b) {
-        if (project->motif == Motif::Light) {
-          project->workspace_light_r = r;
-          project->workspace_light_g = g;
-          project->workspace_light_b = b;
-        } else {
-          project->workspace_dark_r = r;
-          project->workspace_dark_g = g;
-          project->workspace_dark_b = b;
-        }
+      [doc]() { return std::make_tuple(doc->workspace_bg_r,
+                                       doc->workspace_bg_g,
+                                       doc->workspace_bg_b); },
+      [doc](double r, double g, double b) {
+        doc->workspace_bg_r = r;
+        doc->workspace_bg_g = g;
+        doc->workspace_bg_b = b;
       },
-      &proj_workspace_da);
-  // s137 m5: Creation colour. Same motif-aware pattern — clicking the
-  // chip in Light mode edits the light slots, in Dark mode edits the
-  // dark slots. Used by every "creating something" preview surface
+      &motif_workspace_da);
+  // Creation colour — used by every "creating something" preview surface
   // (rect/ellipse/line/polygon/spiral construction, pen tool segments
   // and handles).
   add_color_row(
       "Creation",
-      [project]() { return std::make_tuple(project->creation_r(),
-                                           project->creation_g(),
-                                           project->creation_b()); },
-      [project](double r, double g, double b) {
-        if (project->motif == Motif::Light) {
-          project->creation_light_r = r;
-          project->creation_light_g = g;
-          project->creation_light_b = b;
-        } else {
-          project->creation_dark_r = r;
-          project->creation_dark_g = g;
-          project->creation_dark_b = b;
-        }
+      [doc]() { return std::make_tuple(doc->creation_color_r,
+                                       doc->creation_color_g,
+                                       doc->creation_color_b); },
+      [doc](double r, double g, double b) {
+        doc->creation_color_r = r;
+        doc->creation_color_g = g;
+        doc->creation_color_b = b;
       },
-      &proj_creation_da);
-  curvz::utils::set_name(proj_artboard_da, "ins_proj_ab", "inspector_project_artboard_swatch_da");
-  curvz::utils::set_name(proj_workspace_da, "ins_proj_ws", "inspector_project_workspace_swatch_da");
-  curvz::utils::set_name(proj_creation_da, "ins_proj_cr", "inspector_project_creation_swatch_da");
+      &motif_creation_da);
+  curvz::utils::set_name(motif_artboard_da, "ins_motif_ab", "inspector_motif_artboard_swatch_da");
+  curvz::utils::set_name(motif_workspace_da, "ins_motif_ws", "inspector_motif_workspace_swatch_da");
+  curvz::utils::set_name(motif_creation_da, "ins_motif_cr", "inspector_motif_creation_swatch_da");
 
   // ── Reset row ─────────────────────────────────────────────────────
-  // Single button, restores the active-motif's artboard + workspace
-  // pair to the project defaults defined in CurvzProject. Scope is
-  // active-motif only — flipping to Light, resetting, then flipping
-  // back to Dark preserves the user's Dark customisations. Theme
-  // (Dark/Light) toggle itself isn't reset; that's a separate state.
+  // Single button, restores THIS doc's artboard/workspace/creation to
+  // hardcoded defaults. Scope is per-doc — other docs in the project
+  // are unaffected. Currently a single hardcoded set (dark defaults);
+  // s148 m4 polish makes this app-mode-aware (Dark mode reset → dark
+  // defaults, Light mode reset → light defaults) once the
+  // AppPreferences::appearance_mode field is in place (m2 sub-ship 2).
   {
     auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     row->add_css_class("prop-row");
@@ -1365,24 +1417,31 @@ void PropertiesPanel::build_project_section(CurvzProject *project,
     row->set_halign(Gtk::Align::END);
 
     auto *btn = Gtk::make_managed<Gtk::Button>("Reset");
-    curvz::utils::set_name(btn, "ins_proj_rst", "inspector_project_reset_btn");
+    curvz::utils::set_name(btn, "ins_motif_rst", "inspector_motif_reset_btn");
     btn->add_css_class("flat");
     btn->set_tooltip_text(
-        "Restore artboard, workspace, and creation colours to defaults for the current theme");
-    // s127: also queue_draw on the chips after reset. Pre-s127 this
-    // relied on the (never-actually-happening) panel rebuild path; now
-    // we drive the repaint explicitly, same as the motif Switch.
+        "Restore this document's artboard, workspace, and creation colours to defaults");
     // Capture chips BY VALUE — proj_*_da are local variables; capturing
     // by reference would be UAF once the function returns. The pointed-to
     // widgets are heap-allocated by make_managed and survive for the
     // panel's lifetime.
-    Gtk::DrawingArea *artb_chip = proj_artboard_da;
-    Gtk::DrawingArea *work_chip = proj_workspace_da;
-    Gtk::DrawingArea *crea_chip = proj_creation_da;  // s137 m5
+    Gtk::DrawingArea *artb_chip = motif_artboard_da;
+    Gtk::DrawingArea *work_chip = motif_workspace_da;
+    Gtk::DrawingArea *crea_chip = motif_creation_da;
     btn->signal_clicked().connect(
-        [this, project, gen, artb_chip, work_chip, crea_chip]() {
+        [this, doc, gen, artb_chip, work_chip, crea_chip]() {
           if (m_build_gen != gen) return;
-          project->reset_motif_bg_to_defaults(project->motif);
+          // Hardcoded dark defaults — match CurvzDocument.hpp field
+          // defaults. m4 polish will make these app-mode-aware.
+          doc->artboard_bg_r = 0.157;  // #282828
+          doc->artboard_bg_g = 0.157;
+          doc->artboard_bg_b = 0.157;
+          doc->workspace_bg_r = 0.09;  // #171717
+          doc->workspace_bg_g = 0.09;
+          doc->workspace_bg_b = 0.09;
+          doc->creation_color_r = 0.30;  // light blue against dark
+          doc->creation_color_g = 0.60;
+          doc->creation_color_b = 1.00;
           if (artb_chip) artb_chip->queue_draw();
           if (work_chip) work_chip->queue_draw();
           if (crea_chip) crea_chip->queue_draw();
@@ -1390,33 +1449,6 @@ void PropertiesPanel::build_project_section(CurvzProject *project,
         });
     row->append(*btn);
     body->append(*row);
-  }
-
-  // ── Deferred Theme switch wiring ─────────────────────────────────
-  // Connected here, AFTER the chips exist, so we can capture chip
-  // pointers by value. Capturing &proj_artboard_da into a lambda would
-  // outlive this function's stack frame — UAF. The chip widget pointers
-  // themselves are stable (heap-managed by Gtk::make_managed), so a
-  // by-value capture is sound.
-  if (theme_sw && theme_value_lbl) {
-    Gtk::DrawingArea *artb_chip = proj_artboard_da;
-    Gtk::DrawingArea *work_chip = proj_workspace_da;
-    Gtk::DrawingArea *crea_chip = proj_creation_da;  // s137 m5
-    Gtk::Label *value_lbl = theme_value_lbl;
-    theme_sw->signal_toggled().connect(
-        [this, project, value_lbl, gen, artb_chip, work_chip, crea_chip](bool on) {
-          if (m_build_gen != gen) return;
-          project->motif = on ? Motif::Light : Motif::Dark;
-          value_lbl->set_text(on ? "Light" : "Dark");
-          // Repaint chips against the now-active motif's slots. The
-          // chip draw_func reads through project->artboard_*() / etc.
-          // accessors which switch on motif, so a queue_draw is all
-          // that's needed — no panel rebuild.
-          if (artb_chip) artb_chip->queue_draw();
-          if (work_chip) work_chip->queue_draw();
-          if (crea_chip) crea_chip->queue_draw();
-          emit_prop_changed();
-        });
   }
 }
 
@@ -1439,35 +1471,448 @@ void PropertiesPanel::set_guide_selection(const std::vector<SceneNode *> &sel) {
   m_guide_selection = sel;
 }
 
+// ── Application ▸ Appearance subsection (s148 m2) ────────────────────────────
+// Holds the Dark/Light Theme switch. Relocated here from the old
+// Project ▸ Motif section as part of the s148 motif → document
+// migration: per-doc artboard/workspace/creation moved to Document
+// scope, while Theme (Dark/Light) is genuinely app-tier — a GNOME
+// convention where the user's appearance preference is the same across
+// every project.
+//
+// Sub-ship 1 (this commit) keeps the storage on m_project->motif so
+// the existing CSS apply path (apply_motif_to_window via
+// signal_changed → MainWindow) continues to work without any other
+// changes. Sub-ship 2 will migrate the storage to AppPreferences::
+// instance().appearance_mode for true app-tier persistence; at that
+// point the function loses its CurvzProject* parameter.
+//
+// Why CurvzSwitch (Cairo-drawn) rather than Gtk::Switch: matches the
+// rest of the inspector's switch idiom (snap toggles, reopen-last-
+// project, etc.) — visual cohesion. CurvzSwitch's signal_toggled fires
+// after a user click only, never programmatically, so set_state()
+// during build is safe.
+void PropertiesPanel::build_app_appearance_section(CurvzProject *project,
+                                                   Gtk::Box *parent) {
+  if (!project) return;
+  auto *body = add_collapsible("Appearance", false, parent);
+  uint32_t gen = m_build_gen;
+
+  auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  row->add_css_class("prop-row");
+  row->set_spacing(6);
+  row->set_margin_start(6);
+  row->set_margin_end(6);
+  row->set_margin_top(2);
+  row->set_margin_bottom(2);
+
+  auto *key = Gtk::make_managed<Gtk::Label>("Theme");
+  key->add_css_class("prop-lbl");
+  key->set_xalign(0.0f);
+  row->append(*key);
+
+  // Live-text indicator of current state — same idiom the old Motif
+  // section used. "Dark" or "Light" updates on toggle.
+  auto *value_lbl = Gtk::make_managed<Gtk::Label>(
+      project->motif == Motif::Light ? "Light" : "Dark");
+  value_lbl->add_css_class("prop-val");
+  value_lbl->set_xalign(0.0f);
+  value_lbl->set_hexpand(true);
+  row->append(*value_lbl);
+
+  auto *sw = Gtk::make_managed<CurvzSwitch>();
+  curvz::utils::set_name(sw, "ins_app_appearance_th",
+                         "inspector_app_appearance_theme_switch");
+  sw->set_state(project->motif == Motif::Light);
+  sw->set_valign(Gtk::Align::CENTER);
+  sw->set_tooltip_text(
+      "Switch the app's appearance between Dark and Light.\n"
+      "Affects the editor chrome (panels, menus, toolbar). Per-document\n"
+      "canvas colours (artboard, workspace, creation) are unaffected —\n"
+      "those live under Document ▸ Motif.");
+  row->append(*sw);
+  body->append(*row);
+
+  // Toggle handler: write to project->motif, update the live label,
+  // emit prop_changed. MainWindow's prop_changed handler runs
+  // apply_motif_to_window → swaps the curvz-light CSS class on the
+  // window tree → walks rulers/toolbar/corner via set_motif. Same
+  // path the old in-Motif Theme switch used; only the inspector
+  // location changed.
+  sw->signal_toggled().connect(
+      [this, project, value_lbl, gen](bool on) {
+        if (m_build_gen != gen) return;
+        project->motif = on ? Motif::Light : Motif::Dark;
+        value_lbl->set_text(on ? "Light" : "Dark");
+        emit_prop_changed();
+      });
+}
+
 // ── Application section (s143 m1) ────────────────────────────────────────────
 // User-tier app preferences surfaced from AppPreferences::instance().
 // Lives under the "Application" group at the top of the inspector,
 // sibling of Project / Document / Object.
 //
-// Current contents — single row:
-//   - Boolean cleanup quality:  Gtk::Scale, range 0..10.
-//     0      = most aggressive cleanup  (apex=30°, max_run=20)
-//     5      = default                  (apex=15°, max_run=10  — s142 m6 anchor)
-//     9      = gentlest cleanup         (apex= 5°, max_run= 5)
-//     10     = no cleanup, raw Clipper2 polyline
-//     End labels: "Approximate (fewer nodes)" left — "Faithful (more nodes)" right
+// Subsections in build order (s148 m2 places Appearance first;
+// remaining subsections kept in their existing build order — full
+// alphabetical reorder deferred to s148 m4 polish to limit m2 churn):
+//   Appearance      — Theme (Dark/Light) toggle (s148 m2). Drives the
+//                     CSS fork the app paints in. m2 sub-ship 1 reads/
+//                     writes m_project->motif (project-level state);
+//                     sub-ship 2 migrates the source to AppPreferences
+//                     for true app-tier persistence.
+//   Startup         — Reopen last project (s144 m2), Recent projects
+//                     max count (s144 m3), Show rulers by default
+//                     (s145 m1)
+//   Editing         — Undo history depth (s145 m1), Tooltip delay ms
+//                     (s145 m1)
+//   Paths           — User library, User templates, Log file, Custom
+//                     CSS (s145 m4 — all four are path-string overrides;
+//                     empty = use default; built via curvz::utils::
+//                     make_path_override_row)
+//   Boolean cleanup — Quality slider (s143 m1). 0..10 int.
+//                     End labels: "Approximate (fewer nodes)" left —
+//                     "Faithful (more nodes)" right.
+//   Warp            — Warp creation defaults (s146 m3)
 //
 // Future inhabitants of this section (one row each, planned):
-//   - Recent projects: max count               (SpinButton 0..50)
-//   - Autosave debounce                        (SpinButton, seconds)
-//   - Log file path                            (Entry + Browse, restart req'd)
-//   - Custom CSS path                          (Entry + Browse, restart req'd)
+//   - Autosave debounce  (SpinButton, seconds — needs semantics pinned)
 //
 // Mutation pattern: every input writes to AppPreferences, which fires
 // AppPreferences::signal_changed; MainWindow's wiring catches that and
 // pushes the new value into Canvas. The section is read-mostly — no
 // emit_prop_changed because nothing here is a document property.
+// (Exception: the Appearance Theme switch in m2 sub-ship 1 writes to
+// m_project->motif and emits prop_changed for CSS reapply; sub-ship 2
+// converts this to AppPreferences::signal_changed-driven CSS reapply.)
 //
 // m_loading guard: refresh() sets m_loading=true around builds; we
 // honour it when handling user input so programmatic widget setup
 // during refresh doesn't loop back into a setter.
 void PropertiesPanel::build_app_section(Gtk::Box *parent) {
   uint32_t gen = m_build_gen;
+
+  // ── Appearance subsection (s148 m2) ───────────────────────────────────────
+  // Sorted first. Theme switch only — relocated here from the old
+  // Project ▸ Motif section.
+  build_app_appearance_section(m_project, parent);
+
+  // ── Startup subsection (s144 m2/m3) ───────────────────────────────────────
+  // The Application group's subsections are organised by user-facing
+  // concern (Startup / Editing / Paths / etc.); this is the home for
+  // boot-time prefs. Inhabitants:
+  //   - Reopen last project (s144 m2) — bool switch
+  //   - Recent projects (s144 m3) — int 1..50
+  {
+    auto *body = add_collapsible("Startup", false, parent);
+
+    // ── Reopen last project ────────────────────────────────────────────────
+    {
+      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+      row->add_css_class("prop-row");
+      row->set_spacing(6);
+      row->set_margin_start(6);
+      row->set_margin_end(6);
+      row->set_margin_top(2);
+      row->set_margin_bottom(2);
+
+      auto *key = Gtk::make_managed<Gtk::Label>("Reopen last project");
+      key->add_css_class("prop-lbl");
+      key->set_xalign(0.0f);
+      key->set_hexpand(true);
+      row->append(*key);
+
+      auto *sw = Gtk::make_managed<CurvzSwitch>();
+      curvz::utils::set_name(sw, "ins_app_reopen",
+                             "inspector_app_reopen_last_project_switch");
+      sw->set_state(AppPreferences::instance().reopen_last_project());
+      sw->set_valign(Gtk::Align::CENTER);
+      sw->set_tooltip_text(
+          "When on, Curvz reopens your last project on launch.\n"
+          "When off, Curvz starts with a blank project.\n"
+          "Takes effect on next launch.");
+      row->append(*sw);
+      body->append(*row);
+
+      sw->signal_toggled().connect([this, sw, gen](bool on) {
+        if (m_build_gen != gen || m_loading) return;
+        AppPreferences::instance().set_reopen_last_project(on);
+        LOG_INFO("PropertiesPanel: reopen_last_project → {}", on);
+      });
+    }
+
+    // ── Recent projects max count (s144 m3) ────────────────────────────────
+    // Plain Gtk::SpinButton (not CurvzSpinButton) — that one is unit-aware
+    // and tied to the doc DPI plumbing; this is a unitless integer count
+    // and SpinButton is the simpler, correct choice.
+    {
+      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+      row->add_css_class("prop-row");
+      row->set_spacing(6);
+      row->set_margin_start(6);
+      row->set_margin_end(6);
+      row->set_margin_top(2);
+      row->set_margin_bottom(2);
+
+      auto *key = Gtk::make_managed<Gtk::Label>("Recent projects");
+      key->add_css_class("prop-lbl");
+      key->set_xalign(0.0f);
+      key->set_hexpand(true);
+      row->append(*key);
+
+      auto adj = Gtk::Adjustment::create(
+          double(AppPreferences::instance().recent_projects_max_count()),
+          1.0, 50.0, 1.0, 5.0, 0.0);
+      auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+      curvz::utils::set_name(spin, "ins_app_recents_max",
+                             "inspector_app_recent_projects_max_count_spin");
+      spin->set_valign(Gtk::Align::CENTER);
+      spin->set_width_chars(4);
+      spin->set_tooltip_text(
+          "Maximum entries shown in File ▸ Open Recent.\n"
+          "Range 1–50. Takes effect on the next project open.");
+      row->append(*spin);
+      body->append(*row);
+
+      spin->signal_value_changed().connect([this, spin, gen]() mutable {
+        if (m_build_gen != gen || m_loading) return;
+        int n = static_cast<int>(std::lround(spin->get_value()));
+        AppPreferences::instance().set_recent_projects_max_count(n);
+        LOG_INFO("PropertiesPanel: recent_projects_max_count → {}", n);
+      });
+    }
+
+    // ── Show rulers by default (s145 m1) ───────────────────────────────────
+    // Boot-time ruler visibility. MainWindow seeds m_rulers_visible from
+    // this pref before the toggle-rulers action is created (see
+    // setup_menu) and applies it to the ruler widgets after setup_layout.
+    // Per-session Ctrl+R toggling does NOT write back to this pref —
+    // intentional: users frequently flip rulers during editing without
+    // wanting to change their boot preference. Tooltip says so explicitly.
+    {
+      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+      row->add_css_class("prop-row");
+      row->set_spacing(6);
+      row->set_margin_start(6);
+      row->set_margin_end(6);
+      row->set_margin_top(2);
+      row->set_margin_bottom(2);
+
+      auto *key = Gtk::make_managed<Gtk::Label>("Show rulers by default");
+      key->add_css_class("prop-lbl");
+      key->set_xalign(0.0f);
+      key->set_hexpand(true);
+      row->append(*key);
+
+      auto *sw = Gtk::make_managed<CurvzSwitch>();
+      curvz::utils::set_name(sw, "ins_app_show_rulers",
+                             "inspector_app_show_rulers_by_default_switch");
+      sw->set_state(AppPreferences::instance().show_rulers_by_default());
+      sw->set_valign(Gtk::Align::CENTER);
+      sw->set_tooltip_text(
+          "When on, Curvz shows rulers on launch.\n"
+          "When off, rulers boot hidden.\n"
+          "Use Ctrl+R during a session to toggle without changing this "
+          "preference. Takes effect on next launch.");
+      row->append(*sw);
+      body->append(*row);
+
+      sw->signal_toggled().connect([this, sw, gen](bool on) {
+        if (m_build_gen != gen || m_loading) return;
+        AppPreferences::instance().set_show_rulers_by_default(on);
+        LOG_INFO("PropertiesPanel: show_rulers_by_default → {}", on);
+      });
+    }
+  }
+
+  // ── Editing subsection (s145 m1) ───────────────────────────────────────────
+  // Editor-tier behaviour prefs: undo depth, tooltip delay. Sibling of
+  // Startup. Both inhabitants are unitless integers with simple bounded
+  // ranges, so plain Gtk::SpinButton rows (not CurvzSpinButton — that's
+  // unit-aware and tied to doc DPI; not appropriate for app-tier counts).
+  {
+    auto *body = add_collapsible("Editing", false, parent);
+
+    // ── Undo history depth ──────────────────────────────────────────────────
+    // CommandHistory::push reads this every operation. Reducing the value
+    // trims at the next push (does not retroactively prune); increasing
+    // simply allows further growth.
+    {
+      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+      row->add_css_class("prop-row");
+      row->set_spacing(6);
+      row->set_margin_start(6);
+      row->set_margin_end(6);
+      row->set_margin_top(2);
+      row->set_margin_bottom(2);
+
+      auto *key = Gtk::make_managed<Gtk::Label>("Undo history depth");
+      key->add_css_class("prop-lbl");
+      key->set_xalign(0.0f);
+      key->set_hexpand(true);
+      row->append(*key);
+
+      auto adj = Gtk::Adjustment::create(
+          double(AppPreferences::instance().undo_history_depth()),
+          50.0, 10000.0, 50.0, 100.0, 0.0);
+      auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+      curvz::utils::set_name(spin, "ins_app_undo_depth",
+                             "inspector_app_undo_history_depth_spin");
+      spin->set_valign(Gtk::Align::CENTER);
+      spin->set_width_chars(6);
+      spin->set_tooltip_text(
+          "Maximum number of undo steps Curvz keeps in memory.\n"
+          "Range 50–10000. Takes effect immediately — reducing the\n"
+          "value trims the stack at the next operation.");
+      row->append(*spin);
+      body->append(*row);
+
+      spin->signal_value_changed().connect([this, spin, gen]() mutable {
+        if (m_build_gen != gen || m_loading) return;
+        int n = static_cast<int>(std::lround(spin->get_value()));
+        AppPreferences::instance().set_undo_history_depth(n);
+        LOG_INFO("PropertiesPanel: undo_history_depth → {}", n);
+      });
+    }
+
+    // ── Tooltip delay ───────────────────────────────────────────────────────
+    // Applied to GTK's "gtk-tooltip-timeout" property at startup. The
+    // property is deprecated and dropped on some recent GTK builds —
+    // Application::on_activate probes for it and silently no-ops when
+    // absent. The spinner accepts the user's value either way; on a
+    // build with the property removed, the value persists but has no
+    // visible effect. Takes effect on next launch.
+    {
+      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+      row->add_css_class("prop-row");
+      row->set_spacing(6);
+      row->set_margin_start(6);
+      row->set_margin_end(6);
+      row->set_margin_top(2);
+      row->set_margin_bottom(2);
+
+      auto *key = Gtk::make_managed<Gtk::Label>("Tooltip delay (ms)");
+      key->add_css_class("prop-lbl");
+      key->set_xalign(0.0f);
+      key->set_hexpand(true);
+      row->append(*key);
+
+      auto adj = Gtk::Adjustment::create(
+          double(AppPreferences::instance().tooltip_delay_ms()),
+          0.0, 2000.0, 50.0, 100.0, 0.0);
+      auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+      curvz::utils::set_name(spin, "ins_app_tooltip_delay",
+                             "inspector_app_tooltip_delay_ms_spin");
+      spin->set_valign(Gtk::Align::CENTER);
+      spin->set_width_chars(6);
+      spin->set_tooltip_text(
+          "Milliseconds before tooltips appear.\n"
+          "Range 0–2000. Curvz default is 150 (GTK default is 500).\n"
+          "Takes effect on next launch. May be a no-op on some recent\n"
+          "GTK builds where the underlying property has been removed.");
+      row->append(*spin);
+      body->append(*row);
+
+      spin->signal_value_changed().connect([this, spin, gen]() mutable {
+        if (m_build_gen != gen || m_loading) return;
+        int n = static_cast<int>(std::lround(spin->get_value()));
+        AppPreferences::instance().set_tooltip_delay_ms(n);
+        LOG_INFO("PropertiesPanel: tooltip_delay_ms → {}", n);
+      });
+    }
+  }
+
+  // ── Paths subsection (s145 m4) ─────────────────────────────────────────────
+  // Override locations for the four built-in directories and files
+  // Curvz manages on the user's behalf: the user library, the user
+  // templates folder, the log file, and the user CSS file. Each row
+  // is built by curvz::utils::make_path_override_row, which renders
+  // a label + Entry + Browse + Reset. Empty Entry = use the default;
+  // the placeholder shows what that default would be. All four take
+  // effect on next launch (no live re-scan plumbing this milestone).
+  //
+  // The row helper handles its own commit semantics: writes happen
+  // on Enter, focus loss, Browse confirmation, or Reset click. We
+  // funnel each commit straight into the corresponding AppPreferences
+  // setter, which trims and persists.
+  {
+    auto *body = add_collapsible("Paths", false, parent);
+
+    // Walk to the top-level window for FileDialog modal-rooting. The
+    // dynamic_cast can fail before the panel is attached (refresh
+    // during construction) — the helper tolerates a nullptr by
+    // making Browse a no-op, and Reset still works either way.
+    Gtk::Window *root_win = dynamic_cast<Gtk::Window*>(get_root());
+
+    // Default-path resolvers. These mirror the consumer-side fall-
+    // through logic exactly, so the placeholder a user sees in the
+    // Entry is the path that will be used when the override is empty.
+    const std::string default_library_path =
+        std::string(Glib::get_user_config_dir()) + "/curvz/library";
+    const std::string default_templates_path =
+        std::string(Glib::get_user_config_dir()) + "/curvz/templates";
+    const std::string default_log_path =
+        std::string(Glib::get_user_data_dir()) + "/curvz/curvz.log";
+    const std::string default_css_path =
+        std::string(Glib::get_user_config_dir()) + "/curvz/styles.css";
+
+    body->append(*curvz::utils::make_path_override_row(
+        "User library",
+        AppPreferences::instance().library_path_override(),
+        default_library_path,
+        "Folder for your custom library categories and SVG icons.\n"
+        "Empty = use the default. Takes effect on next launch.",
+        /*pick_folder=*/true,
+        root_win,
+        [](const std::string& v) {
+          AppPreferences::instance().set_library_path_override(v);
+          LOG_INFO("PropertiesPanel: library_path_override → '{}'", v);
+        }));
+
+    body->append(*curvz::utils::make_path_override_row(
+        "User templates",
+        AppPreferences::instance().templates_path_override(),
+        default_templates_path,
+        "Folder for your custom document templates and the seed marker.\n"
+        "Empty = use the default. Takes effect on next launch.",
+        /*pick_folder=*/true,
+        root_win,
+        [](const std::string& v) {
+          AppPreferences::instance().set_templates_path_override(v);
+          LOG_INFO("PropertiesPanel: templates_path_override → '{}'", v);
+        }));
+
+    body->append(*curvz::utils::make_path_override_row(
+        "Log file",
+        AppPreferences::instance().log_path_override(),
+        default_log_path,
+        "Destination file for Curvz's log output.\n"
+        "Empty = use the default. Takes effect on next launch — the\n"
+        "logger initialises before this preference is read on the\n"
+        "current run.",
+        /*pick_folder=*/false,
+        root_win,
+        [](const std::string& v) {
+          AppPreferences::instance().set_log_path_override(v);
+          LOG_INFO("PropertiesPanel: log_path_override → '{}'", v);
+        }));
+
+    body->append(*curvz::utils::make_path_override_row(
+        "Custom CSS",
+        AppPreferences::instance().custom_css_path_override(),
+        default_css_path,
+        "User stylesheet loaded after Curvz's built-in CSS.\n"
+        "Empty = use the default (which gets a stub written on first\n"
+        "run). When set to a custom path, the stub is NOT seeded.\n"
+        "Takes effect on next launch.",
+        /*pick_folder=*/false,
+        root_win,
+        [](const std::string& v) {
+          AppPreferences::instance().set_custom_css_path_override(v);
+          LOG_INFO("PropertiesPanel: custom_css_path_override → '{}'", v);
+        }));
+  }
+
+  // ── Boolean cleanup subsection (s143 m1) ──────────────────────────────────
   auto *body  = add_collapsible("Boolean cleanup", false, parent);
 
   auto *box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
@@ -1540,6 +1985,141 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
     AppPreferences::instance().set_boolean_cleanup_quality(q);
     LOG_INFO("PropertiesPanel: boolean cleanup quality → {}", q);
   });
+
+  // ── Warp subsection (s146 m3) ─────────────────────────────────────────────
+  // Sticky defaults for Path ▸ Warp. Four controls mirroring the inspector's
+  // Object ▸ Warp section: top/bot anchor counts, preset dropdown, quality
+  // slider. Edits route through AppPreferences setters (auto-saved). When
+  // the user invokes Path ▸ Warp on a selection, on_warp_make reads these
+  // values and seeds the new Warp's envelope+quality directly — no dialog.
+  // The just-created Warp is selected, so the Object ▸ Warp section
+  // immediately takes over for fine-tuning the live state.
+  {
+    auto *body = add_collapsible("Warp", false, parent);
+
+    auto make_lbl_row = [](const char *label_text) {
+      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+      row->add_css_class("prop-row");
+      row->set_spacing(6);
+      row->set_margin_start(6);
+      row->set_margin_end(6);
+      row->set_margin_top(2);
+      row->set_margin_bottom(2);
+      auto *key = Gtk::make_managed<Gtk::Label>(label_text);
+      key->add_css_class("prop-lbl");
+      key->set_xalign(0.0f);
+      key->set_hexpand(true);
+      row->append(*key);
+      return row;
+    };
+
+    // ── Top anchor count ──────────────────────────────────────────────
+    {
+      auto *row = make_lbl_row("Top anchors");
+      auto adj = Gtk::Adjustment::create(
+          double(AppPreferences::instance().warp_default_top_count()),
+          2.0, 4.0, 1.0, 1.0, 0.0);
+      auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+      curvz::utils::set_name(spin, "ins_app_wrp_tn",
+                             "inspector_app_warp_default_top_count_spin");
+      spin->set_valign(Gtk::Align::CENTER);
+      spin->set_width_chars(4);
+      spin->set_tooltip_text(
+          "Default top-envelope anchor count for new Warps.\n"
+          "Range 2–4. Wave preset auto-bumps to 3 if needed.");
+      row->append(*spin);
+      body->append(*row);
+
+      spin->signal_value_changed().connect([this, spin, gen]() mutable {
+        if (m_build_gen != gen || m_loading) return;
+        int n = static_cast<int>(std::lround(spin->get_value()));
+        AppPreferences::instance().set_warp_default_top_count(n);
+      });
+    }
+
+    // ── Bottom anchor count ──────────────────────────────────────────
+    {
+      auto *row = make_lbl_row("Bottom anchors");
+      auto adj = Gtk::Adjustment::create(
+          double(AppPreferences::instance().warp_default_bot_count()),
+          2.0, 4.0, 1.0, 1.0, 0.0);
+      auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+      curvz::utils::set_name(spin, "ins_app_wrp_bn",
+                             "inspector_app_warp_default_bot_count_spin");
+      spin->set_valign(Gtk::Align::CENTER);
+      spin->set_width_chars(4);
+      spin->set_tooltip_text(
+          "Default bottom-envelope anchor count for new Warps.\n"
+          "Range 2–4. Wave preset auto-bumps to 3 if needed.");
+      row->append(*spin);
+      body->append(*row);
+
+      spin->signal_value_changed().connect([this, spin, gen]() mutable {
+        if (m_build_gen != gen || m_loading) return;
+        int n = static_cast<int>(std::lround(spin->get_value()));
+        AppPreferences::instance().set_warp_default_bot_count(n);
+      });
+    }
+
+    // ── Preset dropdown ──────────────────────────────────────────────
+    // Note: no "(Custom)" entry here — the Application defaults are the
+    // shape the next new Warp will start with, so "leave envelope alone"
+    // doesn't apply. Eight preset entries only.
+    {
+      auto *row = make_lbl_row("Preset");
+      std::vector<Glib::ustring> preset_strs;
+      const char* const* names = curvz::utils::warp_presets::preset_names();
+      for (int i = 0; i < curvz::utils::warp_presets::PRESET_COUNT; ++i) {
+        preset_strs.push_back(names[i]);
+      }
+      auto preset_model = Gtk::StringList::create(preset_strs);
+      auto *dd = Gtk::make_managed<Gtk::DropDown>(preset_model);
+      curvz::utils::set_name(dd, "ins_app_wrp_pr",
+                             "inspector_app_warp_default_preset_dd");
+      dd->set_valign(Gtk::Align::CENTER);
+      int cur = AppPreferences::instance().warp_default_preset();
+      dd->set_selected(std::clamp(cur, 0, 7));
+      dd->set_tooltip_text(
+          "Default envelope shape for new Warps. The just-created Warp's\n"
+          "Object ▸ Warp section can switch presets per-instance.");
+      row->append(*dd);
+      body->append(*row);
+
+      dd->property_selected().signal_changed().connect(
+          [this, dd, gen]() mutable {
+            if (m_build_gen != gen || m_loading) return;
+            int idx = static_cast<int>(dd->get_selected());
+            AppPreferences::instance().set_warp_default_preset(idx);
+          });
+    }
+
+    // ── Quality slider ───────────────────────────────────────────────
+    {
+      auto *row = make_lbl_row("Quality");
+      auto adj_q = Gtk::Adjustment::create(
+          double(AppPreferences::instance().warp_default_quality()),
+          1.0, 16.0, 1.0, 1.0, 0.0);
+      auto *sc_q = Gtk::make_managed<Gtk::Scale>(adj_q, Gtk::Orientation::HORIZONTAL);
+      curvz::utils::set_name(sc_q, "ins_app_wrp_q",
+                             "inspector_app_warp_default_quality_scale");
+      sc_q->set_hexpand(true);
+      sc_q->set_draw_value(true);
+      sc_q->set_digits(0);
+      sc_q->set_value_pos(Gtk::PositionType::RIGHT);
+      sc_q->set_tooltip_text(
+          "Default subdivision density for new Warps. Range 1–16; higher\n"
+          "values produce smoother warped curves at greater cost.");
+      // Drop the row's hexpand on the label so the slider gets the room.
+      row->append(*sc_q);
+      body->append(*row);
+
+      adj_q->signal_value_changed().connect([this, adj_q, gen]() mutable {
+        if (m_build_gen != gen || m_loading) return;
+        int q = static_cast<int>(std::lround(adj_q->get_value()));
+        AppPreferences::instance().set_warp_default_quality(q);
+      });
+    }
+  }
 }
 
 void PropertiesPanel::build_guide_section(CurvzDocument *doc, Gtk::Box *parent) {
@@ -1896,73 +2476,16 @@ void PropertiesPanel::build_guide_section(CurvzDocument *doc, Gtk::Box *parent) 
   }
 }
 
-// ── Snap section
-// ────────────────────────────────────────────────────────────── Document-wide
-// snap behaviour — separate collapsible, not guide-specific.
-void PropertiesPanel::build_snap_section(CurvzDocument *doc, Gtk::Box *parent) {
-  uint32_t gen = m_build_gen;
-  auto *body = add_collapsible("Snap", false, parent);
-
-  auto *snap_box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
-  snap_box->set_spacing(2);
-  snap_box->set_margin_start(6);
-  snap_box->set_margin_top(2);
-  snap_box->set_margin_bottom(4);
-  body->append(*snap_box);
-
-  // s119: per-checkbox set_name needs literal-string args at the call
-  // site (the harvester regex doesn't follow a loop variable). Six near-
-  // identical blocks below — one per snap kind.
-  auto add_snap_cb = [&](Gtk::CheckButton *cb, bool *flag, bool sensitive) {
-    cb->set_active(*flag);
-    cb->set_sensitive(sensitive);
-    cb->signal_toggled().connect([this, doc, cb, flag, gen]() mutable {
-      if (m_build_gen != gen || m_loading)
-        return;
-      *flag = cb->get_active();
-      // Project snap struct is the source of truth for serialization
-      // (CurvzProject::save reads m_project->snap.*). Inspector writes go
-      // directly to doc->snap, so without this mirror the toggle would
-      // round-trip only within the session; next reload would restore the
-      // stale project value over doc->snap. Toolbar path mirrors the
-      // same way in MainWindow's signal_snap_settings handler.
-      if (m_project) m_project->snap = doc->snap;
-      emit_prop_changed();
-    });
-    snap_box->append(*cb);
-  };
-
-  {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to guides");
-    curvz::utils::set_name(cb, "ins_snp_g", "inspector_snap_guides_check");
-    add_snap_cb(cb, &doc->snap.snap_guides, true);
-  }
-  {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to grid");
-    curvz::utils::set_name(cb, "ins_snp_gr", "inspector_snap_grid_check");
-    add_snap_cb(cb, &doc->snap.snap_grid, true);
-  }
-  {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to margins");
-    curvz::utils::set_name(cb, "ins_snp_m", "inspector_snap_margins_check");
-    add_snap_cb(cb, &doc->snap.snap_margins, true);
-  }
-  {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to nodes");
-    curvz::utils::set_name(cb, "ins_snp_n", "inspector_snap_nodes_check");
-    add_snap_cb(cb, &doc->snap.snap_nodes, true);
-  }
-  {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to edges");
-    curvz::utils::set_name(cb, "ins_snp_e", "inspector_snap_edges_check");
-    add_snap_cb(cb, &doc->snap.snap_edges, true);
-  }
-  {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to centers");
-    curvz::utils::set_name(cb, "ins_snp_c", "inspector_snap_centers_check");
-    add_snap_cb(cb, &doc->snap.snap_centers, true);
-  }
-}
+// ── Snap section: deleted s150 ───────────────────────────────────────────
+// Snap behaviour now lives at the toolbar Snap switch + its right-click
+// popover (see Toolbar::build_snap_popover and the m_toolbar.signal_snap_*
+// handlers in MainWindow.cpp). Storage on doc.snap is unchanged; only
+// the inspector surface went away. The toolbar is the canonical writer
+// (it already wrote to both project->snap and every doc->snap).
+//
+// Per ARC.md design rule 1 ("behaviour at the tool, style in the
+// inspector"), Snap is behaviour — how the editor reacts during use —
+// not style, so it doesn't belong in an inspector section.
 
 // ── Grid section ──────────────────────────────────────────────────────────────
 void PropertiesPanel::build_grid_section(CurvzDocument *doc, Gtk::Box *parent) {
@@ -4076,85 +4599,17 @@ void PropertiesPanel::build_metadata_section(Gtk::Box *parent) {
   }
 }
 
-// ── build_measure_section ────────────────────────────────────────────────────
-void PropertiesPanel::build_measure_section(CurvzDocument *doc, Gtk::Box *parent) {
-  auto *body = add_collapsible("Measure", false, parent);
-  curvz::utils::set_name(body, "ins_meas", "inspector_measure_body");
-
-  uint32_t gen = m_build_gen;
-
-  // Helper — make a [checkbox][label] row with consistent spacing.
-  auto make_chk_row = [](Gtk::CheckButton *chk, Gtk::Label *lbl) -> Gtk::Box * {
-    auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-    row->set_spacing(6);
-    row->set_margin_start(8);
-    row->set_margin_end(6);
-    row->set_margin_top(2);
-    row->set_margin_bottom(2);
-    row->append(*chk);
-    row->append(*lbl);
-    return row;
-  };
-
-  // ── "Save measurements" checkbox row ────────────────────────────────────
-  // When ON, every completed pair (shift+click promote, marquee-with-2,
-  // Enter) auto-appends to the measure layer. When OFF, measurements are
-  // transient — live A/B picks only.
-  auto *save_chk = Gtk::make_managed<Gtk::CheckButton>();
-  curvz::utils::set_name(save_chk, "ins_meas_sv", "inspector_measure_save_check");
-  save_chk->set_active(doc->measure_save_to_layer);
-  save_chk->set_tooltip_text(
-      "When enabled, every completed measurement is appended to the "
-      "Measurements layer and persists in the document.");
-  auto *save_lbl = Gtk::make_managed<Gtk::Label>("Save measurements");
-  save_lbl->set_xalign(0.0f);
-  save_lbl->set_hexpand(true);
-  save_lbl->add_css_class("prop-lbl");
-  body->append(*make_chk_row(save_chk, save_lbl));
-
-  // ── "Delete on copy" checkbox row ───────────────────────────────────────
-  // Only meaningful when Save is OFF — when ON, copying the live label
-  // dismisses the transient measurement from canvas. Saved entries are
-  // never auto-deleted by copy.
-  auto *del_chk = Gtk::make_managed<Gtk::CheckButton>();
-  curvz::utils::set_name(del_chk, "ins_meas_dc", "inspector_measure_destruct_check");
-  del_chk->set_active(doc->measure_destruct_after_copy);
-  del_chk->set_sensitive(!doc->measure_save_to_layer);
-  del_chk->set_tooltip_text(
-      "When enabled, copying a transient measurement label dismisses it "
-      "from the canvas. Only applies when 'Save measurements' is off — "
-      "saved entries are permanent.");
-  auto *del_lbl = Gtk::make_managed<Gtk::Label>("Delete on copy");
-  del_lbl->set_xalign(0.0f);
-  del_lbl->set_hexpand(true);
-  del_lbl->add_css_class("prop-lbl");
-  if (doc->measure_save_to_layer)
-    del_lbl->add_css_class("dim-label");
-  body->append(*make_chk_row(del_chk, del_lbl));
-
-  // Save toggle handler — also updates Delete-on-copy sensitivity inline so
-  // the user gets immediate feedback that Delete-on-copy has no effect when
-  // Save is on. No emit_prop_changed needed (no canvas-visible change).
-  save_chk->signal_toggled().connect(
-      [this, save_chk, del_chk, del_lbl, doc, gen]() {
-        if (gen != m_build_gen || m_loading)
-          return;
-        bool on = save_chk->get_active();
-        doc->measure_save_to_layer = on;
-        del_chk->set_sensitive(!on);
-        if (on)
-          del_lbl->add_css_class("dim-label");
-        else
-          del_lbl->remove_css_class("dim-label");
-      });
-
-  del_chk->signal_toggled().connect([this, del_chk, doc, gen]() {
-    if (gen != m_build_gen || m_loading)
-      return;
-    doc->measure_destruct_after_copy = del_chk->get_active();
-  });
-
-}
+// ── Measure section: deleted s150 ────────────────────────────────────────
+// Measure behaviour now lives at the toolbar Measure button + its right-
+// click popover (see Toolbar::build_measure_popover and the
+// m_toolbar.signal_measure_settings_changed handler in MainWindow.cpp).
+// Storage on doc.measure_save_to_layer / doc.measure_destruct_after_copy
+// is unchanged; only the inspector surface went away.
+//
+// Per ARC.md design rule 1 ("behaviour at the tool, style in the
+// inspector"), Measure is behaviour — how the measure tool acts during
+// use — not style, so it doesn't belong in an inspector section. The
+// Measure tool is its natural home.
 
 // ── Public unified entry point
 // ────────────────────────────────────────────────
@@ -4213,43 +4668,67 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
     return;
   }
 
-  // ── Project group (s116 m6) ──────────────────────────────────
-  // Top-level inspector group. Contains project-wide workspace
-  // appearance (Motif: theme/artboard/workspace). Sits above
-  // Document because it's the umbrella the docs live in — every
-  // doc/tab in this project shares these settings.
-  if (m_project) {
-    auto *proj_grp = add_group_collapsible("Project", false);
-    build_project_section(m_project, proj_grp);
-  }
-
-  // ── Application group (s143 m1) ──────────────────────────────
-  // User-tier app preferences (AppPreferences::instance) — sits
-  // alongside Project because both are "above the document" — the
-  // Project group is per-project, the Application group is per-user
-  // and persists across projects. First inhabitant: boolean cleanup
-  // quality slider.
+  // ── Application group (s143 m1; reordered s145 m2) ──────────────
+  // Sits at the top of the inspector by scope-hierarchy convention:
+  // Application → Project → Document → Object, broadest to narrowest.
+  // User-tier app preferences (AppPreferences::instance) — persists
+  // across projects and launches. Default-collapsed because it's
+  // read-mostly (boot-time prefs, occasional tweaks) and the user's
+  // attention typically lives in Document/Object during editing.
   {
     auto *app_grp = add_group_collapsible("Application", false);
     build_app_section(app_grp);
   }
 
-  // ── Document group ───────────────────────────────────────────
+  // ── Project group (s116 m6 → s148 m2: deleted) ───────────────
+  // The Project group lost its only resident (Motif) when the s148
+  // motif → document migration relocated artboard/workspace/creation
+  // to per-doc scope and pulled Theme into Application ▸ Appearance.
+  // The empty group was deleted in m2 rather than left as a placeholder
+  // — collapsibles that open to nothing are bad UX. Future per-project
+  // settings (anything genuinely project-tier, not app-tier or doc-tier)
+  // can re-add the group when there's something to put in it.
+
+  // ── Document group (s148 m2 fix2: Motif disclosure groups setup phase) ──
+  // Top-level structure:
+  //
+  //   Metadata    — paperwork: what is this drawing called?
+  //   Motif ▸     — disclosure wrapping the four facets of doc setup:
+  //     Canvas    — surface colours (artboard / workspace / creation)
+  //     Margins   — page boundaries (the frame within)
+  //     Grid      — regular mesh, if needed (background scaffold)
+  //     Guides    — custom alignment landmarks
+  //   Measure     — distance-checking aid during work
+  //   Snap        — cursor-stickiness behaviour
+  //   Dimensions  — the doc's underlying geometric bones (ratio,
+  //                 quality, DPI, ruler origin). Set once at doc
+  //                 creation, rarely revisited. Sits LAST so it abuts
+  //                 the Object group below — the doc's frame, sitting
+  //                 at the boundary between doc-level and object-level
+  //                 editing where the user spends most of their time.
+  //
+  // Two ordering principles in play:
+  //   • Frequency-of-use — Dimensions at the bottom because it's
+  //     set-and-forget; setup-phase items grouped under Motif so they
+  //     can be collapsed once setup is done.
+  //   • Workflow chronology inside Motif — Canvas → Margins → Grid →
+  //     Guides mirrors how a draftsman lays out a drawing: surface
+  //     first, then page edges, then mesh, then custom landmarks.
+  //
+  // Resist re-sorting alphabetically or by "structural" hierarchy —
+  // the current order encodes domain meaning.
   {
     auto *doc_grp = add_group_collapsible("Document", false);
-    if (m_project)
-      build_metadata_section(doc_grp);
-    auto cm = std::make_shared<CanvasModel>(*canvas);
-    build_canvas_section(cm, doc_grp);
     if (m_project) {
+      build_metadata_section(doc_grp);
       if (auto *doc = m_project->active_doc()) {
-        build_guide_section(doc, doc_grp);
-        build_grid_section(doc, doc_grp);
-        build_margin_section(doc, doc_grp);
-        build_snap_section(doc, doc_grp);
-        build_measure_section(doc, doc_grp);
+        build_theme_disclosure(doc, doc_grp);
+        // s150: build_measure_section + build_snap_section calls removed.
+        // Both are now toolbar right-click popovers (Ruler, Snap).
       }
     }
+    auto cm = std::make_shared<CanvasModel>(*canvas);
+    build_canvas_section(cm, doc_grp);
   }
 
   // ── Object group ─────────────────────────────────────────────
@@ -4258,6 +4737,8 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
     build_selection_section(obj, obj_grp);
     if (obj && obj->is_blend())
       build_blend_section(obj, obj_grp);
+    if (obj && obj->is_warp())
+      build_warp_section(obj, obj_grp);
     if (obj && m_node_idx >= 0)
       build_node_section(obj, m_node_idx, obj_grp);
     else
@@ -5007,6 +5488,293 @@ void PropertiesPanel::build_blend_section(SceneNode *obj, Gtk::Box *parent) {
   }
 }
 
+// ── build_warp_section — properties for Warp objects ────────────────────────
+//
+// s146 m2: Live in-place editor for a selected Warp. Mirrors the controls
+// in WarpDialog (top/bot anchor counts, preset dropdown, quality slider)
+// but as inspector rows rather than a modal — fits the "in your face for
+// objects" rule. Edits route directly to obj.warp_env_top / warp_env_bottom
+// / warp_quality and flag warp_cache_dirty; emit_prop_changed triggers a
+// canvas redraw and the lazy cache rebuild picks up the new envelope.
+//
+// Differences from the dialog:
+//   - No Apply / Cancel buttons. Edits are live — same shape as Blend.
+//   - Preset dropdown gets an extra "(Custom)" entry at index 0. This is
+//     the initial selection on every refresh because the existing
+//     envelope shape can't be reliably reverse-inferred to a preset
+//     (matches a comment in WarpDialog::show). Selecting any non-Custom
+//     preset stomps the envelope with the preset shape; (Custom) is a
+//     no-op marker meaning "leave envelope alone."
+//   - No undo command pushed yet. Same precedent as build_blend_section
+//     — banked as a follow-up: coalesced EditWarpCommand pushes here
+//     would let the inspector's slider drag collapse to one undo step.
+//
+// Release / Flatten buttons dispatch to the existing on_warp_release /
+// on_warp_flatten handlers (single source of truth with the Path menu).
+void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
+  auto *body = add_collapsible("Warp", true, parent);
+  curvz::utils::set_name(body, "ins_wrp", "inspector_warp_body");
+  if (!obj || !obj->is_warp()) return;
+
+  uint32_t gen = m_build_gen;
+
+  auto *grid = Gtk::make_managed<Gtk::Grid>();
+  grid->set_row_spacing(4);
+  grid->set_column_spacing(6);
+  grid->set_margin_start(8);
+  grid->set_margin_end(6);
+  grid->set_margin_top(4);
+  grid->set_margin_bottom(4);
+
+  auto make_lbl = [](const char *t) {
+    auto *l = Gtk::make_managed<Gtk::Label>(t);
+    l->add_css_class("prop-lbl");
+    l->set_xalign(0.0f);
+    return l;
+  };
+
+  int row = 0;
+
+  // ── Top / Bottom anchor counts ─────────────────────────────────────────
+  // Both clamp 2..4. Initial values come from the warp's stored
+  // top/bot counts (s147 m2 — formerly envelope-size-derived). Storing
+  // the counts as first-class fields means a saved Bulge with top=4
+  // bot=2 reloads with those numbers showing in the spinners, AND a
+  // hand-edited (Custom) warp remembers what counts the user last
+  // chose for it.
+  int top_n = std::clamp(obj->warp_top_count, 2, 4);
+  int bot_n = std::clamp(obj->warp_bot_count, 2, 4);
+
+  auto adj_top = Gtk::Adjustment::create(top_n, 2, 4, 1, 1);
+  auto *sp_top = Gtk::make_managed<Gtk::SpinButton>(adj_top, 1.0, 0);
+  curvz::utils::set_name(sp_top, "ins_wrp_tn", "inspector_warp_top_count_spn");
+  sp_top->set_hexpand(true);
+  sp_top->add_css_class("prop-width-entry");
+  block_scroll(sp_top, [this] { emit_canvas_focus(); });
+  grid->attach(*make_lbl("TOP NODES"), 0, row);
+  grid->attach(*sp_top, 1, row, 2, 1);
+  ++row;
+
+  auto adj_bot = Gtk::Adjustment::create(bot_n, 2, 4, 1, 1);
+  auto *sp_bot = Gtk::make_managed<Gtk::SpinButton>(adj_bot, 1.0, 0);
+  curvz::utils::set_name(sp_bot, "ins_wrp_bn", "inspector_warp_bot_count_spn");
+  sp_bot->set_hexpand(true);
+  sp_bot->add_css_class("prop-width-entry");
+  block_scroll(sp_bot, [this] { emit_canvas_focus(); });
+  grid->attach(*make_lbl("BOT NODES"), 0, row);
+  grid->attach(*sp_bot, 1, row, 2, 1);
+  ++row;
+
+  // ── Preset dropdown ────────────────────────────────────────────────────
+  // Index 0 is "(Custom)" — selected when warp_preset_idx == -1
+  // (envelope is hand-edited or has been drifted by a translate /
+  // drag / arrow-nudge). Indices 1..N map to preset_idx 0..N-1 in
+  // curvz::utils::warp_presets. s147 m2: dropdown now reflects
+  // honest provenance — saved Bulge reloads showing "Bulge", and
+  // the moment the user drifts the envelope by drag, the editing
+  // command sets preset_idx=-1 and a subsequent inspector refresh
+  // shows "(Custom)".
+  auto *preset_lbl = make_lbl("PRESET");
+  grid->attach(*preset_lbl, 0, row);
+  std::vector<Glib::ustring> preset_strs;
+  preset_strs.push_back("(Custom)");
+  const char* const* names = curvz::utils::warp_presets::preset_names();
+  for (int i = 0; i < curvz::utils::warp_presets::PRESET_COUNT; ++i) {
+    preset_strs.push_back(names[i]);
+  }
+  auto preset_model = Gtk::StringList::create(preset_strs);
+  auto *dd_preset = Gtk::make_managed<Gtk::DropDown>(preset_model);
+  curvz::utils::set_name(dd_preset, "ins_wrp_pr", "inspector_warp_preset_dd");
+  dd_preset->set_hexpand(true);
+  // Initial selection: 0 = (Custom) when preset_idx == -1, else
+  // preset_idx + 1 (offset by the (Custom) row).
+  int initial_dd = (obj->warp_preset_idx >= 0 &&
+                    obj->warp_preset_idx <
+                      curvz::utils::warp_presets::PRESET_COUNT)
+                       ? (obj->warp_preset_idx + 1)
+                       : 0;
+  dd_preset->set_selected((guint)initial_dd);
+  grid->attach(*dd_preset, 1, row, 2, 1);
+  ++row;
+
+  // ── Quality slider ─────────────────────────────────────────────────────
+  // 1..16 same as the dialog. Drag-friendly; live cache rebuild on each
+  // value change.
+  auto adj_q = Gtk::Adjustment::create(
+      std::clamp(obj->warp_quality, 1, 16), 1, 16, 1, 1);
+  auto *sc_q = Gtk::make_managed<Gtk::Scale>(adj_q, Gtk::Orientation::HORIZONTAL);
+  curvz::utils::set_name(sc_q, "ins_wrp_q", "inspector_warp_quality_scale");
+  sc_q->set_hexpand(true);
+  sc_q->set_draw_value(true);
+  sc_q->set_digits(0);
+  sc_q->set_value_pos(Gtk::PositionType::RIGHT);
+  grid->attach(*make_lbl("QUALITY"), 0, row);
+  grid->attach(*sc_q, 1, row, 2, 1);
+  ++row;
+
+  body->append(*grid);
+
+  // ── Helper: regenerate envelope from current control state ────────────
+  // Called when count spinners or preset dropdown change. Reads bbox
+  // from warp_source (the untouched original shape), generates envelope
+  // through the lifted preset pump, writes back to obj, marks cache
+  // dirty, redraws.
+  //
+  // s146 m4: bbox source MUST be warp_source (not envelope endpoints).
+  // After the user has dragged envelope handles, picking a preset
+  // means "throw away my drift and lay out fresh against the original
+  // shape." Envelope-derived bbox would carry the drift forward —
+  // wrong intent.
+  //
+  // When preset dropdown is "(Custom)" (index 0), counts change is a
+  // no-op against envelope: the existing shape stays untouched, the
+  // new count takes effect on the next non-Custom preset selection.
+  // Quality is handled by its own dedicated handler — orthogonal to
+  // envelope shape, never stomps regardless of preset state.
+  auto regen_from_controls = [this, obj, sp_top, sp_bot, dd_preset, gen]() {
+    if (m_build_gen != gen || m_loading) return;
+    int t_n = std::clamp((int)sp_top->get_value(), 2, 4);
+    int b_n = std::clamp((int)sp_bot->get_value(), 2, 4);
+    int dd_idx = (int)dd_preset->get_selected();
+
+    // dd_idx 0 = "(Custom)" → leave envelope alone. Counts change but
+    // don't stomp the envelope; they take effect on the next preset
+    // pick. This is the "I'm tweaking how many anchors my next preset
+    // will have" workflow.
+    //
+    // s147 m2: still stamp top/bot counts onto the SceneNode in
+    // (Custom) mode — the user is expressing intent for "next preset
+    // will have N anchors," and that intent should survive save/load
+    // and selection-change refresh. Preset_idx stays -1 (Custom).
+    if (dd_idx == 0) {
+      obj->warp_top_count = t_n;
+      obj->warp_bot_count = b_n;
+      return;
+    }
+
+    // s147 m1: bbox source MUST come from Canvas::warp_source_bbox,
+    // which returns the same rectangle warp_subtree uses internally
+    // when remapping points. Earlier (m4) we used
+    // object_bbox_query(*warp_source) here — directionally right
+    // ("query the original shape, not the mangled envelope") but
+    // wrong tool: object_bbox can include stroke/recipe metadata that
+    // warp_subtree doesn't see, so the envelope we generated was
+    // sized to a slightly different rectangle than the renderer's
+    // reference frame. The result was a warp where envelope and
+    // source disagreed on coordinate frame, producing visually-
+    // unchanged output (the deformations cancel against the bbox
+    // mismatch).
+    //
+    // warp_source_bbox is path-walk-based (subtree_path_bbox of
+    // glyph_cache), exactly what warp_subtree consumes. One canonical
+    // bbox shared between inspector and renderer eliminates the class.
+    if (!obj->warp_source || !m_canvas_widget) return;
+
+    int preset_idx = dd_idx - 1;
+
+    // Wave needs count >= 3. Auto-bump and reflect back into the
+    // spinners so the user sees what happened.
+    if (curvz::utils::warp_presets::requires_three_anchors(preset_idx)) {
+      bool changed = false;
+      if (t_n < 3) { t_n = 3; changed = true; }
+      if (b_n < 3) { b_n = 3; changed = true; }
+      if (changed) {
+        m_loading = true;
+        sp_top->set_value((double)t_n);
+        sp_bot->set_value((double)b_n);
+        m_loading = false;
+      }
+    }
+
+    // Canonical source bbox — same one warp_subtree will use to
+    // interpret the envelope we're about to write.
+    double bx = 0, by = 0, bw = 1, bh = 1;
+    if (!m_canvas_widget->warp_source_bbox(*obj, bx, by, bw, bh)) {
+      // Source has no path-bearing geometry (shouldn't happen for
+      // warpable types, but defensive). Bail without disturbing
+      // envelope.
+      return;
+    }
+    if (bw < 1e-9) bw = 1.0;
+    if (bh < 1e-9) bh = 1.0;
+
+    curvz::utils::generate_warp_preset(preset_idx, bx, by, bw, bh,
+                                       t_n, b_n,
+                                       obj->warp_env_top,
+                                       obj->warp_env_bottom);
+
+    // s147 m2: stamp provenance — the envelope now matches preset
+    // (preset_idx, t_n, b_n) over warp_source_bbox. Honest label for
+    // the dropdown on next refresh, and round-trips to SVG so a saved
+    // Bulge reloads as Bulge.
+    obj->warp_preset_idx = preset_idx;
+    obj->warp_top_count  = t_n;
+    obj->warp_bot_count  = b_n;
+
+    obj->warp_cache_dirty = true;
+    // Direct canvas redraw — emit_prop_changed defers via timer and the
+    // user wants the envelope handles to snap visibly the instant they
+    // pick a preset. queue_draw is idempotent against the deferred
+    // signal so doing both is safe.
+    if (m_canvas_widget) m_canvas_widget->queue_draw();
+    emit_prop_changed();
+  };
+
+  adj_top->signal_value_changed().connect(regen_from_controls);
+  adj_bot->signal_value_changed().connect(regen_from_controls);
+  dd_preset->property_selected().signal_changed().connect(regen_from_controls);
+  // Quality is orthogonal to envelope shape — adjusting it should never
+  // stomp the envelope, even when a non-Custom preset is selected. So
+  // it gets its own minimal handler that only syncs the int + redraws.
+  adj_q->signal_value_changed().connect([this, obj, sc_q, gen]() {
+    if (m_build_gen != gen || m_loading) return;
+    int q = std::clamp((int)sc_q->get_value(), 1, 16);
+    obj->warp_quality = q;
+    obj->warp_cache_dirty = true;
+    if (m_canvas_widget) m_canvas_widget->queue_draw();
+    emit_prop_changed();
+  });
+
+  // ── Release / Flatten buttons ─────────────────────────────────────────
+  // Two-button row, end-aligned to match the Blend section's idiom.
+  // Release dissolves the Warp into source + cache as siblings; Flatten
+  // bakes the warped result into a single path. Both route to existing
+  // MainWindow handlers via the panel's signals.
+  {
+    auto *row_box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+    row_box->set_margin_start(8);
+    row_box->set_margin_end(6);
+    row_box->set_margin_top(4);
+    row_box->set_margin_bottom(6);
+    row_box->set_spacing(6);
+    row_box->set_halign(Gtk::Align::END);
+
+    auto *btn_release = Gtk::make_managed<Gtk::Button>("Release");
+    curvz::utils::set_name(btn_release, "ins_wrp_rl",
+                           "inspector_warp_release_btn");
+    btn_release->set_tooltip_text(
+        "Dissolve this Warp back into its source and cached glyph siblings.");
+    btn_release->signal_clicked().connect([this, gen]() {
+      if (m_build_gen != gen) return;
+      m_sig_request_release_warp.emit();
+    });
+
+    auto *btn_flatten = Gtk::make_managed<Gtk::Button>("Flatten");
+    curvz::utils::set_name(btn_flatten, "ins_wrp_fl",
+                           "inspector_warp_flatten_btn");
+    btn_flatten->set_tooltip_text(
+        "Bake the warped result into a single path, discarding the envelope.");
+    btn_flatten->signal_clicked().connect([this, gen]() {
+      if (m_build_gen != gen) return;
+      m_sig_request_flatten_warp.emit();
+    });
+
+    row_box->append(*btn_release);
+    row_box->append(*btn_flatten);
+    body->append(*row_box);
+  }
+}
+
 // ── build_shadow_section — drop shadow for any non-special node ─────────────
 //
 // S97 m3. Shown for Path / Compound / Group / Text / Image / ClipGroup /
@@ -5381,36 +6149,29 @@ void PropertiesPanel::refresh_node(CanvasModel *canvas, SceneNode *obj,
 
   auto cm = std::make_shared<CanvasModel>(*canvas);
 
-  // ── Project group (s116 m6) ──────────────────────────────────
-  if (m_project) {
-    auto *proj_grp = add_group_collapsible("Project", false);
-    build_project_section(m_project, proj_grp);
-  }
-
-  // ── Application group (s143 m1) ──────────────────────────────
-  // User-tier app preferences. Mirrored from the selection-empty
-  // assembly above so the slider persists/visible across both
-  // refresh paths.
+  // ── Application group (s143 m1; reordered s145 m2) ──────────────
+  // Mirrored from the selection-empty assembly above. Application
+  // sits first by scope-hierarchy convention.
   {
     auto *app_grp = add_group_collapsible("Application", false);
     build_app_section(app_grp);
   }
 
-  // ── Document group ───────────────────────────────────────────
+  // ── Project group (s116 m6 → s148 m2: deleted; see twin in setup_layout) ─
+
+  // ── Document group (s148 m2 fix2: Motif disclosure;
+  //                    see twin in setup_layout for full rationale) ──
   {
     auto *doc_grp = add_group_collapsible("Document", false);
-    if (m_project)
-      build_metadata_section(doc_grp);
-    build_canvas_section(cm, doc_grp);
     if (m_project) {
+      build_metadata_section(doc_grp);
       if (auto *doc = m_project->active_doc()) {
-        build_guide_section(doc, doc_grp);
-        build_grid_section(doc, doc_grp);
-        build_margin_section(doc, doc_grp);
-        build_snap_section(doc, doc_grp);
-        build_measure_section(doc, doc_grp);
+        build_theme_disclosure(doc, doc_grp);
+        // s150: build_measure_section + build_snap_section calls removed.
+        // Both are now toolbar right-click popovers (Ruler, Snap).
       }
     }
+    build_canvas_section(cm, doc_grp);
   }
 
   // ── Object group ─────────────────────────────────────────────
@@ -5997,12 +6758,24 @@ void PropertiesPanel::broadcast_appearance_to_siblings(
     m_history->push(std::move(composite));
 }
 
-// ── Fill / Stroke unified section
-// ───────────────────────────────────────────── A 2-state toggle selects which
-// target (Fill or Stroke) the colour/style widgets below apply to. Switching
-// target refreshes the widgets in-place.
+// ── Object ▸ Treatment unified section (was "Appearance" pre-s148 m2) ────
+// A 2-state toggle selects which target (Fill or Stroke) the colour/
+// style widgets below apply to. Switching target refreshes the widgets
+// in-place.
+//
+// s148 m2 rename: header was "Appearance" through s147. Renamed to
+// "Treatment" so the App-tier "Appearance" section (Dark/Light, GNOME
+// convention) could claim that label without collision. "Treatment"
+// is design-domain vocabulary — fill/stroke/shadow are surface
+// treatments applied to the object — and slots cleanly alongside
+// "Selection," "Node," "Blend," etc. in the Object group.
+//
+// Internal widget IDs (ins_fs_*) intentionally NOT renamed: "fs" for
+// fill+stroke is still an accurate internal abbreviation, and a
+// widget-ID rename across the whole section is busywork that buys
+// nothing. Only the user-facing header label changes.
 void PropertiesPanel::add_fill_stroke_section(SceneNode *obj, Gtk::Box *parent) {
-  auto *outer_body = add_collapsible("Appearance", false, parent);
+  auto *outer_body = add_collapsible("Treatment", false, parent);
   curvz::utils::set_name(outer_body, "ins_fs", "inspector_fill_stroke_body");
   if (!obj) return;
 

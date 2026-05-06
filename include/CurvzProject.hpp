@@ -35,7 +35,16 @@ struct CurvzProject {
     bool sec_documents_open     = false;
     bool sec_swatches_open      = false;
     bool sec_styles_open        = false;
-    bool sec_content_open       = false;  // Content group (Layers/Library/Swatches/Styles/Documents)
+    bool sec_themes_open        = false;  // s147 m3 — Themes panel
+    bool sec_content_open       = false;  // Content group (Layers/Library/Swatches/Styles/Themes/Documents)
+
+    // s141: per-project list of expanded library category keys. Sparse —
+    // only categories the user has explicitly expanded this session are
+    // listed; everything else is collapsed. Keys are "sys:<name>" or
+    // "usr:<name>" to disambiguate same-named system and user categories.
+    // LibraryPanel reads this on set_project() to populate m_expanded
+    // and writes it back via signal_request_save when a category toggles.
+    std::vector<std::string> library_expanded_categories;
 
     // S87 — StylesPanel header dropdown selection. Two-field state
     // because the dropdown can sit on either an app-tier category

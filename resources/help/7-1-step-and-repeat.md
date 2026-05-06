@@ -7,7 +7,7 @@ building radial spokes, arrow strips, evenly-spaced grids, and
 anywhere you'd otherwise duplicate-and-nudge in a loop.
 
 The operation is a single dialog with a live mini preview. Open it
-from **Edit → Step and Repeat…** or with `Ctrl + Alt + D`. You need
+from **Path → Step and Repeat…** or with `Ctrl + Alt + D`. You need
 at least one object selected; the dialog refuses to apply with an
 empty selection.
 

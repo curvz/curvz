@@ -156,29 +156,42 @@ struct CurvzDocument {
     double guide_color_g = 0.749;
     double guide_color_b = 1.0;
 
-    // ── Editor presentation backgrounds (LEGACY — s116 m6) ──────────────
-    // Originally stored here per-doc (S98). Moved to CurvzProject in
-    // s116 m6 because they describe the project's editing environment —
-    // every doc/tab in a project shares the same artboard tone and
-    // workspace surround. Switching tabs no longer flickers the canvas.
+    // ── Editor presentation Motif (s148 m1 — re-promoted to doc-scope) ──
+    // History: per-doc in S98; promoted to project-scope per-motif in
+    // s116 m6 ("every tab in a project shares one tone"); demoted back
+    // to per-doc in s148 m1 because users want per-icon choice — a Print
+    // Setup icon on paper-white, a Web Sketch icon on transparent black.
+    // Single slot per doc (not per-motif): the Application ▸ Appearance
+    // Dark/Light pref no longer swaps colours on the canvas; each doc
+    // carries the colours its author picked.
     //
-    // The fields stay on CurvzDocument purely so old project.json files
-    // (which store these per-doc) load without losing data: load() reads
-    // them and hoists doc[0]'s values to the project level when the
-    // project-level keys are absent. After this version's first save,
-    // the project-level keys become canonical and these legacy fields
-    // stop being written.
+    // Field names kept (artboard_bg_r/g/b, workspace_bg_r/g/b) for
+    // round-trip continuity with s98-era project.json files — those
+    // already wrote these keys per-doc, so old files load directly.
+    // Comment removed: the "LEGACY — write-on-load-only" wording from
+    // s116 m6 no longer applies. Canvas paint and PropertiesPanel
+    // chips read/write these starting m1; ThemeLibrary catches up in
+    // s148 m3 when the Theme struct re-acquires a MotifSettings sub-
+    // bundle.
     //
-    // After s116 m6, NOTHING in the codebase reads these for paint or
-    // theming — Canvas/PropertiesPanel/ThemeLibrary all use the project
-    // fields. They are write-on-load-only here. Slated for removal once
-    // a release-cycle margin has passed and no callers remain.
-    double artboard_bg_r  = 0.157;  // #282828 — LEGACY, see note above
+    // The new third field, creation_color_*, was project-scope per-motif
+    // before s148 (used to tint rubber-band, marquee, drag-preview etc.
+    // against the active artboard). It demotes alongside artboard/
+    // workspace because they're a tonal unit: an author picking a paper-
+    // white artboard wants a sympathetic creation tint, not a pre-baked
+    // dark-motif cyan. Default is the s116-era dark-motif blue (0.30 /
+    // 0.60 / 1.00) — m1 ships with hardcoded defaults; m2 adds app-mode-
+    // aware Reset that picks dark vs light defaults from
+    // AppPreferences::appearance_mode().
+    double artboard_bg_r  = 0.157;  // #282828 default
     double artboard_bg_g  = 0.157;
     double artboard_bg_b  = 0.157;
-    double workspace_bg_r = 0.09;   // #171717 — LEGACY, see note above
+    double workspace_bg_r = 0.09;   // #171717 default
     double workspace_bg_g = 0.09;
     double workspace_bg_b = 0.09;
+    double creation_color_r = 0.30; // light-blue, reads against dark artboard
+    double creation_color_g = 0.60;
+    double creation_color_b = 1.00;
 
     // Measurement settings
     // measure_save_to_layer: when true, every completed measurement (a pair

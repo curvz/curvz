@@ -62,6 +62,7 @@ namespace Curvz {
 struct FillStyle;
 struct SceneNode;       // s132 m2 — count_anchors / count_objects pumps
 struct CurvzDocument;   // s132 m2 — document-level wrappers
+struct PathData;        // s146 m2 — warp_presets pump signatures
 }
 
 namespace curvz::utils {
@@ -566,5 +567,95 @@ void show_form(Gtk::Window& parent,
                std::function<void(int button_index,
                                   const std::map<std::string, FormFieldValue>& values)>
                    callback);
+
+// ── make_path_override_row ────────────────────────────────────────────
+//
+// Builds a path-override pref row for the inspector's Application
+// group. The row layout is:
+//
+//   [Label]  [Entry: current value (placeholder = default)]  [Browse] [Reset]
+//
+// Behaviour:
+//   - The Entry shows current_value. When current_value is empty, the
+//     placeholder shows the default_path so the user sees what's in
+//     effect. Empty Entry = "use default."
+//   - Pressing Enter (or losing focus) commits the Entry contents via
+//     on_commit. Whitespace trimming is the caller's job (typically
+//     the AppPreferences setter does it).
+//   - Browse opens a Gtk::FileDialog. pick_folder = true selects a
+//     directory; false selects a file. The chosen path is written
+//     into the Entry and committed.
+//   - Reset clears the Entry and commits an empty string.
+//
+// dialog_parent is the Gtk::Window the FileDialog modal-roots against.
+// Should not be nullptr in this codebase — every call site has a
+// MainWindow available. A nullptr parent will silently no-op the
+// Browse button (Reset still works).
+//
+// The returned widget has prop-row CSS class and standard margins so it
+// drops into a collapsible body alongside switch/spin rows without
+// alignment fuss. It's a Gtk::Box internally; the return type is
+// Gtk::Widget* to keep gtkmm/box.h out of this header (callers
+// append it via body->append(*widget), which works on any Widget).
+Gtk::Widget* make_path_override_row(
+    const char* label_text,
+    const std::string& current_value,
+    const std::string& default_path,
+    const char* tooltip,
+    bool pick_folder,
+    Gtk::Window* dialog_parent,
+    std::function<void(const std::string&)> on_commit);
+
+// ── Warp envelope presets ───────────────────────────────────────────────
+//
+// s146 m2: lifted from WarpDialog.cpp's anonymous namespace so the
+// inspector's build_warp_section can call the same preset generators
+// the dialog uses. Single source of truth — preset shapes never drift
+// between the two editing surfaces.
+//
+// Preset indices (must match dropdown order in both call sites):
+//   0 Flat            1 Arc Up          2 Arc Down
+//   3 Bulge           4 Squeeze         5 Perspective Near
+//   6 Perspective Far 7 Wave
+//
+// Each preset produces two PathData envelopes (top + bottom) given the
+// glyph-cache bbox in doc space (Y-down) and an anchor count for each
+// side (clamped 2..4). The outputs always have count anchors; handle
+// positions follow the colinear-1/3 convention so straight segments
+// render straight and curved peaks smooth out.
+//
+// generate_warp_preset is a pure function — no side effects, no GTK,
+// safe to call from any thread. Both surfaces call this and write the
+// result into warp->warp_env_top / warp->warp_env_bottom.
+namespace warp_presets {
+
+constexpr int FLAT             = 0;
+constexpr int ARC_UP           = 1;
+constexpr int ARC_DOWN         = 2;
+constexpr int BULGE            = 3;
+constexpr int SQUEEZE          = 4;
+constexpr int PERSPECTIVE_NEAR = 5;
+constexpr int PERSPECTIVE_FAR  = 6;
+constexpr int WAVE             = 7;
+constexpr int PRESET_COUNT     = 8;
+
+// Human-readable names in display order. Index 0 = "Flat", etc.
+const char* const* preset_names();
+
+// True iff the given preset requires anchor count >= 3 to express
+// itself meaningfully. Wave is the only such case currently — count==2
+// is a single segment and can't carry the alternating displacement.
+bool requires_three_anchors(int preset_idx);
+
+} // namespace warp_presets
+
+// Generate a top + bottom envelope for a Warp from preset, bbox, and
+// anchor counts. Pure function. preset_idx is clamped via switch
+// default. top_count and bot_count are clamped to 2..4 internally.
+void generate_warp_preset(int preset_idx,
+                          double bx, double by, double bw, double bh,
+                          int top_count, int bot_count,
+                          ::Curvz::PathData& top_env,
+                          ::Curvz::PathData& bot_env);
 
 } // namespace curvz::utils

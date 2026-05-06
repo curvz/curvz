@@ -102,6 +102,14 @@ and **Export…**:
 A theme captures these document-level settings:
 
 - **Display unit** (px / in / mm / pt) for the inspector and rulers.
+- **Workspace colours** — the artboard colour, workspace surround, and
+  creation-tint live on the document (not the application). A theme
+  carries **two pairs**, one for Dark mode and one for Light, so an
+  applied theme produces a sensible look regardless of which appearance
+  mode you're in. Capturing a theme writes the document's current
+  values into the matching pair; the off-mode pair takes factory
+  defaults. Capture the same document again in the other appearance
+  mode to overwrite the off-mode pair with your preferred values.
 - **Guide colour** and visibility.
 - **Grid** — enabled, spacing X/Y, offset X/Y, colour, dots vs
   lines.
@@ -119,9 +127,6 @@ What it does **not** capture:
   not the artwork.
 - **Project-scoped libraries** — Swatches, Styles, the theme
   library itself. Those live on the project, not the document.
-- **Motif** — the workspace appearance from the inspector's
-  Motif section is project-scoped (5.2.1), not document-scoped,
-  so it isn't part of a per-document theme.
 
 ## A typical workflow
 

@@ -111,7 +111,7 @@
     <file alias="4-5-2-text-on-path.md">help/4-5-2-text-on-path.md</file>
     <file alias="4-6-1-eyedropper.md">help/4-6-1-eyedropper.md</file>
     <file alias="4-6-2-zoom.md">help/4-6-2-zoom.md</file>
-    <file alias="4-6-3-ruler.md">help/4-6-3-ruler.md</file>
+    <file alias="4-6-3-measure.md">help/4-6-3-measure.md</file>
     <file alias="4-7-reference-points.md">help/4-7-reference-points.md</file>
     <file alias="4-8-corner.md">help/4-8-corner.md</file>
     <file alias="5-2-1-motif.md">help/5-2-1-motif.md</file>
@@ -213,7 +213,7 @@
     <file alias="img/4-5-2-text-attached.png">help/img/4-5-2-text-attached.png</file>
     <file alias="img/4-6-1-eyedropper-sample.png">help/img/4-6-1-eyedropper-sample.png</file>
     <file alias="img/4-6-2-zoom-marquee.png">help/img/4-6-2-zoom-marquee.png</file>
-    <file alias="img/4-6-3-ruler-measurement.png">help/img/4-6-3-ruler-measurement.png</file>
+    <file alias="img/4-6-3-measurement.png">help/img/4-6-3-measurement.png</file>
     <file alias="img/4-7-refpoint-marker.png">help/img/4-7-refpoint-marker.png</file>
     <file alias="img/4-8-corner-treatments.png">help/img/4-8-corner-treatments.png</file>
     <file alias="img/5-1-inspector-groups.png">help/img/5-1-inspector-groups.png</file>

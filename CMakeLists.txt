@@ -234,11 +234,13 @@ set(SOURCES
     src/HelpWindow.cpp
     src/StepRepeatDialog.cpp
     src/BlendDialog.cpp
-    src/WarpDialog.cpp
-    # S103 m3: Themes dialog — apply / manage / import / export.
-    # Self-managed lifecycle (new + close); see ThemesDialog.hpp for
-    # the dual-pane (apply + library) UX rationale.
-    src/ThemesDialog.cpp
+    # s146 m3: WarpDialog removed — warp creation seeds from AppPreferences
+    # defaults (inspector Application ▸ Warp), editing lives in the
+    # always-visible Object ▸ Warp inspector section.
+    # s147 m3: ThemesDialog removed — ThemesPanel in Content is the
+    # canonical surface (always-visible, kill-the-commit-gate per the
+    # discovery-not-commit principle). Scott deletes
+    # include/ThemesDialog.hpp and src/ThemesDialog.cpp on his end.
     # S104 m1: Export Documents dialog — per-doc SVG/PNG export with
     # user-chosen size (px/mm/in/pt + DPI) and fit-side. Self-managed
     # lifecycle. Distinct from ExportDialog (icon-theme bundle exporter,
@@ -252,6 +254,11 @@ set(SOURCES
     # ~/.config/curvz/preferences.json. Sibling to MacroSystem in
     # role: singleton, load on startup, save on every change.
     src/AppPreferences.cpp
+    # s144 m3: most-recently-used .curvz project paths. Separate from
+    # AppPreferences (different kind of state — high-churn list vs slow
+    # settings) and persists at ~/.config/curvz/recent_projects.json.
+    # Drives the File ▸ Open Recent submenu.
+    src/RecentProjects.cpp
     src/Canvas.cpp
     src/DocumentGallery.cpp
     src/PropertiesPanel.cpp
@@ -267,6 +274,9 @@ set(SOURCES
     src/LayersPanel.cpp
     src/SwatchesPanel.cpp
     src/StylesPanel.cpp
+    # s147 m3: Themes Content panel — replaces ThemesDialog. Library +
+    # apply-to-targets-with-confirmation in the right pane Content group.
+    src/ThemesPanel.cpp
     src/TemplateLibrary.cpp
     src/SeedTemplates.cpp
     src/Toolbar.cpp

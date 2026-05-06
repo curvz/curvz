@@ -10,13 +10,21 @@ the panel reorganises around what that object is — its position,
 its appearance, any tool-specific properties — and adds rows that
 only make sense for that kind of node.
 
-![The inspector with its three top-level groups visible](img/5-1-inspector-groups.png)
+![The inspector with its four top-level groups visible](img/5-1-inspector-groups.png)
 
-## Three groups
+## Four groups
 
 The inspector is a stack of collapsible **sections**, organised
-under three top-level **groups**:
+under four top-level **groups**, listed top to bottom in the order
+they appear in the panel:
 
+- **Application** — your personal preferences for Curvz itself.
+  These persist across every project and every launch. Currently
+  three sections: **Startup** (reopen-last-project, recent-projects
+  cap, show-rulers-by-default), **Editing** (undo history depth,
+  tooltip delay), and **Boolean cleanup** (the quality slider that
+  controls how aggressively boolean operations simplify their
+  output).
 - **Project** — settings shared by every document in the open
   project. Currently one section: **Motif** (theme, artboard,
   workspace).
@@ -35,18 +43,22 @@ they stay where you left them.
 
 ## Following the data
 
-The three-tier shape mirrors how data is stored. **Project**
-settings live in `project.json` at the project root. **Document**
-settings live inside each `.svg` file, in Curvz's private metadata
-block. **Object** settings live on the individual SVG element you
-have selected.
+The four-tier shape mirrors how data is stored, broadest scope to
+narrowest. **Application** preferences live in
+`~/.config/curvz/preferences.json` and apply to every project you
+open. **Project** settings live in `project.json` at the project
+root. **Document** settings live inside each `.svg` file, in
+Curvz's private metadata block. **Object** settings live on the
+individual SVG element you have selected.
 
 That layering matters when you copy a document into a different
 project: motif and theme will switch to the new project's, but the
 document's units, guides, grid, and margins come along with it.
 Likewise copying an object between documents brings its appearance
 and node geometry — but not the document or project framing
-around it.
+around it. Application preferences are user-level — they stay with
+you, not with any project, and are unaffected by opening or copying
+work between projects.
 
 ## Conditional sections
 
@@ -96,6 +108,10 @@ sessions.
 The next twelve pages walk each inspector section in detail, top
 to bottom in the same order they appear in the panel:
 
+- **Application group** — Startup, Editing, and Boolean cleanup
+  preferences. The fields are documented in their tooltips; this
+  manual chapter covers per-section pages for the project- and
+  document-tier groups below.
 - **Project group** — Motif (5.2.1).
 - **Document group** — Metadata (5.3.1) through Measure (5.3.7).
 - **Object group** — Selection (5.4.1) through Shadow (5.4.6).

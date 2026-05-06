@@ -1184,12 +1184,17 @@ struct FlattenWarpCommand : CurvzCommand {
 
 // ── EditWarpCommand ───────────────────────────────────────────────────────────
 // Undoable edit of a Warp's envelope curves and quality setting. Snapshots
-// pre-state (envelope + quality) on construction and swaps to post-state
-// on execute. Unlike Make/Release/Flatten, this doesn't change the tree
-// topology — it mutates a single Warp node in place.
+// pre-state (envelope + quality + preset_idx) on construction and swaps to
+// post-state on execute. Unlike Make/Release/Flatten, this doesn't change
+// the tree topology — it mutates a single Warp node in place.
 //
 // The warp_cache_dirty flag is forced true by both execute and undo so the
 // next draw rebuilds with the updated envelope.
+//
+// s147 m2: preset_idx is part of the swap so handle-drag drift (which
+// clears preset_idx to -1 in the post-state) is undone atomically with
+// the envelope shape — undoing a drag restores both the original
+// envelope AND the preset label that was on it before the drag.
 struct EditWarpCommand : CurvzCommand {
     SceneNode* warp;                 // pointer to live Warp in doc tree
     std::string warp_id;              // for re-finding if pointer invalid
@@ -1198,29 +1203,35 @@ struct EditWarpCommand : CurvzCommand {
     PathData pre_env_top;
     PathData pre_env_bottom;
     int      pre_quality;
+    int      pre_preset_idx;     // s147 m2
 
     // Post-state (what the user committed).
     PathData post_env_top;
     PathData post_env_bottom;
     int      post_quality;
+    int      post_preset_idx;    // s147 m2
 
     EditWarpCommand(SceneNode* warp,
                     PathData pre_top, PathData pre_bottom, int pre_q,
-                    PathData post_top, PathData post_bottom, int post_q)
+                    PathData post_top, PathData post_bottom, int post_q,
+                    int pre_preset = -1, int post_preset = -1)
         : warp(warp)
         , warp_id(warp ? warp->id : std::string())
         , pre_env_top(std::move(pre_top))
         , pre_env_bottom(std::move(pre_bottom))
         , pre_quality(pre_q)
+        , pre_preset_idx(pre_preset)
         , post_env_top(std::move(post_top))
         , post_env_bottom(std::move(post_bottom))
-        , post_quality(post_q) {}
+        , post_quality(post_q)
+        , post_preset_idx(post_preset) {}
 
     void execute() override {
         if (!warp) return;
         warp->warp_env_top    = post_env_top;
         warp->warp_env_bottom = post_env_bottom;
         warp->warp_quality    = post_quality;
+        warp->warp_preset_idx = post_preset_idx;
         warp->warp_cache_dirty = true;
     }
     void undo() override {
@@ -1228,6 +1239,7 @@ struct EditWarpCommand : CurvzCommand {
         warp->warp_env_top    = pre_env_top;
         warp->warp_env_bottom = pre_env_bottom;
         warp->warp_quality    = pre_quality;
+        warp->warp_preset_idx = pre_preset_idx;
         warp->warp_cache_dirty = true;
     }
     std::string description() const override { return "Edit Warp"; }
