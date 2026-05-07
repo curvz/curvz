@@ -232,8 +232,9 @@ set(SOURCES
     src/ManageTemplatesDialog.cpp
     src/ShortcutsDialog.cpp
     src/HelpWindow.cpp
-    src/StepRepeatDialog.cpp
-    src/BlendDialog.cpp
+    src/StepRepeatPopover.cpp
+    src/BlendPopover.cpp
+    src/WarpPopover.cpp
     # s146 m3: WarpDialog removed — warp creation seeds from AppPreferences
     # defaults (inspector Application ▸ Warp), editing lives in the
     # always-visible Object ▸ Warp inspector section.
@@ -260,6 +261,10 @@ set(SOURCES
     # Drives the File ▸ Open Recent submenu.
     src/RecentProjects.cpp
     src/Canvas.cpp
+    src/Canvas_input.cpp  # s161 — Canvas split, INPUT TU (event state machines)
+    src/Canvas_ops.cpp    # s161 — Canvas split, OPS TU (boolean/blend/warp/etc.)
+    src/Canvas_draw.cpp   # s161 — Canvas split, DRAW TU (all draw_*, on_draw)
+    src/SelectionContext.cpp  # s158 m1 — capability classifier (Info+Actions)
     src/DocumentGallery.cpp
     src/PropertiesPanel.cpp
     src/CurvzColorPicker.cpp

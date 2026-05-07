@@ -2,6 +2,7 @@
 #include "CommandHistory.hpp"
 #include "CurvzDocument.hpp"
 #include "SceneNode.hpp"
+#include "SelectionContext.hpp"  // s158 m1 — capability classifier
 #include "Toolbar.hpp"
 #include "color/Paint.hpp"  // SwatchId alias — pure header, no nlohmann/sigc/gtk
 #include "math/BezierPath.hpp"
@@ -56,6 +57,27 @@ namespace Curvz {
 // templates).
 struct CurvzProject;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Canvas implementation is split across four TUs (s161). The split is
+// purely structural — same class, same surface. Routing convention:
+//
+//   src/Canvas.cpp          (CORE)  — lifecycle, transforms, selection
+//                                     primitives, snapping, zoom,
+//                                     copy/cut/paste/delete
+//   src/Canvas_input.cpp    (INPUT) — input event state machines
+//                                     (on_*_begin/update/end), key dispatchers,
+//                                     place_*, tool selection
+//   src/Canvas_ops.cpp      (OPS)   — boolean, blend, warp, group, align,
+//                                     arrange, transforms-by, fill/stroke
+//                                     apply, import
+//   src/Canvas_draw.cpp     (DRAW)  — all draw_*, on_draw, render_shadow_under,
+//                                     fill/stroke render helpers
+//   include/Canvas_internal.hpp     — cross-TU helpers + file-scope statics
+//                                     (NOT part of public surface)
+//
+// Inline member functions defined in this header live with their declarations
+// — they are not in any .cpp TU.
+// ─────────────────────────────────────────────────────────────────────────────
 class Canvas : public Gtk::DrawingArea {
 public:
   Canvas();
@@ -352,6 +374,15 @@ public:
   SelectionChangedSignal &signal_selection_changed() { return m_sig_selection; }
   DocumentChangedSignal &signal_document_changed() { return m_sig_doc_changed; }
 
+  // s158 m1 — SelectionContext is the canonical answer to "what's
+  // selected and what can it do?" Refreshed automatically whenever
+  // m_sig_selection emits (Canvas wires the recompute internally).
+  // Consumers (context menus, action-enable, inspector, status bar)
+  // read object/node Info+Actions and listen on
+  // m_sel_ctx.signal_changed().
+  SelectionContext       &selection_context()       { return m_sel_ctx; }
+  const SelectionContext &selection_context() const { return m_sel_ctx; }
+
   // notify_document_changed(): public trigger for the doc-changed
   // cascade. Internally emits m_sig_doc_changed, the same signal
   // canvas-driven structural mutations (drag-move, transform, etc.)
@@ -367,6 +398,25 @@ public:
   // structure until something else triggers a structural redraw
   // (doc switch, object edit, etc.).
   void notify_document_changed() { m_sig_doc_changed.emit(); }
+
+  // s156 — pointer-validation pump for deferred idle handlers.
+  // Returns true iff `target` is still present in the active doc tree
+  // (any layer's children, one level into Group/Compound/ClipGroup).
+  // SAFE TO CALL WITH A POSSIBLY-FREED POINTER — only does pointer
+  // equality checks against live unique_ptr.get() values, never derefs
+  // `target`. Used by deferred idle handlers in MainWindow that captured
+  // a SceneNode* before a destructive op (Join, Delete) had a chance to
+  // free it: idle wakes up after the free, validates the captured ptr,
+  // returns early if dead.
+  bool is_node_alive(const SceneNode *target) const;
+
+  // s156 — Scrub all Canvas state pointing at a SceneNode about to be
+  // erased. MUST be called BEFORE the layer-children erase, with the
+  // still-alive pointer. Does not touch m_selected — callers reassign
+  // that immediately after the erase. See implementation for full
+  // coverage list. Safe to call with a not-currently-referenced pointer
+  // (no-op if no member holds it).
+  void scrub_node_refs(const SceneNode *target);
   // S89: fired after a measurement is appended to or modified within the
   // measure layer (auto-save on completion, Enter commit). Listeners refresh
   // the inspector's saved-measurements list and the layers panel. Distinct
@@ -697,6 +747,26 @@ public:
                               int &idx) const;
 
 private:
+  // ── Selection-change fanout (s158 m1) ────────────────────────────────
+  // Single seam that (a) refreshes m_sel_ctx from current m_selection
+  // and m_selected, and (b) emits m_sig_selection. Call this in place
+  // of bare m_sig_selection.emit() at object-selection mutation sites.
+  //
+  // m1 wires this helper at one canonical site only (Canvas::clear_selection)
+  // to prove the pipeline. The audit pass to migrate every existing
+  // m_sig_selection.emit() call is m2 work — until then, sites that
+  // emit directly will not refresh the SelectionContext, and consumers
+  // listening on m_sel_ctx.signal_changed() will see staleness from
+  // those sites. That's expected for m1; no current consumer reads
+  // m_sel_ctx, so the staleness is invisible.
+  void notify_object_selection_changed();
+
+  // Same shape for the node world — refreshes m_sel_ctx from
+  // m_node_selection plus the secondary slot, then (caller's choice
+  // whether to also signal_node_changed). Wired at one canonical
+  // site in m1 for parity with the object side.
+  void notify_node_selection_changed();
+
   // ── Draw ─────────────────────────────────────────────────────────────
   void on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h);
   void draw_grid(const Cairo::RefPtr<Cairo::Context> &cr, int cw, int ch);
@@ -878,6 +948,12 @@ private:
   // m_selected is the primary (inspector target). m_selection is the full set.
   // m_selected is always in m_selection when non-null.
   std::vector<SceneNode *> m_selection;
+
+  // ── SelectionContext (s158 m1) ────────────────────────────────────────
+  // Live capability cache. Refreshed by Canvas at every selection
+  // mutation site (alongside m_sig_selection.emit). Consumers read
+  // its Info+Actions and listen on its signal_changed.
+  SelectionContext m_sel_ctx;
 
   // ── Align anchor (ephemeral key-object) ───────────────────────────────
   // Selection-time mark, NOT a persistent property of the object. Set via
