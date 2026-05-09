@@ -23,6 +23,18 @@ struct CurvzCommand {
     // Return true if undo/redo should NOT clear the canvas node selection.
     // Used for path edits that only mutate geometry, not scene structure.
     virtual bool preserves_selection() const { return false; }
+    // s165 m3 — undo-stack scrub support. Return true if this command holds
+    // any captured raw pointer to `target`. Used by Canvas::scrub_node_refs
+    // → CommandHistory::scrub_command_history to drop commands whose
+    // captured SceneNode pointers have been invalidated by a destructive
+    // op. Default `false` is safe for commands that capture only by id /
+    // unique_ptr / value; commands that hold raw SceneNode* fields override
+    // this to declare their references.
+    //
+    // Note: walking owned children of a captured object (e.g. CompositeCommand
+    // walking its steps) is the override's responsibility — base default is
+    // correct for leaf commands with no captures.
+    virtual bool references(const SceneNode* target) const { (void)target; return false; }
 };
 
 // ── AddNodeCommand ────────────────────────────────────────────────────────────
@@ -47,6 +59,9 @@ struct AddNodeCommand : CurvzCommand {
         }
     }
     std::string description() const override { return "Add object"; }
+    bool references(const SceneNode* target) const override {
+        return parent == target;
+    }
 };
 
 // Legacy alias used by Canvas pen/draw tools during transition
@@ -78,6 +93,9 @@ struct DeleteObjectCommand : CurvzCommand {
         ch.insert(ch.begin() + ins, clone_node(*snapshot));
     }
     std::string description() const override { return "Delete object"; }
+    bool references(const SceneNode* target) const override {
+        return parent == target;
+    }
 };
 
 // ── InsertObjectCommand ───────────────────────────────────────────────────────
@@ -107,6 +125,9 @@ struct InsertObjectCommand : CurvzCommand {
         }
     }
     std::string description() const override { return "Insert object"; }
+    bool references(const SceneNode* target) const override {
+        return parent == target;
+    }
 };
 
 // ── CompositeCommand ──────────────────────────────────────────────────────────
@@ -125,9 +146,17 @@ struct CompositeCommand : CurvzCommand {
         for (auto& s : steps) s->execute();
     }
     void undo() override {
-        for (int i = (int)steps.size()-1; i >= 0; --i) steps[i]->undo();
+        for (int i = (int)steps.size()-1; i >= 0; --i) {
+            steps[i]->undo();
+        }
     }
     std::string description() const override { return desc; }
+    bool references(const SceneNode* target) const override {
+        for (const auto& s : steps)
+            if (s->references(target))
+                return true;
+        return false;
+    }
 };
 
 // ── ReplaceNodeCommand ────────────────────────────────────────────────────────
@@ -163,70 +192,134 @@ struct ReplaceNodeCommand : CurvzCommand {
         ch.insert(ch.begin() + ins, clone_node(*before));
     }
     std::string description() const override { return "Convert text to path"; }
+    bool references(const SceneNode* target) const override {
+        return parent == target;
+    }
 };
 
 // ── MoveObjectCommand ─────────────────────────────────────────────────────────
-// Kept for API compatibility. Path moves use EditPathCommand instead.
+// s169 m1 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// Pre-migration this command held a raw `SceneNode* obj` pointer with NO
+// `references()` override. If the user moved a text/image node, then deleted
+// it (or any destructive op flowed through scrub_node_refs), the s165 m3
+// scrub pass couldn't find this command (no override) and would leave it on
+// the stack. A subsequent Ctrl+Z then dereferenced freed memory. Real
+// hazard, just never tested — every other Stage 1 command has an override.
+//
+// Post-migration: the command holds an iid + project pointer. Resolution
+// happens at execute()/undo() time via curvz::utils::find_by_iid; if the
+// node is gone, the command no-ops cleanly. Same shape as EditPathCommand
+// and the other s167/s168-migrated commands.
+//
+// Used for text-anchor and image-origin moves only. Path moves go through
+// EditPathCommand. This command's body branches on obj->is_text() /
+// obj->is_image() — those checks now run against the resolved live node.
+struct CurvzProject;  // forward decl — full include lives in CommandHistory.cpp.
+                      // Hoisted above MoveObjectCommand in s169 m1 (was below
+                      // EditPathCommand previously); needed here because
+                      // MoveObjectCommand also takes CurvzProject*.
 struct MoveObjectCommand : CurvzCommand {
-    SceneNode* obj;
-    double before_x, before_y, after_x, after_y;
-    MoveObjectCommand(SceneNode* o, double bx, double by, double ax, double ay)
-        : obj(o), before_x(bx), before_y(by), after_x(ax), after_y(ay) {}
-    void execute() override {
-        if (obj->is_text())  { obj->text_x  = after_x;  obj->text_y  = after_y;  }
-        if (obj->is_image()) { obj->image_x = after_x;  obj->image_y = after_y;  }
-    }
-    void undo() override {
-        if (obj->is_text())  { obj->text_x  = before_x; obj->text_y  = before_y; }
-        if (obj->is_image()) { obj->image_x = before_x; obj->image_y = before_y; }
-    }
+    CurvzProject* proj;     // resolution root
+    std::string   obj_iid;  // SceneNode::internal_id of the target
+    double        before_x, before_y, after_x, after_y;
+
+    MoveObjectCommand(CurvzProject* proj, std::string obj_iid,
+                      double bx, double by, double ax, double ay)
+        : proj(proj)
+        , obj_iid(std::move(obj_iid))
+        , before_x(bx), before_y(by)
+        , after_x(ax), after_y(ay) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Move object"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── EditPathCommand ───────────────────────────────────────────────────────────
-// Stores before/after PathData snapshots for any node-level edit.
-struct EditPathCommand : CurvzCommand {
-    SceneNode* obj;
-    PathData   before;
-    PathData   after;
-    std::string desc;
+// s167 m1 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// Stores the internal_id (UUID) of the target node plus a CurvzProject*
+// for resolution. At execute()/undo() time, the iid is looked up via
+// curvz::utils::find_by_iid; if the node has been destroyed since
+// capture, the resolver returns nullptr and the command no-ops.
+//
+// This replaces the s165 m3 `references()`-override pattern: the
+// dangling-pointer class is now impossible by construction. Whatever
+// happens to the tree between capture and execute, the worst the
+// command can do is no-op.
+//
+// Bodies live in CommandHistory.cpp so this header doesn't need the
+// full CurvzProject type (forward-declared above MoveObjectCommand
+// since s169 m1).
 
-    EditPathCommand(SceneNode* obj, PathData before, PathData after,
+struct EditPathCommand : CurvzCommand {
+    CurvzProject* proj;     // resolution root; lifetime guaranteed by
+                            // close-project resetting m_history before
+                            // m_project drops
+    std::string   obj_iid;  // SceneNode::internal_id of the target
+    PathData      before;
+    PathData      after;
+    std::string   desc;
+
+    EditPathCommand(CurvzProject* proj, std::string obj_iid,
+                    PathData before, PathData after,
                     std::string desc = "Edit path")
-        : obj(obj)
+        : proj(proj)
+        , obj_iid(std::move(obj_iid))
         , before(std::move(before))
         , after(std::move(after))
         , desc(std::move(desc)) {}
 
-    void execute() override { if (obj->path) *obj->path = after;  }
-    void undo()    override { if (obj->path) *obj->path = before; }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return desc; }
     bool preserves_selection() const override { return true; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
-// ── EditAppearanceCommand ─────────────────────────────────────────────────────
-// Stores before/after fill + stroke snapshots for inspector appearance edits.
 // ── TextEditCommand ───────────────────────────────────────────────────────────
 // Full snapshot of all text node fields — used by commit_text_edit for both
 // new nodes and edits to existing ones. Undo restores the complete before state.
+//
+// s167 m2: migrated from raw SceneNode* obj to CurvzProject* proj +
+// std::string obj_iid. Bodies move to CommandHistory.cpp; the static
+// snapshot_before factory now takes the project pointer alongside the
+// node, and reads internal_id off the node to capture identity. The
+// `record_after(SceneNode*)` and `apply(SceneNode*, bool)` helpers
+// keep their SceneNode* parameter — they're called with a node already
+// in hand (record_after by commit_text_edit, apply internally by
+// execute/undo after the resolver runs), so they don't need to do
+// their own lookup.
+//
+// The default constructor remains for Canvas's m_text_snapshot member
+// storage. A default-constructed TextEditCommand has proj=nullptr and
+// empty obj_iid, so accidental execute() / undo() on it is a clean
+// no-op via the empty-iid early return.
 struct TextEditCommand : CurvzCommand {
-    SceneNode*  obj;
+    CurvzProject* proj = nullptr;
+    std::string   obj_iid;
     // before state
     std::string before_content, before_family, before_anchor, before_align;
-    double      before_x, before_y, before_size;
-    bool        before_bold, before_italic;
+    double      before_x = 0, before_y = 0, before_size = 0;
+    bool        before_bold = false, before_italic = false;
     FillStyle   before_fill;
     StrokeStyle before_stroke;
     // after state
     std::string after_content, after_family, after_anchor, after_align;
-    double      after_x, after_y, after_size;
-    bool        after_bold, after_italic;
+    double      after_x = 0, after_y = 0, after_size = 0;
+    bool        after_bold = false, after_italic = false;
     FillStyle   after_fill;
     StrokeStyle after_stroke;
 
-    static TextEditCommand snapshot_before(SceneNode* o) {
+    static TextEditCommand snapshot_before(CurvzProject* proj, SceneNode* o) {
         TextEditCommand c;
-        c.obj            = o;
+        c.proj           = proj;
+        c.obj_iid        = o ? o->internal_id : std::string{};
+        if (!o) return c;
         c.before_content = o->text_content;
         c.before_family  = o->text_font_family;
         c.before_anchor  = o->text_anchor;
@@ -241,6 +334,7 @@ struct TextEditCommand : CurvzCommand {
         return c;
     }
     void record_after(SceneNode* o) {
+        if (!o) return;
         after_content = o->text_content;
         after_family  = o->text_font_family;
         after_anchor  = o->text_anchor;
@@ -254,6 +348,7 @@ struct TextEditCommand : CurvzCommand {
         after_stroke  = o->stroke;
     }
     void apply(SceneNode* o, bool after) const {
+        if (!o) return;
         o->text_content    = after ? after_content : before_content;
         o->text_font_family= after ? after_family  : before_family;
         o->text_anchor     = after ? after_anchor  : before_anchor;
@@ -266,13 +361,16 @@ struct TextEditCommand : CurvzCommand {
         o->fill            = after ? after_fill    : before_fill;
         o->stroke          = after ? after_stroke  : before_stroke;
     }
-    void execute() override { apply(obj, true);  }
-    void undo()    override { apply(obj, false); }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Edit text"; }
 
     TextEditCommand() = default;  // needed for Canvas member storage
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
+// ── EditAppearanceCommand ─────────────────────────────────────────────────────
 // S82 m4f: swatch-id capture. Inspector / eyedropper / broadcast writes
 // route through style::mutate_appearance, which (as of S82) clears both
 // bound_style AND *_swatch_id on direct override. Restoring on undo
@@ -282,8 +380,15 @@ struct TextEditCommand : CurvzCommand {
 // stroke_swatch_id, before and after. The legacy 4-arg constructor is
 // retained for callers that don't carry swatch state (none in-tree as
 // of S82, but cheap to keep for source compatibility).
+//
+// s167 m2: migrated from raw SceneNode* obj to CurvzProject* proj +
+// std::string obj_iid. Bodies move to CommandHistory.cpp so this
+// header doesn't need full CurvzProject. Same shape as EditPathCommand
+// (s167 m1) — pure data edit, no structural mutation, resolves at
+// execute/undo time and no-ops if the target node is gone.
 struct EditAppearanceCommand : CurvzCommand {
-    SceneNode* obj;
+    CurvzProject* proj;
+    std::string   obj_iid;
     FillStyle   fill_before,   fill_after;
     StrokeStyle stroke_before, stroke_after;
     std::string fill_swatch_id_before,   fill_swatch_id_after;
@@ -296,14 +401,14 @@ struct EditAppearanceCommand : CurvzCommand {
     std::string bound_style_before,       bound_style_after;
     std::string desc;
 
-    EditAppearanceCommand(SceneNode* obj,
+    EditAppearanceCommand(CurvzProject* proj, std::string obj_iid,
                           FillStyle fb, StrokeStyle sb,
                           FillStyle fa, StrokeStyle sa,
                           std::string fsib, std::string ssib,
                           std::string fsia, std::string ssia,
                           std::string bsb,  std::string bsa,
                           std::string desc = "Edit appearance")
-        : obj(obj)
+        : proj(proj), obj_iid(std::move(obj_iid))
         , fill_before(std::move(fb)), stroke_before(std::move(sb))
         , fill_after(std::move(fa)),  stroke_after(std::move(sa))
         , fill_swatch_id_before(std::move(fsib))
@@ -317,13 +422,13 @@ struct EditAppearanceCommand : CurvzCommand {
     // S82 8-arg constructor — pre-S92 callers that captured swatch ids
     // but not bound_style. Equivalent to empty bound_style on both
     // ends.
-    EditAppearanceCommand(SceneNode* obj,
+    EditAppearanceCommand(CurvzProject* proj, std::string obj_iid,
                           FillStyle fb, StrokeStyle sb,
                           FillStyle fa, StrokeStyle sa,
                           std::string fsib, std::string ssib,
                           std::string fsia, std::string ssia,
                           std::string desc = "Edit appearance")
-        : EditAppearanceCommand(obj,
+        : EditAppearanceCommand(proj, std::move(obj_iid),
                                 std::move(fb), std::move(sb),
                                 std::move(fa), std::move(sa),
                                 std::move(fsib), std::move(ssib),
@@ -334,11 +439,11 @@ struct EditAppearanceCommand : CurvzCommand {
     // Legacy 4-arg constructor — pre-S82 callers that don't track swatch
     // bindings. Equivalent to passing empty swatch ids on both ends.
     // Safe because callers in this category never bind/unbind via swatch.
-    EditAppearanceCommand(SceneNode* obj,
+    EditAppearanceCommand(CurvzProject* proj, std::string obj_iid,
                           FillStyle fb, StrokeStyle sb,
                           FillStyle fa, StrokeStyle sa,
                           std::string desc = "Edit appearance")
-        : EditAppearanceCommand(obj,
+        : EditAppearanceCommand(proj, std::move(obj_iid),
                                 std::move(fb), std::move(sb),
                                 std::move(fa), std::move(sa),
                                 std::string{}, std::string{},
@@ -346,21 +451,11 @@ struct EditAppearanceCommand : CurvzCommand {
                                 std::string{}, std::string{},
                                 std::move(desc)) {}
 
-    void execute() override {
-        obj->fill              = fill_after;
-        obj->stroke            = stroke_after;
-        obj->fill_swatch_id    = fill_swatch_id_after;
-        obj->stroke_swatch_id  = stroke_swatch_id_after;
-        obj->bound_style       = bound_style_after;
-    }
-    void undo() override {
-        obj->fill              = fill_before;
-        obj->stroke            = stroke_before;
-        obj->fill_swatch_id    = fill_swatch_id_before;
-        obj->stroke_swatch_id  = stroke_swatch_id_before;
-        obj->bound_style       = bound_style_before;
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return desc; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── EditObjectCommand ─────────────────────────────────────────────────────────
@@ -374,8 +469,15 @@ struct EditAppearanceCommand : CurvzCommand {
 // swatch_id capture, undoing a hex edit on a swatch-bound object restores
 // the colour but leaves the binding empty (because the funnel cleared it
 // during the edit). Eight fields, legacy 6-arg constructor preserved.
+//
+// s167 m2: migrated from raw SceneNode* obj to CurvzProject* proj +
+// std::string obj_iid. Bodies move to CommandHistory.cpp. Coalescing
+// dynamic_cast site at PropertiesPanel.cpp:381 (push_inspector_command's
+// same-window branch) updated to compare cmd->obj_iid against
+// obj->internal_id.
 struct EditObjectCommand : CurvzCommand {
-    SceneNode*  obj;
+    CurvzProject* proj;
+    std::string   obj_iid;
     PathData    path_before,   path_after;
     FillStyle   fill_before,   fill_after;
     StrokeStyle stroke_before, stroke_after;
@@ -398,7 +500,7 @@ struct EditObjectCommand : CurvzCommand {
     ShadowParams shadow_before,           shadow_after;
     std::string desc;
 
-    EditObjectCommand(SceneNode* obj,
+    EditObjectCommand(CurvzProject* proj, std::string obj_iid,
                       PathData pb, FillStyle fb, StrokeStyle sb,
                       PathData pa, FillStyle fa, StrokeStyle sa,
                       std::string fsib, std::string ssib,
@@ -406,7 +508,7 @@ struct EditObjectCommand : CurvzCommand {
                       std::string bsb,  std::string bsa,
                       ShadowParams shb, ShadowParams sha,
                       std::string desc = "Edit object")
-        : obj(obj)
+        : proj(proj), obj_iid(std::move(obj_iid))
         , path_before(std::move(pb)), fill_before(std::move(fb)), stroke_before(std::move(sb))
         , path_after(std::move(pa)),  fill_after(std::move(fa)),  stroke_after(std::move(sa))
         , fill_swatch_id_before(std::move(fsib))
@@ -421,14 +523,14 @@ struct EditObjectCommand : CurvzCommand {
     // S92 14-arg constructor — pre-S97 source compatibility (callers
     // that captured bound_style but not shadow). Equivalent to default-
     // ShadowParams on both ends → undo is a no-op for shadow.
-    EditObjectCommand(SceneNode* obj,
+    EditObjectCommand(CurvzProject* proj, std::string obj_iid,
                       PathData pb, FillStyle fb, StrokeStyle sb,
                       PathData pa, FillStyle fa, StrokeStyle sa,
                       std::string fsib, std::string ssib,
                       std::string fsia, std::string ssia,
                       std::string bsb,  std::string bsa,
                       std::string desc = "Edit object")
-        : EditObjectCommand(obj,
+        : EditObjectCommand(proj, std::move(obj_iid),
                             std::move(pb), std::move(fb), std::move(sb),
                             std::move(pa), std::move(fa), std::move(sa),
                             std::move(fsib), std::move(ssib),
@@ -441,13 +543,13 @@ struct EditObjectCommand : CurvzCommand {
     // that captured swatch ids but not bound_style). Equivalent to
     // empty bound_style on both ends, which is the right default for
     // call sites that don't touch bound_style.
-    EditObjectCommand(SceneNode* obj,
+    EditObjectCommand(CurvzProject* proj, std::string obj_iid,
                       PathData pb, FillStyle fb, StrokeStyle sb,
                       PathData pa, FillStyle fa, StrokeStyle sa,
                       std::string fsib, std::string ssib,
                       std::string fsia, std::string ssia,
                       std::string desc = "Edit object")
-        : EditObjectCommand(obj,
+        : EditObjectCommand(proj, std::move(obj_iid),
                             std::move(pb), std::move(fb), std::move(sb),
                             std::move(pa), std::move(fa), std::move(sa),
                             std::move(fsib), std::move(ssib),
@@ -456,11 +558,11 @@ struct EditObjectCommand : CurvzCommand {
                             std::move(desc)) {}
 
     // Legacy 6-arg constructor — pre-S82 source compatibility.
-    EditObjectCommand(SceneNode* obj,
+    EditObjectCommand(CurvzProject* proj, std::string obj_iid,
                       PathData pb, FillStyle fb, StrokeStyle sb,
                       PathData pa, FillStyle fa, StrokeStyle sa,
                       std::string desc = "Edit object")
-        : EditObjectCommand(obj,
+        : EditObjectCommand(proj, std::move(obj_iid),
                             std::move(pb), std::move(fb), std::move(sb),
                             std::move(pa), std::move(fa), std::move(sa),
                             std::string{}, std::string{},
@@ -468,25 +570,11 @@ struct EditObjectCommand : CurvzCommand {
                             std::string{}, std::string{},
                             std::move(desc)) {}
 
-    void execute() override {
-        if (obj->path) *obj->path = path_after;
-        obj->fill              = fill_after;
-        obj->stroke            = stroke_after;
-        obj->fill_swatch_id    = fill_swatch_id_after;
-        obj->stroke_swatch_id  = stroke_swatch_id_after;
-        obj->bound_style       = bound_style_after;
-        obj->write_shadow(shadow_after);   // S97 m3
-    }
-    void undo() override {
-        if (obj->path) *obj->path = path_before;
-        obj->fill              = fill_before;
-        obj->stroke            = stroke_before;
-        obj->fill_swatch_id    = fill_swatch_id_before;
-        obj->stroke_swatch_id  = stroke_swatch_id_before;
-        obj->bound_style       = bound_style_before;
-        obj->write_shadow(shadow_before);  // S97 m3
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return desc; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 
@@ -535,139 +623,174 @@ struct SplitPathCommand : CurvzCommand {
 };
 
 // ── ScaleImageCommand ────────────────────────────────────────────────────────
+// s170 m4 — Migrated from raw-SceneNode* capture to iid + project capture.
+// Same multi-target pattern as Align (s169 m5), Scale (s169 m6), and
+// SetOpacity (s170 m1): per-Snap iid resolved at execute()/undo() time.
+// If a node is gone, that entry no-ops while the others still apply.
+//
+// Pre-migration this command held a raw `SceneNode* obj` per Snap with
+// NO `references()` override. Same shape of latent hazard as the rest
+// of Stage 3.
+//
 // Undo/redo for scale/rotate/skew applied to an Image node.
 // Stores before/after image geometry + transform matrix.
 struct ScaleImageCommand : CurvzCommand {
     struct Snap {
-        SceneNode* obj;
+        std::string obj_iid;
         double bef_x, bef_y, bef_w, bef_h;
         Transform  bef_t;
         double aft_x, aft_y, aft_w, aft_h;
         Transform  aft_t;
     };
+    CurvzProject*     proj;
     std::vector<Snap> snaps;
-    std::string desc;
+    std::string       desc;
 
-    ScaleImageCommand(std::vector<Snap> s, std::string d = "Transform image")
-        : snaps(std::move(s)), desc(std::move(d)) {}
+    ScaleImageCommand(CurvzProject* proj, std::vector<Snap> s,
+                      std::string d = "Transform image")
+        : proj(proj), snaps(std::move(s)), desc(std::move(d)) {}
 
-    void execute() override {
-        for (auto& s : snaps) {
-            s.obj->image_x = s.aft_x; s.obj->image_y = s.aft_y;
-            s.obj->image_w = s.aft_w; s.obj->image_h = s.aft_h;
-            s.obj->transform = s.aft_t;
-        }
-    }
-    void undo() override {
-        for (auto& s : snaps) {
-            s.obj->image_x = s.bef_x; s.obj->image_y = s.bef_y;
-            s.obj->image_w = s.bef_w; s.obj->image_h = s.bef_h;
-            s.obj->transform = s.bef_t;
-        }
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return desc; }
     bool preserves_selection() const override { return true; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── ScaleObjectsCommand ───────────────────────────────────────────────────────
-// Atomically undoes/redoes a scale transform across multiple leaf path nodes.
-// One entry per drag-end regardless of how many leaves were affected.
+// s169 m6 — Migrated from raw-SceneNode* capture to iid + project capture.
+// Same multi-target pattern as Align (s169 m5) and CornerTreatment (s169 m4).
+// Used by: scale, rotate, skew, flip-path, multi-node drag, inspector
+// transforms (PropertiesPanel push_leaves helper). Eight push sites across
+// Canvas_ops, Canvas_input, and PropertiesPanel — all changed in this ship.
 struct ScaleObjectsCommand : CurvzCommand {
     struct LeafSnap {
-        SceneNode* obj;
-        PathData   before;
-        PathData   after;
+        std::string obj_iid;
+        PathData    before;
+        PathData    after;
     };
+    CurvzProject*         proj;
     std::vector<LeafSnap> snaps;
-    std::string desc;
+    std::string           desc;
 
-    ScaleObjectsCommand(std::vector<LeafSnap> snaps, std::string desc = "Scale object")
-        : snaps(std::move(snaps)), desc(std::move(desc)) {}
+    ScaleObjectsCommand(CurvzProject* proj, std::vector<LeafSnap> snaps,
+                        std::string desc = "Scale object")
+        : proj(proj), snaps(std::move(snaps)), desc(std::move(desc)) {}
 
-    void execute() override {
-        for (auto& s : snaps) if (s.obj->path) *s.obj->path = s.after;
-    }
-    void undo() override {
-        for (auto& s : snaps) if (s.obj->path) *s.obj->path = s.before;
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return desc; }
     bool preserves_selection() const override { return true; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── AlignObjectsCommand ───────────────────────────────────────────────────────
-// Atomically undoes/redoes an align or distribute operation across multiple paths.
-// Stores before/after PathData per leaf.
+// s169 m5 — Migrated from raw-SceneNode* capture to iid + project capture.
+// Same multi-target pattern as CornerTreatment (s169 m4): per-LeafSnap iid
+// resolved at execute()/undo() time. If a leaf is gone, that entry no-ops
+// while the others still apply.
 struct AlignObjectsCommand : CurvzCommand {
     struct LeafSnap {
-        SceneNode* obj;
-        PathData   before;
-        PathData   after;
+        std::string obj_iid;
+        PathData    before;
+        PathData    after;
     };
+    CurvzProject*         proj;
     std::vector<LeafSnap> snaps;
-    std::string desc;
+    std::string           desc;
 
-    AlignObjectsCommand(std::vector<LeafSnap> snaps, std::string desc = "Align objects")
-        : snaps(std::move(snaps)), desc(std::move(desc)) {}
+    AlignObjectsCommand(CurvzProject* proj, std::vector<LeafSnap> snaps,
+                        std::string desc = "Align objects")
+        : proj(proj), snaps(std::move(snaps)), desc(std::move(desc)) {}
 
-    void execute() override {
-        for (auto& s : snaps) if (s.obj->path) *s.obj->path = s.after;
-    }
-    void undo() override {
-        for (auto& s : snaps) if (s.obj->path) *s.obj->path = s.before;
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return desc; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── SetOpacityCommand ─────────────────────────────────────────────────────────
+// s170 m1 — Migrated from raw-SceneNode* capture to iid + project capture.
+// Same multi-target pattern as Align (s169 m5) and CornerTreatment
+// (s169 m4): per-Snap iid resolved at execute()/undo() time. If a node
+// is gone, that entry no-ops while the others still apply.
+//
+// Pre-migration this command held a raw `SceneNode* obj` per Snap with
+// NO `references()` override — the existing `if (s.obj)` guard inside
+// execute()/undo() was a band-aid against a dangling pointer that scrub
+// could not clear. Same shape of latent hazard as the rest of Stage 3.
+//
 // Records a per-target before/after opacity snapshot for every node touched
 // by Canvas::apply_opacity_to_selection — including the children that get
 // flattened to 1.0 when a group-like is in the selection. Undo restores the
 // full pre-edit state (group + members) atomically.
 //
 // One Snap per affected node. The caller (apply_opacity_to_selection) is
-// responsible for deduping by pointer when a node could be visited twice
+// responsible for deduping by iid when a node could be visited twice
 // (e.g. shift-selecting both a group and one of its members) — first-touch
 // wins, so the snap holds the genuine pre-edit opacity rather than an
 // already-mutated value, and undo round-trips cleanly.
 struct SetOpacityCommand : CurvzCommand {
     struct Snap {
-        SceneNode* obj;
-        double     before;
-        double     after;
+        std::string obj_iid;
+        double      before;
+        double      after;
     };
+    CurvzProject*     proj;
     std::vector<Snap> snaps;
-    std::string desc;
+    std::string       desc;
 
-    SetOpacityCommand(std::vector<Snap> snaps, std::string desc = "Set opacity")
-        : snaps(std::move(snaps)), desc(std::move(desc)) {}
+    SetOpacityCommand(CurvzProject* proj, std::vector<Snap> snaps,
+                      std::string desc = "Set opacity")
+        : proj(proj), snaps(std::move(snaps)), desc(std::move(desc)) {}
 
-    void execute() override {
-        for (auto& s : snaps) if (s.obj) s.obj->opacity = s.after;
-    }
-    void undo() override {
-        for (auto& s : snaps) if (s.obj) s.obj->opacity = s.before;
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return desc; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── ZOrderCommand ─────────────────────────────────────────────────────────────
-// Records a full reorder of a parent's children as two permutations
-// (before and after), so undo/redo can restore exact state regardless of
-// how complex the rearrangement was.
+// s169 m2 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// Pre-migration this command held a raw `SceneNode* parent` pointer with
+// NO `references()` override. If the parent layer was destroyed between
+// push and undo (rare, but possible: delete-layer-with-undo-still-pending),
+// scrub_command_history would not find this command and Ctrl+Z would
+// dereference freed memory. Same shape of latent hazard as MoveObject in
+// s169 m1 — all of Stage 3 is missing `references()` overrides and was
+// silently exposed.
+//
+// Post-migration: command holds an iid + project pointer. Resolution
+// happens at execute()/undo() time via curvz::utils::find_by_iid; if the
+// layer is gone, command no-ops cleanly. The `entries` / `before_order`
+// / `after_order` fields hold strings (SVG ids), no pointer refs in them.
+//
+// `apply_order` and `move_child` remain static helpers taking `SceneNode*`
+// — they're called with already-resolved live pointers from execute()/
+// undo() bodies, so they don't need to do their own lookup.
 struct ZOrderCommand : CurvzCommand {
     struct Entry { std::string id; int before_idx; int after_idx; };
 
-    SceneNode*         parent;
-    std::vector<Entry> entries;   // one per selected object (informational)
+    CurvzProject*           proj;        // resolution root
+    std::string             parent_iid;  // SceneNode::internal_id of the layer
+    std::vector<Entry>      entries;     // one per selected object (informational)
     std::vector<std::string> before_order; // child ids in order before the op
     std::vector<std::string> after_order;  // child ids in order after the op
-    std::string        desc;
+    std::string             desc;
 
-    ZOrderCommand(SceneNode* parent, std::vector<Entry> entries,
+    ZOrderCommand(CurvzProject* proj, std::string parent_iid,
+                  std::vector<Entry> entries,
                   std::vector<std::string> before_order,
                   std::vector<std::string> after_order,
                   std::string desc = "Arrange")
-        : parent(parent), entries(std::move(entries))
+        : proj(proj)
+        , parent_iid(std::move(parent_iid))
+        , entries(std::move(entries))
         , before_order(std::move(before_order))
         , after_order(std::move(after_order))
         , desc(std::move(desc)) {}
@@ -697,201 +820,500 @@ struct ZOrderCommand : CurvzCommand {
         ch.insert(ch.begin() + dst, std::move(node));
     }
 
-    void execute() override { apply_order(parent, after_order);  }
-    void undo()    override { apply_order(parent, before_order); }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return desc; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
+};
+
+// ── AddLayerCommand ──────────────────────────────────────────────────────────
+// s171 m1 — first of the layer-undoable thread. Adds a top-level layer
+// to a document. The push site (LayersPanel::on_add_layer) builds the
+// layer node, mints its iid, and hands off both the snapshot and the
+// metadata for find-the-doc-on-undo.
+//
+// This command exists because the s170 crash (image moved across layers,
+// host layer deleted, undo walks back into transform commands whose iid
+// resolves to nullptr) is rooted in non-undoable structural mutations of
+// `doc->layers`. Layer add was one of two "no command pushed" sites
+// flagged by memory rule #26 and confirmed by the s170 m4 latent-hazard
+// repro. Closing the gap means the undo stack stays coherent across all
+// layer mutations.
+//
+// Doc identity: stored as `anchor_iid` — the iid of any SceneNode that
+// lives in the same doc as the new layer (typically a sibling layer
+// that already existed at push time). The command resolves the doc via
+// `find_doc_by_iid(proj, anchor_iid)` rather than a raw `CurvzDocument*`
+// to survive doc closures cleanly. If the anchor's doc is gone, the
+// command no-ops — same partial-recovery shape as Cut/Duplicate.
+//
+// Active-layer-index handling: the existing add code adjusts
+// active_layer_index after insert. We snap before/after explicitly so
+// undo restores the user's pre-op active layer rather than letting
+// post-op state leak.
+struct AddLayerCommand : CurvzCommand {
+    CurvzProject*              proj;            // resolution root
+    std::string                anchor_iid;      // iid of any peer in the target doc
+    std::unique_ptr<SceneNode> snap;            // deep clone of the new layer
+    std::string                new_layer_iid;   // == snap->internal_id (cached for clarity)
+    int                        index;           // insertion position in doc->layers
+    int                        active_before;   // pre-op active_layer_index
+    int                        active_after;    // post-op active_layer_index
+
+    AddLayerCommand(CurvzProject* proj,
+                    std::string anchor_iid,
+                    std::unique_ptr<SceneNode> snap,
+                    int index,
+                    int active_before,
+                    int active_after)
+        : proj(proj)
+        , anchor_iid(std::move(anchor_iid))
+        , snap(std::move(snap))
+        , new_layer_iid(this->snap ? this->snap->internal_id : std::string{})
+        , index(index)
+        , active_before(active_before)
+        , active_after(active_after) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override { return "Add layer"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
+};
+
+// ── DeleteLayerCommand ───────────────────────────────────────────────────────
+// s171 m1 — second of the layer-undoable thread. Removes a top-level
+// layer from a document.
+//
+// The deleted layer's snapshot is held in `snap` (deep clone, including
+// its children — every iid preserved). On undo, the snapshot is
+// re-inserted at the recorded index. Crucially, the children's iids
+// match what they were before the delete, so any commands queued on
+// those children (transforms, edits, etc.) will resolve correctly when
+// undo walks back through them. This is the structural fix for the
+// s170 crash — the snapshot keeps every iid alive across the
+// delete-undo seam.
+//
+// Doc identity: same `anchor_iid` mechanism as AddLayerCommand. The
+// anchor is a peer layer that survives the delete (the delete handler
+// guarantees at least one normal layer remains, so a peer always
+// exists). If the anchor is also gone (whole doc closed), the command
+// no-ops.
+struct DeleteLayerCommand : CurvzCommand {
+    CurvzProject*              proj;            // resolution root
+    std::string                anchor_iid;      // iid of a surviving peer layer
+    std::unique_ptr<SceneNode> snap;            // deep clone of the deleted layer
+    std::string                deleted_iid;     // == snap->internal_id (cached for clarity)
+    int                        index;           // original position in doc->layers
+    int                        active_before;   // pre-op active_layer_index
+    int                        active_after;    // post-op active_layer_index
+
+    DeleteLayerCommand(CurvzProject* proj,
+                       std::string anchor_iid,
+                       std::unique_ptr<SceneNode> snap,
+                       int index,
+                       int active_before,
+                       int active_after)
+        : proj(proj)
+        , anchor_iid(std::move(anchor_iid))
+        , snap(std::move(snap))
+        , deleted_iid(this->snap ? this->snap->internal_id : std::string{})
+        , index(index)
+        , active_before(active_before)
+        , active_after(active_after) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override { return "Delete layer"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
+};
+
+// ── MoveObjectToLayerCommand ─────────────────────────────────────────────────
+// s171 m2 — replaces the dead s149-era MoveToLayerCommand struct (which
+// had zero push sites and a no-op execute). The two LayersPanel DnD
+// cross-layer drop sites (setup_layer_drop type==1 path, and
+// setup_path_drop cross-layer branch) now build and push this command
+// instead of mutating the doc directly.
+//
+// Single object per command. Captured state: src_layer_iid + dst_layer_iid
+// + obj_iid + src_index + dst_index. The object's own iid resolves the
+// node; layer iids resolve the source/destination containers via
+// find_by_iid (layers participate in the iid index).
+//
+// execute() = redo: erase by iid from src_layer's children, insert clone
+//   at dst_index in dst_layer's children. obj_iid stays the same — the
+//   clone preserves it so future commands resolving against this iid
+//   keep working.
+//
+// undo() = reverse: erase by iid from dst_layer's children, insert clone
+//   at src_index in src_layer's children.
+//
+// Partial-recovery semantics: if either layer iid resolves to nullptr
+// (layer destroyed by some other op), skip and log. Same shape as Cut.
+//
+// Why this resolves the s170 crash class: previously, dragging an image
+// from Layer 1 to Layer 2 was direct mutation with no command pushed;
+// the undo stack still held transform commands keyed on the image's iid
+// from when it lived on Layer 1. Deleting Layer 2 then walked undo back
+// through those transforms after the image was gone, leaving the iid
+// resolver to return nullptr and downstream code to crash. Now the move
+// itself is undoable: undo walks back through Move-to-Layer-2-undo first,
+// putting the image back on Layer 1, before reaching the transforms —
+// they resolve to a live image and apply cleanly.
+struct MoveObjectToLayerCommand : CurvzCommand {
+    CurvzProject* proj;             // resolution root
+    std::string   src_layer_iid;
+    std::string   dst_layer_iid;
+    std::string   obj_iid;          // the moved object's iid
+    std::unique_ptr<SceneNode> snap;  // deep clone for redo / partial-recovery
+    int src_index;                  // original position in src_layer->children
+    int dst_index;                  // post-op position in dst_layer->children
+
+    MoveObjectToLayerCommand(CurvzProject* proj,
+                             std::string src_layer_iid,
+                             std::string dst_layer_iid,
+                             std::string obj_iid,
+                             std::unique_ptr<SceneNode> snap,
+                             int src_index,
+                             int dst_index)
+        : proj(proj)
+        , src_layer_iid(std::move(src_layer_iid))
+        , dst_layer_iid(std::move(dst_layer_iid))
+        , obj_iid(std::move(obj_iid))
+        , snap(std::move(snap))
+        , src_index(src_index)
+        , dst_index(dst_index) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override { return "Move to layer"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
+};
+
+// ── ReorderLayersCommand ─────────────────────────────────────────────────────
+// s172 m3 — final structural piece of the layer-undoable arc. Closes the
+// last "direct mutation of doc->layers" path: DnD layer reorder.
+//
+// Unlike Add/Delete (single-iid + index) and MoveObject (single iid +
+// src/dst layers), reorder is a whole-vector permutation. Capture is two
+// iid sequences: `iids_before` (pre-op order) and `iids_after` (post-op
+// order). Both undo and redo apply by re-sorting doc->layers to match the
+// recorded sequence — same algorithm in both directions, only the target
+// sequence differs.
+//
+// Apply algorithm: move every entry of doc->layers into a temp map keyed
+// by iid, then push them back in the order recorded. iids in the target
+// sequence that no longer exist in the doc (e.g. layer deleted by some
+// other operation while this command sat on the stack) are skipped; any
+// surviving layers whose iids aren't in the target sequence get
+// appended at the tail. This is the same partial-recovery shape as
+// Cut/Duplicate.
+//
+// Doc identity: `anchor_iid` — same mechanism as AddLayer/DeleteLayer.
+// We use the first non-empty iid from `iids_after` (always populated in
+// a successful reorder; layers don't disappear during reorder).
+//
+// active_layer_index: snapped before/after by integer (matching the
+// existing AddLayer/DeleteLayer pattern). The active layer's *iid*
+// doesn't change across a reorder — only its index in the vector — so a
+// numeric snap is consistent with the post-op vector layout.
+//
+// Why this isn't an s170-class crash: reorder doesn't destroy nodes or
+// change tree shape — it permutes the top-level vector. No iids are
+// invalidated; no commands queued on layer children are affected. Closing
+// the gap is for undo-stack hygiene: previously a user could drag layer
+// rows around freely and Ctrl+Z would skip past those reorderings,
+// confusing the perceived undo timeline. After s172 m3 every structural
+// mutation of doc->layers is undoable.
+struct ReorderLayersCommand : CurvzCommand {
+    CurvzProject*            proj;            // resolution root
+    std::string              anchor_iid;      // iid of any peer in the target doc
+    std::vector<std::string> iids_before;     // pre-op sequence of layer iids
+    std::vector<std::string> iids_after;      // post-op sequence of layer iids
+    int                      active_before;   // pre-op active_layer_index
+    int                      active_after;    // post-op active_layer_index
+
+    ReorderLayersCommand(CurvzProject* proj,
+                         std::string anchor_iid,
+                         std::vector<std::string> iids_before,
+                         std::vector<std::string> iids_after,
+                         int active_before,
+                         int active_after)
+        : proj(proj)
+        , anchor_iid(std::move(anchor_iid))
+        , iids_before(std::move(iids_before))
+        , iids_after(std::move(iids_after))
+        , active_before(active_before)
+        , active_after(active_after) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override { return "Reorder layers"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
+};
+
+// ── EditLayerFieldCommand ────────────────────────────────────────────────────
+// s172 m4 — layer state-mutations sub-arc. One unified command class for
+// the four undoable layer-field mutations: rename, color, visibility,
+// lock. They share the same shape (single layer iid + before/after of
+// one field), so collapsing them into one command type avoids four
+// near-identical copies of the same body.
+//
+// This is NOT structural — tree shape is unchanged, no nodes destroyed,
+// no iids invalidated. So it doesn't reproduce the s170 crash class.
+// The motivation is undo-stack hygiene: previously, toggling a layer's
+// visibility / lock / colour / name silently did nothing on Ctrl+Z,
+// confusing the user about what's on the stack.
+//
+// Field discriminator: `Field` enum picks which pair of before/after
+// fields to read. String fields (Name, Color) use `before_str` /
+// `after_str`; bool fields (Visible, Locked) use `before_bool` /
+// `after_bool`. The unused pair is ignored. Coalescing is intentionally
+// NOT implemented here — each toggle / commit is one undo step. (Color
+// picker live-drag could be coalesced in a future revision; for now the
+// single-step model matches how AddLayer / DeleteLayer behave.)
+//
+// Doc identity: not needed — the layer iid resolves directly to the
+// SceneNode via find_by_iid (layers participate in the iid index, same
+// as MoveObjectToLayerCommand src_layer_iid / dst_layer_iid). Skip
+// silently if the iid no longer resolves (layer deleted by some other
+// command between push and replay).
+struct EditLayerFieldCommand : CurvzCommand {
+    enum class Field { Name, Color, Visible, Locked };
+
+    CurvzProject* proj;             // resolution root
+    std::string   layer_iid;        // direct iid of the layer being edited
+    Field         field;
+    std::string   before_str;       // used for Name / Color
+    std::string   after_str;
+    bool          before_bool;      // used for Visible / Locked
+    bool          after_bool;
+
+    EditLayerFieldCommand(CurvzProject* proj,
+                          std::string layer_iid,
+                          Field field,
+                          std::string before_str,
+                          std::string after_str,
+                          bool before_bool,
+                          bool after_bool)
+        : proj(proj)
+        , layer_iid(std::move(layer_iid))
+        , field(field)
+        , before_str(std::move(before_str))
+        , after_str(std::move(after_str))
+        , before_bool(before_bool)
+        , after_bool(after_bool) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override {
+        switch (field) {
+            case Field::Name:    return "Rename layer";
+            case Field::Color:   return "Change layer color";
+            case Field::Visible: return "Toggle layer visibility";
+            case Field::Locked:  return "Toggle layer lock";
+        }
+        return "Edit layer";
+    }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── RefMoveCommand ────────────────────────────────────────────────────────────
-// Moves a Ref point's position. Undo restores original x/y.
-// ── MoveToLayerCommand ────────────────────────────────────────────────────────
-// Moves a SceneNode from one layer to another. Undo puts it back.
-struct MoveToLayerCommand : CurvzCommand {
-    SceneNode* from_layer;
-    SceneNode* to_layer;
-    int        from_idx;          // original position in from_layer->children
-    std::unique_ptr<SceneNode> snap; // deep clone of the node
-
-    MoveToLayerCommand(SceneNode* from, int fi, SceneNode* to,
-                       std::unique_ptr<SceneNode> snapshot)
-        : from_layer(from), to_layer(to), from_idx(fi)
-        , snap(std::move(snapshot)) {}
-
-    void execute() override {
-        // Move: find the node in from_layer by matching the snap (by id/name),
-        // remove it, prepend to to_layer.
-        // NOTE: execute() is called at push time via history replay.
-        // The actual live node is already moved by Canvas::move_to_layer().
-        // This is a replay-only command — see undo() for reversal.
-    }
-    void undo() override {
-        // Find the node in to_layer (match by id) and move it back.
-        auto& dst = to_layer->children;
-        auto it = std::find_if(dst.begin(), dst.end(),
-            [this](const std::unique_ptr<SceneNode>& n){ return n->id == snap->id; });
-        if (it == dst.end()) return;
-        auto node = std::move(*it);
-        dst.erase(it);
-        // Re-insert at original index in from_layer (clamped)
-        auto& src = from_layer->children;
-        int idx = std::min(from_idx, (int)src.size());
-        src.insert(src.begin() + idx, std::move(node));
-    }
-    std::string description() const override { return "Move to layer"; }
-};
-
+// Two-axis move of a Ref node's anchor point. s167 m2: migrated to
+// iid+project capture; bodies out-of-line in CommandHistory.cpp.
 struct RefMoveCommand : CurvzCommand {
-    SceneNode* node;
+    CurvzProject* proj;
+    std::string   node_iid;
     double before_x, before_y;
     double after_x,  after_y;
 
-    RefMoveCommand(SceneNode* n,
+    RefMoveCommand(CurvzProject* proj, std::string node_iid,
                    double bx, double by,
                    double ax, double ay)
-        : node(n)
+        : proj(proj), node_iid(std::move(node_iid))
         , before_x(bx), before_y(by)
         , after_x(ax),  after_y(ay) {}
 
-    void execute() override { node->ref_x = after_x;  node->ref_y = after_y;  }
-    void undo()    override { node->ref_x = before_x; node->ref_y = before_y; }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Move ref point"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── PasteCommand ─────────────────────────────────────────────────────────────
 // Inserts one or more pasted nodes into a parent at the front.
 // Undo removes them by id; redo re-inserts clones.
 struct PasteCommand : CurvzCommand {
-    SceneNode* parent;
+    // s169 m3 — Migrated from raw-SceneNode* capture to iid + project capture.
+    //
+    // Pre-migration this command held a raw `SceneNode* parent` pointer with
+    // NO `references()` override. If the target layer was destroyed between
+    // push and undo, scrub_command_history would not find this command and
+    // Ctrl+Z would dereference freed memory. Same shape of latent hazard as
+    // ZOrder in s169 m2 — Stage 3 commands are uniformly missing references()
+    // overrides and were silently exposed.
+    //
+    // Post-migration: command holds an iid + project pointer. Resolution
+    // happens at execute()/undo() time via curvz::utils::find_by_iid; if the
+    // layer is gone, command no-ops cleanly. The `snaps` vector holds
+    // unique_ptr<SceneNode> deep clones — no pointer hazards there.
+    CurvzProject* proj;        // resolution root
+    std::string   parent_iid;  // SceneNode::internal_id of the target layer
     // Snapshots in insertion order (front = top of layer)
     std::vector<std::unique_ptr<SceneNode>> snaps;
 
-    PasteCommand(SceneNode* parent,
+    PasteCommand(CurvzProject* proj, std::string parent_iid,
                  std::vector<std::unique_ptr<SceneNode>> snaps)
-        : parent(parent), snaps(std::move(snaps)) {}
+        : proj(proj)
+        , parent_iid(std::move(parent_iid))
+        , snaps(std::move(snaps)) {}
 
-    void execute() override {
-        // Insert each in reverse so first snap ends up at front
-        for (int i = (int)snaps.size()-1; i >= 0; --i)
-            parent->children.insert(parent->children.begin(), clone_node(*snaps[i]));
-    }
-    void undo() override {
-        auto& ch = parent->children;
-        for (auto& s : snaps)
-            for (int i = (int)ch.size()-1; i >= 0; --i)
-                if (ch[i]->id == s->id) { ch.erase(ch.begin()+i); break; }
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Paste"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── CutCommand ────────────────────────────────────────────────────────────────
+// s170 m2 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// Pre-migration this command held a raw `SceneNode* parent` per Entry with
+// NO `references()` override. If a parent layer was destroyed between push
+// and undo, scrub_command_history would not find this command and Ctrl+Z
+// would dereference freed memory. Same shape of latent hazard as the rest
+// of Stage 3.
+//
+// Cut differs from Paste (s169 m3) in that each Entry can come from a
+// different parent — shift-selecting objects across layers and Cut
+// produces a multi-parent command. So `parent_iid` is per-Entry, not on
+// the command. Same per-Entry partial-recovery semantics as m4/m5/m6:
+// if one parent is gone, that entry no-ops while the others still apply.
+//
 // Records the removal of one or more nodes for undo purposes.
 // Undo re-inserts them at their original positions.
 struct CutCommand : CurvzCommand {
     struct Entry {
-        SceneNode*                 parent;
+        std::string                parent_iid;  // iid of the source layer
         std::unique_ptr<SceneNode> snap;
         int                        index;
     };
-    std::vector<Entry> entries; // sorted ascending by index
+    CurvzProject*      proj;     // resolution root
+    std::vector<Entry> entries;  // sorted ascending by index
 
-    explicit CutCommand(std::vector<Entry> entries)
-        : entries(std::move(entries)) {}
+    CutCommand(CurvzProject* proj, std::vector<Entry> entries)
+        : proj(proj), entries(std::move(entries)) {}
 
-    void execute() override {
-        // Remove in descending index order to avoid shifting
-        std::vector<int> order(entries.size());
-        for (int i = 0; i < (int)entries.size(); ++i) order[i] = i;
-        std::sort(order.begin(), order.end(),
-            [&](int a, int b){ return entries[a].index > entries[b].index; });
-        for (int i : order) {
-            auto& ch = entries[i].parent->children;
-            for (int j = (int)ch.size()-1; j >= 0; --j)
-                if (ch[j]->id == entries[i].snap->id) { ch.erase(ch.begin()+j); break; }
-        }
-    }
-    void undo() override {
-        // Re-insert in ascending index order
-        std::vector<int> order(entries.size());
-        for (int i = 0; i < (int)entries.size(); ++i) order[i] = i;
-        std::sort(order.begin(), order.end(),
-            [&](int a, int b){ return entries[a].index < entries[b].index; });
-        for (int i : order) {
-            auto& ch = entries[i].parent->children;
-            int ins = std::clamp(entries[i].index, 0, (int)ch.size());
-            ch.insert(ch.begin() + ins, clone_node(*entries[i].snap));
-        }
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Cut"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── DuplicateCommand ──────────────────────────────────────────────────────────
+// s170 m3 — Migrated from raw-SceneNode* capture to iid + project capture.
+// Same shape as Cut (s170 m2): per-Entry parent_iid (different parents
+// possible — duplicating across layer-spanning selections) with per-Entry
+// partial-recovery semantics. If a parent is gone at execute()/undo()
+// time, that entry no-ops while the others still apply.
+//
+// Used by three push sites: Canvas::duplicate_selected (offset clone),
+// Canvas::clone_selected (in-place), and Canvas_input.cpp Alt-drag
+// (in-place duplicate redirected for move).
+//
 // Inserts duplicated nodes directly above their originals.
 // Undo removes by id; redo re-inserts.
 struct DuplicateCommand : CurvzCommand {
     struct Entry {
-        SceneNode*                 parent;
-        std::unique_ptr<SceneNode> snap;   // the new duplicate
-        int                        index;  // insertion index (above original)
+        std::string                parent_iid;  // iid of the target layer
+        std::unique_ptr<SceneNode> snap;        // the new duplicate
+        int                        index;       // insertion index (above original)
     };
+    CurvzProject*      proj;     // resolution root
     std::vector<Entry> entries;
 
-    explicit DuplicateCommand(std::vector<Entry> entries)
-        : entries(std::move(entries)) {}
+    DuplicateCommand(CurvzProject* proj, std::vector<Entry> entries)
+        : proj(proj), entries(std::move(entries)) {}
 
-    void execute() override {
-        // Insert in descending index order to keep positions stable
-        std::vector<int> order(entries.size());
-        for (int i = 0; i < (int)entries.size(); ++i) order[i] = i;
-        std::sort(order.begin(), order.end(),
-            [&](int a, int b){ return entries[a].index > entries[b].index; });
-        for (int i : order) {
-            auto& ch = entries[i].parent->children;
-            int ins = std::clamp(entries[i].index, 0, (int)ch.size());
-            ch.insert(ch.begin() + ins, clone_node(*entries[i].snap));
-        }
-    }
-    void undo() override {
-        for (auto& e : entries) {
-            auto& ch = e.parent->children;
-            for (int i = (int)ch.size()-1; i >= 0; --i)
-                if (ch[i]->id == e.snap->id) { ch.erase(ch.begin()+i); break; }
-        }
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Duplicate"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
+};
+
+// ── CornerTreatmentCommand ────────────────────────────────────────────────────
+// s169 m4 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// First multi-target Stage 3 migration: Entry holds an iid per affected
+// path rather than a raw pointer. Each entry resolves independently at
+// execute()/undo() time. If any one path is gone, that entry no-ops while
+// the others still apply — partial-recovery semantics rather than all-or-
+// nothing, which is the desired shape since Stage 3 commands often touch
+// many objects whose lifecycles aren't coupled.
+//
+// Pre-migration this command held raw `Entry::obj` pointers with NO
+// `references()` override. Same latent hazard pattern as the other Stage 3
+// commands. Post-migration: the command holds iids; entries are resolved
+// via curvz::utils::find_by_iid at apply time.
+//
+// `add()` now takes SceneNode*&const for ergonomic push-site code (caller
+// has the live node in hand) and reads `internal_id` internally to
+// store the iid. Same call shape at the push site.
+struct CornerTreatmentCommand : CurvzCommand {
+    struct Entry { std::string obj_iid; PathData before; PathData after; };
+
+    CurvzProject*      proj;
+    std::vector<Entry> entries;
+
+    explicit CornerTreatmentCommand(CurvzProject* proj) : proj(proj) {}
+
+    void add(const SceneNode* obj, PathData before, PathData after) {
+        entries.push_back({obj->internal_id, std::move(before), std::move(after)});
+    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override { return "Corner Treatment"; }
+    bool preserves_selection() const override { return true; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── BooleanOpCommand ──────────────────────────────────────────────────────────
-// Stores deep clones of the two input nodes and all result nodes.
-// Undo: removes results, reinserts originals at their positions.
-// Redo: removes originals, reinserts results.
-// ── CornerTreatmentCommand ────────────────────────────────────────────────────
-// Stores before/after PathData for all paths affected by one corner treatment.
-// One push covers all affected paths atomically.
-struct CornerTreatmentCommand : CurvzCommand {
-    struct Entry { SceneNode* obj; PathData before; PathData after; };
-    std::vector<Entry> entries;
-
-    void add(SceneNode* obj, PathData before, PathData after) {
-        entries.push_back({obj, std::move(before), std::move(after)});
-    }
-    void execute() override {
-        for (auto& e : entries) if (e.obj->path) *e.obj->path = e.after;
-    }
-    void undo() override {
-        for (auto& e : entries) if (e.obj->path) *e.obj->path = e.before;
-    }
-    std::string description() const override { return "Corner Treatment"; }
-    bool preserves_selection() const override { return true; }
-};
-
+// s173 m2 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// First Stage 4 migration. Pre-migration this command held a raw
+// `SceneNode* parent` pointer with NO `references()` override — same
+// latent hazard pattern as the Stage 3 commands had before s169–s170.
+// If the parent layer was destroyed between push and undo,
+// scrub_command_history would not find this command and Ctrl+Z would
+// dereference freed memory.
+//
+// Post-migration: command holds parent_iid + project pointer. Resolution
+// happens at execute()/undo() time via curvz::utils::find_by_iid; if the
+// layer is gone, command no-ops cleanly. The originals/results vectors
+// hold unique_ptr<SceneNode> deep clones — no pointer hazards there.
+//
+// Stores deep clones of all input nodes and all result nodes.
+// Undo: removes results from parent->children, reinserts originals at
+// their positions.
+// Redo: removes originals, reinserts results at insert_index.
 struct BooleanOpCommand : CurvzCommand {
-    SceneNode* parent;
-
     // Originals — in ascending index order
     struct Original {
         std::unique_ptr<SceneNode> snap;
         int index;
     };
+
+    CurvzProject* proj;        // resolution root
+    std::string   parent_iid;  // SceneNode::internal_id of the target parent
     std::vector<Original> originals;
 
     // Results — inserted at insert_index in ascending order
@@ -899,65 +1321,41 @@ struct BooleanOpCommand : CurvzCommand {
     int insert_index;
     std::string desc;
 
-    BooleanOpCommand(SceneNode* parent,
+    BooleanOpCommand(CurvzProject* proj, std::string parent_iid,
                      std::vector<Original> originals,
                      std::vector<std::unique_ptr<SceneNode>> results,
                      int insert_index,
                      std::string desc = "Boolean operation")
-        : parent(parent)
+        : proj(proj)
+        , parent_iid(std::move(parent_iid))
         , originals(std::move(originals))
         , results(std::move(results))
         , insert_index(insert_index)
         , desc(std::move(desc)) {}
 
-    void execute() override {
-        if (!parent) return;
-        auto& ch = parent->children;
-
-        // Remove originals by id
-        for (auto& orig : originals) {
-            if (!orig.snap) continue;
-            for (int i = (int)ch.size()-1; i >= 0; --i) {
-                if (ch[i] && ch[i]->id == orig.snap->id) {
-                    ch.erase(ch.begin()+i);
-                    break;
-                }
-            }
-        }
-
-        // Insert results at insert_index
-        int ins = std::clamp(insert_index, 0, (int)ch.size());
-        for (int i = 0; i < (int)results.size(); ++i) {
-            if (!results[i]) continue;
-            ch.insert(ch.begin() + ins + i, clone_node(*results[i]));
-        }
-    }
-    void undo() override {
-        if (!parent) return;
-        auto& ch = parent->children;
-
-        // Remove results by id
-        for (auto& r : results) {
-            if (!r) continue;
-            for (int i = (int)ch.size()-1; i >= 0; --i) {
-                if (ch[i] && ch[i]->id == r->id) {
-                    ch.erase(ch.begin()+i);
-                    break;
-                }
-            }
-        }
-
-        // Reinsert originals at their original positions
-        for (auto& orig : originals) {
-            if (!orig.snap) continue;
-            int ins = std::clamp(orig.index, 0, (int)ch.size());
-            ch.insert(ch.begin() + ins, clone_node(*orig.snap));
-        }
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return desc; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── MakeBlendCommand ──────────────────────────────────────────────────────────
+// s173 m3 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// Pre-migration this command held a raw `SceneNode* parent` pointer with
+// NO `references()` override and no null-guard in execute()/undo() —
+// same latent hazard pattern as BooleanOpCommand had before s173 m2. If
+// the parent layer was destroyed between push and undo, scrub_command_
+// history would not find this command and Ctrl+Z would dereference freed
+// memory.
+//
+// Post-migration: command holds parent_iid + project pointer. Resolution
+// happens at execute()/undo() time via curvz::utils::find_by_iid; if the
+// layer is gone, command no-ops cleanly. The originals vector and
+// blend_snap hold unique_ptr<SceneNode> deep clones — no pointer hazards
+// there.
+//
 // Undoable creation of a Blend container from exactly two source Paths
 // that share a common parent. Same shape as BooleanOpCommand: removes
 // the two originals, inserts the Blend at the lower index.
@@ -966,48 +1364,44 @@ struct BooleanOpCommand : CurvzCommand {
 // original positions. The Blend snapshot holds cloned copies of
 // blend_source_a / blend_source_b internally, so nothing is lost.
 struct MakeBlendCommand : CurvzCommand {
-    SceneNode* parent;
-
     struct Original {
         std::unique_ptr<SceneNode> snap;
         int index;
     };
+
+    CurvzProject* proj;        // resolution root
+    std::string   parent_iid;  // SceneNode::internal_id of the target parent
     std::vector<Original> originals;             // always size 2 for v1
 
     std::unique_ptr<SceneNode> blend_snap;       // deep-cloned Blend node
     int insert_index;
 
-    MakeBlendCommand(SceneNode* parent,
+    MakeBlendCommand(CurvzProject* proj, std::string parent_iid,
                      std::vector<Original> originals,
                      std::unique_ptr<SceneNode> blend_snap,
                      int insert_index)
-        : parent(parent)
+        : proj(proj)
+        , parent_iid(std::move(parent_iid))
         , originals(std::move(originals))
         , blend_snap(std::move(blend_snap))
         , insert_index(insert_index) {}
 
-    void execute() override {
-        auto& ch = parent->children;
-        for (auto& orig : originals) {
-            for (int i = (int)ch.size()-1; i >= 0; --i)
-                if (ch[i]->id == orig.snap->id) { ch.erase(ch.begin()+i); break; }
-        }
-        int ins = std::clamp(insert_index, 0, (int)ch.size());
-        ch.insert(ch.begin() + ins, clone_node(*blend_snap));
-    }
-    void undo() override {
-        auto& ch = parent->children;
-        for (int i = (int)ch.size()-1; i >= 0; --i)
-            if (ch[i]->id == blend_snap->id) { ch.erase(ch.begin()+i); break; }
-        for (auto& orig : originals) {
-            int ins = std::clamp(orig.index, 0, (int)ch.size());
-            ch.insert(ch.begin() + ins, clone_node(*orig.snap));
-        }
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Make Blend"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── ReleaseBlendCommand ───────────────────────────────────────────────────────
+// s173 m3 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// Pre-migration this command held a raw `SceneNode* parent` pointer with
+// NO `references()` override and no null-guard. Inverse of MakeBlend in
+// shape but same hazard class. Post-migration: command holds parent_iid
+// + project pointer; resolution via curvz::utils::find_by_iid at
+// execute()/undo() time. If the layer is gone, no-op cleanly.
+//
 // Inverse of MakeBlendCommand in structure (1→3 instead of 2→1).
 //
 // execute():
@@ -1024,40 +1418,43 @@ struct MakeBlendCommand : CurvzCommand {
 // Selection fixup is the caller's job — ReleaseBlendCommand is a pure
 // tree mutation.
 struct ReleaseBlendCommand : CurvzCommand {
-    SceneNode* parent;
+    CurvzProject* proj;        // resolution root
+    std::string   parent_iid;  // SceneNode::internal_id of the target parent
     std::unique_ptr<SceneNode> blend_snap;
     std::vector<std::unique_ptr<SceneNode>> results;  // A, Steps-Group, B
     int insert_index;
 
-    ReleaseBlendCommand(SceneNode* parent,
+    ReleaseBlendCommand(CurvzProject* proj, std::string parent_iid,
                         std::unique_ptr<SceneNode> blend_snap,
                         std::vector<std::unique_ptr<SceneNode>> results,
                         int insert_index)
-        : parent(parent)
+        : proj(proj)
+        , parent_iid(std::move(parent_iid))
         , blend_snap(std::move(blend_snap))
         , results(std::move(results))
         , insert_index(insert_index) {}
 
-    void execute() override {
-        auto& ch = parent->children;
-        for (int i = (int)ch.size()-1; i >= 0; --i)
-            if (ch[i]->id == blend_snap->id) { ch.erase(ch.begin()+i); break; }
-        int ins = std::clamp(insert_index, 0, (int)ch.size());
-        for (int i = 0; i < (int)results.size(); ++i)
-            ch.insert(ch.begin() + ins + i, clone_node(*results[i]));
-    }
-    void undo() override {
-        auto& ch = parent->children;
-        for (auto& r : results)
-            for (int i = (int)ch.size()-1; i >= 0; --i)
-                if (ch[i]->id == r->id) { ch.erase(ch.begin()+i); break; }
-        int ins = std::clamp(insert_index, 0, (int)ch.size());
-        ch.insert(ch.begin() + ins, clone_node(*blend_snap));
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Release Blend"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── MakeWarpCommand ───────────────────────────────────────────────────────────
+// s173 m4 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// Pre-migration this command held a raw `SceneNode* parent` pointer with
+// NO `references()` override and no null-guard in execute()/undo() — same
+// latent hazard pattern as MakeBlend before s173 m3. If the parent layer
+// was destroyed between push and undo, scrub_command_history would not
+// find this command and Ctrl+Z would dereference freed memory.
+//
+// Post-migration: command holds parent_iid + project pointer. Resolution
+// happens at execute()/undo() time via curvz::utils::find_by_iid; if the
+// layer is gone, command no-ops cleanly. The source_snap and warp_snap
+// hold unique_ptr<SceneNode> deep clones — no pointer hazards there.
+//
 // Undoable creation of a Warp container around a single source node
 // (Path, Compound, or Group). The source is cloned into the Warp's
 // warp_source slot and removed from the parent's children; the Warp
@@ -1067,79 +1464,75 @@ struct ReleaseBlendCommand : CurvzCommand {
 // position. The Warp snapshot holds a cloned copy of warp_source
 // internally so nothing is lost.
 struct MakeWarpCommand : CurvzCommand {
-    SceneNode* parent;
+    CurvzProject* proj;        // resolution root
+    std::string   parent_iid;  // SceneNode::internal_id of the target parent
     std::unique_ptr<SceneNode> source_snap;          // clone of the original
     int source_index;                                 // original's position
     std::unique_ptr<SceneNode> warp_snap;             // fully-built Warp
     int insert_index;
 
-    MakeWarpCommand(SceneNode* parent,
+    MakeWarpCommand(CurvzProject* proj, std::string parent_iid,
                     std::unique_ptr<SceneNode> source_snap,
                     int source_index,
                     std::unique_ptr<SceneNode> warp_snap,
                     int insert_index)
-        : parent(parent)
+        : proj(proj)
+        , parent_iid(std::move(parent_iid))
         , source_snap(std::move(source_snap))
         , source_index(source_index)
         , warp_snap(std::move(warp_snap))
         , insert_index(insert_index) {}
 
-    void execute() override {
-        auto& ch = parent->children;
-        for (int i = (int)ch.size()-1; i >= 0; --i)
-            if (ch[i]->id == source_snap->id) { ch.erase(ch.begin()+i); break; }
-        int ins = std::clamp(insert_index, 0, (int)ch.size());
-        ch.insert(ch.begin() + ins, clone_node(*warp_snap));
-    }
-    void undo() override {
-        auto& ch = parent->children;
-        for (int i = (int)ch.size()-1; i >= 0; --i)
-            if (ch[i]->id == warp_snap->id) { ch.erase(ch.begin()+i); break; }
-        int ins = std::clamp(source_index, 0, (int)ch.size());
-        ch.insert(ch.begin() + ins, clone_node(*source_snap));
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Make Warp"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── ReleaseWarpCommand ────────────────────────────────────────────────────────
+// s173 m4 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// Same pre-migration hazard as MakeWarp. Post-migration: parent_iid +
+// project resolution at execute()/undo() time; null-safe no-op if the
+// parent layer is gone.
+//
 // Inverse of MakeWarpCommand: removes the Warp and reinserts the source
 // (cloned from warp_source) at the Warp's position. Envelope data is
 // discarded — release is meant to be the "undo the Make" operation.
 // If the user wants to preserve the baked warped geometry, they should
 // use Flatten Warp instead.
 struct ReleaseWarpCommand : CurvzCommand {
-    SceneNode* parent;
+    CurvzProject* proj;        // resolution root
+    std::string   parent_iid;  // SceneNode::internal_id of the target parent
     std::unique_ptr<SceneNode> warp_snap;             // cloned Warp
     std::unique_ptr<SceneNode> source_snap;           // cloned source
     int insert_index;
 
-    ReleaseWarpCommand(SceneNode* parent,
+    ReleaseWarpCommand(CurvzProject* proj, std::string parent_iid,
                        std::unique_ptr<SceneNode> warp_snap,
                        std::unique_ptr<SceneNode> source_snap,
                        int insert_index)
-        : parent(parent)
+        : proj(proj)
+        , parent_iid(std::move(parent_iid))
         , warp_snap(std::move(warp_snap))
         , source_snap(std::move(source_snap))
         , insert_index(insert_index) {}
 
-    void execute() override {
-        auto& ch = parent->children;
-        for (int i = (int)ch.size()-1; i >= 0; --i)
-            if (ch[i]->id == warp_snap->id) { ch.erase(ch.begin()+i); break; }
-        int ins = std::clamp(insert_index, 0, (int)ch.size());
-        ch.insert(ch.begin() + ins, clone_node(*source_snap));
-    }
-    void undo() override {
-        auto& ch = parent->children;
-        for (int i = (int)ch.size()-1; i >= 0; --i)
-            if (ch[i]->id == source_snap->id) { ch.erase(ch.begin()+i); break; }
-        int ins = std::clamp(insert_index, 0, (int)ch.size());
-        ch.insert(ch.begin() + ins, clone_node(*warp_snap));
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Release Warp"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── FlattenWarpCommand ────────────────────────────────────────────────────────
+// s173 m4 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
+// Same pre-migration hazard as MakeWarp/ReleaseWarp. Post-migration:
+// parent_iid + project resolution at execute()/undo() time; null-safe
+// no-op if the parent layer is gone.
+//
 // Replaces a Warp with its baked warp_cache output. Destructive of the
 // envelope (envelope data is lost — to re-edit, the user would need to
 // undo the flatten). Unlike Release, the visible geometry doesn't
@@ -1151,38 +1544,32 @@ struct ReleaseWarpCommand : CurvzCommand {
 // visible/locked/opacity/transform to preserve the node's visual
 // presence in its parent.
 struct FlattenWarpCommand : CurvzCommand {
-    SceneNode* parent;
+    CurvzProject* proj;        // resolution root
+    std::string   parent_iid;  // SceneNode::internal_id of the target parent
     std::unique_ptr<SceneNode> warp_snap;             // cloned pre-flatten Warp
     std::unique_ptr<SceneNode> flattened_snap;        // cloned baked result
     int insert_index;
 
-    FlattenWarpCommand(SceneNode* parent,
+    FlattenWarpCommand(CurvzProject* proj, std::string parent_iid,
                        std::unique_ptr<SceneNode> warp_snap,
                        std::unique_ptr<SceneNode> flattened_snap,
                        int insert_index)
-        : parent(parent)
+        : proj(proj)
+        , parent_iid(std::move(parent_iid))
         , warp_snap(std::move(warp_snap))
         , flattened_snap(std::move(flattened_snap))
         , insert_index(insert_index) {}
 
-    void execute() override {
-        auto& ch = parent->children;
-        for (int i = (int)ch.size()-1; i >= 0; --i)
-            if (ch[i]->id == warp_snap->id) { ch.erase(ch.begin()+i); break; }
-        int ins = std::clamp(insert_index, 0, (int)ch.size());
-        ch.insert(ch.begin() + ins, clone_node(*flattened_snap));
-    }
-    void undo() override {
-        auto& ch = parent->children;
-        for (int i = (int)ch.size()-1; i >= 0; --i)
-            if (ch[i]->id == flattened_snap->id) { ch.erase(ch.begin()+i); break; }
-        int ins = std::clamp(insert_index, 0, (int)ch.size());
-        ch.insert(ch.begin() + ins, clone_node(*warp_snap));
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Flatten Warp"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── EditWarpCommand ───────────────────────────────────────────────────────────
+// s174 m1 — Migrated from raw-SceneNode* capture to iid + project capture.
+//
 // Undoable edit of a Warp's envelope curves and quality setting. Snapshots
 // pre-state (envelope + quality + preset_idx) on construction and swaps to
 // post-state on execute. Unlike Make/Release/Flatten, this doesn't change
@@ -1195,9 +1582,16 @@ struct FlattenWarpCommand : CurvzCommand {
 // clears preset_idx to -1 in the post-state) is undone atomically with
 // the envelope shape — undoing a drag restores both the original
 // envelope AND the preset label that was on it before the drag.
+//
+// s174 m1: capture shape is the EditPath template — single-target field
+// swap. obj_iid is the warp node's internal_id; resolution via
+// curvz::utils::find_by_iid at execute()/undo() time. If the warp is
+// destroyed between push and replay, the command no-ops cleanly. Bodies
+// move out-of-line into CommandHistory.cpp so the resolver can use the
+// full CurvzProject type.
 struct EditWarpCommand : CurvzCommand {
-    SceneNode* warp;                 // pointer to live Warp in doc tree
-    std::string warp_id;              // for re-finding if pointer invalid
+    CurvzProject* proj;     // resolution root
+    std::string   obj_iid;  // internal_id of the target Warp node
 
     // Pre-state (what was there before the user's edits).
     PathData pre_env_top;
@@ -1211,12 +1605,12 @@ struct EditWarpCommand : CurvzCommand {
     int      post_quality;
     int      post_preset_idx;    // s147 m2
 
-    EditWarpCommand(SceneNode* warp,
+    EditWarpCommand(CurvzProject* proj, std::string obj_iid,
                     PathData pre_top, PathData pre_bottom, int pre_q,
                     PathData post_top, PathData post_bottom, int post_q,
                     int pre_preset = -1, int post_preset = -1)
-        : warp(warp)
-        , warp_id(warp ? warp->id : std::string())
+        : proj(proj)
+        , obj_iid(std::move(obj_iid))
         , pre_env_top(std::move(pre_top))
         , pre_env_bottom(std::move(pre_bottom))
         , pre_quality(pre_q)
@@ -1226,67 +1620,71 @@ struct EditWarpCommand : CurvzCommand {
         , post_quality(post_q)
         , post_preset_idx(post_preset) {}
 
-    void execute() override {
-        if (!warp) return;
-        warp->warp_env_top    = post_env_top;
-        warp->warp_env_bottom = post_env_bottom;
-        warp->warp_quality    = post_quality;
-        warp->warp_preset_idx = post_preset_idx;
-        warp->warp_cache_dirty = true;
-    }
-    void undo() override {
-        if (!warp) return;
-        warp->warp_env_top    = pre_env_top;
-        warp->warp_env_bottom = pre_env_bottom;
-        warp->warp_quality    = pre_quality;
-        warp->warp_preset_idx = pre_preset_idx;
-        warp->warp_cache_dirty = true;
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Edit Warp"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── StepRepeatCommand ─────────────────────────────────────────────────────────
+// s175 m1 — Migrated from raw-SceneNode* per-Entry parent to per-Entry
+// parent_iid + project capture. Multi-target shape, same template as
+// CutCommand (s170 m2): each Entry resolves its own parent independently
+// at execute()/undo() time, with per-Entry no-op-on-miss so partial
+// destruction (some parents alive, others gone) leaves the still-resolvable
+// entries fully reversible.
+//
 // Inserts N copies of each selected object, each offset by (dx*i, dy*i).
 // All copies are removed atomically on undo.
+//
+// s175 m1: bodies move out-of-line into CommandHistory.cpp so the resolver
+// can use the full CurvzProject type. Ordering invariant preserved —
+// inserts happen in descending insertion-index order to keep positions
+// stable when multiple Entries share a parent.
 struct StepRepeatCommand : CurvzCommand {
     struct Entry {
-        SceneNode*                 parent;
-        std::unique_ptr<SceneNode> snap;   // deep copy of the inserted node
-        int                        index;  // insertion index
+        std::string                parent_iid;  // internal_id of the target parent
+        std::unique_ptr<SceneNode> snap;        // deep copy of the inserted node
+        int                        index;       // insertion index
     };
-    std::vector<Entry> entries; // all copies across all steps, in insertion order
+    CurvzProject*      proj;     // resolution root
+    std::vector<Entry> entries;  // all copies across all steps, in insertion order
 
-    explicit StepRepeatCommand(std::vector<Entry> e) : entries(std::move(e)) {}
+    StepRepeatCommand(CurvzProject* proj, std::vector<Entry> e)
+        : proj(proj), entries(std::move(e)) {}
 
-    void execute() override {
-        // Insert in descending index order to keep positions stable
-        std::vector<int> order(entries.size());
-        for (int i = 0; i < (int)entries.size(); ++i) order[i] = i;
-        std::sort(order.begin(), order.end(),
-            [&](int a, int b){ return entries[a].index > entries[b].index; });
-        for (int i : order) {
-            auto& ch = entries[i].parent->children;
-            int ins = std::clamp(entries[i].index, 0, (int)ch.size());
-            ch.insert(ch.begin() + ins, clone_node(*entries[i].snap));
-        }
-    }
-    void undo() override {
-        // Remove all inserted copies by id (reverse order for stability)
-        for (int i = (int)entries.size() - 1; i >= 0; --i) {
-            auto& ch = entries[i].parent->children;
-            for (int j = (int)ch.size() - 1; j >= 0; --j)
-                if (ch[j]->id == entries[i].snap->id) { ch.erase(ch.begin()+j); break; }
-        }
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override { return "Step and Repeat"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── LinkTextToPathCommand ─────────────────────────────────────────────────────
+// s175 m2 — Migrated from raw-SceneNode* obj capture to iid + project
+// capture. TextEdit template — single-target field swap.
+//
 // Undoable link/unlink of a text node to a guide path.
 // Stores before/after text_path_id, offset, flip, and text_x/text_y so that
 // detach (which repositions the text node) is fully reversible.
+//
+// s174 finding (banked, applied here): text_path_id is *already* an iid
+// (it stores the target path's internal_id, not its SVG id — verified via
+// Canvas::top_find_path_by_id which searches by internal_id == id, and
+// SvgWriter writes it back as data-curvz-path-id for round-trip). So
+// before_path_id / after_path_id are kept verbatim — they're not
+// pointers, they're the same iid that find_by_iid resolves on the other
+// end. No SVG-id-to-iid upgrade needed.
+//
+// s175 m2: obj_iid replaces SceneNode* obj. Resolution via
+// curvz::utils::find_by_iid at execute()/undo() time. If the text node
+// is destroyed between push and replay, the command no-ops cleanly.
+// Bodies move out-of-line into CommandHistory.cpp so the resolver can
+// use the full CurvzProject type.
 struct LinkTextToPathCommand : CurvzCommand {
-    SceneNode*  obj;
+    CurvzProject* proj;     // resolution root
+    std::string   obj_iid;  // internal_id of the target text node
     std::string before_path_id;
     double      before_offset;
     bool        before_flip;
@@ -1296,34 +1694,24 @@ struct LinkTextToPathCommand : CurvzCommand {
     bool        after_flip;
     double      after_x, after_y;     // text_x/text_y after the operation
 
-    LinkTextToPathCommand(SceneNode* o,
+    LinkTextToPathCommand(CurvzProject* proj, std::string obj_iid,
                           std::string bpid, double boff, bool bflip,
                           double bx, double by,
                           std::string apid, double aoff, bool aflip,
                           double ax, double ay)
-        : obj(o)
+        : proj(proj), obj_iid(std::move(obj_iid))
         , before_path_id(std::move(bpid)), before_offset(boff), before_flip(bflip)
         , before_x(bx), before_y(by)
         , after_path_id(std::move(apid)),  after_offset(aoff),  after_flip(aflip)
         , after_x(ax), after_y(ay) {}
 
-    void execute() override {
-        obj->text_path_id     = after_path_id;
-        obj->text_path_offset = after_offset;
-        obj->text_path_flip   = after_flip;
-        obj->text_x           = after_x;
-        obj->text_y           = after_y;
-    }
-    void undo() override {
-        obj->text_path_id     = before_path_id;
-        obj->text_path_offset = before_offset;
-        obj->text_path_flip   = before_flip;
-        obj->text_x           = before_x;
-        obj->text_y           = before_y;
-    }
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
     std::string description() const override {
         return after_path_id.empty() ? "Detach text from path" : "Link text to path";
     }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
 };
 
 // ── EditSwatchCommand ─────────────────────────────────────────────────────────
@@ -2177,6 +2565,19 @@ public:
 
     std::string undo_description() const;
     std::string redo_description() const;
+
+    // s165 m3 — drop any command from either stack whose captured raw
+    // pointers reference `target`. Called from Canvas::scrub_node_refs
+    // when a SceneNode is destroyed, so the undo/redo stacks stay
+    // consistent with the live document tree. Without this, a command
+    // that captured a now-freed SceneNode crashes on undo() when it
+    // dereferences the dangling pointer.
+    //
+    // Implementation: erase-remove on both deques. Order is preserved.
+    // Commands that don't override CurvzCommand::references() default to
+    // `false` and are kept (safe assumption: they captured by id /
+    // unique_ptr / value, not raw pointer).
+    int scrub_command_history(const SceneNode* target);
 
 private:
     std::deque<std::unique_ptr<CurvzCommand>> m_undo_stack;

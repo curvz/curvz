@@ -799,7 +799,8 @@ void Canvas::make_blend(int steps, bool reverse, bool stroke_w_override,
 
   if (m_history)
     m_history->push(std::make_unique<MakeBlendCommand>(
-        parent, std::move(originals), std::move(blend_snap), ins));
+        project(), parent->internal_id,
+        std::move(originals), std::move(blend_snap), ins));
 
   m_selected = blend_ptr;
   m_selection = {blend_ptr};
@@ -1695,7 +1696,8 @@ void Canvas::make_warp() {
 
   if (m_history)
     m_history->push(std::make_unique<MakeWarpCommand>(
-        parent, std::move(source_snap), src_idx, std::move(warp_snap), ins));
+        project(), parent->internal_id,
+        std::move(source_snap), src_idx, std::move(warp_snap), ins));
 
   m_selected = warp_ptr;
   m_selection = {warp_ptr};
@@ -1757,7 +1759,8 @@ void Canvas::release_warp() {
 
   if (m_history)
     m_history->push(std::make_unique<ReleaseWarpCommand>(
-        parent, std::move(warp_snap), std::move(source_snap), warp_idx));
+        project(), parent->internal_id,
+        std::move(warp_snap), std::move(source_snap), warp_idx));
 
   m_selected = new_sel;
   m_selection = {new_sel};
@@ -1826,7 +1829,8 @@ void Canvas::flatten_warp() {
 
   if (m_history)
     m_history->push(std::make_unique<FlattenWarpCommand>(
-        parent, std::move(warp_snap), std::move(flat_snap), warp_idx));
+        project(), parent->internal_id,
+        std::move(warp_snap), std::move(flat_snap), warp_idx));
 
   m_selected = new_sel;
   m_selection = {new_sel};
@@ -1902,7 +1906,8 @@ bool Canvas::equalize_blend_sources(SceneNode *a, SceneNode *b) {
 
   if (m_history)
     m_history->push(std::make_unique<EditPathCommand>(
-        target, std::move(before_pd), std::move(after_pd),
+        project(), target->internal_id,
+        std::move(before_pd), std::move(after_pd),
         "Equalize nodes for Blend"));
 
   LOG_INFO("Canvas: equalized path '{}' — inserted {} node(s), now {} nodes "
@@ -2019,7 +2024,8 @@ void Canvas::release_blend() {
 
   if (m_history)
     m_history->push(std::make_unique<ReleaseBlendCommand>(
-        parent, std::move(blend_snap), std::move(results), blend_idx));
+        project(), parent->internal_id,
+        std::move(blend_snap), std::move(results), blend_idx));
 
   m_selection = new_sel;
   m_selected = new_sel.empty() ? nullptr : new_sel.front();
@@ -2386,7 +2392,7 @@ void Canvas::align_selection(AlignOp op) {
         n.cx2 += ddx;
         n.cy2 += ddy;
       }
-      snaps.push_back({leaf, std::move(before), *leaf->path});
+      snaps.push_back({leaf->internal_id, std::move(before), *leaf->path});
     }
   }
 
@@ -2401,7 +2407,8 @@ void Canvas::align_selection(AlignOp op) {
 
   if (m_history)
     m_history->push(
-        std::make_unique<AlignObjectsCommand>(std::move(snaps), desc));
+        std::make_unique<AlignObjectsCommand>(
+            project(), std::move(snaps), desc));
 
   // ── Record macro step ─────────────────────────────────────────────────
   {
@@ -2845,7 +2852,8 @@ void Canvas::boolean_op(BooleanOpType op) {
   // ── Push single atomic undo command ──────────────────────────────────────
   if (m_history)
     m_history->push(std::make_unique<BooleanOpCommand>(
-        parent, std::move(originals), std::move(result_snaps), insert_idx,
+        project(), parent->internal_id,
+        std::move(originals), std::move(result_snaps), insert_idx,
         std::string(op_name)));
 
   // ── Notify if any objects were skipped ───────────────────────────────────
@@ -2985,7 +2993,8 @@ void Canvas::offset_path_op(double distance, OffsetSide side,
 
       if (m_history)
         m_history->push(std::make_unique<BooleanOpCommand>(
-            parent, std::move(originals), std::move(result_snaps), ins,
+            project(), parent->internal_id,
+            std::move(originals), std::move(result_snaps), ins,
             "Offset Path"));
     }
 
@@ -3716,7 +3725,8 @@ void Canvas::expand_stroke_op() {
 
     if (m_history)
       m_history->push(std::make_unique<BooleanOpCommand>(
-          parent, std::move(originals), std::move(result_snaps), idx,
+          project(), parent->internal_id,
+          std::move(originals), std::move(result_snaps), idx,
           "Expand Stroke"));
 
     ++applied;
@@ -3931,7 +3941,8 @@ void Canvas::arrange(ArrangeOp op) {
   // ── 4. Push undo + signal ─────────────────────────────────────────────
   if (m_history)
     m_history->push(std::make_unique<ZOrderCommand>(
-        parent, std::move(entries), std::move(before_order),
+        project(), parent->internal_id,
+        std::move(entries), std::move(before_order),
         std::move(after_order), desc));
 
   m_sig_doc_changed.emit();
@@ -3974,7 +3985,8 @@ void Canvas::reverse_selected_path() {
   *m_selected->path = bp.to_path_data();
   if (m_history)
     m_history->push(std::make_unique<EditPathCommand>(
-        m_selected, std::move(before), *m_selected->path, "Reverse path"));
+        project(), m_selected->internal_id,
+        std::move(before), *m_selected->path, "Reverse path"));
 
   // ── Record macro step ─────────────────────────────────────────────────
   {
@@ -4028,7 +4040,8 @@ void Canvas::open_selected_at_node() {
 
   if (m_history)
     m_history->push(std::make_unique<EditPathCommand>(
-        m_selected, std::move(before), *m_selected->path, "Open path at node"));
+        project(), m_selected->internal_id,
+        std::move(before), *m_selected->path, "Open path at node"));
 
   // Select the new tail (last node) — the cut point
   m_selected_node = (int)m_selected->path->nodes.size() - 1;
@@ -4432,9 +4445,9 @@ void Canvas::flip_selection(bool horizontal) {
         obj->transform.d = -obj->transform.d;
       }
 
-      img_snaps.push_back({obj, bef_x, bef_y, bef_w, bef_h, bef, obj->image_x,
-                           obj->image_y, obj->image_w, obj->image_h,
-                           obj->transform});
+      img_snaps.push_back({obj->internal_id, bef_x, bef_y, bef_w, bef_h,
+                           bef, obj->image_x, obj->image_y, obj->image_w,
+                           obj->image_h, obj->transform});
       continue;
     }
 
@@ -4447,7 +4460,8 @@ void Canvas::flip_selection(bool horizontal) {
         obj->text_y = 2.0 * cy - obj->text_y;
       if (m_history)
         m_history->push(std::make_unique<MoveObjectCommand>(
-            obj, bef_x, bef_y, obj->text_x, obj->text_y));
+            project(), obj->internal_id,
+            bef_x, bef_y, obj->text_x, obj->text_y));
       continue;
     }
 
@@ -4469,7 +4483,7 @@ void Canvas::flip_selection(bool horizontal) {
           n.cy2 = 2.0 * cy - n.cy2;
         }
       }
-      path_snaps.push_back({leaf, before, *leaf->path});
+      path_snaps.push_back({leaf->internal_id, before, *leaf->path});
     }
   }
 
@@ -4477,10 +4491,12 @@ void Canvas::flip_selection(bool horizontal) {
     std::string desc = horizontal ? "Flip horizontal" : "Flip vertical";
     if (!path_snaps.empty())
       m_history->push(
-          std::make_unique<ScaleObjectsCommand>(std::move(path_snaps), desc));
+          std::make_unique<ScaleObjectsCommand>(
+              project(), std::move(path_snaps), desc));
     if (!img_snaps.empty())
       m_history->push(
-          std::make_unique<ScaleImageCommand>(std::move(img_snaps), desc));
+          std::make_unique<ScaleImageCommand>(
+              project(), std::move(img_snaps), desc));
   }
 
   m_sig_doc_changed.emit();
@@ -4752,14 +4768,19 @@ void Canvas::apply_opacity_to_selection(double opacity) {
   };
   // Capture pre-edit snapshots BEFORE writing — group + every flattened
   // child gets a Snap so undo restores the full pre-edit state. Track
-  // already-snapped nodes by pointer to avoid double-recording when a
+  // already-snapped nodes by iid to avoid double-recording when a
   // group and one of its members are both selected (rare but possible
   // via shift-click).
+  // s170 m1 — iid-based capture: Snap stores obj_iid (string) instead of
+  // a raw SceneNode*, dedup set is keyed on iid string, push passes
+  // project() so execute()/undo() can resolve via find_by_iid.
   std::vector<SetOpacityCommand::Snap> snaps;
-  std::unordered_set<SceneNode*> seen;
+  std::unordered_set<std::string> seen;
   auto snap_and_write = [&](SceneNode *n, double after) {
-    if (!n || !seen.insert(n).second) return;
-    snaps.push_back({n, n->opacity, after});
+    if (!n) return;
+    const std::string& iid = n->internal_id;
+    if (iid.empty() || !seen.insert(iid).second) return;
+    snaps.push_back({iid, n->opacity, after});
     n->opacity = after;
   };
   for (SceneNode *obj : m_selection) {
@@ -4772,8 +4793,8 @@ void Canvas::apply_opacity_to_selection(double opacity) {
   }
   if (snaps.empty()) return;
   if (m_history)
-    m_history->push(std::make_unique<SetOpacityCommand>(std::move(snaps),
-                                                        "Set opacity"));
+    m_history->push(std::make_unique<SetOpacityCommand>(
+        project(), std::move(snaps), "Set opacity"));
   m_sig_doc_changed.emit();
   queue_draw();
   // Macro recording (s108 m3): record the SetOpacity step at the same
@@ -4831,12 +4852,12 @@ void Canvas::rotate_selection_by(double angle_deg, double pivot_x,
         rot(nd.cx1, nd.cy1, nd.cx1, nd.cy1);
         rot(nd.cx2, nd.cy2, nd.cx2, nd.cy2);
       }
-      snaps.push_back({leaf, before, *leaf->path});
+      snaps.push_back({leaf->internal_id, before, *leaf->path});
     }
   }
   if (m_history && !snaps.empty())
-    m_history->push(std::make_unique<ScaleObjectsCommand>(std::move(snaps),
-                                                          "Rotate object"));
+    m_history->push(std::make_unique<ScaleObjectsCommand>(
+        project(), std::move(snaps), "Rotate object"));
   m_sig_doc_changed.emit();
   queue_draw();
 }
@@ -4875,12 +4896,12 @@ void Canvas::scale_selection_by(double sx, double sy) {
         sc(nd.cx1, nd.cy1, nd.cx1, nd.cy1);
         sc(nd.cx2, nd.cy2, nd.cx2, nd.cy2);
       }
-      snaps.push_back({leaf, before, *leaf->path});
+      snaps.push_back({leaf->internal_id, before, *leaf->path});
     }
   }
   if (m_history && !snaps.empty())
-    m_history->push(std::make_unique<ScaleObjectsCommand>(std::move(snaps),
-                                                          "Scale object"));
+    m_history->push(std::make_unique<ScaleObjectsCommand>(
+        project(), std::move(snaps), "Scale object"));
   m_sig_doc_changed.emit();
   queue_draw();
 }
@@ -4951,7 +4972,7 @@ void Canvas::run_macro(const std::string &macro_id, int from_step) {
               nd.cx2 += s.dx;
               nd.cy2 += s.dy;
             }
-            snaps.push_back({leaf, before, *leaf->path});
+            snaps.push_back({leaf->internal_id, before, *leaf->path});
           }
           if (obj->is_text()) {
             obj->text_x += s.dx;
@@ -4964,7 +4985,7 @@ void Canvas::run_macro(const std::string &macro_id, int from_step) {
         }
         if (m_history && !snaps.empty())
           m_history->push(std::make_unique<ScaleObjectsCommand>(
-              std::move(snaps), "Move object"));
+              project(), std::move(snaps), "Move object"));
         m_sig_doc_changed.emit();
         queue_draw();
         break;
@@ -5206,7 +5227,7 @@ void Canvas::step_repeat(int copies, double dx, double dy, bool rotate_enabled,
       new_selection.push_back(dup.get());
       e.parent->children.insert(e.parent->children.begin() + ins,
                                 std::move(dup));
-      cmd_entries.push_back({e.parent, std::move(snap), ins});
+      cmd_entries.push_back({e.parent->internal_id, std::move(snap), ins});
       ++shift;
     }
   }
@@ -5214,7 +5235,7 @@ void Canvas::step_repeat(int copies, double dx, double dy, bool rotate_enabled,
 
   if (m_history)
     m_history->push(
-        std::make_unique<StepRepeatCommand>(std::move(cmd_entries)));
+        std::make_unique<StepRepeatCommand>(project(), std::move(cmd_entries)));
 
   // Select all new copies
   m_selection = new_selection;
@@ -5266,7 +5287,8 @@ void Canvas::set_selected_nodes_type(BezierNode::Type type) {
 
   if (m_history)
     m_history->push(std::make_unique<EditPathCommand>(
-        m_selected, std::move(before), *m_selected->path, "Set node type"));
+        project(), m_selected->internal_id,
+        std::move(before), *m_selected->path, "Set node type"));
 
   m_sig_doc_changed.emit();
   queue_draw();
@@ -5281,7 +5303,7 @@ void Canvas::apply_corner_treatment_op(CornerType type, double radius) {
   for (auto &cs : m_corner_selection)
     by_obj[cs.obj].insert(cs.node_idx);
 
-  auto cmd = std::make_unique<CornerTreatmentCommand>();
+  auto cmd = std::make_unique<CornerTreatmentCommand>(project());
   bool any = false;
 
   for (auto &[obj, indices] : by_obj) {
@@ -5351,7 +5373,8 @@ void Canvas::release_text_from_path() {
 
     if (m_history) {
       m_history->push(std::make_unique<LinkTextToPathCommand>(
-          tn, tn->text_path_id, tn->text_path_offset, tn->text_path_flip,
+          project(), tn->internal_id,
+          tn->text_path_id, tn->text_path_offset, tn->text_path_flip,
           tn->text_x, tn->text_y,               // before x/y
           "", 0.0, false, detach_x, detach_y)); // after x/y
     }

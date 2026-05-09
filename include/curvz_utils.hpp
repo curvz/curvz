@@ -14,6 +14,8 @@
 //   count_anchors          recursive BezierNode count under a SceneNode
 //   doc_anchor_count       sum of count_anchors across non-guide layers
 //   doc_object_count       count of top-level visible objects in a doc
+//   find_by_iid            project-level SceneNode lookup by internal_id
+//                          (s167 m1 — id-based command captures pump)
 //   box_blur_argb32        in-place 3-pass box blur on ARGB32 pixels
 //                          (Cairo premultiplied, ≈ Gaussian)
 //   build_gradient_pattern FillStyle + bbox → Cairo::Pattern (linear/radial)
@@ -62,6 +64,7 @@ namespace Curvz {
 struct FillStyle;
 struct SceneNode;       // s132 m2 — count_anchors / count_objects pumps
 struct CurvzDocument;   // s132 m2 — document-level wrappers
+struct CurvzProject;    // s167 m1 — project-level find_by_iid wrapper
 struct PathData;        // s146 m2 — warp_presets pump signatures
 }
 
@@ -147,6 +150,17 @@ std::string short_iid(const std::string& iid);
 std::string encode_svg_id(const std::string& name,
                           const std::string& iid);
 
+// Turn a display name like "Untitled - Default" into a clean SVG filename
+// stem like "Untitled-Default" (preserving case). Runs of non-alphanumeric
+// characters collapse to a single '-'; leading/trailing dashes are stripped.
+// Returns "icon" if the result would be empty.
+//
+// s164: hoisted from MainWindow.cpp's static helper. Used from the new-doc
+// flow (on_new and the bindings file's two NDD slots) to derive a filename
+// stem from the user-visible doc name. Pure string→string transform with no
+// dependencies on Curvz types — belongs in utils.
+std::string doc_stem_from_name(const std::string& raw);
+
 // ── Document counting pumps (s132 m2) ────────────────────────────────
 // Single source of truth for the StatusBar's "N objects · N nodes"
 // readout. MainWindow had five copies of "iterate doc.layers and sum
@@ -183,6 +197,104 @@ int doc_anchor_count(const Curvz::CurvzDocument& doc);
 // "User-visible" here means "what shows in the Layers panel as a row" —
 // direct children of regular Layer nodes, regardless of node count.
 int doc_object_count(const Curvz::CurvzDocument& doc);
+
+// ── Iid resolver pump (s167 m1) ──────────────────────────────────────
+// Project-level lookup of a SceneNode by internal_id (the stable UUID).
+// Walks every document in the project, returning the first hit.
+//
+// UUIDs are globally unique by construction (RFC 4122 random; see
+// SceneNode::generate_internal_id), so "first hit" and "only hit" are
+// the same thing in practice — the walk stops as soon as a doc's
+// find_by_iid returns non-null.
+//
+// Use case: id-based command captures (s167 stages 0-6). A command
+// stores the iid of the node it edits; at execute/undo time it calls
+// this to resolve the iid back to a live pointer, early-returning if
+// the node has been destroyed since capture. Replaces the dangling-
+// SceneNode*-in-undo-stack class of bug.
+//
+// Performance: each doc's find_by_iid is O(1) when its index is fresh,
+// O(N) the first time after a structural mutation (rebuild). Project
+// walk is O(D) where D = number of docs (typically <10). Microseconds
+// at our scale.
+//
+// Returns nullptr if iid is empty or no document contains a match.
+Curvz::SceneNode* find_by_iid(const Curvz::CurvzProject& proj,
+                              const std::string& iid);
+
+// ── Layer-index resolver (s171 m1) ───────────────────────────────────
+// Layers live at the top of the document tree (`doc->layers`) and are
+// identified by index for insertion / erasure / reorder operations.
+// `find_by_iid` returns a SceneNode* but doesn't tell us where the layer
+// sits in the layers vector — and walking `children` to find it would
+// be wrong (groups don't live under layers' children, layers live
+// directly under the doc). This pump answers "which slot in
+// doc->layers holds the layer with this iid?"
+//
+// Use case: layer-undoable command bodies (s171). Add/Delete/Reorder
+// commands need vector indices to insert and erase by position; they
+// store layer iids and resolve to indices at apply time.
+//
+// Returns the index in the supplied document's `layers` vector, or -1
+// if iid is empty or no top-level layer in this doc matches. Does NOT
+// walk into layer children — only matches against `doc->layers[i]->
+// internal_id`. Linear scan (top-level layer count is small, no index
+// caching needed).
+//
+// Caller chooses the doc — typically `proj.active_doc()` or a specific
+// CurvzDocument*. Project-wide resolution doesn't fit here because the
+// returned index is doc-relative.
+int find_layer_index_by_iid(const Curvz::CurvzDocument& doc,
+                            const std::string& iid);
+
+// ── Doc-by-iid resolver (s171 m1) ────────────────────────────────────
+// Project-level scan: which document in this project contains the
+// SceneNode with the given iid? Returns a non-owning pointer to the
+// CurvzDocument, or nullptr if iid is empty / no document contains it.
+//
+// Use case: layer-undoable commands need to know which doc to mutate
+// without storing a raw `CurvzDocument*` (which would dangle if the
+// user closes the doc between push and undo). The command stores an
+// iid that's expected to live in the target doc — typically a sibling
+// layer's iid as an "anchor" — and resolves to the live doc at apply
+// time. If the anchor's gone too (whole doc closed), the command
+// no-ops cleanly, same partial-recovery shape as Cut/Duplicate.
+//
+// Linear over docs and per-doc index lookup; documents are few (<10
+// typical) and the per-doc lookup is O(1) when index is fresh.
+Curvz::CurvzDocument* find_doc_by_iid(const Curvz::CurvzProject& proj,
+                                      const std::string& iid);
+
+// ── iid_breadcrumb (s175 m3) ─────────────────────────────────────────
+// Resolves an iid to a human-readable "Layer Name → Node Name" string
+// suitable for inspector labels and any other place where users would
+// otherwise see a raw UUID.
+//
+// Why this exists: iids are stable UUIDs (good for code), but exposing
+// them in UI labels is a UX leak — users see things like
+// "e0677496-dfb3-4001-810a-97050f9c7aa0" where they expect a name.
+// First user-visible case: the Text-on-Path inspector row, which used
+// to render `text_path_id` directly as the label text.
+//
+// Format: "<Layer Name> → <Node Name>". If the node is nested under a
+// group inside a layer, intermediate group names are skipped — the
+// breadcrumb shows only the owning layer and the leaf node, matching
+// what the LayersPanel surfaces for hierarchy at a glance. (Today the
+// only UI that consumes this is text-on-path, where group nesting
+// isn't reachable; the layer-only walk handles future cases too.)
+//
+// Returns:
+//   - "<Layer> → <Name>" on a clean resolve
+//   - "—" if iid is empty (treat as "no link")
+//   - "(unresolved)" if iid is non-empty but doesn't match any node
+//     in the project (e.g. linked path was deleted; the link is stale
+//     but the value is preserved for round-trip)
+//
+// Never returns the raw iid — that's the bug this helper exists to
+// prevent. If callers want the iid (e.g. for diagnostic logging),
+// they should use the iid string directly, not this label.
+std::string iid_breadcrumb(const Curvz::CurvzProject& proj,
+                           const std::string& iid);
 
 // ── box_blur_argb32 ──────────────────────────────────────────────────
 // In-place blur of an ARGB32 (Cairo premultiplied, BGRA byte order on

@@ -210,6 +210,23 @@ public:
     bool library_defaults_seeded() const { return m_library_defaults_seeded; }
     void set_library_defaults_seeded(bool v);
 
+    // s152 — Toolbar density (Comfortable / Standard / Compact / Tight).
+    // Stored as int 0..3 matching Toolbar::Density enum order. Default 1
+    // (Standard) — the curvz-going-forward default after the s152 toolbar
+    // refactor; clearly tighter than the historical 48-column Comfortable
+    // and leaves headroom for ARC.md milestones #6-9 to add toolbar items
+    // (Booleans, Step-and-Repeat, Blend, Warp).
+    //
+    // MainWindow reads this once at startup and calls Toolbar::set_density
+    // with the corresponding enum. The user's right-click density picker
+    // emits Toolbar::signal_density_changed(Density), which MainWindow
+    // catches and writes back through set_toolbar_density().
+    //
+    // Range 0..3; clamped on set. Out-of-range values on load fall back
+    // to the default (1 = Standard).
+    int  toolbar_density() const { return m_toolbar_density; }
+    void set_toolbar_density(int v);
+
     // Emitted when any preference changes. Subscribers re-read the relevant
     // getter; the signal is intentionally parameterless to keep the ABI
     // stable as new prefs land.
@@ -242,8 +259,8 @@ private:
     // override of GTK's 500ms default. Range 0..2000 per setter.
     int  m_tooltip_delay_ms = 150;
     // s146 m3 — Warp creation defaults. See public docs above.
-    int  m_warp_default_top_count = 2;
-    int  m_warp_default_bot_count = 2;
+    int  m_warp_default_top_count = 3;
+    int  m_warp_default_bot_count = 3;
     int  m_warp_default_preset    = 0;   // Flat
     int  m_warp_default_quality   = 4;
     // s145 m4 — path overrides. Empty = "use the built-in default"
@@ -255,6 +272,9 @@ private:
     std::string m_log_path_override;
     std::string m_custom_css_path_override;
     bool m_library_defaults_seeded = false;
+    // s152 — Toolbar density. 0=Comfortable, 1=Standard (default),
+    // 2=Compact, 3=Tight. Maps to Toolbar::Density enum.
+    int  m_toolbar_density = 1;
     sigc::signal<void()> m_sig_changed;
 };
 

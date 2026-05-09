@@ -880,25 +880,132 @@ label { color: var(--fg-primary); }
 /* (ctx-well classes removed — defaults well moved to Toolbar) */
 
 /* ── Toolbar ─────────────────────────────────────────────── */
+/*
+ * s152: CSS-driven active state. The previous implementation
+ * allocated a Gtk::CssProvider per call to select_tool() and
+ * loaded raw hex literals to override Adwaita. That hack is
+ * gone; .tool-btn:checked carries the active styling here, and
+ * select_tool() now only flips the toggle's checked bit.
+ *
+ * Tokens: every colour goes through var(--token) so light motif
+ * works automatically. The active blue uses --accent-deep (the
+ * GNOME blue dark-shade family token) so light motif gets a
+ * darker accent that reads correctly on a light surface.
+ *
+ * Density: four classes on the .toolbar-panel root scale every
+ * sizing rule. Comfortable is the default rule set (no extra
+ * class). .standard / .compact / .tight stack on top, narrowing
+ * the column and shrinking buttons. set_density() flips the
+ * class; GTK relayouts on the change, no widget rebuild.
+ *
+ *   Comfortable  (no class)     48px col, 40×40 buttons   curvz historical
+ *   Standard     .standard      40px col, 32×32 buttons   curvz default
+ *   Compact      .compact       32px col, 28×28 buttons
+ *   Tight        .tight         28px col, 24×24 buttons
+ */
 .toolbar-panel {
     background-color: var(--bg-surface);
     border-right: 1px solid var(--bg-deepest);
+    min-width: 48px;
+    padding: 4px 2px;
+}
+.toolbar-panel > separator {
+    background-color: var(--bg-edge);
+    margin: 4px 0;
+    min-height: 1px;
+}
+/* Tool buttons (.tool-btn class applied by add_tool_button).
+   Selector targets .tool-btn directly so :checked rules apply
+   regardless of widget type (togglebutton, etc). */
+.toolbar-panel .tool-btn {
     min-width: 40px;
-    padding: 0px;
-}
-/* Tool buttons — square, fill the column */
-.toolbar-panel togglebutton {
-    background-color: transparent;
-    border: none;
+    min-height: 40px;
+    padding: 0;
     border-radius: 4px;
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
     color: var(--fg-muted);
-    padding: 4px;
-    min-width: 28px;
-    min-height: 28px;
+    transition: background-color 80ms ease, color 80ms ease;
 }
-/* Non-tool buttons inherit panel style but are unconstrained —
-   tb-zoom-btn / tb-fit-btn / tb-icon-btn override this further */
-.toolbar-panel button {
+.toolbar-panel .tool-btn image {
+    color: var(--fg-muted);
+}
+.toolbar-panel .tool-btn:hover {
+    background-color: var(--hover-bg);
+    color: var(--fg-primary);
+}
+.toolbar-panel .tool-btn:hover image {
+    color: var(--fg-primary);
+}
+/* Active state — replaces the inline-CSS provider hack.
+   --accent-deep matches the GNOME-family selection blue used
+   throughout curvz; both motifs supply a tone that reads as
+   "engaged" without colliding with hover. */
+.toolbar-panel .tool-btn:checked {
+    background-color: var(--accent-deep);
+    background-image: none;
+    color: #ffffff;
+}
+.toolbar-panel .tool-btn:checked image {
+    color: #ffffff;
+}
+.toolbar-panel .tool-btn:checked:hover {
+    background-color: var(--accent);
+}
+/* s152 — Snap toggle exception. The snap button uses the same .tool-btn
+   sizing/hover/density rules but the on/off state is conveyed by the
+   icon itself (curvz-switch-on/off-symbolic), not by background colour.
+   The `.tb-snap-btn` class (added alongside `.tool-btn` on the snap
+   button) wins specificity here and reverts the :checked background to
+   transparent. Hover still highlights normally. */
+.toolbar-panel .tool-btn.tb-snap-btn:checked,
+.toolbar-panel .tool-btn.tb-snap-btn:checked:hover {
+    background-color: transparent;
+    background-image: none;
+    color: var(--fg-primary);
+}
+.toolbar-panel .tool-btn.tb-snap-btn:checked image {
+    color: var(--fg-primary);
+}
+.toolbar-panel .tool-btn.tb-snap-btn:checked:hover {
+    background-color: var(--hover-bg);
+}
+/* S117 m5 (preserved): hold disabled toolbar buttons transparent.
+   The system theme paints a grey background-image on :disabled —
+   we clear both background-color and background-image. opacity
+   stays for icon de-emphasis. */
+.toolbar-panel .tool-btn:disabled {
+    background-color: transparent;
+    background-image: none;
+    opacity: 0.4;
+}
+/* s152 sub-ship 1: faked-disabled look. Used by widgets that need to
+   *appear* disabled while staying GTK-sensitive — so they can still
+   absorb events (e.g. the right-click swallow on the align button
+   needs to fire even when align has nothing to align, otherwise
+   right-click bubbles up to the toolbar density picker). The action
+   itself is gated in the click handler.
+   Visual matches the real :disabled rule; hover is suppressed (a
+   sensitive widget would otherwise paint --hover-bg, contradicting
+   the disabled look). */
+.toolbar-panel .tool-btn.tool-btn-disabled {
+    background-color: transparent;
+    background-image: none;
+    opacity: 0.4;
+}
+.toolbar-panel .tool-btn.tool-btn-disabled:hover,
+.toolbar-panel .tool-btn.tool-btn-disabled:hover image {
+    background-color: transparent;
+    color: var(--fg-muted);
+}
+/* Legacy fallback for any toolbar buttons NOT yet carrying the
+   .tool-btn class (e.g. align/macro built before this refactor).
+   Same rule shape as before; remove once all toolbar buttons are
+   .tool-btn-tagged. */
+.toolbar-panel togglebutton:not(.tool-btn),
+.toolbar-panel button:not(.tool-btn) {
     background-color: transparent;
     border: none;
     border-radius: 4px;
@@ -907,33 +1014,28 @@ label { color: var(--fg-primary); }
     min-height: 0;
     padding: 0;
 }
-.toolbar-panel togglebutton:hover,
-.toolbar-panel button:hover { background-color: var(--hover-bg); color: var(--fg-primary); }
-.toolbar-panel togglebutton:hover image { color: var(--fg-primary); }
-/* S117 m5: hold disabled toolbar buttons transparent. The system
-   theme (Default-dark.css:235) paints a grey background-IMAGE on
-   `button:disabled` — not a background-color, which is why our
-   earlier `background-color: transparent` override did nothing
-   visible. Need to clear both. Inspector confirmed: button itself
-   is rgba(0,0,0,0) but background-image is image(rgb(50,50,50)),
-   creating the visible darker square over the toolbar band.
-   opacity: 0.4 stays — that's just visual de-emphasis on the icon. */
-.toolbar-panel togglebutton:disabled,
-.toolbar-panel button:disabled {
+.toolbar-panel togglebutton:not(.tool-btn):hover,
+.toolbar-panel button:not(.tool-btn):hover {
+    background-color: var(--hover-bg);
+    color: var(--fg-primary);
+}
+.toolbar-panel togglebutton:not(.tool-btn):hover image {
+    color: var(--fg-primary);
+}
+.toolbar-panel togglebutton:not(.tool-btn):disabled,
+.toolbar-panel button:not(.tool-btn):disabled {
     background-color: transparent;
     background-image: none;
     opacity: 0.4;
 }
-togglebutton.tool-active {
-    border-left: 3px solid var(--accent);
-    border-radius: 0px;
-}
-/*
-.toolbar-panel togglebutton:checked:hover {
-    background-color: var(--accent-bg);
-    color: var(--accent-hover);
-}
-*/
+/* Legacy .tool-active class — kept for any code path that still
+   adds it via add_css_class("tool-active"). Now a no-op visual
+   (the :checked rule handles active state); preserved so a stray
+   add/remove doesn't cause a crash or warning. The old left-
+   accent bar is gone — full background fill is clearer and more
+   consistent with industry conventions. */
+togglebutton.tool-active { /* no-op, see .tool-btn:checked above */ }
+
 .tb-switch {
     border: none;
     padding: 0px;
@@ -941,6 +1043,48 @@ togglebutton.tool-active {
     min-width: 0px;
     min-height: 0px;
     font-size: 0px;
+}
+
+/* ── Toolbar density: Standard (curvz default) ──────────── */
+.toolbar-panel.standard {
+    min-width: 40px;
+    padding: 3px 2px;
+}
+.toolbar-panel.standard > separator {
+    margin: 3px 0;
+}
+.toolbar-panel.standard .tool-btn {
+    min-width: 32px;
+    min-height: 32px;
+    border-radius: 3px;
+}
+
+/* ── Toolbar density: Compact ───────────────────────────── */
+.toolbar-panel.compact {
+    min-width: 32px;
+    padding: 2px 1px;
+}
+.toolbar-panel.compact > separator {
+    margin: 2px 0;
+}
+.toolbar-panel.compact .tool-btn {
+    min-width: 28px;
+    min-height: 28px;
+    border-radius: 3px;
+}
+
+/* ── Toolbar density: Tight (minimum-viable for symbolic icons) */
+.toolbar-panel.tight {
+    min-width: 28px;
+    padding: 1px;
+}
+.toolbar-panel.tight > separator {
+    margin: 1px 0;
+}
+.toolbar-panel.tight .tool-btn {
+    min-width: 24px;
+    min-height: 24px;
+    border-radius: 2px;
 }
 
 /* ── Toolbar defaults well ───────────────────────────────── */
@@ -1367,12 +1511,17 @@ label.accent {
     color: var(--fg-muted);
     font-family: monospace;
 }
+.statusbar-doc-label {
+    
+}
+
 /* s150 — active display unit lives next to zoom in the status bar.
    Bold + slightly more saturated colour so it reads at a glance,
    peripheral-vision feedback for "what unit are my numbers in." */
 .statusbar-units-label {
-    font-weight: bold;
-    color: var(--fg-secondary);
+    font-size: 11px;
+    color: var(--fg-muted);
+    font-family: monospace;
 }
 
 /* ── Typography classes ──────────────────────────────────── */

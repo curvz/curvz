@@ -233,10 +233,21 @@ struct SceneNode {
   };
 
   Type type = Type::Path;
-  std::string
-      id; // SVG id attr — user-visible export name, not unique across docs
-  std::string internal_id; // Stable UUID — unique across all docs, used for
-                           // cross-node links
+  std::string id; // SVG id attr — user-visible export name, not unique across docs
+  // s168 m2: default-init via generate_internal_id() so every SceneNode
+  // entering the tree has a non-empty iid by construction. Diagnosed in
+  // s168 m1: Ref creation paths (Canvas_input.cpp:1690, :3876) and several
+  // others mint nodes without calling generate_internal_id(), leaving
+  // internal_id="". The s167 iid-based migration reads internal_id at
+  // command-push time, and an empty iid silently no-ops on undo —
+  // manifesting as RefMove "removing" the refpt. Default-init at the
+  // struct level closes the gap structurally: clone_node and SvgParser
+  // both overwrite internal_id explicitly after construction, so this
+  // change is invisible to existing copy/load paths and only fills in
+  // the gap for sites that previously skipped the assignment.
+  std::string internal_id = generate_internal_id(); // Stable UUID — unique
+                                                    // across all docs, used
+                                                    // for cross-node links
   std::string name;
   bool visible = true;
   bool locked = false;

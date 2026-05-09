@@ -160,13 +160,26 @@ void AppPreferences::load() {
                 j["library_defaults_seeded"].get<bool>();
         }
 
+        // s152 — toolbar density. Out-of-range values fall back to
+        // the default (Standard = 1) silently.
+        if (j.contains("toolbar_density") &&
+            j["toolbar_density"].is_number_integer()) {
+            int n = j["toolbar_density"].get<int>();
+            if (n < 0 || n > 3) {
+                LOG_WARN("AppPreferences: toolbar_density out of range "
+                         "({}), using default", n);
+                n = 1;
+            }
+            m_toolbar_density = n;
+        }
+
         LOG_INFO("AppPreferences: loaded from {} — "
                  "boolean_cleanup_quality={}, reopen_last_project={}, "
                  "recent_projects_max_count={}, show_rulers_by_default={}, "
                  "undo_history_depth={}, tooltip_delay_ms={}, "
                  "library_override={}, templates_override={}, "
                  "log_override={}, css_override={}, "
-                 "library_defaults_seeded={}",
+                 "library_defaults_seeded={}, toolbar_density={}",
                  path, m_boolean_cleanup_quality,
                  m_reopen_last_project, m_recent_projects_max_count,
                  m_show_rulers_by_default, m_undo_history_depth,
@@ -175,7 +188,8 @@ void AppPreferences::load() {
                  m_templates_path_override.empty() ? "<default>" : m_templates_path_override,
                  m_log_path_override.empty() ? "<default>" : m_log_path_override,
                  m_custom_css_path_override.empty() ? "<default>" : m_custom_css_path_override,
-                 m_library_defaults_seeded);
+                 m_library_defaults_seeded,
+                 m_toolbar_density);
     } catch (const std::exception& e) {
         LOG_WARN("AppPreferences: failed to parse {}: {} — using defaults",
                  path, e.what());
@@ -209,6 +223,7 @@ void AppPreferences::save() const {
     j["log_path_override"]          = m_log_path_override;
     j["custom_css_path_override"]   = m_custom_css_path_override;
     j["library_defaults_seeded"]    = m_library_defaults_seeded;
+    j["toolbar_density"]            = m_toolbar_density;
 
     std::ofstream f(path);
     if (f) {
@@ -360,6 +375,20 @@ void AppPreferences::set_custom_css_path_override(const std::string& v) {
 void AppPreferences::set_library_defaults_seeded(bool v) {
     if (m_library_defaults_seeded == v) return;
     m_library_defaults_seeded = v;
+    save();
+    m_sig_changed.emit();
+}
+
+// s152 — Toolbar density. 0..3 maps to Toolbar::Density enum values
+// (Comfortable / Standard / Compact / Tight). Out-of-range values are
+// clamped silently — callers passing through Toolbar::Density's enum
+// values will always be in range; this clamp protects against
+// inspector-driven raw int paths.
+void AppPreferences::set_toolbar_density(int v) {
+    if (v < 0) v = 0;
+    if (v > 3) v = 3;
+    if (m_toolbar_density == v) return;
+    m_toolbar_density = v;
     save();
     m_sig_changed.emit();
 }

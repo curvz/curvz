@@ -6,6 +6,7 @@
 #include <cmath>
 #include <algorithm>
 #include <functional>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Curvz {
@@ -127,6 +128,76 @@ struct CurvzDocument {
 
     // Top-level children are always Layer or GuideLayer nodes
     std::vector<std::unique_ptr<SceneNode>> layers;
+
+    // ── Iid → SceneNode* index (s167 m1) ──────────────────────────────
+    //
+    // Flat map projection of the tree, keyed on SceneNode::internal_id
+    // (the stable UUID, not the SVG `id` attribute). The tree is the
+    // authoritative structure; this map is the "poor man's tree" — a
+    // lookup view rebuilt lazily when the dirty bit fires.
+    //
+    // Why: the command system needs to capture node identity in a way
+    // that survives the node being destroyed and re-inserted (undo /
+    // redo of structural ops). Raw SceneNode* dangles; iids don't. The
+    // resolver `find_by_iid` is the migration's pump (s167 stages 0-6),
+    // and several other walks across the codebase will eventually
+    // retire onto this same index — find_warp_owner, parser forward-ref
+    // fixup, selection-by-iid, cross-link follows.
+    //
+    // Walk coverage:
+    //   • children                  — every container (Layer, Group,
+    //                                 Compound, ClipGroup, etc.)
+    //   • clip_shape                — ClipGroup's authoritative slot
+    //   • blend_source_a / _b       — Blend's authoritative inputs
+    //   • warp_source               — Warp's authoritative input
+    //
+    // NOT walked (deliberately): blend_cache, warp_glyph_cache,
+    // warp_cache. Those are derived; iids inside them aren't stable
+    // across cache rebuilds. A command that tried to capture a cached
+    // node's iid would lose it on the next rebuild — by design, we
+    // never let that capture happen.
+    //
+    // Freshness contract:
+    //   1. Index starts dirty. First lookup walks the tree to build it.
+    //   2. Pure data edits (EditPath, EditAppearance, TextEdit, …) do
+    //      NOT change topology — the index stays valid across them.
+    //   3. Any code path that destroys a SceneNode MUST call
+    //      `invalidate_iid_index()` BEFORE the destruction. The single
+    //      seam is `Canvas::scrub_node_refs`, which runs before every
+    //      destructive op (s156). Stage 0 wires the call there; new
+    //      destruction sites must extend that seam, not bypass it.
+    //   4. Bulk loads (SvgParser) leave the index dirty by default —
+    //      first lookup after load rebuilds.
+    //
+    // Failure mode if rule 3 is forgotten: stale pointer in the map
+    // dereferenced by a caller. SAME failure mode as today's raw-
+    // pointer-in-command. Rule 3 doesn't make things worse than the
+    // status quo; rules 1-2 make the common case safe by construction.
+    //
+    // The index is `mutable` because find_by_iid is conceptually const
+    // (no observable change to the document), and rebuild happens
+    // through a const path. Standard idiom for lazy caches behind a
+    // logically-const interface (cf. gradient_cache in SceneNode).
+    mutable std::unordered_map<std::string, SceneNode*> m_iid_index;
+    mutable bool m_iid_index_dirty = true;
+
+    // Mark the iid index stale. Call before any code path that destroys
+    // or replaces a SceneNode in this document's tree. The next
+    // find_by_iid will rebuild from a fresh tree walk.
+    //
+    // Cheap (single bool flip) — safe to call defensively. Idempotent.
+    void invalidate_iid_index() const { m_iid_index_dirty = true; }
+
+    // Look up a live SceneNode in this document by internal_id.
+    // Returns nullptr if iid is empty or no node matches.
+    //
+    // Rebuilds the index on first call after invalidation; O(1) on
+    // subsequent calls within the same fresh window. Const because the
+    // index is mutable; callers can use this from const contexts.
+    //
+    // Implementation lives in CurvzDocument.cpp to keep the recursive
+    // walk out of the header.
+    SceneNode* find_by_iid(const std::string& iid) const;
 
     int canvas_width()  const { return canvas.canvas_width();  }
     int canvas_height() const { return canvas.canvas_height(); }

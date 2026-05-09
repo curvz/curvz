@@ -529,12 +529,14 @@ void Canvas::on_pivot_dialog(double doc_x, double doc_y) {
         auto comp = std::make_unique<CompositeCommand>("Rotate from point");
         for (auto &s : psnaps)
           comp->add(std::make_unique<EditPathCommand>(
-              s.obj, s.before, *s.obj->path, "Rotate from point"));
+              project(), s.obj->internal_id, s.before, *s.obj->path,
+              "Rotate from point"));
         for (auto &s : tsnaps) {
           double ax = s.obj->is_text() ? s.obj->text_x : s.obj->image_x;
           double ay = s.obj->is_text() ? s.obj->text_y : s.obj->image_y;
           comp->add(
-              std::make_unique<MoveObjectCommand>(s.obj, s.bx, s.by, ax, ay));
+              std::make_unique<MoveObjectCommand>(
+                  project(), s.obj->internal_id, s.bx, s.by, ax, ay));
         }
         if (!comp->steps.empty())
           m_history->push(std::move(comp));
@@ -589,11 +591,17 @@ void Canvas::on_text_begin(double sx, double sy) {
     // Edit existing text node — snapshot before-state for undo.
     m_text_editing = hit;
     m_text_is_new = false;
-    m_text_snapshot = TextEditCommand::snapshot_before(hit);
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), hit);
     m_text_has_snapshot = true;
     m_selected = hit;
     m_selection = {hit};  // s159 m2: sync for SelectionContext
     notify_object_selection_changed();
+    // s168 m1 DIAG — STRIP after triage (re-added in m5; clobbered when
+    // m4 overwrote Canvas_input.cpp from baseline)
+    LOG_INFO("[IIDDIAG] TextEdit::snapshot_before  hit_iid='{}' "
+             "snapshot.obj_iid='{}' name='{}' content='{}'",
+             hit->internal_id, m_text_snapshot.obj_iid,
+             hit->name, hit->text_content);
   } else {
     // Create a new text node at click position.
     auto obj = std::make_unique<SceneNode>();
@@ -673,6 +681,14 @@ void Canvas::commit_text_edit() {
     if (!m_text_is_new && m_text_has_snapshot) {
       // Existing node edit.
       m_text_snapshot.record_after(m_text_editing);
+      // s168 m1 DIAG — STRIP after triage (re-added in m5)
+      LOG_INFO("[IIDDIAG] TextEdit::push  capturing iid='{}' "
+               "obj_name='{}' obj_type={}  before='{}' after='{}'",
+               m_text_snapshot.obj_iid,
+               m_text_editing ? m_text_editing->name : std::string{"(null)"},
+               m_text_editing ? (int)m_text_editing->type : -1,
+               m_text_snapshot.before_content,
+               m_text_snapshot.after_content);
       m_history->push(
           std::make_unique<TextEditCommand>(std::move(m_text_snapshot)));
       m_text_has_snapshot = false;
@@ -1062,6 +1078,12 @@ void Canvas::on_draw_begin(double x, double y) {
           m_ref_selected = child.get();
           m_ref_drag_ox = px - child->ref_x;
           m_ref_drag_oy = py - child->ref_y;
+          // s168 m4: snapshot pre-drag position for RefMoveCommand push
+          // at mouse-up. Without this, the drag mutates ref_x/ref_y in
+          // place with no undo command — pre-existing gap diagnosed in
+          // s168.
+          m_ref_drag_orig_x = child->ref_x;
+          m_ref_drag_orig_y = child->ref_y;
           break;
         }
       }
@@ -1149,13 +1171,18 @@ void Canvas::on_draw_begin(double x, double y) {
         std::string fsia = obj->fill_swatch_id;
         std::string ssia = obj->stroke_swatch_id;
         std::string bsa  = obj->bound_style;
-        if (m_history)
+        if (m_history) {
+          // s168 m1 DIAG — STRIP after triage (re-added in m5)
+          LOG_INFO("[IIDDIAG] EditAppearance::push (eyedropper) "
+                   "iid='{}' obj_name='{}' obj_type={}",
+                   obj->internal_id, obj->name, (int)obj->type);
           m_history->push(std::make_unique<EditAppearanceCommand>(
-              obj, fb, sb, fa, sa,
+              project(), obj->internal_id, fb, sb, fa, sa,
               std::move(fsib), std::move(ssib),
               std::move(fsia), std::move(ssia),
               std::move(bsb), std::move(bsa),
               "Eyedropper"));
+        }
       }
 
       // Notify MainWindow so it can sync the toolbar well.
@@ -1579,7 +1606,8 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
       m_selected->warp_preset_idx = -1;
       if (m_history) {
         m_history->push(std::make_unique<EditWarpCommand>(
-            m_selected, m_warp_drag_pre_top, m_warp_drag_pre_bottom,
+            project(), m_selected->internal_id,
+            m_warp_drag_pre_top, m_warp_drag_pre_bottom,
             m_warp_drag_pre_quality, m_selected->warp_env_top,
             m_selected->warp_env_bottom, m_selected->warp_quality,
             m_warp_drag_pre_preset_idx, /*post_preset=*/-1));
@@ -1672,6 +1700,26 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
 
     if (m_ref_selected) {
       // Finished dragging existing ref point
+      // s168 m4: push RefMoveCommand if the drag actually moved the
+      // refpt. Pre-s168 this drag mutated ref_x/ref_y in place with
+      // no undo entry — Ctrl+Z would skip past the drag entirely. The
+      // 0.001 epsilon matches the path-move threshold at line ~3329.
+      if (m_history) {
+        double cur_x = m_ref_selected->ref_x;
+        double cur_y = m_ref_selected->ref_y;
+        if (std::abs(cur_x - m_ref_drag_orig_x) > 0.001 ||
+            std::abs(cur_y - m_ref_drag_orig_y) > 0.001) {
+          LOG_INFO("[IIDDIAG] RefMove::push (ref-tool drag) "
+                   "iid='{}' obj_name='{}' obj_type={}  "
+                   "before=({},{}) after=({},{})",
+                   m_ref_selected->internal_id, m_ref_selected->name,
+                   (int)m_ref_selected->type,
+                   m_ref_drag_orig_x, m_ref_drag_orig_y, cur_x, cur_y);
+          m_history->push(std::make_unique<RefMoveCommand>(
+              project(), m_ref_selected->internal_id,
+              m_ref_drag_orig_x, m_ref_drag_orig_y, cur_x, cur_y));
+        }
+      }
       m_ref_selected = nullptr;
       m_sig_doc_changed.emit();
     } else {
@@ -2379,6 +2427,9 @@ void Canvas::on_select_begin(double x, double y) {
     if (m_mod_alt && !m_selection.empty()) {
       auto entries = collect_selection_entries(m_doc, m_selection);
       if (!entries.empty()) {
+        // s170 m3 — iid-based capture: Entry stores parent_iid (string)
+        // instead of a raw SceneNode*, push passes project() so
+        // execute()/undo() can resolve via find_by_iid.
         std::vector<DuplicateCommand::Entry> cmd_entries;
         std::vector<SceneNode *> clone_sel;
         int id_counter = s_next_id;
@@ -2392,13 +2443,14 @@ void Canvas::on_select_begin(double x, double y) {
           clone_sel.push_back(dup.get());
           e.parent->children.insert(e.parent->children.begin() + ins,
                                     std::move(dup));
-          cmd_entries.push_back({e.parent, std::move(snap), ins});
+          cmd_entries.push_back({e.parent ? e.parent->internal_id : std::string(),
+                                 std::move(snap), ins});
           ++shift;
         }
         s_next_id = id_counter;
         if (m_history)
           m_history->push(
-              std::make_unique<DuplicateCommand>(std::move(cmd_entries)));
+              std::make_unique<DuplicateCommand>(project(), std::move(cmd_entries)));
         // Redirect selection to clones — the move will operate on them
         m_selection = clone_sel;
         m_selected = clone_sel.empty() ? nullptr : clone_sel[0];
@@ -3090,14 +3142,14 @@ void Canvas::on_select_end(double /*dx*/, double /*dy*/) {
           }
         }
         if (changed)
-          snaps.push_back({obj, snap.before_path, *obj->path});
+          snaps.push_back({obj->internal_id, snap.before_path, *obj->path});
       }
       std::string desc = was_rotate
                              ? "Rotate object"
                              : (was_skew ? "Skew object" : "Scale object");
       if (!snaps.empty())
-        m_history->push(std::make_unique<ScaleObjectsCommand>(std::move(snaps),
-                                                              std::move(desc)));
+        m_history->push(std::make_unique<ScaleObjectsCommand>(
+            project(), std::move(snaps), std::move(desc)));
       // Image transform undo
       std::vector<ScaleImageCommand::Snap> img_snaps;
       for (auto &isnap : m_image_transform_snaps) {
@@ -3110,14 +3162,15 @@ void Canvas::on_select_end(double /*dx*/, double /*dy*/) {
             std::abs(obj.transform.a - isnap.orig_transform.a) > 1e-6 ||
             std::abs(obj.transform.b - isnap.orig_transform.b) > 1e-6;
         if (changed)
-          img_snaps.push_back({&obj, isnap.orig_x, isnap.orig_y, isnap.orig_w,
-                               isnap.orig_h, isnap.orig_transform, obj.image_x,
-                               obj.image_y, obj.image_w, obj.image_h,
-                               obj.transform});
+          img_snaps.push_back({obj.internal_id, isnap.orig_x, isnap.orig_y,
+                               isnap.orig_w, isnap.orig_h,
+                               isnap.orig_transform, obj.image_x, obj.image_y,
+                               obj.image_w, obj.image_h, obj.transform});
       }
       if (!img_snaps.empty())
         m_history->push(
-            std::make_unique<ScaleImageCommand>(std::move(img_snaps), desc));
+            std::make_unique<ScaleImageCommand>(
+                project(), std::move(img_snaps), desc));
     }
     // ── Capture scale factor before clearing snaps ────────────────────
     double rec_scale_x = 1.0, rec_scale_y = 1.0;
@@ -3336,7 +3389,8 @@ void Canvas::on_select_end(double /*dx*/, double /*dy*/) {
         if (moved) {
           PathData after = *obj->path;
           m_history->push(std::make_unique<EditPathCommand>(
-              obj, snap_data.before_path, std::move(after), "Move object"));
+              project(), obj->internal_id, snap_data.before_path,
+              std::move(after), "Move object"));
         }
       }
       // Text and Image node moves
@@ -3348,7 +3402,8 @@ void Canvas::on_select_end(double /*dx*/, double /*dy*/) {
         if (std::abs(cur_x - tsnap.orig_x) > 0.001 ||
             std::abs(cur_y - tsnap.orig_y) > 0.001) {
           m_history->push(std::make_unique<MoveObjectCommand>(
-              tsnap.obj, tsnap.orig_x, tsnap.orig_y, cur_x, cur_y));
+              project(), tsnap.obj->internal_id,
+              tsnap.orig_x, tsnap.orig_y, cur_x, cur_y));
         }
       }
       // Warp envelope moves — push EditWarpCommand per moved Warp.
@@ -3376,9 +3431,33 @@ void Canvas::on_select_end(double /*dx*/, double /*dy*/) {
           int pre_preset = w->warp_preset_idx;
           w->warp_preset_idx = -1;
           m_history->push(std::make_unique<EditWarpCommand>(
-              w, wsnap.orig_env_top, wsnap.orig_env_bottom, w->warp_quality,
+              project(), w->internal_id,
+              wsnap.orig_env_top, wsnap.orig_env_bottom, w->warp_quality,
               w->warp_env_top, w->warp_env_bottom, w->warp_quality,
               pre_preset, /*post_preset=*/-1));
+        }
+      }
+      // s168 m4: refpt moves — push RefMoveCommand per moved ref. The
+      // multi-object drag pattern matches the path / text / warp
+      // pushes above (one command per moved object, not a Composite —
+      // pre-existing pattern, see line ~3320). 0.001 epsilon matches
+      // the path move threshold.
+      for (auto &rsnap : m_ref_move_snaps) {
+        if (!rsnap.obj || !rsnap.obj->is_ref())
+          continue;
+        double cur_x = rsnap.obj->ref_x;
+        double cur_y = rsnap.obj->ref_y;
+        if (std::abs(cur_x - rsnap.orig_x) > 0.001 ||
+            std::abs(cur_y - rsnap.orig_y) > 0.001) {
+          LOG_INFO("[IIDDIAG] RefMove::push (selection drag) "
+                   "iid='{}' obj_name='{}' obj_type={}  "
+                   "before=({},{}) after=({},{})",
+                   rsnap.obj->internal_id, rsnap.obj->name,
+                   (int)rsnap.obj->type,
+                   rsnap.orig_x, rsnap.orig_y, cur_x, cur_y);
+          m_history->push(std::make_unique<RefMoveCommand>(
+              project(), rsnap.obj->internal_id,
+              rsnap.orig_x, rsnap.orig_y, cur_x, cur_y));
         }
       }
     }
@@ -4430,7 +4509,8 @@ bool Canvas::selection_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
       int pre_preset = m_selected->warp_preset_idx;
       m_selected->warp_preset_idx = -1;
       m_history->push(std::make_unique<EditWarpCommand>(
-          m_selected, pre_top, pre_bottom, pre_quality,
+          project(), m_selected->internal_id,
+          pre_top, pre_bottom, pre_quality,
           m_selected->warp_env_top, m_selected->warp_env_bottom,
           m_selected->warp_quality,
           pre_preset, /*post_preset=*/-1));
@@ -4540,6 +4620,14 @@ bool Canvas::selection_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
   std::vector<PathData> befores, afters;
   for (SceneNode *leaf : leaves)
     befores.push_back(*leaf->path);
+  // s168 m4: parallel before/after snapshots for refpts so nudge can
+  // push RefMoveCommands. Same coalesce pattern as the path nudge
+  // below — within a 1500ms window, patch the last command's after
+  // rather than pushing a new one.
+  struct RefBefore { std::string iid; double bx, by; };
+  std::vector<RefBefore> ref_befores;
+  for (SceneNode *r : ref_nodes)
+    ref_befores.push_back({r->internal_id, r->ref_x, r->ref_y});
 
   for (SceneNode *leaf : leaves) {
     for (auto &nd : leaf->path->nodes) {
@@ -4568,9 +4656,9 @@ bool Canvas::selection_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
     im->image_x += ndx;
     im->image_y += ndy;
   }
-  // Refpt: same per-point translation as image. No undo command — matches
-  // the Ref-tool drag and Selection-tool refpt drag, neither of which
-  // push undo. Could be added later via a RefMoveCommand if needed.
+  // s168 m4: refpt nudge now pushes RefMoveCommand and coalesces with
+  // the same 1500ms window as path nudges below. Pre-s168 this drag
+  // mutated ref_x/ref_y in place with no undo.
   for (SceneNode *r : ref_nodes) {
     r->ref_x += ndx;
     r->ref_y += ndy;
@@ -4589,14 +4677,44 @@ bool Canvas::selection_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
     if (!same_window) {
       for (int i = 0; i < (int)leaves.size(); ++i)
         m_history->push(std::make_unique<EditPathCommand>(
-            leaves[i], std::move(befores[i]), std::move(afters[i]),
+            project(), leaves[i]->internal_id,
+            std::move(befores[i]), std::move(afters[i]),
             "Nudge object"));
+      // s168 m4: push RefMoveCommand for each ref nudged, mirroring the
+      // path branch above. Each ref gets its own command — multi-ref
+      // nudge produces N commands per nudge step (matches path branch).
+      for (size_t i = 0; i < ref_nodes.size() && i < ref_befores.size(); ++i) {
+        SceneNode *r = ref_nodes[i];
+        LOG_INFO("[IIDDIAG] RefMove::push (nudge) "
+                 "iid='{}' obj_name='{}' obj_type={}  "
+                 "before=({},{}) after=({},{})",
+                 r->internal_id, r->name, (int)r->type,
+                 ref_befores[i].bx, ref_befores[i].by,
+                 r->ref_x, r->ref_y);
+        m_history->push(std::make_unique<RefMoveCommand>(
+            project(), ref_befores[i].iid,
+            ref_befores[i].bx, ref_befores[i].by,
+            r->ref_x, r->ref_y));
+      }
     } else {
       for (SceneNode *leaf : leaves)
         if (auto *cmd =
                 dynamic_cast<EditPathCommand *>(m_history->last_command()))
-          if (cmd->obj == leaf)
+          if (cmd->obj_iid == leaf->internal_id)
             cmd->after = *leaf->path;
+      // s168 m4: same coalesce shape for refs — patch the last command's
+      // after if iid matches. The "last command" check is single-shot
+      // (matches the path branch's pattern) — for multi-ref nudge in a
+      // continuation, only the most-recently-pushed RefMoveCommand gets
+      // its after patched. Pre-existing pattern; revisit if multi-ref
+      // continuation produces visible undo drift.
+      for (SceneNode *r : ref_nodes)
+        if (auto *cmd =
+                dynamic_cast<RefMoveCommand *>(m_history->last_command()))
+          if (cmd->node_iid == r->internal_id) {
+            cmd->after_x = r->ref_x;
+            cmd->after_y = r->ref_y;
+          }
     }
   }
 
@@ -4626,67 +4744,181 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
   if (n == 0)
     return false;
 
-  // ── Delete selected node ──────────────────────────────────────────────
+  // ── Delete selected node(s) ───────────────────────────────────────────
+  // s163 m4: cross-path n-order delete — restored.
+  //
+  // Pre-s163 the handler operated on m_selected_node only, which was a
+  // regression from the original behavior where Delete walked m_node_selection
+  // and removed every selected node, even across multiple paths. The
+  // single-node behavior surfaced as "select 5 nodes, press Delete, only one
+  // disappears." This restores the n-order behavior.
+  //
+  // Per-path independence: each path's deletes are local. We group
+  // m_node_selection by path, walk each group's indices descending (so
+  // intra-group delete doesn't shift later targets), call bp.delete_node(idx)
+  // per node — which preserves the shape-fitting handle reshaping at each
+  // neighbor pair via the existing least-squares fit in BezierPath. One
+  // EditPathCommand per affected path; if a path's deletes consume all its
+  // nodes, push DeleteObjectCommand for that path's parent layer instead.
+  // The whole press wraps in CompositeCommand so a single Ctrl+Z undoes it.
+  //
+  // Pre-flight Blend rejection runs across every affected path. If any are
+  // blend sources the press is rejected cleanly with the existing message —
+  // partial delete with some-paths-skipped is worse than a clean reject.
+  //
+  // Fallback: if m_node_selection is empty but m_selected_node >= 0 (single
+  // click hadn't populated multi-select for some reason), synthesize a
+  // single-entry list. Preserves the historical single-node case.
   if (keyval == GDK_KEY_Delete || keyval == GDK_KEY_BackSpace) {
-    if (m_selected_node < 0 || m_selected_node >= n)
-      return false;
-    // Node-count lock: the selected path can't shrink if it's A or B of
-    // a Blend — the Blend's math requires matching node counts on A and B.
-    // M3 rejects with a user-visible message; M4 could offer to release
-    // the Blend first, but for now the user must Release explicitly.
-    if (find_blend_owner(m_selected)) {
-      LOG_INFO("NodeTool: delete-node rejected — path is a Blend source "
-               "(node count is locked)");
-      m_sig_show_message.emit(
-          "Blend", "This path is part of a Blend and its node count is locked. "
-                   "Release the Blend first to edit node counts.");
-      return true;
-    }
-    if (n == 1) {
-      // Last node — delete the whole object
-      if (!m_doc)
-        return false;
-      for (auto &layer : m_doc->layers) {
-        auto it = std::find_if(layer->children.begin(), layer->children.end(),
-                               [this](const std::unique_ptr<SceneNode> &o) {
-                                 return o.get() == m_selected;
-                               });
-        if (it != layer->children.end()) {
-          int idx = (int)(it - layer->children.begin());
-          if (m_history)
-            m_history->push(std::make_unique<DeleteObjectCommand>(
-                layer.get(), clone_node(**it), idx));
-          layer->children.erase(it);
-          m_selected = nullptr;
-          m_selected_node = -1;
-          // s159 m2: defensive cleanup. The erased child was likely in
-          // m_selection / m_node_selection (now dangling). scrub_node_refs
-          // would handle this uniformly; that consolidation is the
-          // deferred destructive-op audit. Until then, clear locally so
-          // SelectionContext's recompute doesn't walk dead pointers.
-          m_selection.clear();
-          m_node_selection.clear();
-          notify_object_selection_changed();
-          notify_node_selection_changed();
-          m_sig_doc_changed.emit();
-          queue_draw();
-          LOG_INFO("NodeTool: deleted last node — removed object");
-          return true;
+    // Build the (path → indices) groups, preserving first-seen order of
+    // paths so undo grouping is deterministic. Synthesize a single entry
+    // from m_selected/m_selected_node when m_node_selection is empty.
+    std::vector<std::pair<SceneNode *, std::vector<int>>> groups;
+    auto add_entry = [&](SceneNode *p, int idx) {
+      if (!p || !p->path)
+        return;
+      const int pn = (int)p->path->nodes.size();
+      if (idx < 0 || idx >= pn)
+        return;
+      for (auto &g : groups) {
+        if (g.first == p) {
+          // Dedup within a path
+          for (int existing : g.second)
+            if (existing == idx)
+              return;
+          g.second.push_back(idx);
+          return;
         }
       }
+      groups.push_back({p, {idx}});
+    };
+    if (!m_node_selection.empty()) {
+      for (const auto &ns : m_node_selection)
+        add_entry(ns.obj, ns.node_idx);
+    } else if (m_selected_node >= 0) {
+      add_entry(m_selected, m_selected_node);
     }
-    PathData before_pd = *m_selected->path;
-    bp.delete_node(m_selected_node);
-    // Keep selection in bounds
-    m_selected_node = std::min(m_selected_node, (int)bp.nodes.size() - 1);
-    *m_selected->path = bp.to_path_data();
-    if (m_history)
-      m_history->push(std::make_unique<EditPathCommand>(
-          m_selected, std::move(before_pd), *m_selected->path, "Delete node"));
+
+    if (groups.empty())
+      return false;  // nothing to delete, fall through
+
+    // Pre-flight: reject the press if any affected path is a Blend source.
+    // Node-count locks per Blend's matched-A/B requirement; partial delete
+    // would silently violate it.
+    for (const auto &g : groups) {
+      if (find_blend_owner(g.first)) {
+        LOG_INFO("NodeTool: delete-node rejected — path is a Blend source "
+                 "(node count is locked)");
+        m_sig_show_message.emit(
+            "Blend",
+            "One or more selected nodes belong to a path that is part of a "
+            "Blend. The Blend's node count is locked. Release the Blend first "
+            "to edit node counts.");
+        return true;
+      }
+    }
+
+    if (!m_doc)
+      return false;
+
+    // Sort each group's indices descending so the delete loop's
+    // BezierPath::delete_node(idx) calls don't shift targets we haven't
+    // visited yet.
+    for (auto &g : groups)
+      std::sort(g.second.begin(), g.second.end(), std::greater<int>());
+
+    // Compose into a single undoable unit.
+    auto composite = std::make_unique<CompositeCommand>(
+        groups.size() == 1 ? std::string("Delete node")
+                            : std::string("Delete nodes"));
+
+    // Track whether the primary-selected object survives. If its path
+    // gets fully consumed we need to clear m_selected too.
+    bool primary_erased = false;
+
+    for (auto &g : groups) {
+      SceneNode *obj = g.first;
+      const std::vector<int> &indices = g.second;
+      const int orig_n = (int)obj->path->nodes.size();
+      const bool consumes_all = ((int)indices.size() >= orig_n);
+
+      if (consumes_all) {
+        // All of this path's nodes are slated for delete → erase the
+        // whole object. Mirrors the historical n==1 branch but generalised
+        // to multi-node-consume-all. Snapshot before the erase so undo
+        // can re-insert at the original index.
+        SceneNode *parent_layer = nullptr;
+        int orig_index = -1;
+        for (auto &layer : m_doc->layers) {
+          for (int i = 0; i < (int)layer->children.size(); ++i) {
+            if (layer->children[i].get() == obj) {
+              parent_layer = layer.get();
+              orig_index = i;
+              break;
+            }
+          }
+          if (parent_layer)
+            break;
+        }
+        if (parent_layer && orig_index >= 0) {
+          auto snap = clone_node(*obj);
+          composite->add(std::make_unique<DeleteObjectCommand>(
+              parent_layer, std::move(snap), orig_index));
+          // Mutate now so subsequent groups see consistent state. Match
+          // the existing single-node-erase pattern: scrub Canvas state
+          // pointing at the about-to-be-freed object before the erase.
+          scrub_node_refs(obj);
+          if (m_selected == obj)
+            primary_erased = true;
+          parent_layer->children.erase(parent_layer->children.begin() +
+                                        orig_index);
+        } else {
+          // Object not at a top-level layer — nested in a Group/Compound.
+          // Leave it intact; falling through to the per-node path would
+          // empty the path's nodes vector and produce a degenerate node-
+          // less Path, which other code may not handle. Safer to skip
+          // this group with a log line. The user can ungroup/release-
+          // compound first if they want to delete the contained path.
+          LOG_INFO("NodeTool: skipping consume-all delete on nested path "
+                   "'{}' — not at top-level layer; ungroup first.",
+                   obj->id);
+        }
+        continue;
+      }
+
+      // Partial delete — apply per-node delete in descending order.
+      PathData before_pd = *obj->path;
+      BezierPath bp = BezierPath::from_path_data(before_pd);
+      for (int idx : indices)
+        bp.delete_node(idx);
+      *obj->path = bp.to_path_data();
+
+      composite->add(std::make_unique<EditPathCommand>(
+          project(), obj->internal_id, std::move(before_pd), *obj->path,
+          indices.size() == 1 ? "Delete node" : "Delete nodes"));
+    }
+
+    // Push the composite. Empty-step guards below — a press where every
+    // group was a skipped nested consume-all leaves an empty composite;
+    // skip the push so the redo stack isn't cleared spuriously.
+    if (m_history && !composite->steps.empty())
+      m_history->push(std::move(composite));
+
+    // Selection state cleanup. Clear node selection wholesale; survivors
+    // can re-select if they want to continue editing. m_selected also
+    // clears if its object got erased.
+    m_node_selection.clear();
+    m_selected_node = -1;
+    if (primary_erased) {
+      m_selected = nullptr;
+      m_selection.clear();
+    }
+    notify_object_selection_changed();
+    notify_node_selection_changed();
     m_sig_doc_changed.emit();
     m_sig_node_changed.emit(m_selected, m_selected_node);
     queue_draw();
-    LOG_INFO("NodeTool: deleted node, {} remaining", bp.nodes.size());
+    LOG_INFO("NodeTool: deleted nodes across {} path(s)", groups.size());
     return true;
   }
 
@@ -5077,7 +5309,8 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
         if (m_history) {
           auto composite = std::make_unique<CompositeCommand>("Join paths");
           composite->add(std::make_unique<EditPathCommand>(
-              joined_obj, std::move(before_base), *joined_obj->path,
+              project(), joined_obj->internal_id,
+              std::move(before_base), *joined_obj->path,
               "Join paths"));
           composite->add(std::make_unique<DeleteObjectCommand>(
               layer2_ptr, std::move(app_snap), app_idx));
@@ -5143,7 +5376,8 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
         m_node_selection.clear();
         if (m_history)
           m_history->push(std::make_unique<EditPathCommand>(
-              m_selected, std::move(before_pd), *m_selected->path,
+              project(), m_selected->internal_id,
+              std::move(before_pd), *m_selected->path,
               "Close path"));
         notify_object_selection_changed();
         notify_node_selection_changed();
@@ -5199,7 +5433,8 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
     m_selected_node = -1;
     if (m_history)
       m_history->push(std::make_unique<EditPathCommand>(
-          m_selected, std::move(before_pd), *m_selected->path,
+          project(), m_selected->internal_id,
+          std::move(before_pd), *m_selected->path,
           was_closed ? "Open path" : "Close path"));
     notify_object_selection_changed();
     notify_node_selection_changed();
@@ -5285,7 +5520,8 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
       *m_selected->path = bp.to_path_data();
       if (m_history)
         m_history->push(std::make_unique<EditPathCommand>(
-            m_selected, std::move(before), *m_selected->path, "Set node type"));
+            project(), m_selected->internal_id,
+            std::move(before), *m_selected->path, "Set node type"));
       LOG_INFO("NodeTool: node {} type → {}", m_selected_node, (int)new_type);
       m_sig_doc_changed.emit();
       m_sig_node_changed.emit(m_selected, m_selected_node);
@@ -5305,7 +5541,8 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
     PathData after = *m_selected->path;
     if (m_history)
       m_history->push(std::make_unique<EditPathCommand>(
-          m_selected, std::move(before), std::move(after), "Reverse path"));
+          project(), m_selected->internal_id,
+          std::move(before), std::move(after), "Reverse path"));
     m_sig_doc_changed.emit();
     queue_draw();
     LOG_INFO("NodeTool: reversed path '{}'", m_selected->id);
@@ -5388,11 +5625,12 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
 
         if (!same_window) {
           m_history->push(std::make_unique<EditPathCommand>(
-              m_selected, std::move(before), std::move(after), "Nudge node"));
+              project(), m_selected->internal_id,
+              std::move(before), std::move(after), "Nudge node"));
         } else {
           if (auto *cmd =
                   dynamic_cast<EditPathCommand *>(m_history->last_command()))
-            if (cmd->obj == m_selected)
+            if (cmd->obj_iid == m_selected->internal_id)
               cmd->after = after;
         }
       }
@@ -5538,7 +5776,8 @@ void Canvas::on_node_begin(double x, double y) {
         m_selected_node = hit.segment_index + 1;
         if (m_history)
           m_history->push(std::make_unique<EditPathCommand>(
-              m_selected, std::move(before), std::move(after), "Insert node"));
+              project(), m_selected->internal_id,
+              std::move(before), std::move(after), "Insert node"));
         m_sig_doc_changed.emit();
       }
       // s160 m2: m_node_selection may have mutated above (clear+push at
@@ -5926,16 +6165,17 @@ void Canvas::on_node_end() {
       if (m_node_drag_before_multi.empty()) {
         // Single path drag
         m_history->push(std::make_unique<EditPathCommand>(
-            m_selected, m_node_drag_before, *m_selected->path, "Move node"));
+            project(), m_selected->internal_id,
+            m_node_drag_before, *m_selected->path, "Move node"));
       } else {
         // Multi-path drag — use ScaleObjectsCommand to bundle all snaps
         std::vector<ScaleObjectsCommand::LeafSnap> snaps;
-        snaps.push_back({m_selected, m_node_drag_before, *m_selected->path});
+        snaps.push_back({m_selected->internal_id, m_node_drag_before, *m_selected->path});
         for (auto &[obj, before] : m_node_drag_before_multi)
           if (obj->path)
-            snaps.push_back({obj, before, *obj->path});
-        m_history->push(std::make_unique<ScaleObjectsCommand>(std::move(snaps),
-                                                              "Move nodes"));
+            snaps.push_back({obj->internal_id, before, *obj->path});
+        m_history->push(std::make_unique<ScaleObjectsCommand>(
+            project(), std::move(snaps), "Move nodes"));
       }
     }
     m_sig_doc_changed.emit();
@@ -6540,10 +6780,16 @@ void Canvas::on_top_begin(double x, double y) {
           // Ensure path has stable internal_id
           if (obj->internal_id.empty())
             obj->internal_id = generate_internal_id();
+          // s175 m2: ensure text node has stable internal_id too — the
+          // migrated LinkTextToPathCommand captures m_top_text's iid for
+          // resolution at undo/redo time. Symmetric with the path-side
+          // ensure above.
+          if (m_top_text->internal_id.empty())
+            m_top_text->internal_id = generate_internal_id();
           // Push undo command before mutating
           if (m_history) {
             m_history->push(std::make_unique<LinkTextToPathCommand>(
-                m_top_text,
+                project(), m_top_text->internal_id,
                 m_top_text->text_path_id, // before (empty or old)
                 m_top_text->text_path_offset, m_top_text->text_path_flip,
                 m_top_text->text_x, m_top_text->text_y, // before x/y

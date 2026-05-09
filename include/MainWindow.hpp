@@ -1,3 +1,68 @@
+// ─────────────────────────────────────────────────────────────────────────
+// MainWindow — the application's main window class.
+//
+// Implementation is split across multiple TUs by *category of code*, not by
+// domain. The header below is the index — every public and private method
+// declared here has its body in one of the categorized files. Find a method
+// here, read its trailing `// category: ...` tag, open the matching file.
+//
+// Vocabulary
+// ----------
+//   Zones    — named regions of the window the user can point at:
+//              headerbar, menubar, toolbar, canvas, status bar, panels,
+//              rulers, overlays, tabs, dialogs.
+//              Files: MainWindow_zones_*.cpp
+//
+//   Bindings — what's connected to what. Signals connected to handlers,
+//              Gio actions declared and bound to handlers, accelerators
+//              registered, key controllers wired. After the s164 split
+//              this is still the largest TU because most of its lines
+//              are inline lambda slot bodies that travel with the wiring.
+//              File:  MainWindow_bindings.cpp
+//
+//   Handlers — slot bodies. The on_* / apply_* methods that run when a
+//              binding fires. Grouped by domain (documents, edit, effects,
+//              guides, library, macros).
+//              Files: MainWindow_handlers_*.cpp
+//
+//   Helpers  — reusable pieces called from bindings, handlers, or other
+//              helpers. Display sync (refresh_inspector, update_title),
+//              action-enable predicates, flow orchestrators (load_project,
+//              check_unsaved_then), persistence, the inspector make_section
+//              pumps, the SVG-import workhorses, the library write helper.
+//              File:  MainWindow_helpers.cpp
+//
+//   Glue     — what stays in MainWindow.cpp itself: the ctor that
+//              orchestrates zone construction and binding setup, plus a
+//              few genuinely cross-cutting methods that don't fit any one
+//              category (on_tool_changed, on_doc_activated, cycle_doc,
+//              rename_doc, setup_project).
+//
+// Finding things
+// --------------
+//   "Where does on_save's body live?"     → MainWindow_handlers_documents.cpp
+//   "Where is the menubar built?"         → MainWindow_zones_menu.cpp
+//   "Where is win.save's accelerator?"    → MainWindow_bindings.cpp
+//   "Where is refresh_inspector defined?" → MainWindow_helpers.cpp
+//   "Why is the ctor so small?"           → it's just orchestration; the
+//                                           real work is in the categorized
+//                                           files above.
+//
+// Why this split exists
+// ---------------------
+// MainWindow.cpp had grown to ~7000 lines; setup_menu (~830) and
+// connect_signals (~2110) alone were 42% of the file. The split is
+// structural relief — findability over compile-time. The vocabulary
+// is the load-bearing decision; the file layout is its expression.
+// Let the code argue with the layout when it doesn't fit; adjust the
+// layout, keep the vocabulary.
+//
+// Per-method tags below: every method declaration carries a trailing
+// comment naming its category (and sub-domain where relevant). That tag
+// IS the index — without it, the split fragments findability instead
+// of improving it.
+// ─────────────────────────────────────────────────────────────────────────
+
 #pragma once
 #include "Canvas.hpp"
 #include "Toolbar.hpp"
@@ -8,6 +73,7 @@
 #include <unordered_map>  // s141: m_sec_apply
 #include <optional>
 #include <vector>
+#include <chrono>   // s165 m3 — chrono trap on rapid undo presses
 #include "PropertiesPanel.hpp"
 #include "PreviewPanel.hpp"
 #include "LayersPanel.hpp"
@@ -21,8 +87,9 @@
 #include "CommandHistory.hpp"
 #include "NewDocumentDialog.hpp"
 #include "ExportDialog.hpp"
-#include "StepRepeatDialog.hpp"
-#include "BlendDialog.hpp"
+#include "StepRepeatPopover.hpp"
+#include "BlendPopover.hpp"
+#include "WarpPopover.hpp"
 // s146 m3 — WarpDialog removed; warp creation seeds from AppPreferences
 // (Application ▸ Warp inspector subsection) and editing happens entirely
 // in the Object ▸ Warp inspector section.
@@ -71,37 +138,37 @@ public:
     // (ExportDocsDialog and friends) can opt into the same per-purpose
     // memory the built-in pickers use. Storage lives in m_last_folders
     // and persists via save_config.
-    std::string get_last_folder(const std::string& purpose) const;
+    std::string get_last_folder(const std::string& purpose) const;  // category: helper: persistence
     void        set_last_folder(const std::string& purpose,
-                                const std::string& path);
+                                const std::string& path);  // category: helper: persistence
 
 private:
-    void setup_headerbar();
-    void setup_layout();
-    void setup_project();
-    void setup_menu();              // build Gio::Menu + actions + hamburger button
-    void connect_signals();
+    void setup_headerbar();  // category: zone: headerbar
+    void setup_layout();  // category: zone: layout
+    void setup_project();  // category: glue
+    void setup_menu();  // category: zone: menu
+    void connect_signals();  // category: bindings
 
-    void load_project(std::unique_ptr<CurvzProject> project);
-    void update_all_panels();
-    void update_title();
-    void update_rulers();
-    void refresh_inspector();
+    void load_project(std::unique_ptr<CurvzProject> project);  // category: helper: flow orchestrator
+    void update_all_panels();  // category: helper: display sync
+    void update_title();  // category: helper: display sync
+    void update_rulers();  // category: helper: display sync
+    void refresh_inspector();  // category: helper: display sync
 
     // s144 m3 — Open Recent submenu rebuild. Called on every
     // RecentProjects::signal_changed emit (project open, save-as,
     // clear). remove_all() the stored m_recent_menu, then re-append
     // one item per recents path plus a Clear Recent Projects entry.
     // Cheap: typical list is 0..10 entries.
-    void rebuild_recents_menu();
+    void rebuild_recents_menu();  // category: helper: menu support
     // s132 m2: single funnel for the StatusBar's "N objects · N nodes"
     // readout. Replaces five duplicated "iterate doc.layers, sum
     // children.size()" loops that all hardcoded `nodes=0`. Computes
     // counts via curvz::utils::doc_object_count / doc_anchor_count and
     // pushes them to m_statusbar.set_counts. Safe to call when there is
     // no active document (sets 0 / 0).
-    void refresh_status_counts();
-    void toggle_rulers(bool visible);  // show/hide ruler chrome
+    void refresh_status_counts();  // category: helper: display sync
+    void toggle_rulers(bool visible);  // category: helper
 
     // Apply the active project's motif to the main window — adds or
     // removes the `curvz-light` CSS class based on `m_project->motif`.
@@ -115,7 +182,7 @@ private:
     // Motif is project-scope (s116 m6) — switching tabs within the same
     // project never changes the app theme. No-op when no project is
     // loaded.
-    void apply_motif_to_window();
+    void apply_motif_to_window();  // category: helper: window state
 
     // S117 m15: apply (or remove) the `curvz-light` CSS class on a single
     // top-level window based on the current project's motif. Used by
@@ -125,7 +192,7 @@ private:
     // Gtk::Window we create — Themes, Export, Macro Manager, etc.) are
     // separate top-level windows from MainWindow, so the class doesn't
     // propagate down naturally; we propagate it explicitly here.
-    void sync_motif_class_to(Gtk::Window& w);
+    void sync_motif_class_to(Gtk::Window& w);  // category: helper: window state
 
     // Shared rename handler used by both the inspector "File" entry and the
     // documents-gallery double-click / context-menu rename. Sanitises the
@@ -133,21 +200,21 @@ private:
     // within the project, renames on disk if the project is saved, and
     // updates UI. Caller passes the document explicitly so this works for
     // any doc, not just the active one.
-    void rename_doc(CurvzDocument *doc, std::string new_name);
+    void rename_doc(CurvzDocument *doc, std::string new_name);  // category: glue
 
-    void on_new();
-    void on_new_project();
-    void on_close_project();
-    void on_open();
-    void update_project_sensitive();
-    void check_unsaved_then(std::function<void()> then);
-    void on_save();
-    void on_save_as();
-    void on_save_as_template();
-    void on_manage_templates();
+    void on_new();  // category: handler: documents
+    void on_new_project();  // category: handler: documents
+    void on_close_project();  // category: handler: documents
+    void on_open();  // category: handler: documents
+    void update_project_sensitive();  // category: helper: action predicate
+    void check_unsaved_then(std::function<void()> then);  // category: helper: flow orchestrator
+    void on_save();  // category: handler: documents
+    void on_save_as();  // category: handler: documents
+    void on_save_as_template();  // category: handler: library
+    void on_manage_templates();  // category: handler: library
     // s147 m3: on_show_themes removed — ThemesPanel in Content is the
     // canonical surface, no menu entry / dialog version remains.
-    void on_export_docs();             // S104 m1 — Project → Export Documents…
+    void on_export_docs();  // category: handler: documents
 
     // S104 m1 follow-on — NewDocumentDialog "Theme" dropdown helpers.
     //
@@ -162,12 +229,12 @@ private:
     // is nullopt or the theme is not found (defensive — if the theme
     // was deleted between NDD opening and Create being clicked,
     // silently fall through to the un-themed seed).
-    std::vector<theme::Theme> ndd_available_themes() const;
+    std::vector<theme::Theme> ndd_available_themes() const;  // category: helper: NDD support
     void ndd_apply_chosen_theme(CurvzDocument& seed,
-                                const std::optional<theme::ThemeId>& id) const;
+                                const std::optional<theme::ThemeId>& id) const;  // category: helper: NDD support
 
-    void on_import_svg();
-    void on_import_svg_as_icon();
+    void on_import_svg();  // category: handler: documents
+    void on_import_svg_as_icon();  // category: handler: documents
     // Shared impl.
     //   force_currentcolor=true → convert Solid fill/stroke to CurrentColor
     //                             (icon workflow).
@@ -176,55 +243,63 @@ private:
     //                             SVG's authored geometry verbatim.
     void import_svg_impl(const std::string& path,
                          bool force_currentcolor,
-                         bool normalize_to_1000);
-    void on_place_image();
+                         bool normalize_to_1000);  // category: helper: import shared
+    void on_place_image();  // category: handler: documents
     // s125 m1d (was m1c on_place_image_as_doc, renamed): routes to
     // import_image_to_canvas with fit_canvas_to_image=true. Wired to
     // win.open-image and the File → Open Image menu entry. Sibling of
     // on_open in user model — both create a new doc.
-    void on_open_image();
-    void on_save_selection_to_library(const std::string& dest_dir);
+    void on_open_image();  // category: handler: documents
+    void on_save_selection_to_library(const std::string& dest_dir);  // category: handler: library
     // s125 m1a: opens a folder picker (mirrors LibraryPanel::on_add_clicked)
     // and routes the chosen directory to on_save_selection_to_library.
     // Wired to Canvas::signal_request_save_to_library, fired from the
     // canvas right-click "Save to Library…" entry.
-    void on_request_save_selection_to_library();
+    void on_request_save_selection_to_library();  // category: handler: library
     // s136 m4: actual library file write. Pure helper — takes a destination
     // directory and a base name (without extension), writes
     // `<dest_dir>/<base_name>.svg`. Returns true on success. The orchestrator
     // (on_save_selection_to_library) handles the name prompt and any
     // collision resolution; this helper assumes base_name is final.
     bool write_library_item(const std::string& dest_dir,
-                            const std::string& base_name);
-    void on_step_repeat();
-    // Blend orchestrator (M3) — validates selection, reads A/B node counts
-    // and stroke widths, shows BlendDialog, forwards dialog Result to
-    // Canvas::make_blend on OK. If selection is invalid on action-fire
+                            const std::string& base_name);  // category: helper: library
+    void on_step_repeat();  // category: handler: effects
+    // s154 m2: toolbar SnR left-click path — applies the popover's
+    // persisted last values without showing UI. on_step_repeat() is
+    // the menu-item / right-click path; this one is the left-click.
+    void apply_step_repeat_with_last();  // category: handler: effects
+    // Blend orchestrator — validates selection, reads A/B node counts
+    // and stroke widths, shows BlendPopover (s154 m3), forwards Result
+    // to Canvas::make_blend on OK. If selection is invalid on action-fire
     // (shouldn't happen thanks to the sensitivity hook, but belt-and-
     // braces) shows a user-visible message and returns.
-    void on_blend();
-    void on_warp_make();
-    void on_warp_edit();
-    void on_warp_release();
-    void on_warp_flatten();
+    void on_blend();  // category: handler: effects
+    // s154 m3: toolbar Blend left-click path. Applies popover-last-values
+    // when node counts already match; falls back to opening the popover
+    // when validation requires the warning banner / Equalize button.
+    void apply_blend_with_last();  // category: handler: effects
+    void on_warp_make();  // category: handler: effects
+    void on_warp_edit();  // category: handler: effects
+    void on_warp_release();  // category: handler: effects
+    void on_warp_flatten();  // category: handler: effects
     // Guide construct (M3) — open the review dialog after the user clicks p2.
-    void open_guide_review_dialog();
-    void close_guide_review_dialog();
-    void on_macro_manager();
-    void on_run_macro(const std::string& macro_id);
-    void on_export_theme();
-    void on_quit();
-    void do_save_as(const std::string& dir);
-    void on_tool_changed(ActiveTool tool);
-    void on_doc_activated(int index);
-    void cycle_doc(int delta);   // s108 m7: doc-next / doc-prev seam
-    void on_undo();
-    void on_redo();
+    void open_guide_review_dialog();  // category: handler: guides
+    void close_guide_review_dialog();  // category: handler: guides
+    void on_macro_manager();  // category: handler: macros
+    void on_run_macro(const std::string& macro_id);  // category: handler: macros
+    void on_export_theme();  // category: handler: library
+    void on_quit();  // category: handler: documents
+    void do_save_as(const std::string& dir);  // category: helper: save flow
+    void on_tool_changed(ActiveTool tool);  // category: glue
+    void on_doc_activated(int index);  // category: glue
+    void cycle_doc(int delta);  // category: glue
+    void on_undo();  // category: handler: edit
+    void on_redo();  // category: handler: edit
 
     // Build a collapsible inspector section
     Gtk::Box* make_section(const char* title, Gtk::Widget& child,
                            bool expanded = true, bool vexpand_child = false,
-                           std::shared_ptr<bool>* out_flag = nullptr);
+                           std::shared_ptr<bool>* out_flag = nullptr);  // category: helper: inspector pump
 
     // Build a collapsible GROUP header (Document/Object/Content style).
     // Returns {outer, container}: append `outer` where you want the group
@@ -232,15 +307,16 @@ private:
     // the inspector-group-container CSS class for indentation.
     struct GroupSection { Gtk::Box* outer; Gtk::Box* container; };
     GroupSection make_group_section(const char* title, bool expanded,
-                                    std::shared_ptr<bool>* out_flag = nullptr);
+                                    std::shared_ptr<bool>* out_flag = nullptr);  // category: helper: inspector pump
 
     // ── State ─────────────────────────────────────────────────────────────
     std::unique_ptr<CurvzProject> m_project;
     CommandHistory                m_history;
     NewDocumentDialog             m_new_doc_dialog;
     ExportDialog                  m_export_dialog;
-    StepRepeatDialog              m_step_repeat_dialog;
-    BlendDialog                   m_blend_dialog;
+    StepRepeatPopover             m_step_repeat_popover;
+    BlendPopover                  m_blend_popover;
+    WarpPopover                   m_warp_popover;
     MacroManagerWindow            m_macro_manager;
     MacroEditorWindow             m_macro_editor;
     PrintManager                  m_print_manager;
@@ -266,6 +342,24 @@ private:
     bool                          m_pane_ready    = false;
     gint64                        m_pane_settled_at = 0; // microseconds, from g_get_monotonic_time()
     bool                          m_rulers_visible = true; // toggled by View → Rulers / Ctrl+R
+    // s165 m3 — re-entrancy guard for on_undo / on_redo. Set true at entry,
+    // cleared at exit. Suppresses re-entry when a Ctrl+Z keypress arrives
+    // while a previous undo is still mid-flight (e.g. partway through
+    // m_history.undo() or one of the post-undo refreshes). Without this,
+    // rapid Ctrl+Z spam can re-enter on_undo on a partially-mutated tree
+    // and crash. Belt-and-braces — also protects against signal handlers
+    // queued during refresh that fire back into on_undo before we exit.
+    bool                          m_undo_in_progress = false;
+    // s165 m3 — chrono trap on rapid undo/redo presses. The undo system has
+    // a structural issue where queue eviction (cap=500 by default) destroys
+    // command storage that other queued commands reference via raw pointers
+    // — rapid Ctrl+Z that traverses many history entries can hit one of
+    // those dangling references and crash. Until commands are reworked to
+    // capture by id rather than raw pointer, throttle the input rate so
+    // each undo has time to settle (refresh, scrub, paint) before the next
+    // is accepted. Threshold: 80ms — fast enough that deliberate presses
+    // never get dropped, slow enough to absorb keyboard auto-repeat.
+    std::chrono::steady_clock::time_point m_last_undo_redo_at = {};
 
     // ── Widgets ───────────────────────────────────────────────────────────
     Gtk::HeaderBar      m_headerbar;
@@ -310,19 +404,19 @@ private:
     Gtk::Label          m_corner_unit_label;
     Gtk::Button         m_corner_apply_btn;
 
-    void build_corner_panel();
-    void show_corner_panel(bool show);
-    void update_corner_panel_position();
+    void build_corner_panel();  // category: zone: overlays
+    void show_corner_panel(bool show);  // category: zone: overlays
+    void update_corner_panel_position();  // category: zone: overlays
 
     // System icon preview/copy
     // force_currentcolor=true → convert all Solid fills/strokes to CurrentColor
     // (default true because this is the icon-gallery copy flow).
     bool import_svg_as_doc(const std::string& path,
-                           bool force_currentcolor = true);
-    void on_preview_icon(const std::string& path);
-    void on_copy_icon(const std::string& path);
-    void exit_preview_mode();
-    double pop_to_px(double v) const;   // convert display-unit value to doc units
+                           bool force_currentcolor = true);  // category: helper: import shared
+    void on_preview_icon(const std::string& path);  // category: handler: documents
+    void on_copy_icon(const std::string& path);  // category: handler: documents
+    void exit_preview_mode();  // category: helper
+    double pop_to_px(double v) const;  // category: helper
 
     bool                           m_preview_active     = false;
     int                            m_preview_saved_index = 0;
@@ -363,9 +457,9 @@ private:
     std::unordered_map<std::string, std::function<void(bool)>> m_sec_apply;
 
     // App-level config (last opened project path)
-    std::string config_path() const;
-    void        save_config() const;
-    std::string load_last_project_path();
+    std::string config_path() const;  // category: helper: persistence
+    void        save_config() const;  // category: helper: persistence
+    std::string load_last_project_path();  // category: helper: persistence
 
     // s125 m1e: per-purpose "last folder used" memory for file pickers.
     // Keyed by a stable purpose string (typically the action name —
@@ -383,7 +477,7 @@ private:
     // Release Clip enabled iff primary selection is a ClipGroup.
     Glib::RefPtr<Gio::SimpleAction> m_act_clip_make;
     Glib::RefPtr<Gio::SimpleAction> m_act_clip_release;
-    void update_clip_actions_sensitive();
+    void update_clip_actions_sensitive();  // category: helper: action predicate
 
     // Blend — enabled iff exactly 2 Path nodes are selected (stricter
     // preconditions — same parent, equal node counts — enforced inside
@@ -391,7 +485,7 @@ private:
     // Release Blend — enabled iff primary selection is a Blend.
     Glib::RefPtr<Gio::SimpleAction> m_act_blend_make;
     Glib::RefPtr<Gio::SimpleAction> m_act_blend_release;
-    void update_blend_action_sensitive();
+    void update_blend_action_sensitive();  // category: helper: action predicate
 
     // Warp — Make enabled iff exactly 1 Path/Compound/Group is selected.
     // Release / Flatten enabled iff primary selection is a Warp.
@@ -400,7 +494,7 @@ private:
     Glib::RefPtr<Gio::SimpleAction> m_act_warp_edit;
     Glib::RefPtr<Gio::SimpleAction> m_act_warp_release;
     Glib::RefPtr<Gio::SimpleAction> m_act_warp_flatten;
-    void update_warp_action_sensitive();
+    void update_warp_action_sensitive();  // category: helper: action predicate
 
     // Group / Ungroup (s138) — Make enabled iff >=2 nodes are selected;
     // Release enabled iff the primary selection is a Group. Wraps the
@@ -410,7 +504,7 @@ private:
     // s138 m2 menu-accel fix made the Path submenu's gaps visible.
     Glib::RefPtr<Gio::SimpleAction> m_act_group_make;
     Glib::RefPtr<Gio::SimpleAction> m_act_group_release;
-    void update_group_actions_sensitive();
+    void update_group_actions_sensitive();  // category: helper: action predicate
 
     // Boolean path ops (s122 m2) — Union/Subtract/Intersect enabled iff
     // exactly 2 Path or Compound nodes are selected. Deeper preconditions
@@ -420,7 +514,7 @@ private:
     Glib::RefPtr<Gio::SimpleAction> m_act_bool_union;
     Glib::RefPtr<Gio::SimpleAction> m_act_bool_subtract;
     Glib::RefPtr<Gio::SimpleAction> m_act_bool_intersect;
-    void update_bool_actions_sensitive();
+    void update_bool_actions_sensitive();  // category: helper: action predicate
 
     // s135 m1: Align & Distribute actions. Mirror the Boolean ops pattern —
     // stored as members so the existing update_align_btn() predicate can flip
@@ -438,7 +532,7 @@ private:
     Glib::RefPtr<Gio::SimpleAction> m_act_distribute_v;
 
     // Debounced auto-save — coalesces rapid changes into one write
-    void schedule_save();
+    void schedule_save();  // category: helper
     sigc::connection m_save_timer;  // pending debounce timer
 
     // s113 m2: gated outline-mode toggle. Refuses outline→preview when
@@ -446,7 +540,7 @@ private:
     // shows an AlertDialog explaining how to proceed safely. Returns
     // true if the toggle happened (caller should sync action state +
     // statusbar), false if the toggle was refused.
-    bool try_toggle_outline_safely();
+    bool try_toggle_outline_safely();  // category: helper
 
     // Updates align button sensitivity; set in connect_signals, called from on_tool_changed
     std::function<void()> m_update_align_btn;

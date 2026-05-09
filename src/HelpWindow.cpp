@@ -722,6 +722,9 @@ void HelpWindow::build_topic_list() {
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/11-1-macros.md",                "11.1 Macros" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/11-2-keyboard-shortcuts.md",    "11.2 Keyboard shortcuts" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/11-3-troubleshooting.md",       "11.3 Troubleshooting" },
+
+    { RowKind::Chapter, 0, false, "", "12 Workflow strategies" },
+    { RowKind::Leaf, 1, true,  "/com/curvz/app/help/12-1-workflow-strategies.md",   "12.1 Workflow strategies" },
   };
 }
 

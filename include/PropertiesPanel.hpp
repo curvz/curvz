@@ -48,6 +48,24 @@ public:
         m_suppress_push  = true;
     }
 
+    // s165 m3 — bump the build generation so any in-flight queued signal
+    // handlers (signal_value_changed deliveries that GTK queued during prior
+    // set_value() calls in refresh_node, etc.) see their captured `gen` as
+    // stale and early-return instead of dereferencing potentially-stale
+    // `obj` / `node_idx` captures.
+    //
+    // Call this at the top of any caller that's about to mutate the document
+    // tree out from under the inspector — e.g., on_undo / on_redo before
+    // m_history.undo()/redo(). Without this, a pending value-changed signal
+    // queued before the mutation can fire after the mutation, hitting
+    // dangling pointers (timing-sensitive crash in Node mode after fast-path
+    // refresh + immediate Ctrl+Z).
+    //
+    // Cheap (one increment); idempotent in the sense that bumping a few extra
+    // times in a turn is harmless — every captured `gen` snapshots the value
+    // at lambda construction.
+    void invalidate_lambdas() { ++m_build_gen; }
+
     void set_ruler_origin(double ox, double oy) {
         m_ruler_ox = ox;
         m_ruler_oy = oy;

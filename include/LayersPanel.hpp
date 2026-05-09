@@ -15,12 +15,26 @@
 
 namespace Curvz {
 
+// s171 m1 — forward declarations only; full types are needed in
+// LayersPanel.cpp for push sites but not at header-include time.
+struct CurvzProject;
+class  CommandHistory;
+
 class LayersPanel : public Gtk::Box {
 public:
     LayersPanel();
 
     void set_document(CurvzDocument* doc);
     void refresh();
+
+    // s171 m1 — wired so that structural mutations (layer add/delete,
+    // and later: cross-layer object move, layer reorder) push commands
+    // onto the undo stack instead of mutating the doc directly. Both
+    // pointers are non-owning; LayersPanel just borrows them. nullptrs
+    // are tolerated (silent no-op at push site) so test harnesses and
+    // partial-init paths don't crash.
+    void set_history(CommandHistory* history) { m_history = history; }
+    void set_project(CurvzProject*   project) { m_project = project; }
 
     // Called from MainWindow when canvas selection changes
     void set_canvas_selection(const std::vector<SceneNode*>& selection);
@@ -63,6 +77,27 @@ private:
     // a lock toggled mid-session takes effect at the next click/drag without
     // requiring a panel rebuild. Returns false on out-of-range indices.
     bool layer_at_locked(int layer_idx) const;
+
+    // s172 m4 — push EditLayerFieldCommand for a layer-state mutation
+    // (rename / color / visible / lock). Helpers exist because there are
+    // ~14 push sites across the panel (the four canonical fields plus
+    // the five special-layer-row variants of visible+lock); centralizing
+    // keeps them consistent and avoids 14 copies of the same iid-snap +
+    // history-guard boilerplate. Two overloads keep the call sites
+    // readable: string-valued fields (rename, color) take before/after
+    // strings; bool-valued fields (visible, lock) take before/after
+    // bools. The `is_color` flag on the string form picks Color vs Name;
+    // the `is_locked` flag on the bool form picks Locked vs Visible.
+    // Silently no-op if m_history/m_project aren't wired or the layer
+    // iid is empty.
+    void push_edit_layer_string_field(int layer_idx,
+                                      bool is_color,
+                                      const std::string& before_str,
+                                      const std::string& after_str);
+    void push_edit_layer_bool_field(int layer_idx,
+                                    bool is_locked,
+                                    bool before_bool,
+                                    bool after_bool);
 
     void on_add_layer();
     void on_delete_layer();
@@ -131,6 +166,11 @@ private:
 
     // ── State ─────────────────────────────────────────────────────────────
     CurvzDocument* m_doc           = nullptr;
+    // s171 m1 — borrowed pointers for undoable structural ops. Set via
+    // set_history / set_project from MainWindow_zones during panel
+    // assembly. Read-only outside the panel; we never mutate them.
+    CommandHistory* m_history      = nullptr;
+    CurvzProject*   m_project      = nullptr;
     int            m_active_layer  = 0;
     bool           m_rebuilding    = false;
     std::vector<SceneNode*> m_canvas_selection;  // mirrors canvas m_selection

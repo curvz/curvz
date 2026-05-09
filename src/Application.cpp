@@ -191,12 +191,15 @@ void Application::on_startup() {
   // View
   bind("win.toggle-rulers",   {"<Control>r"});
   bind("win.toggle-outline",  {"<Control>e"});
-  bind("win.zoom-in",         {"plus", "equal", "KP_Add"});
-  bind("win.zoom-out",        {"minus", "KP_Subtract"});
-  bind("win.zoom-100",        {"1", "KP_1"});
-  bind("win.zoom-200",        {"2", "KP_2"});
-  bind("win.zoom-selection",  {"3", "KP_3", "<Control>3"});
-  bind("win.zoom-fit",        {"0", "KP_0", "<Control>0"});
+  // Zoom: bare-key accels (0/1/2/3/+/-) are intentionally NOT registered.
+  // set_accels_for_action's accelerator dispatch fires AFTER MainWindow's
+  // CAPTURE controller returns false (which it does when text input has
+  // focus), so a bare-key accel hijacks every digit/symbol typed into a
+  // CurvzEntry or CurvzSpinButton. The CAPTURE controller in MainWindow
+  // wires bare-key zoom directly when the canvas has focus; the menu's
+  // shortcut hint column will show only the modifier-keyed alternatives.
+  bind("win.zoom-selection",  {"<Control>3"});
+  bind("win.zoom-fit",        {"<Control>0"});
 
   // Document navigation
   bind("win.doc-next",        {"<Control>Tab",        "<Control>Page_Down"});

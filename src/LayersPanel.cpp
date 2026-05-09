@@ -1,7 +1,9 @@
 #include "LayersPanel.hpp"
 #include "Canvas.hpp"
 #include "ColorPickerPopover.hpp"
+#include "CommandHistory.hpp"  // s171 m1 — push AddLayerCommand / DeleteLayerCommand
 #include "CurvzLog.hpp"
+#include "CurvzProject.hpp"    // s171 m1 — required for command construction
 #include "MacroSystem.hpp"
 #include "SceneNode.hpp"
 #include "UnitSystem.hpp"
@@ -139,6 +141,13 @@ void LayersPanel::set_document(CurvzDocument *doc) {
 }
 
 void LayersPanel::refresh() {
+  // s171 m1 fix2 — re-sync m_active_layer from the doc before rebuild.
+  // Without this, undo of a layer add/delete restores doc->active_layer_index
+  // but the panel's local m_active_layer is stale (still holds the post-op
+  // value from the original push), so rebuild() highlights the wrong row.
+  // set_document does the same sync; refresh now matches its shape.
+  if (m_doc)
+    m_active_layer = m_doc->active_layer_index;
   Glib::signal_idle().connect_once([this]() { rebuild(); });
 }
 
@@ -258,6 +267,72 @@ bool LayersPanel::layer_at_locked(int layer_idx) const {
   if (layer_idx < 0 || layer_idx >= (int)m_doc->layers.size())
     return false;
   return m_doc->layers[layer_idx]->locked;
+}
+
+// s172 m4 — push helpers for layer state-mutations. Resolve the layer
+// iid at push time (live read of doc->layers[layer_idx]->internal_id),
+// then build and push the command. Both helpers follow the same
+// mutate-then-push convention as the s171 m1+m2 layer commands —
+// callers do the direct mutation first, then call the helper to record
+// it. push() does NOT call execute(); it only appends to the undo
+// stack. Silent no-op when m_history/m_project aren't wired (test
+// harnesses, partial init) or the layer's iid is empty (degenerate /
+// pre-iid legacy doc).
+//
+// before_*/after_* are passed in as plain values, not snapshotted from
+// the live layer — the caller has already mutated, so reading the live
+// state would give us "after" twice. Caller responsibility to capture
+// `before` before mutating, then call the helper with both.
+void LayersPanel::push_edit_layer_string_field(int layer_idx,
+                                               bool is_color,
+                                               const std::string& before_str,
+                                               const std::string& after_str) {
+  if (!m_history || !m_project) return;
+  if (!m_doc) return;
+  if (layer_idx < 0 || layer_idx >= (int)m_doc->layers.size()) return;
+  if (!m_doc->layers[layer_idx]) return;
+  std::string layer_iid = m_doc->layers[layer_idx]->internal_id;
+  if (layer_iid.empty()) {
+    LOG_WARN("[IIDDIAG] EditLayerField: layer at idx={} has empty iid, "
+             "skipping command push", layer_idx);
+    return;
+  }
+  using Field = EditLayerFieldCommand::Field;
+  auto cmd = std::make_unique<EditLayerFieldCommand>(
+      m_project,
+      std::move(layer_iid),
+      is_color ? Field::Color : Field::Name,
+      before_str,
+      after_str,
+      /*before_bool=*/false,
+      /*after_bool=*/false);
+  m_history->push(std::move(cmd));
+}
+
+void LayersPanel::push_edit_layer_bool_field(int layer_idx,
+                                             bool is_locked,
+                                             bool before_bool,
+                                             bool after_bool) {
+  if (!m_history || !m_project) return;
+  if (!m_doc) return;
+  if (layer_idx < 0 || layer_idx >= (int)m_doc->layers.size()) return;
+  if (!m_doc->layers[layer_idx]) return;
+  std::string layer_iid = m_doc->layers[layer_idx]->internal_id;
+  if (layer_iid.empty()) {
+    LOG_WARN("[IIDDIAG] EditLayerField: layer at idx={} has empty iid, "
+             "skipping command push", layer_idx);
+    return;
+  }
+  using Field = EditLayerFieldCommand::Field;
+  auto cmd = std::make_unique<EditLayerFieldCommand>(
+      m_project,
+      std::move(layer_iid),
+      is_locked ? Field::Locked : Field::Visible,
+      /*before_str=*/std::string{},
+      /*after_str=*/std::string{},
+      before_bool,
+      after_bool);
+  m_history->push(std::move(cmd));
 }
 
 void LayersPanel::write_expanded(const std::string &key, bool expanded) {
@@ -425,6 +500,20 @@ void LayersPanel::setup_layer_drop(Gtk::Widget *w, int layer_idx) {
               (zone == DropZone::After) ? dst_row + 1 : dst_row;
           if (insert_before_row == src_row || insert_before_row == src_row + 1)
             return false;
+
+          // s172 m3 — capture pre-op layer iid sequence and active index
+          // before the rearrange. iids_before is the doc->layers order
+          // *as-is* (no row->index conversion needed: we're capturing the
+          // canonical doc-level vector ordering, which is what the
+          // command applies in both directions).
+          std::vector<std::string> iids_before;
+          int active_before = m_doc->active_layer_index;
+          if (m_history && m_project) {
+            iids_before.reserve(n);
+            for (auto& ly : m_doc->layers)
+              iids_before.push_back(ly ? ly->internal_id : std::string{});
+          }
+
           std::vector<int> order;
           order.reserve(n);
           for (int r = 0; r < n; ++r) {
@@ -445,6 +534,40 @@ void LayersPanel::setup_layer_drop(Gtk::Widget *w, int layer_idx) {
                               order.begin());
           m_active_layer = (n - 1) - new_row;
           m_doc->active_layer_index = m_active_layer;
+          m_doc->invalidate_iid_index();
+
+          // s172 m3 — capture post-op iid sequence and push the command.
+          // Anchor is the first non-empty iid in iids_after; layers don't
+          // disappear during reorder so iids_after has the same set as
+          // iids_before, just permuted. Push only if both before and
+          // after sequences are non-empty (degenerate doc safety).
+          if (m_history && m_project && !iids_before.empty()) {
+            std::vector<std::string> iids_after;
+            iids_after.reserve(m_doc->layers.size());
+            for (auto& ly : m_doc->layers)
+              iids_after.push_back(ly ? ly->internal_id : std::string{});
+
+            std::string anchor_iid;
+            for (const auto& iid : iids_after) {
+              if (!iid.empty()) {
+                anchor_iid = iid;
+                break;
+              }
+            }
+            if (!anchor_iid.empty()) {
+              auto cmd = std::make_unique<ReorderLayersCommand>(
+                  m_project,
+                  std::move(anchor_iid),
+                  std::move(iids_before),
+                  std::move(iids_after),
+                  active_before,
+                  m_doc->active_layer_index);
+              m_history->push(std::move(cmd));
+            } else {
+              LOG_WARN("[IIDDIAG] ReorderLayers: no anchor iid found, "
+                       "skipping command push");
+            }
+          }
         } else {
           if (src_li == layer_idx)
             return false;
@@ -462,13 +585,51 @@ void LayersPanel::setup_layer_drop(Gtk::Widget *w, int layer_idx) {
             return false;
           if (m_doc->layers[layer_idx]->is_margin_layer())
             return false;
-          auto obj = std::move(m_doc->layers[src_li]->children[src_oi]);
-          // Never drag ref points out of their ref layer
-          if (obj->is_ref())
+          // Pre-mutation check: never drag ref points out of their ref
+          // layer. Read without taking ownership so we can bail before
+          // the move. (The original `auto obj = std::move(...)` happened
+          // before the is_ref check; if is_ref returned true the obj
+          // was already moved-out, leaving a hole. Reordering the check
+          // here is a small safety improvement.)
+          if (m_doc->layers[src_li]->children[src_oi]->is_ref())
             return false;
+
+          // s171 m2 — capture iids and indices before the mutation, so
+          // the command sees the pre-op state. Mutate the doc directly
+          // (matching pre-s171 behaviour and the established
+          // mutate-then-push pattern), then push the command.
+          std::string src_layer_iid = m_doc->layers[src_li]->internal_id;
+          std::string dst_layer_iid = m_doc->layers[layer_idx]->internal_id;
+          std::string obj_iid       = m_doc->layers[src_li]->children[src_oi]->internal_id;
+          int saved_src_index       = src_oi;
+          int saved_dst_index       = (int)m_doc->layers[layer_idx]->children.size();
+
+          // Snapshot the object before move-out so the command holds a
+          // stable clone (every iid preserved).
+          std::unique_ptr<SceneNode> snap_for_cmd;
+          if (m_history && m_project
+              && !src_layer_iid.empty() && !dst_layer_iid.empty()
+              && !obj_iid.empty()) {
+            snap_for_cmd = clone_node(*m_doc->layers[src_li]->children[src_oi]);
+          }
+
+          auto obj = std::move(m_doc->layers[src_li]->children[src_oi]);
           m_doc->layers[src_li]->children.erase(
               m_doc->layers[src_li]->children.begin() + src_oi);
           m_doc->layers[layer_idx]->children.push_back(std::move(obj));
+          m_doc->invalidate_iid_index();
+
+          if (snap_for_cmd) {
+            auto cmd = std::make_unique<MoveObjectToLayerCommand>(
+                m_project,
+                std::move(src_layer_iid),
+                std::move(dst_layer_iid),
+                std::move(obj_iid),
+                std::move(snap_for_cmd),
+                saved_src_index,
+                saved_dst_index);
+            m_history->push(std::move(cmd));
+          }
         }
 
         m_sig_layer_selected.emit(m_active_layer);
@@ -589,12 +750,44 @@ void LayersPanel::setup_path_drop(Gtk::Widget *w, int layer_idx, int obj_idx) {
           insert_at = std::max(0, std::min(insert_at, (int)children.size()));
           children.insert(children.begin() + insert_at, std::move(moving));
         } else {
+          // s171 m2 — cross-layer move via path-row drop. Capture iids
+          // and indices before the mutation; mutate; then push the
+          // command. Same pattern as the layer-row drop site above.
+          std::string src_layer_iid = src_layer->internal_id;
+          std::string dst_layer_iid = m_doc->layers[layer_idx]->internal_id;
+          std::string obj_iid       = src_layer->children[src_oi]->internal_id;
+          int saved_src_index       = src_oi;
+          int saved_dst_index       = (zone == DropZone::After) ? obj_idx + 1 : obj_idx;
+          // Clamp dst to live size (the live insertion below clamps too).
+          saved_dst_index = std::max(0, std::min(saved_dst_index,
+              (int)m_doc->layers[layer_idx]->children.size()));
+
+          std::unique_ptr<SceneNode> snap_for_cmd;
+          if (m_history && m_project
+              && !src_layer_iid.empty() && !dst_layer_iid.empty()
+              && !obj_iid.empty()) {
+            snap_for_cmd = clone_node(*src_layer->children[src_oi]);
+          }
+
           auto obj = std::move(src_layer->children[src_oi]);
           src_layer->children.erase(src_layer->children.begin() + src_oi);
           auto &dst = m_doc->layers[layer_idx]->children;
           int insert_at = (zone == DropZone::After) ? obj_idx + 1 : obj_idx;
           insert_at = std::max(0, std::min(insert_at, (int)dst.size()));
           dst.insert(dst.begin() + insert_at, std::move(obj));
+          m_doc->invalidate_iid_index();
+
+          if (snap_for_cmd) {
+            auto cmd = std::make_unique<MoveObjectToLayerCommand>(
+                m_project,
+                std::move(src_layer_iid),
+                std::move(dst_layer_iid),
+                std::move(obj_iid),
+                std::move(snap_for_cmd),
+                saved_src_index,
+                saved_dst_index);
+            m_history->push(std::move(cmd));
+          }
         }
 
         m_sig_layer_changed.emit();
@@ -685,7 +878,12 @@ void LayersPanel::add_layer_row(int i, Gtk::Box *parent) {
           if (i >= (int)m_doc->layers.size()) return;
           std::string hex = color::to_hex(c);
           if (hex.size() > 7) hex.resize(7);
+          // s172 m4 — capture before, mutate, push.
+          std::string before = m_doc->layers[i]->color;
           m_doc->layers[i]->color = hex;
+          if (before != hex) {
+            push_edit_layer_string_field(i, /*is_color=*/true, before, hex);
+          }
           m_sig_layer_changed.emit();
           Glib::signal_idle().connect_once([this]() { rebuild(); });
         });
@@ -709,7 +907,10 @@ void LayersPanel::add_layer_row(int i, Gtk::Box *parent) {
   if (!vis)
     vis_btn->add_css_class("layer-hidden-btn");
   vis_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->visible = !m_doc->layers[i]->visible;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->visible;
+    m_doc->layers[i]->visible = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/false, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -761,6 +962,11 @@ void LayersPanel::add_layer_row(int i, Gtk::Box *parent) {
           entry->select_region(0, -1);
           entry->on_commit([this, i, entry]() {
             std::string nm = entry->get_text();
+            LOG_INFO("[IIDDIAG] LayerRename: on_commit fired idx={} text='{}' "
+                     "m_history={} m_project={}",
+                     i, nm,
+                     m_history ? "yes" : "NO",
+                     m_project ? "yes" : "NO");
             if (!nm.empty()) {
               // Route user-typed names through the uniqueness funnel so
               // hand-typed collisions get suffixed (e.g. typing "Background"
@@ -768,7 +974,15 @@ void LayersPanel::add_layer_row(int i, Gtk::Box *parent) {
               // "Background (2)"). Self-exclude so renaming-to-current-name
               // doesn't falsely collide with itself.
               SceneNode* self = m_doc->layers[i].get();
-              m_doc->layers[i]->name = m_doc->uniquify_name(nm, self);
+              // s172 m4 — capture before, mutate, push (only if name
+              // actually changed after uniquify; typing the current
+              // name back in shouldn't add an empty undo step).
+              std::string before = m_doc->layers[i]->name;
+              std::string after  = m_doc->uniquify_name(nm, self);
+              m_doc->layers[i]->name = after;
+              if (before != after) {
+                push_edit_layer_string_field(i, /*is_color=*/false, before, after);
+              }
             }
             m_sig_layer_changed.emit();
             Glib::signal_idle().connect_once([this]() { rebuild(); });
@@ -789,7 +1003,10 @@ void LayersPanel::add_layer_row(int i, Gtk::Box *parent) {
   if (layer.locked)
     lock_btn->add_css_class("layer-locked-btn");
   lock_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->locked = !m_doc->layers[i]->locked;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->locked;
+    m_doc->layers[i]->locked = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/true, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -1846,7 +2063,12 @@ void LayersPanel::add_ref_layer_row(int i, Gtk::Box *parent) {
               if (i >= (int)m_doc->layers.size()) return;
               std::string hex = color::to_hex(c);
               if (hex.size() > 7) hex.resize(7);
+              // s172 m4 — capture before, mutate, push.
+              std::string before = m_doc->layers[i]->color;
               m_doc->layers[i]->color = hex;
+              if (before != hex) {
+                push_edit_layer_string_field(i, /*is_color=*/true, before, hex);
+              }
               m_sig_layer_changed.emit();
               Glib::signal_idle().connect_once([this]() { rebuild(); });
             });
@@ -1863,7 +2085,10 @@ void LayersPanel::add_ref_layer_row(int i, Gtk::Box *parent) {
   if (!layer.visible)
     vis_btn->add_css_class("layer-hidden-btn");
   vis_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->visible = !m_doc->layers[i]->visible;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->visible;
+    m_doc->layers[i]->visible = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/false, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -1904,7 +2129,10 @@ void LayersPanel::add_ref_layer_row(int i, Gtk::Box *parent) {
   if (layer.locked)
     lock_btn->add_css_class("layer-locked-btn");
   lock_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->locked = !m_doc->layers[i]->locked;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->locked;
+    m_doc->layers[i]->locked = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/true, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -2078,7 +2306,10 @@ void LayersPanel::add_measure_layer_row(int i, Gtk::Box *parent) {
   if (!layer.visible)
     vis_btn->add_css_class("layer-hidden-btn");
   vis_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->visible = !m_doc->layers[i]->visible;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->visible;
+    m_doc->layers[i]->visible = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/false, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -2105,7 +2336,10 @@ void LayersPanel::add_measure_layer_row(int i, Gtk::Box *parent) {
   if (layer.locked)
     lock_btn->add_css_class("layer-locked-btn");
   lock_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->locked = !m_doc->layers[i]->locked;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->locked;
+    m_doc->layers[i]->locked = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/true, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -2330,7 +2564,10 @@ void LayersPanel::add_grid_layer_row(int i, Gtk::Box *parent) {
   if (!layer.visible)
     vis_btn->add_css_class("layer-hidden-btn");
   vis_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->visible = !m_doc->layers[i]->visible;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->visible;
+    m_doc->layers[i]->visible = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/false, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -2354,7 +2591,10 @@ void LayersPanel::add_grid_layer_row(int i, Gtk::Box *parent) {
   if (layer.locked)
     lock_btn->add_css_class("layer-locked-btn");
   lock_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->locked = !m_doc->layers[i]->locked;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->locked;
+    m_doc->layers[i]->locked = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/true, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -2442,7 +2682,10 @@ void LayersPanel::add_margin_layer_row(int i, Gtk::Box *parent) {
   if (!layer.visible)
     vis_btn->add_css_class("layer-hidden-btn");
   vis_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->visible = !m_doc->layers[i]->visible;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->visible;
+    m_doc->layers[i]->visible = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/false, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -2466,7 +2709,10 @@ void LayersPanel::add_margin_layer_row(int i, Gtk::Box *parent) {
   if (layer.locked)
     lock_btn->add_css_class("layer-locked-btn");
   lock_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->locked = !m_doc->layers[i]->locked;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->locked;
+    m_doc->layers[i]->locked = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/true, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -2566,7 +2812,10 @@ void LayersPanel::add_guide_layer_row(int i, Gtk::Box *parent) {
   if (!layer.visible)
     vis_btn->add_css_class("layer-hidden-btn");
   vis_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->visible = !m_doc->layers[i]->visible;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->visible;
+    m_doc->layers[i]->visible = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/false, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -2610,7 +2859,10 @@ void LayersPanel::add_guide_layer_row(int i, Gtk::Box *parent) {
   if (layer.locked)
     lock_btn->add_css_class("layer-locked-btn");
   lock_btn->signal_clicked().connect([this, i]() {
-    m_doc->layers[i]->locked = !m_doc->layers[i]->locked;
+    if (i < 0 || i >= (int)m_doc->layers.size()) return;
+    bool before = m_doc->layers[i]->locked;
+    m_doc->layers[i]->locked = !before;
+    push_edit_layer_bool_field(i, /*is_locked=*/true, before, !before);
     m_sig_layer_changed.emit();
     Glib::signal_idle().connect_once([this]() { rebuild(); });
   });
@@ -2949,9 +3201,62 @@ void LayersPanel::on_add_layer() {
       break;
     }
   }
+
+  // s171 m1 — push AddLayerCommand if history+project are wired.
+  // Pattern (per StylesPanel/Canvas convention): mutate live state
+  // first, THEN push the command (which records before+after for undo
+  // and redo). push() does NOT call execute() — it only appends to
+  // the undo stack. Initial state-application is the direct mutation
+  // below.
+  //
+  // Falls through to plain direct mutation if either history or
+  // project is missing (test harness / partial init), preserving old
+  // behaviour as a safety net.
+  int active_before = m_doc->active_layer_index;
+  int active_after  = insert_pos;
+  std::string new_iid = layer->internal_id;
+
+  // Pick the anchor BEFORE the mutation, so it's an iid that already
+  // existed in the doc and survives this op (and any future undo).
+  std::string anchor_iid;
+  if (m_history && m_project) {
+    for (auto& l : m_doc->layers) {
+      if (l && !l->internal_id.empty()) {
+        anchor_iid = l->internal_id;
+        break;
+      }
+    }
+    if (anchor_iid.empty()) {
+      // Degenerate doc with no anchorable layer — log and proceed
+      // with direct mutation only (no command pushed).
+      LOG_WARN("[IIDDIAG] AddLayer: no anchor layer found, "
+               "skipping command push");
+    }
+  }
+
+  // Take a snapshot of the layer (deep clone) BEFORE moving it into
+  // the doc, so the command can replay-insert on redo without holding
+  // a reference to the live layer (which would dangle if user later
+  // deletes it).
+  std::unique_ptr<SceneNode> snap_for_cmd;
+  if (m_history && m_project && !anchor_iid.empty()) {
+    snap_for_cmd = clone_node(*layer);
+  }
+
+  // Direct mutation — same as pre-s171 behaviour.
   m_doc->layers.insert(m_doc->layers.begin() + insert_pos, std::move(layer));
+  m_doc->invalidate_iid_index();
   m_active_layer = insert_pos;
   m_doc->active_layer_index = insert_pos;
+
+  // Now record the command for undo/redo.
+  if (snap_for_cmd) {
+    auto cmd = std::make_unique<AddLayerCommand>(
+        m_project, anchor_iid, std::move(snap_for_cmd),
+        insert_pos, active_before, active_after);
+    m_history->push(std::move(cmd));
+  }
+
   m_sig_layer_selected.emit(insert_pos);
   m_sig_layer_changed.emit();
   Glib::signal_idle().connect_once([this]() { rebuild(); });
@@ -2975,7 +3280,75 @@ void LayersPanel::on_delete_layer() {
       ++normal_count;
   if (normal_count <= 1)
     return;
+
+  // s171 m1 — capture pre-op state for the command, then mutate the
+  // doc directly (matching pre-s171 behaviour), then push the command.
+  // push() does NOT call execute(); the direct mutation below IS the
+  // initial application. The command records before+after for undo/redo.
+  int del_idx = m_active_layer;
+  int active_before = m_doc->active_layer_index;
+
+  // Pick anchor BEFORE the erase. Must NOT be the layer about to be
+  // deleted (that iid won't resolve post-op). The doc always has at
+  // least the special layers, so an anchor always exists.
+  std::string anchor_iid;
+  if (m_history && m_project) {
+    for (int i = 0; i < (int)m_doc->layers.size(); ++i) {
+      if (i == del_idx) continue;
+      auto& l = m_doc->layers[i];
+      if (l && !l->internal_id.empty()) {
+        anchor_iid = l->internal_id;
+        break;
+      }
+    }
+    if (anchor_iid.empty()) {
+      LOG_WARN("[IIDDIAG] DeleteLayer: no anchor layer found, "
+               "skipping command push");
+    }
+  }
+
+  // Deep clone the layer (with all children) before erase so undo
+  // can restore everything — every child iid preserved. This is what
+  // makes the s170 crash go away by construction: child commands queued
+  // before the delete will resolve their iids correctly when undo walks
+  // back through the delete-undo first.
+  std::unique_ptr<SceneNode> snap_for_cmd;
+  if (m_history && m_project && !anchor_iid.empty()) {
+    snap_for_cmd = clone_node(*m_doc->layers[del_idx]);
+  }
+
+  // s171 m2 — scrub raw-pointer captures from undo/redo stacks before
+  // the live nodes are destroyed. The pre-s171 commands on Stage 1 (e.g.
+  // AddNodeCommand) hold raw `SceneNode* parent`, with a `references()`
+  // override that returns true when their parent matches `target`.
+  // Without this scrub, Ctrl+Z after restoring this layer would walk
+  // back to those commands and dereference freed memory (the layer
+  // SceneNode at this address is destroyed by the erase below; the
+  // restored layer is a clone at a different address). The scrub drops
+  // those commands from the stacks, so undo walks past them cleanly.
+  // Recurses into children so any descendant container that has raw-
+  // pointer captures (groups holding their own contents) also scrubs.
+  // No-op for iid-based commands (default `references() == false`).
+  // STRIP: do not strip. This is structural belt-and-braces until every
+  // pre-s170 raw-pointer command is migrated to iid capture.
+  if (m_history && m_active_layer >= 0
+      && m_active_layer < (int)m_doc->layers.size()) {
+    SceneNode* layer_to_delete = m_doc->layers[m_active_layer].get();
+    std::function<void(SceneNode*)> scrub_walk = [&](SceneNode* n) {
+      if (!n) return;
+      m_history->scrub_command_history(n);
+      for (auto& c : n->children) scrub_walk(c.get());
+      if (n->clip_shape)     scrub_walk(n->clip_shape.get());
+      if (n->blend_source_a) scrub_walk(n->blend_source_a.get());
+      if (n->blend_source_b) scrub_walk(n->blend_source_b.get());
+      if (n->warp_source)    scrub_walk(n->warp_source.get());
+    };
+    scrub_walk(layer_to_delete);
+  }
+
+  // Direct mutation — same as pre-s171 behaviour.
   m_doc->layers.erase(m_doc->layers.begin() + m_active_layer);
+  m_doc->invalidate_iid_index();
   m_active_layer = std::min(m_active_layer, (int)m_doc->layers.size() - 1);
   // Ensure active layer is a normal layer
   while (m_active_layer >= 0 &&
@@ -2988,6 +3361,16 @@ void LayersPanel::on_delete_layer() {
   if (m_active_layer < 0)
     m_active_layer = 0;
   m_doc->active_layer_index = m_active_layer;
+  int active_after = m_active_layer;
+
+  // Now record the command.
+  if (snap_for_cmd) {
+    auto cmd = std::make_unique<DeleteLayerCommand>(
+        m_project, anchor_iid, std::move(snap_for_cmd),
+        del_idx, active_before, active_after);
+    m_history->push(std::move(cmd));
+  }
+
   m_sig_layer_selected.emit(m_active_layer);
   m_sig_layer_changed.emit();
   Glib::signal_idle().connect_once([this]() { rebuild(); });

@@ -19,11 +19,15 @@
 #include <gdkmm/contentprovider.h>
 #include <gdkmm/pixbuf.h>
 #include <gdkmm/rectangle.h>
+#include <giomm/menu.h>            // s162 m3: object-world context menu
+#include <giomm/simpleaction.h>    // s162 m3 — local "save to library" action
+#include <giomm/simpleactiongroup.h>// s162 m3
 #include <gtkmm/alertdialog.h>
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
 #include <gtkmm/grid.h>
 #include <gtkmm/popover.h>
+#include <gtkmm/popovermenu.h>     // s162 m3 — object-world context menu
 #include <gtkmm/separator.h>
 #include <gtkmm/spinbutton.h>
 #include <gtkmm/window.h>
@@ -53,6 +57,277 @@
 #include "Canvas_internal.hpp"
 
 namespace Curvz {
+
+// ─── s162 m3: object-world context menu builder ───────────────────────────────
+// Builds a Gio::Menu from the current ObjectActions mask. Sections appear only
+// when at least one of their bits is set, so the menu has no greyed entries —
+// what's visible is what's currently doable. Section dividers (the visual gap
+// between groups in PopoverMenu) come from the Gio::Menu section append idiom.
+//
+// Action references use existing MainWindow `win.*` action names (cut, copy,
+// paste, group-make, bool-union, …). The exception is "Save to Library…",
+// which is wired locally via the `ctx` action group set up in the right-click
+// handler — it has no MainWindow action because its target signal lives on
+// Canvas.
+//
+// Section order follows Affinity/Illustrator convention:
+//   1. Lifecycle  (Cut/Copy/Paste/Duplicate/Delete)
+//   2. Structure  (Group/Ungroup/Compound/Release)
+//   3. Boolean    (Union/Subtract/Intersect)
+//   4. Arrange    (Bring Front/Forward, Send Backward/Back)
+//   5. Effects    (Make/Edit/Release Warp+Blend, Flatten, Expand Stroke,
+//                  Convert to Path)
+//   6. Library    (Save to Library…) — always present
+//
+// Lock/Unlock/Hide/Show (VisAction) and Align/Distribute are intentionally
+// omitted from the right-click menu in this ship: visibility belongs in the
+// inspector visibility row per the s145 "in your face" rule, and align/distribute
+// already have a dedicated toolbar group plus inspector section. Both are
+// trivial follow-ups if Scott wants them later.
+static Glib::RefPtr<Gio::Menu>
+build_object_context_menu(const ObjectActions &oa) {
+  auto menu = Gio::Menu::create();
+
+  // Helper: build a section, append non-empty sections to `menu`. Appending
+  // a Gio::Menu as a section produces a visual divider between groups in the
+  // resulting PopoverMenu — the canonical idiom across LibraryPanel,
+  // DocumentGallery, MainWindow's main menubar.
+  auto append_section_if_nonempty = [&menu](Glib::RefPtr<Gio::Menu> section) {
+    if (section->get_n_items() > 0)
+      menu->append_section(/*label=*/"", section);
+  };
+
+  // s165 m2 (continued): inline helper to append an item with an optional
+  // accelerator hint. PopoverMenu renders the "accel" attribute as a right-
+  // aligned grey label (system-styled). Standard accel format: "<Primary>x"
+  // for Ctrl+X, "<Primary><Shift>u" for Ctrl+Shift+U, "Delete" for the bare
+  // Delete key, "<Primary>Up" for Ctrl+Up, etc.
+  //
+  // Important: accel strings are DISPLAY-ONLY in this codebase. Per the
+  // project's hotkey convention, every shortcut is dispatched in the
+  // CAPTURE-phase key controller in MainWindow_bindings.cpp; GTK accelerator
+  // dispatch is unreachable because CAPTURE claims events first. We use the
+  // "accel" attribute purely as a label-rendering mechanism. The accel
+  // strings here MUST stay in sync with the controller — when a hotkey
+  // changes, change both sites or the menu will lie about the shortcut.
+  auto add = [](Glib::RefPtr<Gio::Menu> &sec, const char *label,
+                const char *action, const char *accel = nullptr) {
+    auto item = Gio::MenuItem::create(label, action);
+    if (accel)
+      item->set_attribute_value(
+          "accel", Glib::Variant<Glib::ustring>::create(accel));
+    sec->append_item(item);
+  };
+
+  // Mask reads use the any(mask & Bit) idiom from SelectionContext.hpp's
+  // CURVZ_BITWISE_ENUM macro — preserves the enum-class type and reads
+  // declaratively as "is this bit set?".
+
+  // ── 1. Lifecycle ─────────────────────────────────────────────────────────
+  {
+    auto sec = Gio::Menu::create();
+    if (any(oa.life & LifeAction::Cut))
+      add(sec, "Cut",       "win.cut",              "<Primary>x");
+    if (any(oa.life & LifeAction::Copy))
+      add(sec, "Copy",      "win.copy",             "<Primary>c");
+    if (any(oa.life & LifeAction::Paste))
+      add(sec, "Paste",     "win.paste",            "<Primary>v");
+    if (any(oa.life & LifeAction::Duplicate))
+      add(sec, "Duplicate", "win.duplicate",        "<Primary>d");
+    if (any(oa.life & LifeAction::Delete))
+      add(sec, "Delete",    "win.delete-selected",  "Delete");
+    append_section_if_nonempty(sec);
+  }
+
+  // ── 2. Structure ─────────────────────────────────────────────────────────
+  {
+    auto sec = Gio::Menu::create();
+    if (any(oa.struct_ & StructAction::MakeGroup))
+      add(sec, "Group",            "win.group-make",     "<Primary>g");
+    if (any(oa.struct_ & StructAction::Ungroup))
+      add(sec, "Ungroup",          "win.group-release",  "<Primary><Shift>g");
+    if (any(oa.struct_ & StructAction::MakeCompound))
+      add(sec, "Make Compound",    "win.make-compound",  "<Primary>8");
+    if (any(oa.struct_ & StructAction::ReleaseCompound))
+      add(sec, "Release Compound", "win.split-compound", "<Primary><Shift>8");
+    append_section_if_nonempty(sec);
+  }
+
+  // ── 3. Boolean (submenu) ─────────────────────────────────────────────────
+  // s165 m2: Boolean ops collapsed into a "Boolean" submenu. Three items
+  // share a coherent verb family and are uncommon in everyday workflow,
+  // so nesting clears top-level real estate without hiding the verbs.
+  {
+    auto sub = Gio::Menu::create();
+    if (any(oa.bool_ & BoolAction::Union))
+      add(sub, "Union",     "win.bool-union",     "<Primary><Shift>u");
+    if (any(oa.bool_ & BoolAction::Subtract))
+      add(sub, "Subtract",  "win.bool-subtract",  "<Primary><Shift>e");
+    if (any(oa.bool_ & BoolAction::Intersect))
+      add(sub, "Intersect", "win.bool-intersect", "<Primary><Shift>i");
+    if (sub->get_n_items() > 0) {
+      auto sec = Gio::Menu::create();
+      sec->append_submenu("Boolean", sub);
+      menu->append_section("", sec);
+    }
+  }
+
+  // ── 4. Arrange (submenu, z-order) ────────────────────────────────────────
+  // s165 m2: Arrange collapsed to a submenu — four directional items
+  // sharing a common verb. Standard idiom across vector editors (Affinity,
+  // Illustrator).
+  {
+    auto sub = Gio::Menu::create();
+    if (any(oa.layer & LayerAction::BringToFront))
+      add(sub, "Bring to Front", "win.arrange-bring-front",
+          "<Primary><Shift>Up");
+    if (any(oa.layer & LayerAction::BringForward))
+      add(sub, "Bring Forward",  "win.arrange-bring-forward",
+          "<Primary>Up");
+    if (any(oa.layer & LayerAction::SendBackward))
+      add(sub, "Send Backward",  "win.arrange-send-backward",
+          "<Primary>Down");
+    if (any(oa.layer & LayerAction::SendToBack))
+      add(sub, "Send to Back",   "win.arrange-send-back",
+          "<Primary><Shift>Down");
+    if (sub->get_n_items() > 0) {
+      auto sec = Gio::Menu::create();
+      sec->append_submenu("Arrange", sub);
+      menu->append_section("", sec);
+    }
+  }
+
+  // ── 5. Effects (submenu) ─────────────────────────────────────────────────
+  // s165 m2: Effects collapsed to a submenu. Up to 8 items spanning Warp,
+  // Blend, Stroke, and primitive→path conversion — too many to leave at top
+  // level and a coherent group. ConvertToPath maps to text-to-path (font-
+  // glyph rasterisation) — the only primitive→path conversion currently
+  // wired. EditBlend has no discrete action — Blend editing happens via
+  // the dedicated Blend popover reached via its own right-click branch
+  // above this menu — so it's omitted here. Make Warp and Make Blend
+  // (s162 m3) appear at the top of this section so creation reads before
+  // lifecycle/release verbs.
+  //
+  // Most Effects items have no hotkey wired in the CAPTURE controller;
+  // those omit the accel attribute. Expand Stroke (Ctrl+Shift+X) is the
+  // exception.
+  {
+    auto sub = Gio::Menu::create();
+    if (any(oa.effect & EffectAction::MakeWarp))
+      add(sub, "Make Warp",      "win.warp-make");
+    if (any(oa.effect & EffectAction::MakeBlend))
+      add(sub, "Make Blend",     "win.blend-make");
+    if (any(oa.effect & EffectAction::EditWarp))
+      add(sub, "Edit Warp",      "win.warp-edit");
+    if (any(oa.effect & EffectAction::ReleaseWarp))
+      add(sub, "Release Warp",   "win.warp-release");
+    if (any(oa.effect & EffectAction::ReleaseBlend))
+      add(sub, "Release Blend",  "win.blend-release");
+    if (any(oa.effect & EffectAction::Flatten))
+      add(sub, "Flatten",        "win.warp-flatten");
+    if (any(oa.effect & EffectAction::ExpandStroke))
+      add(sub, "Expand Stroke",  "win.expand-stroke", "<Primary><Shift>x");
+    if (any(oa.effect & EffectAction::ConvertToPath))
+      add(sub, "Convert to Path", "win.text-to-path");
+    if (sub->get_n_items() > 0) {
+      auto sec = Gio::Menu::create();
+      sec->append_submenu("Effects", sub);
+      menu->append_section("", sec);
+    }
+  }
+
+  // ── 6. Library — always present (selection-independent at this layer; the
+  //    save-to-library handler in MainWindow does its own pre-flight on the
+  //    current selection, and "Save current selection" reads naturally even
+  //    when nothing else is doable on it).
+  {
+    auto sec = Gio::Menu::create();
+    sec->append("Save to Library…", "ctx.save-to-library");
+    menu->append_section("", sec);
+  }
+
+  return menu;
+}
+
+// ─── s165 m2: node-world context menu builder ─────────────────────────────────
+// Builds a Gio::Menu of the J/M/K/A/B/C node-tool operations. Companion to
+// build_object_context_menu but for the Node tool's right-click — the s162 m3
+// object-context-menu work didn't ship a node equivalent, so right-clicking
+// in the Node tool was falling through to the object branch and showing the
+// wrong items.
+//
+// Item-to-key correspondence (matches Canvas::node_tool_key dispatch):
+//   J — Join paths or Close/Open path        (NodeStructAction::Join is too
+//                                              narrow; the J handler does
+//                                              more than the policy bit
+//                                              suggests, so this item is
+//                                              shown unconditionally and
+//                                              the handler shows a helpful
+//                                              dialog if the configuration
+//                                              isn't actionable)
+//   B — Break path at node                   (same reasoning — always shown)
+//   A — Make node Symmetric                  (gated on NodeKindAction::MakeSymmetric)
+//   M — Make node Smooth                     (gated on NodeKindAction::MakeSmooth)
+//   C — Make node Cusp                       (no policy bit exists; shown
+//                                              alongside the other kind keys
+//                                              when any is set)
+//   K — Make node Corner                     (gated on NodeKindAction::MakeCorner)
+//
+// Action references use the local `nodectx` action group set up in the
+// right-click handler — its actions invoke node_tool_key() directly, so the
+// menu and the keypress paths share a single source of truth (blend-source
+// rejection, atomic-undo wrapping, error dialogs, etc. all live in the key
+// handler and the menu inherits all of it for free).
+static Glib::RefPtr<Gio::Menu>
+build_node_context_menu(const NodeActions &na) {
+  auto menu = Gio::Menu::create();
+
+  auto append_section_if_nonempty = [&menu](Glib::RefPtr<Gio::Menu> section) {
+    if (section->get_n_items() > 0)
+      menu->append_section(/*label=*/"", section);
+  };
+
+  // ── 1. Structural ops (Join, Break) ──────────────────────────────────────
+  // Always shown. The key handlers self-validate and surface user-facing
+  // dialogs when the configuration isn't actionable, so a "do nothing"
+  // click is impossible — the user always sees feedback.
+  //
+  // Hotkey hints are baked into the label text as "(X)" because nodectx
+  // actions are local to the popup and have no real Gio accel registration
+  // to drive PopoverMenu's right-aligned accel rendering. The hotkey
+  // strings here are display-only; the actual key dispatch lives in
+  // Canvas::node_tool_key. Inline-parenthetical reads naturally in
+  // PopoverMenu's proportional UI font without needing column alignment.
+  {
+    auto sec = Gio::Menu::create();
+    sec->append("Join or Close   (J)", "nodectx.join");
+    sec->append("Break Path   (B)",    "nodectx.break");
+    append_section_if_nonempty(sec);
+  }
+
+  // ── 2. Node kind (Symmetric, Smooth, Cusp, Corner) ───────────────────────
+  // Gated on NodeKindAction bits. compute_node_actions() sets these together
+  // when any node is selected, so the section appears as a unit (or not at
+  // all). Cusp has no policy bit but is included alongside its siblings.
+  {
+    auto sec = Gio::Menu::create();
+    if (any(na.kind & NodeKindAction::MakeSymmetric))
+      sec->append("Make Symmetric   (A)", "nodectx.type-symmetric");
+    if (any(na.kind & NodeKindAction::MakeSmooth))
+      sec->append("Make Smooth   (M)",    "nodectx.type-smooth");
+    // Cusp has no NodeKindAction bit; tie its visibility to the same gate as
+    // the other kind ops.
+    if (any(na.kind & (NodeKindAction::MakeSymmetric |
+                       NodeKindAction::MakeSmooth |
+                       NodeKindAction::MakeCorner)))
+      sec->append("Make Cusp   (C)",      "nodectx.type-cusp");
+    if (any(na.kind & NodeKindAction::MakeCorner))
+      sec->append("Make Corner   (K)",    "nodectx.type-corner");
+    append_section_if_nonempty(sec);
+  }
+
+  return menu;
+}
 
 
 // ── Constructor
@@ -178,6 +453,67 @@ Canvas::Canvas() {
       on_top_rclick(x, y);
       return;
     }
+    // s165 m2: Node tool right-click context menu.
+    //
+    // Independent of the object-world rclick branch below — the node menu's
+    // verbs (Join/Break/Make-X) operate on m_node_selection / m_selected_node
+    // and dispatch through Canvas::node_tool_key, NOT on the hit-tested
+    // object. We require a primary path with an active node (or node
+    // selection) to show anything; otherwise fall through to the object
+    // branch so the user can still get the object menu while transiently in
+    // Node tool.
+    if (m_tool == ActiveTool::Node && m_selected &&
+        m_selected->type == SceneNode::Type::Path && m_selected->path &&
+        (m_selected_node >= 0 || !m_node_selection.empty())) {
+      auto menu = build_node_context_menu(m_sel_ctx.node_actions());
+      if (menu->get_n_items() == 0) {
+        // No items would render — fall through to the object branch so the
+        // right-click isn't a silent no-op.
+      } else {
+        // Local "nodectx" action group — each action invokes node_tool_key
+        // with the corresponding keyval. Single source of truth: the key
+        // handler does blend-source rejection, atomic-undo wrapping, and
+        // user-facing error dialogs. The menu inherits all of it.
+        auto ag = Gio::SimpleActionGroup::create();
+        auto add = [&](const char *name, guint keyval) {
+          auto act = Gio::SimpleAction::create(name);
+          act->signal_activate().connect(
+              [this, keyval](const Glib::VariantBase &) {
+                // Defer one idle so the popover finishes dismissing before
+                // the (potential) error dialog from node_tool_key opens.
+                // Mirrors the s125 m1a / object-ctx defer pattern.
+                Glib::signal_idle().connect_once([this, keyval]() {
+                  node_tool_key(keyval, /*shift=*/false, /*ctrl=*/false,
+                                /*alt=*/false);
+                });
+              });
+          ag->add_action(act);
+        };
+        add("join",            GDK_KEY_j);
+        add("break",           GDK_KEY_b);
+        add("type-symmetric",  GDK_KEY_a);
+        add("type-smooth",     GDK_KEY_m);
+        add("type-cusp",       GDK_KEY_c);
+        add("type-corner",     GDK_KEY_k);
+        insert_action_group("nodectx", ag);
+
+        auto *popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
+        popover->set_parent(*this);
+        popover->set_has_arrow(false);
+        Gdk::Rectangle rect((int)x, (int)y, 1, 1);
+        popover->set_pointing_to(rect);
+
+        // Lifetime: same pattern as the object-world popover below — break
+        // the popdown→destroy ordering race by unparenting from idle.
+        popover->signal_closed().connect([popover]() {
+          Glib::signal_idle().connect_once(
+              [popover]() { popover->unparent(); });
+        });
+
+        popover->popup();
+        return;
+      }
+    }
     double dx, dy;
     screen_to_doc(x, y, dx, dy);
     SceneNode *hit = hit_test(dx, dy);
@@ -264,62 +600,73 @@ Canvas::Canvas() {
       return;
     }
     if (!hit->is_image()) {
-      // s125 m1a: general object context menu — paths, text, groups,
-      // compounds, refs. Single entry today: "Save to Library…". Future
-      // entries (Group, Cut/Copy/Paste, Bring Forward, …) append here.
-      // Image is excluded because it has its own info-dialog branch below;
-      // Blend is excluded because the Blend branch above already returned.
+      // s162 m3: object-world context menu, driven by SelectionContext.
+      //
+      // Replaces the s125 m1a hand-rolled Box+Button popover (single "Save to
+      // Library…" entry) with a Gio::Menu populated from the current
+      // ObjectActions mask. Sections only appear when at least one of their
+      // bits is set, so the menu is always exactly what's currently doable.
+      // Action references resolve through MainWindow's `win.*` action group
+      // for everything except "Save to Library…", which lives on Canvas
+      // (signal_request_save_to_library) and gets a local `ctx` action group.
       //
       // If the hit isn't already in the selection, select-then-show — matches
       // Illustrator/Affinity. Otherwise leave the selection as-is so a
-      // multi-selection can be saved as one library item.
+      // multi-selection's verbs (Union, Group, …) operate on the whole
+      // selection. notify_object_selection_changed() refreshes
+      // m_sel_ctx so the action mask we build the menu from is current.
       if (!is_selected(hit)) {
+        // s162 m3: set_selection_single now folds in
+        // notify_object_selection_changed() (see Canvas.cpp:~2873). The
+        // previous explicit notify here was needed before that change to
+        // keep m_sel_ctx fresh for the menu build below; it's now
+        // redundant. Pre-s162 m3 comment was a class-C audit fix marker
+        // for the s159 migration — kept in source-control history.
         set_selection_single(hit);
-        // s160 m2 (audit class C, bug-as-comment fix): the prior emit passed
-        // nullptr — stale-as-written. set_selection_single sets m_selected
-        // and m_selection consistently above; helper reads m_selected and
-        // broadcasts the correct value. Migration silently fixes the bug.
-        notify_object_selection_changed();
         queue_draw();
       }
 
-      auto *popover = Gtk::make_managed<Gtk::Popover>();
+      // Build the menu from the now-current SelectionContext.
+      auto menu = build_object_context_menu(m_sel_ctx.object_actions());
+
+      // Local "ctx" action group: hosts only Save to Library, since that
+      // verb's target lives on Canvas (m_sig_request_save_to_library) rather
+      // than as a MainWindow action. Same pattern as DocTabBar's "tabctx"
+      // and LibraryPanel's "libctx" — a per-popup action group attached to
+      // the parent of the PopoverMenu.
+      auto ag = Gio::SimpleActionGroup::create();
+      auto act_save_lib = Gio::SimpleAction::create("save-to-library");
+      act_save_lib->signal_activate().connect(
+          [this](const Glib::VariantBase &) {
+            // Defer the signal emission so the popover finishes dismissing
+            // before MainWindow opens the folder-picker dialog. Without
+            // this, popover popdown and dialog modal-show race in a way
+            // that sometimes leaves the popover frame painted under the
+            // dialog. Same defer the s125 m1a Button handler used.
+            Glib::signal_idle().connect_once(
+                [this]() { m_sig_request_save_to_library.emit(); });
+          });
+      ag->add_action(act_save_lib);
+      insert_action_group("ctx", ag);
+
+      auto *popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
       popover->set_parent(*this);
-      popover->set_has_arrow(true);
-      auto *box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
-      box->set_spacing(2);
-      box->set_margin_start(4);
-      box->set_margin_end(4);
-      box->set_margin_top(4);
-      box->set_margin_bottom(4);
-
-      auto *btn_save = Gtk::make_managed<Gtk::Button>("Save to Library…");
-      btn_save->set_has_frame(false);
-      // Left-align the label so it reads as a menu entry, not a centred
-      // button. The Blend popover above uses a single centred button (one
-      // entry, button-like) — this menu is a list of entries even though
-      // it has just one today, so left-align is the right idiom.
-      if (auto *child = btn_save->get_child()) {
-        if (auto *lbl = dynamic_cast<Gtk::Label *>(child)) {
-          lbl->set_xalign(0.0f);
-          lbl->set_hexpand(true);
-        }
-      }
-      btn_save->signal_clicked().connect([this, popover]() {
-        popover->popdown();
-        // Defer the signal emission so the popover finishes dismissing
-        // before MainWindow opens the folder-picker dialog. Without this,
-        // the popover popdown and dialog modal-show race in a way that
-        // sometimes leaves the popover frame painted under the dialog.
-        Glib::signal_idle().connect_once([this]() {
-          m_sig_request_save_to_library.emit();
-        });
-      });
-      box->append(*btn_save);
-
-      popover->set_child(*box);
+      popover->set_has_arrow(false);
       Gdk::Rectangle rect((int)x, (int)y, 1, 1);
       popover->set_pointing_to(rect);
+
+      // Lifetime: a popover attached via set_parent() is NOT a normal child
+      // of its parent — managed-widget cleanup doesn't reach it, so each
+      // right-click would leak its own PopoverMenu against the long-lived
+      // Canvas. The s125 m1a hand-rolled popover had this same leak.
+      // Pattern from DocumentGallery.cpp: hook signal_closed and unparent
+      // from an idle, breaking the popdown→destroy ordering race. Capture
+      // popover by raw pointer (managed widget; Glib idle keeps it alive
+      // until the lambda runs).
+      popover->signal_closed().connect([popover]() {
+        Glib::signal_idle().connect_once([popover]() { popover->unparent(); });
+      });
+
       popover->popup();
       return;
     }
@@ -2109,9 +2456,13 @@ void Canvas::cut_selected() {
     m_clipboard.push_back(clone_node(*e.node));
 
   // Build CutCommand entries (descending index order for safe removal)
+  // s170 m2 — iid-based capture: Entry stores parent_iid (string) instead
+  // of a raw SceneNode*, push passes project() so execute()/undo() can
+  // resolve via find_by_iid.
   std::vector<CutCommand::Entry> cmd_entries;
   for (auto &e : entries)
-    cmd_entries.push_back({e.parent, clone_node(*e.node), e.index});
+    cmd_entries.push_back({e.parent ? e.parent->internal_id : std::string(),
+                           clone_node(*e.node), e.index});
 
   // Remove from document (high index first)
   std::vector<int> order(entries.size());
@@ -2129,7 +2480,7 @@ void Canvas::cut_selected() {
   }
 
   if (m_history)
-    m_history->push(std::make_unique<CutCommand>(std::move(cmd_entries)));
+    m_history->push(std::make_unique<CutCommand>(project(), std::move(cmd_entries)));
 
   m_selected = nullptr;
   m_selection.clear();
@@ -2224,7 +2575,8 @@ void Canvas::paste_clipboard() {
 
   if (m_history)
     m_history->push(
-        std::make_unique<PasteCommand>(target_layer, std::move(cmd_snaps)));
+        std::make_unique<PasteCommand>(
+            project(), target_layer->internal_id, std::move(cmd_snaps)));
 
   // After a cut-paste, the clipboard contents are consumed (can't paste again
   // with same ids). Clear the cut flag so a re-paste would freshen ids.
@@ -2253,6 +2605,9 @@ void Canvas::duplicate_selected() {
 
   constexpr double OFFSET = 10.0; // doc-space nudge so duplicate is visible
 
+  // s170 m3 — iid-based capture: Entry stores parent_iid (string) instead
+  // of a raw SceneNode*, push passes project() so execute()/undo() can
+  // resolve via find_by_iid.
   std::vector<DuplicateCommand::Entry> cmd_entries;
   std::vector<SceneNode *> new_selection;
   int id_counter = s_next_id;
@@ -2286,13 +2641,14 @@ void Canvas::duplicate_selected() {
     auto snap = clone_node(*dup);
     new_selection.push_back(dup.get());
     e.parent->children.insert(e.parent->children.begin() + ins, std::move(dup));
-    cmd_entries.push_back({e.parent, std::move(snap), ins});
+    cmd_entries.push_back({e.parent ? e.parent->internal_id : std::string(),
+                           std::move(snap), ins});
     ++shift;
   }
   s_next_id = id_counter;
 
   if (m_history)
-    m_history->push(std::make_unique<DuplicateCommand>(std::move(cmd_entries)));
+    m_history->push(std::make_unique<DuplicateCommand>(project(), std::move(cmd_entries)));
 
   // Record macro step
   {
@@ -2324,6 +2680,7 @@ void Canvas::clone_selected() {
   if (entries.empty())
     return;
 
+  // s170 m3 — iid-based capture: same migration as duplicate_selected.
   std::vector<DuplicateCommand::Entry> cmd_entries;
   std::vector<SceneNode *> new_selection;
   int id_counter = s_next_id;
@@ -2337,13 +2694,14 @@ void Canvas::clone_selected() {
     auto snap = clone_node(*dup);
     new_selection.push_back(dup.get());
     e.parent->children.insert(e.parent->children.begin() + ins, std::move(dup));
-    cmd_entries.push_back({e.parent, std::move(snap), ins});
+    cmd_entries.push_back({e.parent ? e.parent->internal_id : std::string(),
+                           std::move(snap), ins});
     ++shift;
   }
   s_next_id = id_counter;
 
   if (m_history)
-    m_history->push(std::make_unique<DuplicateCommand>(std::move(cmd_entries)));
+    m_history->push(std::make_unique<DuplicateCommand>(project(), std::move(cmd_entries)));
 
   // Record macro step
   {
@@ -2654,6 +3012,27 @@ void Canvas::scrub_node_refs(const SceneNode *target) {
   // Belt-and-braces; the next recompute_object will rebuild Info from
   // scratch, but defence in depth is cheap.
   m_sel_ctx.scrub_node_ref(target);
+
+  // s165 m3 — also scrub the undo/redo stacks. Commands that captured raw
+  // pointers to `target` will dereference dangling memory at undo() time
+  // and crash; dropping them here keeps the history consistent with the
+  // live tree. Cost: a single linear walk of both stacks per destructive
+  // op. The default base CurvzCommand::references() returns false so
+  // commands without raw-pointer captures aren't affected.
+  if (m_history)
+    m_history->scrub_command_history(target);
+
+  // s167 m1 — invalidate the iid → SceneNode* index on the active
+  // document. scrub_node_refs is the canonical "node about to be
+  // destroyed" seam (s156); marking the index dirty here ensures the
+  // next find_by_iid rebuilds the map, so iid-based commands never
+  // resolve to a stale pointer. Cheap (single bool flip); idempotent
+  // across multiple scrubs in the same destructive op. Migrating
+  // commands to id-based captures (s167 stages 0-6) progressively
+  // retires the scrub_command_history call above; the invalidate
+  // call here is the structural replacement.
+  if (m_doc)
+    m_doc->invalidate_iid_index();
 }
 
 // ── Canvas::notify_object_selection_changed ──────────────────────────────────
@@ -2702,6 +3081,31 @@ void Canvas::notify_node_selection_changed() {
   m_sel_ctx.recompute_node(paths, indices,
                            m_selected, m_selected_node,
                            m_selected2, m_selected_node2);
+}
+
+// ── Canvas::set_selection_single ─────────────────────────────────────────────
+// s162 m3 — moved out-of-line so it can fold in
+// notify_object_selection_changed(). Previously a header inline that callers
+// were expected to follow up with a manual notify; the s159 audit caught and
+// fixed every Canvas.cpp `m_sig_selection.emit()` site, but missed external
+// callers (notably MainWindow::on_warp_make at line 6648) that mutated the
+// canonical selection through this accessor without driving the SelectionContext
+// recompute. The bug surfaced as a stale right-click context menu after Make
+// Warp — the menu showed Compound verbs because m_sel_ctx still reflected the
+// pre-warp selection. Folding the notify here is the structural fix per the
+// project memory rule "structural fix makes the problem class go away":
+// every present and future caller becomes correct by construction. Pivot
+// reset preserved verbatim.
+void Canvas::set_selection_single(SceneNode *node) {
+  m_selection.clear();
+  m_selected = node;
+  if (node)
+    m_selection.push_back(node);
+  // New selection → reset custom pivot
+  m_has_custom_pivot = false;
+  m_pivot_dragging = false;
+
+  notify_object_selection_changed();
 }
 
 // s161 split: path_anchor_bbox moved here from Canvas_ops.cpp.

@@ -42,6 +42,28 @@
     <file preprocess="xml-stripblanks" alias="curvz-orientation-landscape-symbolic.svg">icons/curvz-orientation-landscape-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-anchor-symbolic.svg">icons/curvz-anchor-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-logo-symbolic.svg">icons/curvz-logo-symbolic.svg</file>
+    <!-- s152: snap toggle icons. Drawn by Scott as a mirror pair (pill
+         outline; "on" voids the right-side and fills the left, "off" is
+         the mirror). currentColor fill so they paint against the
+         active-state foreground (white on var(--accent-deep) when the
+         snap toggle is :checked, var(--fg-muted)/var(--fg-primary)
+         otherwise). Originally drawn at 1000×1000 viewBox in curvz
+         itself; the data-curvz-* metadata that ships with curvz-export
+         was stripped before bundling because GTK4's symbolic-icon
+         validator rejected the metadata wrappers. -->
+    <file preprocess="xml-stripblanks" alias="curvz-switch-on-symbolic.svg">icons/curvz-switch-on-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-switch-off-symbolic.svg">icons/curvz-switch-off-symbolic.svg</file>
+    <!-- s154: transforms section icons (Step-and-Repeat, Blend, Warp,
+         and three Boolean ops). Same metadata-strip discipline as the
+         snap-toggle pair above — the source SVGs were exported from
+         Curvz and had to have data-curvz-* attributes and id="" with
+         pilcrow separators stripped before bundling. -->
+    <file preprocess="xml-stripblanks" alias="curvz-step-repeat-symbolic.svg">icons/curvz-step-repeat-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-blend-symbolic.svg">icons/curvz-blend-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-warp-symbolic.svg">icons/curvz-warp-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-union-symbolic.svg">icons/curvz-union-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-subtract-symbolic.svg">icons/curvz-subtract-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-intersect-symbolic.svg">icons/curvz-intersect-symbolic.svg</file>
   </gresource>
 
   <!-- ── Bundled non-icon data ────────────────────────────────────────────
@@ -150,6 +172,7 @@
     <file alias="11-1-macros.md">help/11-1-macros.md</file>
     <file alias="11-2-keyboard-shortcuts.md">help/11-2-keyboard-shortcuts.md</file>
     <file alias="11-3-troubleshooting.md">help/11-3-troubleshooting.md</file>
+    <file alias="12-1-workflow-strategies.md">help/12-1-workflow-strategies.md</file>
 
     <!-- Live image aliases — files exist on disk -->
     <file alias="img/1-3-workspace-overview.png">help/img/1-3-workspace-overview.png</file>

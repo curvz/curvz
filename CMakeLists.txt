@@ -225,6 +225,23 @@ set(SOURCES
     src/main.cpp
     src/Application.cpp
     src/MainWindow.cpp
+    # s164 m1 — MainWindow.cpp split (see top of include/MainWindow.hpp for the
+    # category vocabulary and per-method index). Originally one ~7000-line TU;
+    # split into categorized TUs that all compile into the same Curvz::MainWindow
+    # class. MainWindow.cpp itself is now ~375 lines of glue (ctor + cross-cutting
+    # orchestrators); the meat lives in the files below.
+    # s165 m1 — sub-TU consolidation. The s164 ship had per-domain sub-TUs
+    # (MainWindow_zones_headerbar.cpp, _menu.cpp, _layout.cpp, _overlays.cpp;
+    # MainWindow_handlers_documents.cpp, _edit.cpp, _library.cpp, _effects.cpp,
+    # _guides.cpp, _macros.cpp). Project rule: any MainWindow_<bucket>_<sub>.cpp
+    # collapses into MainWindow_<bucket>.cpp. The 10 sub-TUs merged back into
+    # MainWindow_zones.cpp and MainWindow_handlers.cpp; sections within each
+    # are demarcated by banner comments and named in the per-method category
+    # tags' parenthetical (e.g. `// category: handler (documents)`).
+    src/MainWindow_zones.cpp
+    src/MainWindow_bindings.cpp
+    src/MainWindow_handlers.cpp
+    src/MainWindow_helpers.cpp
     src/NewDocumentDialog.cpp
     src/OffsetPathDialog.cpp
     src/GradientDialog.cpp

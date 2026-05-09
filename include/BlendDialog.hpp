@@ -27,7 +27,7 @@ struct CanvasModel;
 //
 // The dialog DOES NOT perform the Blend itself — it returns a Result
 // via apply_cb and the caller orchestrates. This keeps the "dialog as
-// passive data-collector" contract matching StepRepeatDialog.
+// passive data-collector" contract matching StepRepeatPopover.
 //
 // Non-modality note: canvas must stay interactive so the user can
 // click another object and cancel/retry without being blocked.

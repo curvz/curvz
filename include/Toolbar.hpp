@@ -2,10 +2,10 @@
 #include "ColorPickerPopover.hpp"
 #include "CurvzDocument.hpp"
 #include "CurvzEntry.hpp"
-#include "CurvzSwitch.hpp"
 #include "UnitSystem.hpp"
 #include "SceneNode.hpp"
 #include <functional>
+#include <memory>
 #include <gtkmm/adjustment.h>
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
@@ -46,6 +46,16 @@ enum class AlignOp {
   DistributeV,
 };
 
+// ── Boolean path operations (s154 m1) ────────────────────────────────────────
+// Selected via the Boolean toolbar button's left-click popover. MainWindow
+// receives signal_bool_op(BoolOp) and dispatches to the same handler the
+// Path menu items already use (m_act_bool_union/subtract/intersect).
+enum class BoolOp {
+  Union,
+  Subtract,
+  Intersect,
+};
+
 enum class ActiveTool {
   Selection,
   Node,
@@ -70,18 +80,49 @@ enum class ActiveTool {
 class Toolbar : public Gtk::Box {
 public:
   Toolbar();
+  ~Toolbar();   // s152 sub-ship 1: defined in .cpp where Impl is complete
+                // (required for unique_ptr<Impl> with forward-declared Impl)
 
   using ToolChangedSignal = sigc::signal<void(ActiveTool)>;
-  ToolChangedSignal &signal_tool_changed() { return m_signal_tool_changed; }
+  ToolChangedSignal& signal_tool_changed();
 
-  ActiveTool active_tool() const { return m_active; }
+  ActiveTool active_tool() const;   // forwarder; defined in .cpp
   void set_active_tool_icon(ActiveTool tool, const char *icon_name);
   void select_tool(ActiveTool tool);
   void cycle_tool(int dir); // +1 = next, -1 = previous
 
+  // ── s152: Toolbar density ──────────────────────────────────────────────
+  //
+  // Four sizing presets. The toolbar shrinks/expands by flipping a
+  // CSS class on the .toolbar-panel root — no widget rebuild, GTK
+  // relayouts on the class change.
+  //
+  //   Comfortable  48px column, 40×40 buttons   (curvz historical)
+  //   Standard     40px column, 32×32 buttons   (curvz default — s152)
+  //   Compact      32px column, 28×28 buttons
+  //   Tight        28px column, 24×24 buttons
+  //
+  // Right-click on empty toolbar background opens a small popover
+  // letting the user pick density immediately. AppPreferences carries
+  // the persisted default; MainWindow applies it on startup and the
+  // user's pick saves back through AppPreferences.
+  enum class Density { Comfortable, Standard, Compact, Tight };
+  void set_density(Density d);
+  Density density() const;   // forwarder; defined in .cpp
+
+  // s152 — Emitted when the user picks a density via the right-click
+  // popover. MainWindow listens to persist the pick into AppPreferences.
+  // set_density() called programmatically (e.g. on startup from the
+  // persisted value) does NOT emit this signal — silent path for
+  // host-driven sync.
+  using DensitySignal = sigc::signal<void(Density)>;
+  DensitySignal& signal_density_changed();
+
   // ── Defaults well ────────────────────────────────────────────────────
-  const FillStyle &default_fill() const { return m_def_fill; }
-  const StrokeStyle &default_stroke() const { return m_def_stroke; }
+  // s153 sub-ship 3: state moved to Impl. Accessors are forwarders
+  // defined in Toolbar.cpp where Impl is complete.
+  const FillStyle& default_fill() const;
+  const StrokeStyle& default_stroke() const;
   void sync_from_object(const FillStyle &fill, const StrokeStyle &stroke);
   // S58n: Multi-select-aware sync. Checks selection uniformity on fill and
   // stroke; when mixed, the well and popover swatches paint diagonal
@@ -91,7 +132,7 @@ public:
                            SceneNode* primary);
 
   using DefaultsSignal = sigc::signal<void(FillStyle, StrokeStyle)>;
-  DefaultsSignal &signal_defaults_changed() { return m_sig_defaults; }
+  DefaultsSignal& signal_defaults_changed();
 
   // S91: User clicked Edit gradient inside the Fill or Stroke popover.
   // The toolbar packages "what to do on Apply" as a callback that writes
@@ -107,9 +148,7 @@ public:
   using GradientEditSignal =
       sigc::signal<void(FillStyle /*current*/,
                         std::function<void(FillStyle /*edited*/)> /*apply_cb*/)>;
-  GradientEditSignal &signal_gradient_edit_requested() {
-      return m_sig_gradient_edit;
-  }
+  GradientEditSignal& signal_gradient_edit_requested();
 
   // S87 m1 (doc-scoped slot swatches — toolbar bite): wire the project's
   // swatch library so the fill/stroke popovers can show a copy-only
@@ -127,16 +166,16 @@ public:
   void set_swatch_library(const color::SwatchLibrary* lib);
 
   using SnapToggleSignal = sigc::signal<void(bool)>;
-  SnapToggleSignal &signal_snap_toggled() { return m_sig_snap; }
+  SnapToggleSignal& signal_snap_toggled();
   void set_snap_enabled(bool enabled);
 
   // Snap settings popover
   using SnapSettingsSignal = sigc::signal<void(SnapSettings)>;
-  SnapSettingsSignal &signal_snap_settings_changed() { return m_sig_snap_settings; }
+  SnapSettingsSignal& signal_snap_settings_changed();
   void set_snap_settings(const SnapSettings &s);
 
   using SnapPopOpenSignal = sigc::signal<void()>;
-  SnapPopOpenSignal &signal_snap_pop_open() { return m_sig_snap_pop_open; }
+  SnapPopOpenSignal& signal_snap_pop_open();
 
   // s150 — Ruler / Measure settings signal. Fires when the user toggles
   // either of the two measure prefs in the Ruler tool's right-click
@@ -144,19 +183,78 @@ public:
   // exists so MainWindow can schedule_save() and perform any cross-doc
   // mirroring (currently none — measure prefs are per-doc only).
   using MeasureSettingsSignal = sigc::signal<void()>;
-  MeasureSettingsSignal &signal_measure_settings_changed() {
-      return m_sig_measure_settings;
-  }
+  MeasureSettingsSignal& signal_measure_settings_changed();
 
   // ── Align & Distribute ───────────────────────────────────────────────
   using AlignSignal = sigc::signal<void(AlignOp)>;
-  AlignSignal &signal_align_requested() { return m_sig_align; }
+  AlignSignal& signal_align_requested();
+
+  // ── Transforms section (s154 m1) ─────────────────────────────────────
+  // New cluster between the top creation tools and the lower tools:
+  // Step-and-Repeat, Blend, Boolean Ops, Warp. Left-click on the first
+  // three fires the matching signal (M1: equivalent to the existing
+  // menu-item handler). Boolean is a single button whose left-click
+  // pops a small horizontal popover with three icon buttons (union /
+  // subtract / intersect); selection emits signal_bool_op(BoolOp).
+  // Right-click on SnR/Blend/Warp pops a placeholder configuration
+  // popover (real config content lands in M2/M3/M4 when the existing
+  // dialogs convert into popovers).
+  using StepRepeatSignal = sigc::signal<void()>;
+  using BlendSignal      = sigc::signal<void()>;
+  using WarpSignal       = sigc::signal<void()>;
+  using BoolOpSignal     = sigc::signal<void(BoolOp)>;
+  StepRepeatSignal& signal_step_repeat();
+  BlendSignal&      signal_blend();
+  WarpSignal&       signal_warp();
+  BoolOpSignal&     signal_bool_op();
+
+  // s154 m2: Right-click on the SnR toolbar button. Replaces the M1
+  // placeholder cfg popover for SnR. MainWindow handles by calling
+  // StepRepeatPopover::show(button, ...). Blend/Warp follow the same
+  // pattern when their popovers land in M3/M4; for now they keep the
+  // placeholder right-click popover.
+  using StepRepeatConfigureSignal = sigc::signal<void()>;
+  StepRepeatConfigureSignal& signal_step_repeat_configure();
+
+  // s154 m3: Right-click on the Blend toolbar button. Same shape as
+  // signal_step_repeat_configure — MainWindow calls
+  // BlendPopover::show(button, ...). Replaces the M1 placeholder for
+  // Blend; the placeholder pattern remains for Warp until M4.
+  using BlendConfigureSignal = sigc::signal<void()>;
+  BlendConfigureSignal& signal_blend_configure();
+
+  // s154 m4a: Right-click on the Warp toolbar button. MainWindow opens
+  // WarpPopover (a defaults-editor mirroring AppPreferences fields, in
+  // parallel with the inspector's Application ▸ Warp subsection for a
+  // comparison trial — last write wins, no live sync).
+  using WarpConfigureSignal = sigc::signal<void()>;
+  WarpConfigureSignal& signal_warp_configure();
+
+  // s154 m2: SnR toolbar button accessor — MainWindow's StepRepeatPopover
+  // anchors to this widget. Mirrors get_corner_btn()'s pattern.
+  Gtk::Widget& step_repeat_button();
+
+  // s154 m3: Blend toolbar button accessor.
+  Gtk::Widget& blend_button();
+
+  // s154 m4a: Warp toolbar button accessor.
+  Gtk::Widget& warp_button();
+
+  // s154 m1: Mirrors set_align_enabled's faked-disabled pattern. Each
+  // flag drives a single button's .tool-btn-disabled CSS class and
+  // gates the left-click action; right-click stays live so the
+  // configuration popover is reachable even when the action is
+  // disabled by selection state. MainWindow calls this from the same
+  // selection-change handlers that update m_act_bool_*/blend/warp/
+  // step_repeat sensitivity (Path menu mirror).
+  void set_transforms_enabled(bool snr, bool blend,
+                              bool boolop, bool warp);
 
   using MacroSignal = sigc::signal<void()>;
-  MacroSignal &signal_macro_manager() { return m_sig_macro; }
+  MacroSignal& signal_macro_manager();
   // Toolbar macro button: left-click runs the current macro (Ctrl+M
   // semantics), right-click opens the manager (Ctrl+Shift+M semantics).
-  MacroSignal &signal_macro_run() { return m_sig_macro_run; }
+  MacroSignal& signal_macro_run();
   // Enable/disable the align button (call when selection changes)
   void set_align_enabled(bool enabled);
 
@@ -165,7 +263,7 @@ public:
   void set_zoom_alt(bool alt_down); // swap zoom-in/out icon
   void set_popup_unit(Unit u);      // update "Units: x" label in all shape popovers (legacy, kept for direct calls)
   void set_document(CurvzDocument* doc); // live doc pointer — used by popovers for unit + canvas size
-  Gtk::ToggleButton* get_corner_btn() { return m_corner_tool_btn; }
+  Gtk::ToggleButton* get_corner_btn();   // forwarder; defined in .cpp
 
   using FitSignal = sigc::signal<void()>;
   using ZoomSignal = sigc::signal<void(double)>;
@@ -188,334 +286,60 @@ public:
   using PlaceSpiralSignal = sigc::signal<void(
       double /*cx*/, double /*cy*/, double /*outer_r*/, double /*inner_r*/,
       double /*turns*/, double /*angle_rad*/)>;
-  FitSignal &signal_fit_requested() { return m_sig_fit; }
-  ZoomSignal &signal_zoom_step() { return m_sig_zoom_step; }
-  ZoomToSignal &signal_zoom_to() { return m_sig_zoom_to; }
-  PlaceRefSignal &signal_place_ref() { return m_sig_place_ref; }
-  PlaceRectSignal &signal_place_rect() { return m_sig_place_rect; }
-  PlaceEllipseSignal &signal_place_ellipse() { return m_sig_place_ellipse; }
-  PlaceLineSignal &signal_place_line() { return m_sig_place_line; }
-  PlaceTextSignal &signal_place_text() { return m_sig_place_text; }
-  PlacePolygonSignal &signal_place_polygon() { return m_sig_place_polygon; }
-  PlaceSpiralSignal &signal_place_spiral() { return m_sig_place_spiral; }
-  CanvasFocusSignal &signal_request_canvas_focus() {
-    return m_sig_canvas_focus;
-  }
+  FitSignal& signal_fit_requested();
+  ZoomSignal& signal_zoom_step();
+  ZoomToSignal& signal_zoom_to();
+  PlaceRefSignal& signal_place_ref();
+  PlaceRectSignal& signal_place_rect();
+  PlaceEllipseSignal& signal_place_ellipse();
+  PlaceLineSignal& signal_place_line();
+  PlaceTextSignal& signal_place_text();
+  PlacePolygonSignal& signal_place_polygon();
+  PlaceSpiralSignal& signal_place_spiral();
+  CanvasFocusSignal& signal_request_canvas_focus();
 
   // ── Polygon tool settings (read by Canvas during drag) ───────────────
-  int polygon_sides() const { return m_poly_sides; }
-  double polygon_inflection() const { return m_poly_inflection; }
-  double spiral_turns() const { return m_spiral_turns; }
-  double spiral_inner_pct() const { return m_spiral_inner; }
+  // s153 sub-ship 2e: state moved to Impl. These are now forwarders
+  // defined in Toolbar.cpp where Impl is complete.
+  int polygon_sides() const;
+  double polygon_inflection() const;
+  double spiral_turns() const;
+  double spiral_inner_pct() const;
+
+  // S117 m5: align icon is Cairo-painted, so it can't read motif tokens
+  // directly. Forwarder; body in Toolbar.cpp where Impl is complete.
+  void set_motif(Motif m);
 
 private:
-  void add_tool_button(const char *icon, const char *tooltip, ActiveTool tool);
-  void add_tool_button(Gtk::Picture *pic, const char *tooltip, ActiveTool tool);
-
-  // Well
-  void build_defaults_well();
-  void build_fill_popover();
-  void build_stroke_popover();
-  void redraw_well();
-  void update_cap_buttons();
-  void update_join_buttons();
-  // Cap/Join buttons — icon buttons, active state via CSS
-  Gtk::Button* m_cap_butt_btn   = nullptr;
-  Gtk::Button* m_cap_round_btn  = nullptr;
-  Gtk::Button* m_cap_square_btn = nullptr;
-  Gtk::Button* m_join_miter_btn = nullptr;
-  Gtk::Button* m_join_round_btn = nullptr;
-  Gtk::Button* m_join_bevel_btn = nullptr;
-  void apply_hex_to_fill(const std::string &hex);
-  void apply_hex_to_stroke(const std::string &hex);
-  void refresh_fill_popover();
-  void refresh_stroke_popover();
-  void reset_to_defaults();
-  void emit_defaults();
-
-  // Tool buttons
-  ActiveTool m_active = ActiveTool::Selection;
-  ToolChangedSignal m_signal_tool_changed;
-  std::vector<Gtk::ToggleButton *> m_buttons;
-  Gtk::ToggleButton* m_corner_tool_btn = nullptr;
-  std::vector<ActiveTool> m_button_tools;
-
-  double m_zoom = 1.0;
-
-  // Zoom popover (Ctrl+click zoom tool)
-  Gtk::Popover m_zoom_pop;
-  Glib::RefPtr<Gtk::Adjustment> m_zoom_adj;
-  Gtk::SpinButton m_zoom_spin;
-
-  // Ref tool placement popover (Ctrl+click)
-  Gtk::Popover m_ref_pop;
-  Glib::RefPtr<Gtk::Adjustment> m_ref_adj_x;
-  Glib::RefPtr<Gtk::Adjustment> m_ref_adj_y;
-  Gtk::Label* m_ref_unit_lbl = nullptr;
-  void build_zoom_popover(Gtk::ToggleButton *zoom_btn);
-  void build_ref_popover(Gtk::ToggleButton *ref_btn);
-
-  // Rect placement popover (Ctrl+click)
-  Gtk::Popover m_rect_pop;
-  Glib::RefPtr<Gtk::Adjustment> m_rect_adj_x, m_rect_adj_y, m_rect_adj_w,
-      m_rect_adj_h;
-  Gtk::Label* m_rect_unit_lbl = nullptr;
-  void build_rect_popover(Gtk::ToggleButton *btn);
-
-  // Ellipse placement popover (Ctrl+click)
-  Gtk::Popover m_ellipse_pop;
-  Glib::RefPtr<Gtk::Adjustment> m_ellipse_adj_x, m_ellipse_adj_y,
-      m_ellipse_adj_w, m_ellipse_adj_h;
-  Gtk::Label* m_ellipse_unit_lbl = nullptr;
-  void build_ellipse_popover(Gtk::ToggleButton *btn);
-
-  // Polygon placement popover (Ctrl+click)
-  Gtk::Popover m_poly_pop;
-  Glib::RefPtr<Gtk::Adjustment> m_poly_adj_cx, m_poly_adj_cy, m_poly_adj_r;
-  Glib::RefPtr<Gtk::Adjustment> m_poly_adj_sides, m_poly_adj_inflect;
-  Gtk::DrawingArea m_poly_preview;
-  int m_poly_sides = 6;
-  double m_poly_inflection = 1.0;
-  bool m_poly_hdl_drag = false;
-  double m_poly_hdl_start_inflect = 1.0;
-  Gtk::Label* m_poly_unit_lbl = nullptr;
-
-  // ── Spiral popover state ──────────────────────────────────────────────
-  Gtk::Popover m_spiral_pop;
-  Glib::RefPtr<Gtk::Adjustment> m_spiral_adj_cx, m_spiral_adj_cy,
-      m_spiral_adj_r;
-  Glib::RefPtr<Gtk::Adjustment> m_spiral_adj_turns, m_spiral_adj_inner;
-  Gtk::DrawingArea m_spiral_preview;
-  // S98: defaults tuned for nautilus look — 3 turns, 4% inner radius
-  // gives a growth ratio of (1/0.04)^(1/3) ≈ 2.92× per turn, close to
-  // a real nautilus.
-  double m_spiral_turns = 3.0;
-  double m_spiral_inner = 4.0;
-  Gtk::Label* m_spiral_unit_lbl = nullptr;
-  void build_polygon_popover(Gtk::ToggleButton *btn);
-  void build_spiral_popover(Gtk::ToggleButton *btn);
-
-  // s150 — Measure tool right-click popover. Houses the two measure
-  // behaviour settings (save_to_layer, destruct_after_copy) that used
-  // to live in the inspector ▸ Document ▸ Measure section. Per
-  // ARC.md design rule 1: behaviour at the tool, not in the inspector.
-  // Writes go directly to m_doc->measure_*; signal_measure_settings_changed
-  // fires so MainWindow can schedule_save.
-  Gtk::Popover m_measure_pop;
-  Gtk::CheckButton* m_measure_save_chk = nullptr;
-  Gtk::CheckButton* m_measure_del_chk = nullptr;
-  Gtk::Label* m_measure_del_lbl = nullptr;
-  void build_measure_popover(Gtk::ToggleButton *measure_btn);
-
-  // Line placement popover (Ctrl+click)
-  Gtk::Popover m_line_pop;
-  Glib::RefPtr<Gtk::Adjustment> m_line_adj_x1, m_line_adj_y1, m_line_adj_x2,
-      m_line_adj_y2;
-  Gtk::Label* m_line_unit_lbl = nullptr;
-  void build_line_popover(Gtk::ToggleButton *btn);
-
-  // Current popup display unit
-  Unit m_popup_unit = Unit::Px;
-  CurvzDocument* m_doc = nullptr;  // live doc pointer for popover defaults
-
-  // Text placement popover (Ctrl+click)
-  Gtk::Popover m_text_pop;
-  Glib::RefPtr<Gtk::Adjustment> m_text_adj_x, m_text_adj_y, m_text_adj_size;
-  Gtk::Label* m_text_unit_lbl = nullptr;
-  Gtk::DropDown *m_text_family_drop = nullptr; // font family selector
-  Gtk::CheckButton m_text_bold_btn;
-  Gtk::CheckButton m_text_italic_btn;
-  Gtk::DropDown *m_text_anchor_drop = nullptr;
-  void build_text_popover(Gtk::ToggleButton *btn);
-
-  // The only toolbar-column well widget
-  Gtk::DrawingArea m_well;
-
-  // Fill popover
-  Gtk::Popover m_fill_pop;
-  Gtk::ToggleButton m_fill_type_solid_btn;
-  Gtk::ToggleButton m_fill_type_none_btn;
-  Gtk::ToggleButton m_fill_type_cc_btn;
-  Gtk::ToggleButton m_fill_type_swatch_btn;  // S87 m1 v2 — 4th type toggle
-  Gtk::ToggleButton m_fill_type_gradient_btn;  // S91 — 5th type toggle
-  CurvzEntry m_fill_hex_entry;
-  Gtk::DrawingArea m_fill_swatch;
-  // S91 fill gradient row: [ramp ─────][Edit…]. Visible only when
-  // m_def_fill.is_gradient(). Same idiom as the colour row above —
-  // member-pointer Box so refresh_fill_popover can drive visibility.
-  Gtk::Box*        m_fill_gradient_row  = nullptr;
-  Gtk::DrawingArea m_fill_gradient_ramp;
-  Gtk::Button      m_fill_gradient_edit_btn;
-
-  // Stroke popover
-  Gtk::Popover m_stroke_pop;
-  Gtk::ToggleButton m_stroke_type_solid_btn;
-  Gtk::ToggleButton m_stroke_type_none_btn;
-  Gtk::ToggleButton m_stroke_type_cc_btn;
-  Gtk::ToggleButton m_stroke_type_swatch_btn;  // S87 m1 v2 — 4th type toggle
-  CurvzEntry m_stroke_hex_entry;
-  Gtk::DrawingArea m_stroke_swatch;
-  // S91: stroke does NOT get a gradient toggle. Gradient strokes are
-  // valid SVG but rare, and the cost of a separate stroke-side gradient
-  // surface (toggle handler, popover row, well frame rendering) isn't
-  // justified. Fill-only is the shipped surface.
-  Gtk::SpinButton m_width_spin;
-  Glib::RefPtr<Gtk::Adjustment> m_width_adj;
-  Gtk::Label      m_width_unit_lbl;
-  Gtk::Label      m_width_label;  // "Width (in):" label — updated with unit
-  // (cap/join buttons stored as Gtk::Button* above)
-
-  FillStyle m_def_fill;
-  StrokeStyle m_def_stroke;
-  // S58n: true when the current multi-selection has heterogeneous fill /
-  // stroke paint. Drives diagonal-stripe rendering in the well and popover
-  // swatches, and deactivates all type toggles in the popovers.
-  bool m_fill_mixed = false;
-  bool m_stroke_mixed = false;
-  bool m_syncing = false;
-
-  // ── S87 m1: swatch picker section (copy-only, fill + stroke) ─────────
+  // ── pImpl ──────────────────────────────────────────────────────────────
   //
-  // Chip-grid picker tucked inside each existing popover, below the
-  // type/colour rows and before the popover-specific footer (stroke has
-  // width + cap/join below; fill ends at the colour row). Visible only
-  // when m_swatch_library != nullptr. Click on a chip = "write this
-  // swatch's RGB into m_def_* as a Solid paint" — i.e. equivalent to
-  // pasting a hex into the entry. No binding state on the toolbar.
+  // The public surface above is the contract callers depend on.
+  // Implementation detail — every state member, every popover builder,
+  // every signal storage slot — lives behind `std::unique_ptr<Impl>`,
+  // defined in Toolbar.cpp.
   //
-  // m_swatch_library is non-owning; MainWindow plumbs it after project
-  // load via set_swatch_library() and again on project switch. Same
-  // pattern as StylesPanel::set_swatch_library (S85 cont-3 fix4).
-  const color::SwatchLibrary* m_swatch_library = nullptr;
-
-  // Per-popover picker widgets. Stored as pointers because they're
-  // owned (managed) by their host Box — we keep references for
-  // refresh_*_popover and the rebuild path. Set to non-null in the
-  // build_*_popover methods, then live for the toolbar's lifetime.
-  Gtk::Box*      m_fill_picker_section   = nullptr;
-  Gtk::DropDown* m_fill_palette_dd       = nullptr;
-  Gtk::FlowBox*  m_fill_chip_flow        = nullptr;
-  Gtk::Box*      m_stroke_picker_section = nullptr;
-  Gtk::DropDown* m_stroke_palette_dd     = nullptr;
-  Gtk::FlowBox*  m_stroke_chip_flow      = nullptr;
-
-  // S87 m1 v2: pointers to the colour rows (chip + hex entry) so the
-  // refresh handler can show/hide them based on the active type. The
-  // rows themselves are Boxes built in build_*_popover and appended to
-  // outer; we promoted the locals to members to drive visibility.
-  Gtk::Box*      m_fill_color_row        = nullptr;
-  Gtk::Box*      m_stroke_color_row      = nullptr;
-
-  // S87 m1 v2: per-popover "Swatch tab is showing" flag. Distinct from
-  // m_def_*.type — the type stays Solid/None/CC, but the user has
-  // chosen to see the picker. Mirrors PaintEditor's `is_swatch_active`
-  // RenderState flag, kept locally because the Toolbar is its own host.
-  // Reset to false whenever the user clicks Solid / None / currentColor.
-  bool m_fill_picker_open   = false;
-  bool m_stroke_picker_open = false;
-
-  // Shadow vectors tracking each dropdown's row order so selection-
-  // changed maps row index → palette id without a name lookup. Mirrors
-  // PaintEditor::m_picker_palette_ids. Includes the "__all__" sentinel
-  // at row 0 (synthetic "All" pseudo-palette walking every swatch).
-  std::vector<std::string> m_fill_palette_ids;
-  std::vector<std::string> m_stroke_palette_ids;
-
-  // Connections for dropdown property_selected. Disconnected before
-  // programmatic re-selection inside rebuild_palette_dropdown to avoid
-  // firing user-flow handlers — same idiom as PaintEditor.
-  sigc::connection m_fill_palette_dd_conn;
-  sigc::connection m_stroke_palette_dd_conn;
-
-  // S87 m1 fix2: tracks the palette id the chip grid currently shows.
-  // The dropdown's property_selected can spurious-fire (handoff gotcha:
-  // "Spurious signal_changed fires on dropdowns after panel rebuilds").
-  // Without this guard, every spurious fire rebuilt the chip grid,
-  // tearing down + recreating gesture controllers — producing an
-  // asymmetric chip-click-then-popdown bug where the first click after
-  // a rebuild dismissed cleanly but subsequent clicks didn't. Guard
-  // pattern: skip rebuild_chip_grid when the requested palette id
-  // matches what's already drawn.
-  std::string m_fill_chips_palette_id;
-  std::string m_stroke_chips_palette_id;
-
-  // S87 m1 helpers — per-slot. is_stroke selects which set of members
-  // to operate on. Keeps the build / rebuild code from duplicating.
-  void build_swatch_picker_section(Gtk::Box& outer, bool is_stroke);
-  void rebuild_swatch_pickers();         // re-runs both dropdown + chips
-  void rebuild_palette_dropdown(bool is_stroke);
-  void rebuild_chip_grid(bool is_stroke);
-  void apply_swatch_pick_to_fill(const std::string& swatch_id);
-  void apply_swatch_pick_to_stroke(const std::string& swatch_id);
-
-  // Shared colour-picker popover for fill + stroke wells. One instance,
-  // reused for both: set_initial() + the per-open callback determines
-  // which target is active. Attached to `*this` (the Toolbar) in the
-  // ctor. Anchored to m_well at open time.
+  // Migration arc:
+  //   s152 sub-ship 1 — tool buttons + radio bookkeeping + snap toggle
+  //                     button + macro button + density into Impl.
+  //   s153 sub-ship 2 — all 9 placement popovers (zoom, rect, ellipse,
+  //                     line, ref, measure, text, polygon, spiral).
+  //   s153 sub-ship 3 — paint editor (defaults well, fill/stroke
+  //                     popovers, swatch picker section, cap/join,
+  //                     width spinner, gradient row, colour picker).
+  //   s153 sub-ship 4 — align popover + snap settings popover, plus
+  //                     ALL signal storage (Impl owns the signals
+  //                     directly; public accessors forward), m_doc,
+  //                     m_popup_unit, m_motif. tbproto/ retired.
   //
-  // The old design dismissed m_fill_pop / m_stroke_pop before opening a
-  // modal Gtk::ColorDialog. We keep that dismissal (the user loses the
-  // mode-buttons context while picking), because nesting popovers gets
-  // hairy with autohide and Phase 2 chose conservative over clever.
-  // A later phase can embed CurvzColorPicker directly inside m_fill_pop
-  // if desired.
-  ColorPickerPopover m_color_popover;
+  // After sub-ship 4 the public Toolbar is a thin wrapper: ctor +
+  // dtor + public method declarations + signal accessor declarations
+  // + the unique_ptr<Impl>. Header dependents pay only for the public
+  // contract; signal type instantiations and widget storage no longer
+  // bleed through.
+  struct Impl;
+  std::unique_ptr<Impl> m_impl;
 
-  DefaultsSignal m_sig_defaults;
-  GradientEditSignal m_sig_gradient_edit;
-  FitSignal m_sig_fit;
-  ZoomSignal m_sig_zoom_step;
-  ZoomToSignal m_sig_zoom_to;
-  PlaceRefSignal m_sig_place_ref;
-  PlaceRectSignal m_sig_place_rect;
-  PlaceEllipseSignal m_sig_place_ellipse;
-  PlaceLineSignal m_sig_place_line;
-  PlaceTextSignal m_sig_place_text;
-  PlacePolygonSignal m_sig_place_polygon;
-  PlaceSpiralSignal m_sig_place_spiral;
-  CanvasFocusSignal m_sig_canvas_focus;
-  SnapToggleSignal m_sig_snap;
-  SnapSettingsSignal m_sig_snap_settings;
-  SnapPopOpenSignal m_sig_snap_pop_open;
-  MeasureSettingsSignal m_sig_measure_settings;  // s150
-  CurvzSwitch m_snap_switch;
-
-  // Snap settings popover
-  Gtk::Popover m_snap_pop;
-  Gtk::CheckButton *m_snap_cb_guides  = nullptr;
-  Gtk::CheckButton *m_snap_cb_grid    = nullptr;
-  Gtk::CheckButton *m_snap_cb_margins = nullptr;
-  Gtk::CheckButton *m_snap_cb_nodes   = nullptr;
-  Gtk::CheckButton *m_snap_cb_edges   = nullptr;
-  Gtk::CheckButton *m_snap_cb_centers = nullptr;
-  bool m_snap_loading = false;
-  void build_snap_popover(Gtk::Widget *widget);
-
-  // Align & Distribute
-  void build_align_button();
-  void build_align_popover();
-  Gtk::Button m_align_btn;
-  Gtk::Popover m_align_pop;
-  AlignSignal m_sig_align;
-  MacroSignal m_sig_macro;
-  MacroSignal m_sig_macro_run;
-  // 8 icon drawing areas for the popover
-  Gtk::DrawingArea m_align_da[8];
-
-  // S117 m5: align icon is Cairo-painted (not CSS), so it can't read
-  // motif tokens directly. We mirror the ruler approach: a per-instance
-  // motif member, set_motif() forwarded from MainWindow's
-  // apply_motif_to_window(), and a small palette struct in Toolbar.cpp
-  // that picks colours based on motif. queue_draw on the main button
-  // and all 8 popover DAs forces an immediate repaint.
-  Motif m_motif = Motif::Dark;
-public:
-  void set_motif(Motif m) {
-    if (m_motif == m) return;
-    m_motif = m;
-    m_align_btn.queue_draw();
-    for (auto &da : m_align_da) da.queue_draw();
-  }
+  friend struct Impl;
 };
 
 } // namespace Curvz

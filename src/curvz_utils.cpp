@@ -4,6 +4,7 @@
 #include "curvz_utils.hpp"
 #include "SceneNode.hpp"        // FillStyle, GradientStop, SceneNode walk
 #include "CurvzDocument.hpp"    // s132 m2 — doc.layers for counting pumps
+#include "CurvzProject.hpp"     // s167 m1 — find_by_iid walks project docs
 #include "CurvzLog.hpp"    // s126: diagnostics for confirm callback path
 
 #include <algorithm>
@@ -110,6 +111,31 @@ std::string encode_svg_id(const std::string& name,
     return clean_name + kPilcrow + short_part;
 }
 
+// ── doc_stem_from_name (s164: hoisted from MainWindow.cpp) ──────────
+// Turn a display name like "Untitled - Default" into a clean SVG filename
+// stem like "Untitled-Default" (preserving case). Runs of non-alphanumeric
+// characters collapse to a single '-'; leading/trailing dashes are stripped.
+// Returns "icon" if the result would be empty.
+std::string doc_stem_from_name(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size());
+    bool last_dash = true; // suppresses leading dashes
+    for (unsigned char ch : raw) {
+        if (std::isalnum(ch)) {
+            out.push_back((char)ch);
+            last_dash = false;
+        } else if (!last_dash) {
+            out.push_back('-');
+            last_dash = true;
+        }
+    }
+    while (!out.empty() && out.back() == '-')
+        out.pop_back();
+    if (out.empty())
+        out = "icon";
+    return out;
+}
+
 // ── Document counting pumps (s132 m2) ────────────────────────────────
 //
 // Five sites in MainWindow had open-coded `iterate doc.layers, sum
@@ -183,6 +209,120 @@ int doc_object_count(const Curvz::CurvzDocument& doc) {
         total += (int)l->children.size();
     }
     return total;
+}
+
+// ── find_by_iid (s167 m1) ────────────────────────────────────────────
+// Project-level resolver — iterates documents in stack order and asks
+// each doc's iid index. The per-doc lookup is the heavy lifting (O(1)
+// after a rebuild, O(N) on the first call after a structural mutation);
+// this pump is just the "which doc?" loop.
+//
+// Stops at the first hit because UUIDs are globally unique — a second
+// match would be a bug, not a tie to break. Returning early skips the
+// rest of the walk in the common case.
+//
+// Empty iid is treated as "no match" without walking — find_by_iid("")
+// hitting every doc would be wasted work for zero useful results.
+Curvz::SceneNode* find_by_iid(const Curvz::CurvzProject& proj,
+                              const std::string& iid) {
+    if (iid.empty()) return nullptr;
+    for (const auto& doc : proj.documents) {
+        if (!doc) continue;
+        if (auto* n = doc->find_by_iid(iid))
+            return n;
+    }
+    return nullptr;
+}
+
+// ── find_layer_index_by_iid (s171 m1) ────────────────────────────────
+// Doc-relative top-level scan. Layers don't appear inside other layers'
+// children (the layers vector IS the top-level layer list), so a direct
+// O(L) walk is the right shape here — using the iid index would also
+// match nested nodes that share a (theoretically impossible) iid, and
+// would still need a follow-up "which slot is this in?" walk anyway.
+//
+// L is the layer count, which is small in practice (typically <20 even
+// for complex docs). Linear scan is fine; index caching would be
+// premature.
+int find_layer_index_by_iid(const Curvz::CurvzDocument& doc,
+                            const std::string& iid) {
+    if (iid.empty()) return -1;
+    for (int i = 0; i < (int)doc.layers.size(); ++i) {
+        if (doc.layers[i] && doc.layers[i]->internal_id == iid)
+            return i;
+    }
+    return -1;
+}
+
+// ── find_doc_by_iid (s171 m1) ────────────────────────────────────────
+// Walks every doc in the project and asks each one's iid index. First
+// hit wins (UUIDs are globally unique by construction). Returns the
+// non-owning doc pointer or nullptr.
+//
+// Why a separate pump from find_by_iid: callers here want the *doc*
+// that owns the node, not the node itself. Mutating a layer's parent
+// container (insert/erase a peer layer) is a doc-level op even when
+// the resolution started from a node-level iid. Splitting these pumps
+// keeps each one's intent legible.
+Curvz::CurvzDocument* find_doc_by_iid(const Curvz::CurvzProject& proj,
+                                      const std::string& iid) {
+    if (iid.empty()) return nullptr;
+    for (const auto& doc : proj.documents) {
+        if (!doc) continue;
+        if (doc->find_by_iid(iid))
+            return doc.get();
+    }
+    return nullptr;
+}
+
+// ── iid_breadcrumb (s175 m3) ─────────────────────────────────────────
+// User-facing label for an iid. Rendered "<Layer Name> → <Node Name>"
+// where the layer name is the top-level container's name and the node
+// name is the leaf's. See header docstring for return-value contract.
+//
+// Resolution path: find_by_iid + find_doc_by_iid give the node and its
+// owning doc; from there a per-doc layer walk locates the top-level
+// layer whose subtree contains the node. The layer walk does its own
+// recursion (rather than reusing the doc's flat iid index) because we
+// need the *layer* on the path from root to leaf, not just whether
+// the node exists somewhere in the doc — and the index doesn't carry
+// that hierarchy info.
+//
+// Microbenchmark sanity: per-call cost is one doc scan (O(D)) for
+// find_doc_by_iid plus one layer-tree walk (O(N) worst case in the
+// owning doc). At our scale (D<10, N<1000s) that's microseconds —
+// well within budget for an inspector-rebuild label.
+std::string iid_breadcrumb(const Curvz::CurvzProject& proj,
+                           const std::string& iid) {
+    if (iid.empty()) return "\xE2\x80\x94";  // em dash "—"
+    auto* node = find_by_iid(proj, iid);
+    auto* doc  = find_doc_by_iid(proj, iid);
+    if (!node || !doc) return "(unresolved)";
+
+    // Find the top-level layer in this doc whose subtree contains node.
+    // Walk each layer's tree until we find the iid; the layer at the
+    // root of that walk is the breadcrumb's first segment.
+    std::function<bool(const Curvz::SceneNode*)> contains =
+        [&](const Curvz::SceneNode* n) -> bool {
+            if (!n) return false;
+            if (n->internal_id == iid) return true;
+            for (const auto& ch : n->children)
+                if (contains(ch.get())) return true;
+            return false;
+        };
+    for (const auto& layer : doc->layers) {
+        if (!layer) continue;
+        // The layer itself might be the target (rare — iid match on a
+        // layer node) or it may contain the target somewhere below.
+        if (layer->internal_id == iid)
+            return layer->name + " \xE2\x86\x92 " + node->name;
+        if (contains(layer.get()))
+            return layer->name + " \xE2\x86\x92 " + node->name;
+    }
+    // Resolved by find_by_iid but not found under any layer — shouldn't
+    // happen in practice (every node lives under some layer), but
+    // degrade to just the node name rather than crashing or lying.
+    return node->name;
 }
 
 // ── box_blur_argb32 ─────────────────────────────────────────────────
@@ -1278,7 +1418,15 @@ const char* const* preset_names() {
 }
 
 bool requires_three_anchors(int preset_idx) {
-    return preset_idx == WAVE;
+    // s155: Arc Up / Down / Bulge / Squeeze need an interior anchor to
+    // bend — build_arc bails to build_flat when count <= 2 because
+    // there's no interior point to displace. Auto-bumping count to 3
+    // (same way Wave already does) makes these presets actually visible
+    // when picked at count=2 default. Without the bump, the envelope
+    // generates as flat and the warp looks unchanged.
+    return preset_idx == ARC_UP   || preset_idx == ARC_DOWN  ||
+           preset_idx == BULGE    || preset_idx == SQUEEZE   ||
+           preset_idx == WAVE;
 }
 
 } // namespace warp_presets

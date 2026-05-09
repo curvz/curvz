@@ -329,16 +329,15 @@ public:
   void text_to_paths_op();       // convert selected Text nodes to Path outlines
   void release_text_from_path(); // detach PTT text nodes in current selection
                                  // (undoable)
-  void
-  set_selection_single(SceneNode *node) { // set selection to exactly one node
-    m_selection.clear();
-    m_selected = node;
-    if (node)
-      m_selection.push_back(node);
-    // New selection → reset custom pivot
-    m_has_custom_pivot = false;
-    m_pivot_dragging = false;
-  }
+  // s162 m3: set_selection_single now folds in notify_object_selection_changed
+  // so SelectionContext stays in sync no matter who calls it. Previously
+  // inline; moved to Canvas.cpp because the inline body would otherwise need
+  // to reach a private member via header — and the s159 audit was scoped
+  // to m_sig_selection.emit() sites in Canvas.cpp, missing MainWindow callers
+  // (e.g. on_warp_make) that mutated selection through this accessor without
+  // refreshing m_sel_ctx. Folding the notify here is the structural fix:
+  // every caller becomes correct by construction.
+  void set_selection_single(SceneNode *node);
 
   // Called by MainWindow after the canvas is placed in its Overlay.
   // fixed is the Gtk::Fixed child of the overlay that floats above the canvas.
@@ -1609,6 +1608,12 @@ private:
   SceneNode *m_ref_selected = nullptr; // ref point being moved
   double m_ref_drag_ox = 0.0;          // doc-space offset at drag start
   double m_ref_drag_oy = 0.0;
+  // s168 m4: pre-drag position snapshot for the Ref-tool single-refpt
+  // drag, so mouse-up can push a RefMoveCommand. Selection-tool drag
+  // and nudge use m_ref_move_snaps for the same purpose; the Ref tool
+  // doesn't go through that path because it only ever drags one refpt.
+  double m_ref_drag_orig_x = 0.0;
+  double m_ref_drag_orig_y = 0.0;
 
   // ── Text tool state ──────────────────────────────────────────────────
   // The entry is parented to m_text_fixed which the parent Overlay places
