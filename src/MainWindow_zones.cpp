@@ -5,7 +5,6 @@
 #include "CurvzLog.hpp"
 #include "CurvzProject.hpp"
 #include "DocTabBar.hpp"
-#include "ExportDialog.hpp"
 #include "RecentProjects.hpp" // s144 m3 — Open Recent submenu
 #include "Ruler.hpp"
 #include "SvgOptimiser.hpp"
@@ -20,7 +19,6 @@
 // (already pulled in via MainWindow.hpp). The dialog source files
 // remain in the tree until Scott deletes them on his end; CMake no
 // longer references them in this milestone.
-#include "ExportDocsDialog.hpp"
 #include "UnitSystem.hpp"
 #include "curvz_utils.hpp" // s117 m18 v2: apply_motif_class_from_parent
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector-driven appearance edits
@@ -394,7 +392,10 @@ void MainWindow::setup_menu() {
   file_io->append("Import SVG…", "win.import-svg");
   file_io->append("Import as Icon…", "win.import-svg-icon");
   file_io->append("Place Image…", "win.place-image");
-  file_io->append("Export Icon Theme…", "win.export-theme");
+  // s179 m1: unified Export dialog. Tabbed parent for Documents +
+  // Icon Theme; replaces the previous File ▸ Export Icon Theme… and
+  // Project ▸ Export Documents… split entries.
+  file_io->append("Export…", "win.export");
   file_io->append("Print…", "win.print");
   file_menu->append_section("", file_io);
   auto file_section = Gio::Menu::create();
@@ -551,20 +552,11 @@ void MainWindow::setup_menu() {
   view_section->append_submenu("View", view_menu);
   menu->append_section("", view_section);
 
-  // ── Project submenu (S103 m3) ──────────────────────────────────────────
-  // Currently houses the Themes… item. New top-level menu — project-
-  // scoped utilities that aren't file-IO and aren't editing belong
-  // here. Future tenants might include "Project Settings…" or
-  // "Migrate project…" if we ever need them.
-  auto project_menu = Gio::Menu::create();
-  // s147 m3: "Themes…" entry removed — the Themes Content panel
-  // (always-visible in the right pane) IS the surface. A menu entry
-  // that opened a dialog version of a panel makes no sense under the
-  // discovery-not-commit reframe.
-  project_menu->append("Export Documents…", "win.export-docs");
-  auto project_section = Gio::Menu::create();
-  project_section->append_submenu("Project", project_menu);
-  menu->append_section("", project_section);
+  // s179 m1: Project submenu dropped. Originally (S103 m3) it housed
+  // Themes… and Export Documents…; s147 m3 removed Themes… (replaced
+  // by ThemesPanel in the Content pane), and s179 m1 unified Export
+  // Documents… into File ▸ Export…. The submenu itself had no other
+  // inhabitants, so removing it leaves the menu structure cleaner.
 
   // ── Navigate submenu (s108 m7) ─────────────────────────────────────────
   // Document navigation. Menu placement also forces GTK to register the
@@ -630,12 +622,6 @@ void MainWindow::setup_menu() {
   // s147 m3: show-themes action removed alongside the menu entry.
   // ThemesPanel in Content is the canonical surface.
 
-  // S104 m1 — Project → Export Documents…
-  auto act_export_docs = Gio::SimpleAction::create("export-docs");
-  act_export_docs->signal_activate().connect(
-      [this](const Glib::VariantBase &) { on_export_docs(); });
-  add_action(act_export_docs);
-
   auto act_import_svg = Gio::SimpleAction::create("import-svg");
   act_import_svg->signal_activate().connect(
       [this](const Glib::VariantBase &) { on_import_svg(); });
@@ -660,10 +646,13 @@ void MainWindow::setup_menu() {
       [this](const Glib::VariantBase &) { on_open_image(); });
   add_action(act_open_image);
 
-  auto act_export_theme = Gio::SimpleAction::create("export-theme");
-  act_export_theme->signal_activate().connect(
-      [this](const Glib::VariantBase &) { on_export_theme(); });
-  add_action(act_export_theme);
+  // s179 m1: unified Export dialog (File ▸ Export…). Tabbed parent
+  // for Documents + Icon Theme; one action and one menu entry replace
+  // the previous win.export-theme + win.export-docs split.
+  auto act_export = Gio::SimpleAction::create("export");
+  act_export->signal_activate().connect(
+      [this](const Glib::VariantBase &) { on_export(); });
+  add_action(act_export);
 
   auto act_print = Gio::SimpleAction::create("print");
   act_print->signal_activate().connect([this](const Glib::VariantBase &) {
@@ -718,26 +707,6 @@ void MainWindow::setup_menu() {
   act_clone->signal_activate().connect(
       [this](const Glib::VariantBase &) { m_canvas.clone_selected(); });
   add_action(act_clone);
-
-  // s176 m1: refpt-as-export-origin promote / clear. Surfaced on a
-  // single-Ref selection via build_object_context_menu's RefAction
-  // section — see compute_object_actions for the policy. The handler
-  // reads the primary selection at activate time (rather than capturing
-  // a SceneNode* in the lambda) because primary_selection is always
-  // current when the menu invokes the action.
-  auto act_set_export_origin = Gio::SimpleAction::create("set-export-origin");
-  act_set_export_origin->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        SceneNode *p = m_canvas.primary_selection();
-        if (p && p->is_ref()) m_canvas.set_refpt_as_export_origin(p);
-      });
-  add_action(act_set_export_origin);
-
-  auto act_clear_export_origin =
-      Gio::SimpleAction::create("clear-export-origin");
-  act_clear_export_origin->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.clear_refpt_export_origin(); });
-  add_action(act_clear_export_origin);
 
   // s136 m5: select-all and deselect-all promoted to actions so the Edit
   // menu can reach them. The hotkeys (Ctrl+A and Ctrl+Shift+A) are still

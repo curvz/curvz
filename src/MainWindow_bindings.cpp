@@ -5,7 +5,6 @@
 #include "CurvzLog.hpp"
 #include "CurvzProject.hpp"
 #include "DocTabBar.hpp"
-#include "ExportDialog.hpp"
 #include "RecentProjects.hpp" // s144 m3 — Open Recent submenu
 #include "Ruler.hpp"
 #include "SvgOptimiser.hpp"
@@ -20,7 +19,6 @@
 // (already pulled in via MainWindow.hpp). The dialog source files
 // remain in the tree until Scott deletes them on his end; CMake no
 // longer references them in this milestone.
-#include "ExportDocsDialog.hpp"
 #include "UnitSystem.hpp"
 #include "curvz_utils.hpp" // s117 m18 v2: apply_motif_class_from_parent
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector-driven appearance edits
@@ -1224,8 +1222,11 @@ void MainWindow::connect_signals() {
       // only the primary's paint, which left the toolbar unable to tell a
       // uniform selection from a mixed one.
       m_toolbar.sync_from_selection(m_canvas.selection(), obj);
-      // Sync layers panel highlight to canvas selection
-      m_layers.set_canvas_selection(m_canvas.selection());
+      // s178 m1: panel sync now lives inside refresh_inspector() — same
+      // event, two consumers, matched pair. The redundant call here was
+      // removed because it routed only this single listener path through
+      // to the panel; many other refresh_inspector callers (tool switch,
+      // doc reload, undo, etc.) bypassed it.
     });
   });
 
@@ -2062,6 +2063,17 @@ void MainWindow::connect_signals() {
         }
         if (shift && (kv == GDK_KEY_s || kv == GDK_KEY_S)) {
           on_save_as();
+          return true;
+        }
+        // s179 m1e: Ctrl+Shift+T — File ▸ Export…. Per the
+        // project's CAPTURE-controller rule, set_accels_for_action is
+        // cosmetic; the controller is the source of truth for hotkey
+        // dispatch. The legacy win.export-theme bind looked like it
+        // was working through the menu accel only; after m1d retired
+        // win.export-theme, the absence of a controller case here
+        // surfaced the underlying gap.
+        if (shift && !alt && (kv == GDK_KEY_t || kv == GDK_KEY_T)) {
+          on_export();
           return true;
         }
         if (!shift && (kv == GDK_KEY_p || kv == GDK_KEY_P)) {

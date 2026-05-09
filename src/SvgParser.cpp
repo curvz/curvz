@@ -2091,9 +2091,11 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 ref->ref_y = dbl(attr(tag, "cy"));
                 if (!attr(tag, "display").empty()) ref->visible = false;
                 // s177: data-curvz-export-origin removed from the save
-                // format. is_export_origin remains as a runtime
-                // SceneNode field (in-memory only). Save/restore is
-                // sacred; export concerns don't touch it.
+                // format (export coord system became the ruler).
+                // s179 m2: the runtime is_export_origin field was also
+                // removed — the entire promotion stack is gone, since
+                // the ruler origin is the canonical export origin and
+                // a per-refpt promotion concept no longer applies.
                 LOG_DEBUG("SvgParser: ref point at ({:.4f},{:.4f})", ref->ref_x, ref->ref_y);
                 current_parent()->children.push_back(std::move(ref));
                 continue;

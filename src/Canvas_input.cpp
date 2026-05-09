@@ -1088,6 +1088,18 @@ void Canvas::on_draw_begin(double x, double y) {
         }
       }
     }
+    // s178 m1: when the Ref tool picks an existing refpt, sync to the
+    // canonical canvas selection so the layers panel highlights the row
+    // and the inspector can refresh. The Ref tool's drag-to-move still
+    // reads from m_ref_selected (independent slot, set above); m_selection
+    // / m_selected mirror it for app-wide selection consumers. On empty
+    // click (no refpt hit), leave the existing selection untouched so the
+    // user's prior selection isn't clobbered by a draw-new gesture.
+    if (m_ref_selected) {
+      m_selection = {m_ref_selected};
+      m_selected = m_ref_selected;
+      notify_object_selection_changed();
+    }
     m_drawing = true;
     m_draw_start_dx = px;
     m_draw_start_dy = py;

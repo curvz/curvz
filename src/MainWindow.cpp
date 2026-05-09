@@ -5,7 +5,6 @@
 #include "CurvzLog.hpp"
 #include "CurvzProject.hpp"
 #include "DocTabBar.hpp"
-#include "ExportDialog.hpp"
 #include "RecentProjects.hpp" // s144 m3 — Open Recent submenu
 #include "Ruler.hpp"
 #include "SvgOptimiser.hpp"
@@ -20,7 +19,6 @@
 // (already pulled in via MainWindow.hpp). The dialog source files
 // remain in the tree until Scott deletes them on his end; CMake no
 // longer references them in this milestone.
-#include "ExportDocsDialog.hpp"
 #include "UnitSystem.hpp"
 #include "curvz_utils.hpp" // s117 m18 v2: apply_motif_class_from_parent
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector-driven appearance edits

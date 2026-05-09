@@ -138,7 +138,7 @@ void Application::on_startup() {
   bind("win.import-svg",        {"<Control>i"});
   bind("win.import-svg-icon",   {"<Control><Alt>i"});
   bind("win.place-image",       {"<Control><Shift>p"});
-  bind("win.export-theme",      {"<Control><Shift>t"});
+  bind("win.export",            {"<Control><Shift>t"});
   bind("win.print",             {"<Control>p"});
 
   // Edit

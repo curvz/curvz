@@ -570,17 +570,6 @@ struct SceneNode {
   double ref_x = 0.0;
   double ref_y = 0.0;
 
-  // s176 m1: refpt-as-export-origin flag. When true, this Ref node is the
-  // origin (0,0) for refpt coordinate exports — the exporter translates
-  // every refpt's (x,y) so this point reads as (0,0). Document-level
-  // invariant: at most one Ref in a document has this flag set; setting
-  // it on one refpt is expected to clear it on all others (the setter
-  // lives at the call site, not on the field). Survives save/load via
-  // the data-curvz-export-origin SVG attribute. Default false: when no
-  // refpt is promoted, exports use canvas (0,0) as the origin.
-  // Meaningful on Ref only.
-  bool is_export_origin = false;
-
   // Text data — meaningful on Text only
   std::string text_content;
   double text_x = 0.0; // anchor x in doc space (Y-up)
@@ -772,7 +761,6 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->guide_angle = src.guide_angle;
   dst->ref_x = src.ref_x;
   dst->ref_y = src.ref_y;
-  dst->is_export_origin = src.is_export_origin;
   dst->text_content = src.text_content;
   dst->text_x = src.text_x;
   dst->text_y = src.text_y;

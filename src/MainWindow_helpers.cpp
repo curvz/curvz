@@ -5,7 +5,6 @@
 #include "CurvzLog.hpp"
 #include "CurvzProject.hpp"
 #include "DocTabBar.hpp"
-#include "ExportDialog.hpp"
 #include "RecentProjects.hpp" // s144 m3 — Open Recent submenu
 #include "Ruler.hpp"
 #include "SvgOptimiser.hpp"
@@ -20,7 +19,6 @@
 // (already pulled in via MainWindow.hpp). The dialog source files
 // remain in the tree until Scott deletes them on his end; CMake no
 // longer references them in this milestone.
-#include "ExportDocsDialog.hpp"
 #include "UnitSystem.hpp"
 #include "curvz_utils.hpp" // s117 m18 v2: apply_motif_class_from_parent
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector-driven appearance edits
@@ -581,6 +579,14 @@ void MainWindow::refresh_inspector() {
     } else {
       m_properties.show_empty();
     }
+    // s178 m1: layers panel is the inspector's matched pair — same event,
+    // two consumers. Pre-fix, panel sync only happened from
+    // signal_selection_changed's listener, which is one of many sites that
+    // refresh the inspector. That asymmetry left the panel stale on
+    // canvas-side selections that reached the inspector via other routes
+    // (e.g. refpt picks). Sync here so any inspector refresh implies a
+    // matched panel refresh.
+    m_layers.set_canvas_selection(m_canvas.selection());
     m_inspector_tool = m_active_tool;
   });
 }
@@ -914,13 +920,9 @@ void MainWindow::update_project_sensitive() {
   bool open = (m_project != nullptr);
   for (const char *name :
        {"new", "save", "save-as", "save-as-template", "close-project",
-        "import-svg", "place-image", "export-theme", "print", "step-repeat",
+        "import-svg", "place-image", "export", "print", "step-repeat",
         "undo", "redo", "zoom-fit", "zoom-in", "zoom-out", "zoom-100",
-        "zoom-200", "zoom-selection",
-        // s176 m1: refpt export-origin actions are project-sensitive
-        // even though they're surfaced via context menu only on Ref
-        // selections — without a project there's nothing to promote.
-        "set-export-origin", "clear-export-origin"}) {
+        "zoom-200", "zoom-selection"}) {
     if (auto act = lookup_action(name)) {
       if (auto sa = std::dynamic_pointer_cast<Gio::SimpleAction>(act))
         sa->set_enabled(open);

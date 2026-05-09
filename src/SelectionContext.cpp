@@ -505,28 +505,6 @@ ObjectActions compute_object_actions(const ObjectInfo &info) {
               DistAction::SpaceH     | DistAction::SpaceV;
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  //  Refpt actions (s176 m1)
-  //
-  //  "Use as export origin" / "Clear export origin" surface only when
-  //  the selection is a single Ref node. The two are mutually
-  //  exclusive — exactly one is offered, depending on whether the
-  //  refpt currently holds the flag. This mirrors the visibility
-  //  Lock/Unlock pair: same rule, opposite verb.
-  //
-  //  No unlocked gate. Setting an export origin is metadata about the
-  //  refpt's role in export, not a destructive operation; locking the
-  //  refpt should not block its promotion. (A locked refpt's position
-  //  is fixed, which is exactly the property an export origin wants.)
-  // ──────────────────────────────────────────────────────────────────
-  if (info.is_single() && info.single && info.single->is_ref()) {
-    if (info.single->is_export_origin) {
-      a.ref_ |= RefAction::ClearExportOrigin;
-    } else {
-      a.ref_ |= RefAction::SetExportOrigin;
-    }
-  }
-
   return a;
 }
 

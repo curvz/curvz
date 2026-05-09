@@ -149,7 +149,7 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   r = add_row(m_keyboard_grid, "Ctrl+I", "Import SVG…", r);
   r = add_row(m_keyboard_grid, "Ctrl+Alt+I", "Import as Icon…", r);
   r = add_row(m_keyboard_grid, "Ctrl+Shift+P", "Place Image…", r);
-  r = add_row(m_keyboard_grid, "Ctrl+Shift+T", "Export Theme…", r);
+  r = add_row(m_keyboard_grid, "Ctrl+Shift+T", "Export…", r);
   r = add_row(m_keyboard_grid, "Ctrl+P", "Print / export dialog", r);
   r = add_row(m_keyboard_grid, "Ctrl+Q", "Quit", r);
   r = add_row(m_keyboard_grid, "Ctrl+W", "Quit (alternate)", r);

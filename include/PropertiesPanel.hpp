@@ -234,7 +234,6 @@ private:
     // app-tier persistence. Takes CurvzProject* during sub-ship 1
     // for that reason; sub-ship 2 will drop the parameter.
     void build_app_appearance_section(CurvzProject* project, Gtk::Box* parent = nullptr);
-    void build_guide_section(CurvzDocument* doc, Gtk::Box* parent = nullptr);
     // s150: build_snap_section deleted — Snap behaviour now lives at the
     // toolbar Snap switch + its right-click popover. Storage on doc.snap
     // is unchanged; only the inspector surface went away.
@@ -263,6 +262,20 @@ private:
     // Like build_blend_section, this section's edits don't push undo —
     // future milestone may add coalesced EditWarpCommand pushes here.
     void build_warp_section(SceneNode* obj, Gtk::Box* parent = nullptr);
+    // s179 m3 — Object ▸ Guides section. Always visible; mirrors the
+    // build_warp_section pattern (always-present, dual-mode). When
+    // guides are selected (m_guide_selection non-empty) the section
+    // shows the per-guide editor — single-select X/Y/A spinners + lock
+    // + delete; multi-select count + bulk delete. When no guides are
+    // selected it shows just the "From 2 points…" construct tool, which
+    // is a creation verb available regardless of selection state.
+    //
+    // Selection-driven content moved here from build_guide_section
+    // (Document ▸ Theme ▸ Guides). The Document-tier section retains
+    // only the colour swatch — colour is theme-saveable style, the rest
+    // is selection-driven editing that belongs at object scope.
+    void build_object_guides_section(CurvzDocument* doc,
+                                     Gtk::Box* parent = nullptr);
     // S97 m3 — drop shadow inspector section. Shown for any node that
     // can_have_shadow() (Path, Compound, Group, Text, Image, ClipGroup,
     // Blend, Warp). Controls: enable toggle, dx/dy/blur spinbuttons,

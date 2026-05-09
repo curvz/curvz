@@ -86,7 +86,6 @@
 #include "CurvzProject.hpp"
 #include "CommandHistory.hpp"
 #include "NewDocumentDialog.hpp"
-#include "ExportDialog.hpp"
 #include "StepRepeatPopover.hpp"
 #include "BlendPopover.hpp"
 #include "WarpPopover.hpp"
@@ -135,7 +134,7 @@ public:
     explicit MainWindow(Application& app);
 
     // s126: last-used folder accessors. Public so non-MainWindow dialogs
-    // (ExportDocsDialog and friends) can opt into the same per-purpose
+    // (ExportDialog and friends) can opt into the same per-purpose
     // memory the built-in pickers use. Storage lives in m_last_folders
     // and persists via save_config.
     std::string get_last_folder(const std::string& purpose) const;  // category: helper: persistence
@@ -214,7 +213,7 @@ private:
     void on_manage_templates();  // category: handler: library
     // s147 m3: on_show_themes removed — ThemesPanel in Content is the
     // canonical surface, no menu entry / dialog version remains.
-    void on_export_docs();  // category: handler: documents
+    void on_export();  // category: handler: documents — File ▸ Export… (unified)
 
     // S104 m1 follow-on — NewDocumentDialog "Theme" dropdown helpers.
     //
@@ -287,7 +286,6 @@ private:
     void close_guide_review_dialog();  // category: handler: guides
     void on_macro_manager();  // category: handler: macros
     void on_run_macro(const std::string& macro_id);  // category: handler: macros
-    void on_export_theme();  // category: handler: library
     void on_quit();  // category: handler: documents
     void do_save_as(const std::string& dir);  // category: helper: save flow
     void on_tool_changed(ActiveTool tool);  // category: glue
@@ -313,7 +311,6 @@ private:
     std::unique_ptr<CurvzProject> m_project;
     CommandHistory                m_history;
     NewDocumentDialog             m_new_doc_dialog;
-    ExportDialog                  m_export_dialog;
     StepRepeatPopover             m_step_repeat_popover;
     BlendPopover                  m_blend_popover;
     WarpPopover                   m_warp_popover;
@@ -469,7 +466,7 @@ private:
     // sites). Folder, not file: pickers re-open at the same directory,
     // not pre-select the same file.
     //
-    // Accessors are public (above) — see s126 ExportDocsDialog wiring.
+    // Accessors are public (above) — see s126 last-folder wiring.
     std::map<std::string, std::string> m_last_folders;
 
     // Clip / Release Clip — held as members so we can toggle enabled

@@ -185,27 +185,6 @@ public:
   void make_compound_path();
   void split_compound_path();
 
-  // ── Refpt as export origin (s176 m1) ──────────────────────────────────
-  //
-  // set_refpt_as_export_origin(ref): promote a single Ref node to be the
-  //   document's export origin. Enforces the at-most-one-per-doc invariant
-  //   by clearing the flag on every other Ref in the document first. The
-  //   passed-in node must be a Ref (caller's responsibility — guarded by
-  //   the action's policy on the menu side, but defended here as well).
-  //   Marks the project dirty and emits the standard prop-changed signal
-  //   so the canvas redraws.
-  //
-  // clear_refpt_export_origin(): clears the flag on every Ref in the
-  //   document. Used by the "Clear Export Origin" verb. Idempotent —
-  //   safe to call when nothing is promoted (no-op).
-  //
-  // Both are non-undoable in m1 — the flag is metadata about the refpt's
-  // role, similar in spirit to per-measurement visibility (also non-
-  // undoable today). Banked as a backlog item: wrap as an EditFlag
-  // command using the s170 m1+m2 iid-based capture pattern.
-  void set_refpt_as_export_origin(SceneNode *ref);
-  void clear_refpt_export_origin();
-
   // ── Clipping paths ──────────────────────────────────────────────────
   // make_clip_group(): requires a non-empty selection. Arms "pick-clip"
   //   mode — the next click on a Path or Compound in the canvas will

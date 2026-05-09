@@ -236,21 +236,6 @@ build_object_context_menu(const ObjectActions &oa) {
     }
   }
 
-  // ── 5b. Refpt (s176 m1) ───────────────────────────────────────────────────
-  // Surfaces only on a single-Ref selection, where the policy emits exactly
-  // one of SetExportOrigin / ClearExportOrigin (mutually exclusive — same
-  // shape as the Lock/Unlock pair). The verb is positional: a refpt is
-  // either the export origin or it isn't, and the menu shows the inverse
-  // verb for the current state.
-  {
-    auto sec = Gio::Menu::create();
-    if (any(oa.ref_ & RefAction::SetExportOrigin))
-      add(sec, "Use as Export Origin",   "win.set-export-origin");
-    if (any(oa.ref_ & RefAction::ClearExportOrigin))
-      add(sec, "Clear Export Origin",    "win.clear-export-origin");
-    append_section_if_nonempty(sec);
-  }
-
   // ── 6. Library — always present (selection-independent at this layer; the
   //    save-to-library handler in MainWindow does its own pre-flight on the
   //    current selection, and "Save current selection" reads naturally even

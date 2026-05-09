@@ -20,7 +20,6 @@
 // (already pulled in via MainWindow.hpp). The dialog source files
 // remain in the tree until Scott deletes them on his end; CMake no
 // longer references them in this milestone.
-#include "ExportDocsDialog.hpp"
 #include "UnitSystem.hpp"
 #include "curvz_utils.hpp" // s117 m18 v2: apply_motif_class_from_parent
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector-driven appearance edits
@@ -293,24 +292,26 @@ void MainWindow::on_save_as() {
 // panel; apply is non-undoable per design (same as the dialog used
 // to be).
 
-void MainWindow::on_export_docs() {
+// File ▸ Export… handler. Self-managed dialog: constructed with
+// `new`, deletes itself via signal_close_request → idle delete-this.
+// The done_cb is just for logging; the dialog handles its own
+// success confirmation internally.
+void MainWindow::on_export() {
   if (!m_project) {
-    LOG_INFO("on_export_docs: no project, ignoring");
+    LOG_INFO("on_export: no project, ignoring");
     return;
   }
   if (m_project->documents.empty()) {
-    LOG_INFO("on_export_docs: project has no documents, ignoring");
+    LOG_INFO("on_export: project has no documents, ignoring");
     return;
   }
-  // Self-managed dialog. The dialog deletes itself on close; the
-  // done_cb is just for logging — the dialog handles its own success
-  // confirmation via an AlertDialog after a successful export.
-  new ExportDocsDialog(*this, *m_project, [](bool success, std::string dir) {
-    if (success)
-      LOG_INFO("on_export_docs: export complete → '{}'", dir);
-    else
-      LOG_INFO("on_export_docs: export cancelled or failed");
-  });
+  new ExportDialog(*this, *m_project,
+      [](bool success, std::string dir) {
+        if (success)
+          LOG_INFO("on_export: export complete → '{}'", dir);
+        else
+          LOG_INFO("on_export: dialog closed without export");
+      });
 }
 
 
@@ -757,18 +758,6 @@ void MainWindow::on_manage_templates() {
     // opens Add to Project or New Project. If a persistent picker UI ever
     // lives outside the dialog, wire its refresh here.
     LOG_INFO("on_manage_templates: templates changed");
-  });
-}
-
-
-void MainWindow::on_export_theme() {
-  if (!m_project)
-    return;
-  m_export_dialog.show(*this, *m_project, [](bool success, std::string dir) {
-    if (success)
-      LOG_INFO("on_export_theme: export complete → '{}'", dir);
-    else
-      LOG_INFO("on_export_theme: export cancelled or failed");
   });
 }
 

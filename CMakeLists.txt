@@ -259,11 +259,6 @@ set(SOURCES
     # canonical surface (always-visible, kill-the-commit-gate per the
     # discovery-not-commit principle). Scott deletes
     # include/ThemesDialog.hpp and src/ThemesDialog.cpp on his end.
-    # S104 m1: Export Documents dialog — per-doc SVG/PNG export with
-    # user-chosen size (px/mm/in/pt + DPI) and fit-side. Self-managed
-    # lifecycle. Distinct from ExportDialog (icon-theme bundle exporter,
-    # File → Export Icon Theme…).
-    src/ExportDocsDialog.cpp
     src/MacroSystem.cpp
     src/MacroManagerWindow.cpp
     src/MacroEditorWindow.cpp
@@ -399,6 +394,10 @@ set(SOURCES
     src/tools/EyedropperTool.cpp
 
     # Export
+    # s179 m1: unified Export dialog (File ▸ Export…). Tabbed parent
+    # for Documents + Icon Theme. Replaced the s103-era ExportDialog
+    # (icon theme) and S104-era ExportDocsDialog (per-doc) — the
+    # migration completed via additive-prove-retire-consolidate.
     src/ExportDialog.cpp
     src/PngExporter.cpp
     src/IcoExporter.cpp

@@ -1266,7 +1266,7 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
 }
 
 // ── Document ▸ Theme disclosure (s150; was "Motif" s148 m2 fix2) ──────
-// A nested collapsible that wraps the four draftsman-setup facets of a
+// A nested collapsible that wraps the draftsman-setup facets of a
 // document under a single header. The wrapper is labelled "Theme" —
 // post-s150 the user-facing word for the saveable doc-style bundle
 // (the Themes panel saves and applies what's inside this disclosure).
@@ -1280,20 +1280,25 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
 //                 renaming the geometry section to "Dimensions."
 //     Margins   — page-edge boundaries (the frame within).
 //     Grid      — regular mesh, if needed (background scaffold).
-//     Guides    — custom alignment landmarks (placed relative to
-//                 margins/grid).
 //
-// The order inside the disclosure mirrors a draftsman's setup
-// chronology: surface → edges → mesh → custom landmarks. Each step
-// depends on the previous step's setup — the order is causal, not
-// alphabetical.
+// s179 m3: Guides removed from the Theme disclosure. The remaining
+// three entries cover doc-level surfaces with no selection model;
+// Guides have a selection model and the entire Guides surface
+// (colour, per-guide editor, construct tool) lives in Object ▸ Guides.
+// ThemeLibrary still round-trips guide_color_r/g/b as part of the
+// theme bundle — only the inspector edit location moved.
 //
-// Why nest rather than keep the four sections flat as siblings of
-// Metadata/Dimensions: the four together are a coherent "saveable
+// The order mirrors a draftsman's setup chronology: surface → edges →
+// mesh. Each step depends on the previous step's setup — the order is
+// causal, not alphabetical.
+//
+// Why nest rather than keep these flat as siblings of
+// Metadata/Dimensions: the three together are a coherent "saveable
 // style preset" — what a Theme actually is. The disclosure makes the
 // bundle visible to the user; the Themes panel saves and applies
 // exactly what's inside this disclosure (plus a few hidden fields
-// like Snap and Units that round-trip silently).
+// like Snap and Units that round-trip silently, and guide colour
+// which is now edited from Object ▸ Guides but still saved here).
 //
 // Visual nesting: build_canvas_section is intentionally NOT in this
 // disclosure — Dimensions (geometric bones) is set-and-forget at doc
@@ -1310,18 +1315,22 @@ void PropertiesPanel::build_theme_disclosure(CurvzDocument *doc,
   if (!doc)
     return;
   auto *body = add_collapsible("Theme", false, parent);
-  // s148 m2 fix3: indent the four inner sections so the nesting
-  // reads as a distinct level. See css.hpp::.inspector-disclosure-body.
+  // s148 m2 fix3: indent the inner sections so the nesting reads as a
+  // distinct level. See css.hpp::.inspector-disclosure-body.
   body->add_css_class("inspector-disclosure-body");
-  // Pass the disclosure body as parent to the four inner section
-  // builders. add_collapsible appends the inner outer-box (header +
-  // separator + body) into the disclosure's body, producing a nested
-  // collapsible visually indented inside the Theme disclosure.
+  // s179 m3: Guides removed from the Theme disclosure. The other three
+  // theme entries cover doc-level surfaces with no selection model
+  // (Canvas backdrop, Margins, Grid) — they belong in the saveable
+  // style preset that is "Theme". Guides are objects on the canvas with
+  // a selection model, so the entire Guides surface (colour, per-guide
+  // editor, construct tool) lives in Object ▸ Guides instead. Theme
+  // save/load still round-trips guide_color_r/g/b — see
+  // ThemeLibrary::serialize/deserialize — the inspector edit surface
+  // moved, the theme bundle's contents didn't change.
   build_canvas_colours_section(doc,
                                body); // labelled "Canvas" inside the function
   build_margin_section(doc, body);
   build_grid_section(doc, body);
-  build_guide_section(doc, body);
 }
 
 // ── Document ▸ Motif ▸ Canvas section (was Document ▸ Motif pre-fix2) ──
@@ -2105,126 +2114,104 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
   // Warp, with hard-coded initial values for first launch.
 }
 
-void PropertiesPanel::build_guide_section(CurvzDocument *doc,
-                                          Gtk::Box *parent) {
+// ── Object ▸ Guides section (s179 m3) ───────────────────────────────────────
+//
+// Always-visible Object-tier section. Mirrors build_warp_section's
+// dual-mode pattern: the section is always present in the Object group,
+// the body adapts to selection state.
+//
+// Selection cardinality:
+//   - empty   → "From 2 points…" tool only (always-available creation verb)
+//   - single  → per-guide editor: type label + lock toggle + delete,
+//               then X / Y / A spinners (disabled when guide or layer
+//               is locked); plus the construct tool below
+//   - multi   → "N guides" + bulk-delete; plus the construct tool below
+//
+// The construct tool stays at the bottom of the body for all three
+// states because it's a creation verb, not selection-driven editing —
+// available regardless of what (if anything) is selected.
+//
+// Pre-s179, this content lived inside Document ▸ Theme ▸ Guides. Two
+// problems with that placement: (1) when a guide was selected, users
+// looked for it in Object first per the inspector's selection-drives-
+// content convention; (2) the construct tool was buried inside the
+// Theme disclosure which is set-and-forget for most workflows. Moving
+// the editor + tool to Object ▸ Guides puts the right things in the
+// right place. The Document-tier section keeps the colour swatch
+// (theme-saveable style) and nothing else.
+void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
+                                                  Gtk::Box *parent) {
   uint32_t gen = m_build_gen;
 
-  // ── Custom collapsible header with color swatch ───────────────────────
-  const char *key = "Guides";
-  auto it = m_section_open.find(key);
-  bool open_now = (it != m_section_open.end()) ? it->second : false;
-  m_section_open[key] = open_now;
+  auto *body = add_collapsible("Guides", false, parent);
+  curvz::utils::set_name(body, "ins_obj_gd", "inspector_object_guides_body");
 
-  auto *outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
-  outer->add_css_class("inspector-section");
-
-  auto *hdr = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-  hdr->add_css_class("inspector-section-header");
-  hdr->set_spacing(5);
-
-  auto *arrow = Gtk::make_managed<Gtk::Label>(open_now ? "▾" : "▸");
-  arrow->add_css_class("inspector-arrow");
-
-  // Color swatch
-  auto *swatch = Gtk::make_managed<Gtk::DrawingArea>();
-  curvz::utils::set_name(swatch, "ins_gd_color",
-                         "inspector_guides_color_swatch_da");
-  swatch->set_size_request(14, 14);
-  swatch->set_valign(Gtk::Align::CENTER);
-  swatch->set_can_target(true);
-  swatch->set_draw_func(
-      [doc](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
-        cr->set_source_rgb(doc->guide_color_r, doc->guide_color_g,
-                           doc->guide_color_b);
-        cr->rectangle(0, 0, w, h);
-        cr->fill();
-      });
-  auto swatch_click = Gtk::GestureClick::create();
-  swatch_click->set_button(1);
-  swatch_click->signal_pressed().connect(
-      [this, doc, swatch, gen](int, double, double) {
-        if (m_build_gen != gen)
-          return;
-        color::Color initial(doc->guide_color_r, doc->guide_color_g,
-                             doc->guide_color_b, 1.0);
-
-        m_color_popover.open(*swatch, initial, /*with_alpha=*/false,
-                             [this, doc, swatch, gen](const color::Color &c) {
-                               // gen guard: if the inspector was rebuilt while
-                               // the popover was open, `swatch` is now
-                               // dangling. Skip the redraw + the doc write
-                               // would still be valid but we bail for
-                               // consistency.
-                               if (m_build_gen != gen)
-                                 return;
-                               doc->guide_color_r = c.r;
-                               doc->guide_color_g = c.g;
-                               doc->guide_color_b = c.b;
-                               swatch->queue_draw();
-                               emit_prop_changed();
-                             });
-      });
-  swatch->add_controller(swatch_click);
-
-  auto *lbl = Gtk::make_managed<Gtk::Label>("Guides");
-  lbl->set_xalign(0.0f);
-  lbl->set_hexpand(true);
-  lbl->add_css_class("inspector-section-title");
-
-  hdr->append(*arrow);
-  hdr->append(*lbl);
-  outer->append(*hdr);
-  outer->append(
-      *Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL));
-
-  auto *body = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
-  body->set_spacing(4);
-  body->set_visible(open_now);
-  body->set_margin_top(4);
-  body->set_margin_bottom(4);
-  outer->append(*body);
-
-  {
-    std::string skey{key};
-    auto gesture = Gtk::GestureClick::create();
-    gesture->signal_pressed().connect(
-        [this, body, arrow, skey](int, double, double) {
-          bool on = !m_section_open[skey];
-          m_section_open[skey] = on;
-          body->set_visible(on);
-          arrow->set_text(on ? "▾" : "▸");
-        });
-    hdr->add_controller(gesture);
-  }
-
-  Gtk::Box *gdest = parent ? parent : &m_inner;
-  gdest->append(*outer);
+  // No project / no doc — nothing to do. Section is still drawn (for
+  // visual consistency in the Object group); body is empty.
+  if (!doc) return;
 
   const SceneNode *gl = doc->guide_layer();
   bool layer_locked = gl && gl->locked;
 
-  // ── Color row — always visible inside the disclosure ─────────────────
+  // ── Color row — always visible at the top of the body ────────────────
+  // s179 m3: absorbed from build_guide_section. Edits doc->guide_color_*
+  // directly; ThemeLibrary still round-trips these as part of the saved
+  // theme bundle, so moving the inspector edit surface to Object scope
+  // doesn't change what gets saved with a theme.
   {
     auto *color_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+    color_row->add_css_class("prop-row");
     color_row->set_spacing(6);
-    color_row->set_margin_start(10);
-    color_row->set_margin_end(10);
-    color_row->set_margin_top(4);
-    color_row->set_margin_bottom(2);
+    color_row->set_margin_top(2);
+    color_row->set_margin_bottom(4);
 
     auto *color_lbl = Gtk::make_managed<Gtk::Label>("Color:");
     color_lbl->set_halign(Gtk::Align::START);
     color_lbl->set_hexpand(false);
     color_lbl->add_css_class("prop-lbl");
-
     color_row->append(*color_lbl);
+
+    auto *swatch = Gtk::make_managed<Gtk::DrawingArea>();
+    curvz::utils::set_name(swatch, "ins_obj_gd_color",
+                           "inspector_object_guides_color_swatch_da");
+    swatch->set_size_request(14, 14);
+    swatch->set_valign(Gtk::Align::CENTER);
+    swatch->set_can_target(true);
+    swatch->set_draw_func(
+        [doc](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
+          cr->set_source_rgb(doc->guide_color_r, doc->guide_color_g,
+                             doc->guide_color_b);
+          cr->rectangle(0, 0, w, h);
+          cr->fill();
+        });
+    auto swatch_click = Gtk::GestureClick::create();
+    swatch_click->set_button(1);
+    swatch_click->signal_pressed().connect(
+        [this, doc, swatch, gen](int, double, double) {
+          if (m_build_gen != gen)
+            return;
+          color::Color initial(doc->guide_color_r, doc->guide_color_g,
+                               doc->guide_color_b, 1.0);
+          m_color_popover.open(
+              *swatch, initial, /*with_alpha=*/false,
+              [this, doc, swatch, gen](const color::Color &c) {
+                if (m_build_gen != gen)
+                  return;
+                doc->guide_color_r = c.r;
+                doc->guide_color_g = c.g;
+                doc->guide_color_b = c.b;
+                swatch->queue_draw();
+                emit_prop_changed();
+              });
+        });
+    swatch->add_controller(swatch_click);
     color_row->append(*swatch);
     body->append(*color_row);
   }
 
   // ── Selection content ─────────────────────────────────────────────────
   if (m_guide_selection.empty()) {
-    // Nothing selected — show placeholder
+    // Nothing selected — placeholder; construct tool below.
     auto *none_lbl = Gtk::make_managed<Gtk::Label>("No guide selected");
     none_lbl->set_xalign(0.0f);
     none_lbl->set_margin_start(10);
@@ -2232,7 +2219,7 @@ void PropertiesPanel::build_guide_section(CurvzDocument *doc,
     body->append(*none_lbl);
 
   } else if (m_guide_selection.size() == 1) {
-    // ── Single guide selected — M2 full editor ────────────────────────
+    // ── Single guide selected — full editor ───────────────────────────
     SceneNode *g = m_guide_selection[0];
 
     // Type label row: "H", "V", or "A" + per-guide lock toggle + delete.
@@ -2253,20 +2240,29 @@ void PropertiesPanel::build_guide_section(CurvzDocument *doc,
       spacer->set_hexpand(true);
       row->append(*spacer);
 
-      // Per-guide lock toggle.
-      auto *lock_btn =
-          Gtk::make_managed<Gtk::ToggleButton>(g->locked ? "🔒" : "🔓");
-      curvz::utils::set_name(lock_btn, "ins_gd_lock",
-                             "inspector_guide_lock_toggle");
+      // Per-guide lock toggle. s179 m3v3: switched from ToggleButton+
+      // emoji glyph to plain Button+symbolic-icon to match the codebase's
+      // canonical lock idiom (LayersPanel uses Button + curvz-locked-
+      // symbolic / curvz-unlocked-symbolic everywhere). The emoji set
+      // was the only place in the inspector using glyph-as-state; the
+      // symbolic-icon set respects theme tinting and renders cleanly
+      // at small sizes. Plain Button is correct here too: it's a
+      // one-shot action that flips state and rebuilds the section,
+      // not a stateful toggle (state lives on the SceneNode, not on
+      // the button).
+      auto *lock_btn = Gtk::make_managed<Gtk::Button>();
+      curvz::utils::set_name(lock_btn, "ins_obj_gd_lock",
+                             "inspector_object_guide_lock_btn");
       lock_btn->set_has_frame(false);
-      lock_btn->set_active(g->locked);
-      lock_btn->set_tooltip_text("Lock guide — prevents drag and edit");
+      lock_btn->set_icon_name(g->locked ? "curvz-locked-symbolic"
+                                        : "curvz-unlocked-symbolic");
+      lock_btn->set_tooltip_text(g->locked ? "Unlock guide"
+                                           : "Lock guide");
       lock_btn->set_sensitive(!layer_locked);
-      lock_btn->signal_toggled().connect([this, g, lock_btn, gen]() mutable {
+      lock_btn->signal_clicked().connect([this, g, gen]() mutable {
         if (m_build_gen != gen)
           return;
-        g->locked = lock_btn->get_active();
-        lock_btn->set_label(g->locked ? "🔒" : "🔓");
+        g->locked = !g->locked;
         emit_prop_changed();
         Glib::signal_idle().connect_once([this]() {
           if (m_project && m_canvas)
@@ -2276,8 +2272,8 @@ void PropertiesPanel::build_guide_section(CurvzDocument *doc,
       row->append(*lock_btn);
 
       auto *del_btn = Gtk::make_managed<Gtk::Button>("×");
-      curvz::utils::set_name(del_btn, "ins_gd_del",
-                             "inspector_guide_delete_btn");
+      curvz::utils::set_name(del_btn, "ins_obj_gd_del",
+                             "inspector_object_guide_delete_btn");
       del_btn->set_has_frame(false);
       del_btn->set_tooltip_text("Delete guide");
       del_btn->set_sensitive(!layer_locked);
@@ -2323,7 +2319,8 @@ void PropertiesPanel::build_guide_section(CurvzDocument *doc,
 
       auto *sp = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX,
                                                     m_canvas, m_ruler_ox);
-      curvz::utils::set_name(sp, "ins_gd_x", "inspector_guide_x_spn");
+      curvz::utils::set_name(sp, "ins_obj_gd_x",
+                             "inspector_object_guide_x_spn");
       sp->with_value(g->guide_x);
       sp->set_hexpand(true);
       sp->set_sensitive(edit_on);
@@ -2353,7 +2350,8 @@ void PropertiesPanel::build_guide_section(CurvzDocument *doc,
 
       auto *sp = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY,
                                                     m_canvas, m_ruler_oy);
-      curvz::utils::set_name(sp, "ins_gd_y", "inspector_guide_y_spn");
+      curvz::utils::set_name(sp, "ins_obj_gd_y",
+                             "inspector_object_guide_y_spn");
       sp->with_value(g->guide_y);
       sp->set_hexpand(true);
       sp->set_sensitive(edit_on);
@@ -2382,7 +2380,8 @@ void PropertiesPanel::build_guide_section(CurvzDocument *doc,
       row->append(*lbl);
 
       auto *sp = Gtk::make_managed<CurvzSpinButton>(SpinType::Angle, m_canvas);
-      curvz::utils::set_name(sp, "ins_gd_a", "inspector_guide_angle_spn");
+      curvz::utils::set_name(sp, "ins_obj_gd_a",
+                             "inspector_object_guide_angle_spn");
       sp->with_value(g->guide_angle);
       sp->set_hexpand(true);
       sp->set_sensitive(edit_on);
@@ -2414,8 +2413,8 @@ void PropertiesPanel::build_guide_section(CurvzDocument *doc,
     row->append(*count_lbl);
 
     auto *del_btn = Gtk::make_managed<Gtk::Button>("×");
-    curvz::utils::set_name(del_btn, "ins_gd_mdel",
-                           "inspector_guides_multi_delete_btn");
+    curvz::utils::set_name(del_btn, "ins_obj_gd_mdel",
+                           "inspector_object_guides_multi_delete_btn");
     del_btn->set_has_frame(false);
     del_btn->set_tooltip_text("Delete selected guides");
     del_btn->set_sensitive(!layer_locked);
@@ -2446,12 +2445,11 @@ void PropertiesPanel::build_guide_section(CurvzDocument *doc,
     body->append(*row);
   }
 
-  // Add-guide row removed in M2: guides are created by dragging from the
-  // rulers; typing a position here duplicated that flow and confused users.
-
-  // ── Construct guide from 2 points (M3) ────────────────────────────────
+  // ── Construct guide from 2 points — always available ─────────────────
   // Launches a canvas-side mode that captures two clicks (with node-snap),
-  // shows a preview + review dialog, and commits on OK.
+  // shows a preview + review dialog, and commits on OK. Sits at the bottom
+  // of the body regardless of selection state — it's a creation verb,
+  // available whether or not a guide is selected.
   {
     auto *tools_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     tools_row->add_css_class("prop-row");
@@ -2459,8 +2457,8 @@ void PropertiesPanel::build_guide_section(CurvzDocument *doc,
     tools_row->set_margin_top(4);
 
     auto *from_nodes_btn = Gtk::make_managed<Gtk::Button>("From 2 points…");
-    curvz::utils::set_name(from_nodes_btn, "ins_gd_f2p",
-                           "inspector_guides_from_2_points_btn");
+    curvz::utils::set_name(from_nodes_btn, "ins_obj_gd_f2p",
+                           "inspector_object_guides_from_2_points_btn");
     from_nodes_btn->set_has_frame(false);
     from_nodes_btn->add_css_class("flat");
     from_nodes_btn->set_halign(Gtk::Align::START);
@@ -4975,11 +4973,10 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
   // Top-level structure:
   //
   //   Metadata    — paperwork: what is this drawing called?
-  //   Motif ▸     — disclosure wrapping the four facets of doc setup:
+  //   Motif ▸     — disclosure wrapping the facets of doc setup:
   //     Canvas    — surface colours (artboard / workspace / creation)
   //     Margins   — page boundaries (the frame within)
   //     Grid      — regular mesh, if needed (background scaffold)
-  //     Guides    — custom alignment landmarks
   //   Measure     — distance-checking aid during work
   //   Snap        — cursor-stickiness behaviour
   //   Dimensions  — the doc's underlying geometric bones (ratio,
@@ -4993,9 +4990,15 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
   //   • Frequency-of-use — Dimensions at the bottom because it's
   //     set-and-forget; setup-phase items grouped under Motif so they
   //     can be collapsed once setup is done.
-  //   • Workflow chronology inside Motif — Canvas → Margins → Grid →
-  //     Guides mirrors how a draftsman lays out a drawing: surface
-  //     first, then page edges, then mesh, then custom landmarks.
+  //   • Workflow chronology inside Motif — Canvas → Margins → Grid
+  //     mirrors how a draftsman lays out a drawing: surface first,
+  //     then page edges, then mesh.
+  //
+  // s179 m3: Guides used to live inside the Motif disclosure as the
+  // fourth entry. Moved to Object ▸ Guides — guides are objects on
+  // the canvas with a selection model, not a doc-level surface
+  // setting. ThemeLibrary still round-trips guide colour as part of
+  // the theme bundle.
   //
   // Resist re-sorting alphabetically or by "structural" hierarchy —
   // the current order encodes domain meaning.
@@ -5016,6 +5019,18 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
   // ── Object group ─────────────────────────────────────────────
   {
     auto *obj_grp = add_group_collapsible("Object", false);
+    // s179 m3v2: Guides section sits FIRST in the Object group, above
+    // build_selection_section's output. Build_selection_section emits
+    // an empty "Text" placeholder disclosure for non-Text selections
+    // (so the Text section is structurally always present even when
+    // its body is empty); placing Guides above the selection_section
+    // call puts Guides above that Text placeholder, which matches the
+    // user's mental model — Guides as a first-class object surface
+    // distinct from the per-selection branches below it. The doc may
+    // be null if no project is open; build_object_guides_section
+    // guards on that.
+    build_object_guides_section(
+        m_project ? m_project->active_doc() : nullptr, obj_grp);
     build_selection_section(obj, obj_grp);
     if (obj && obj->is_blend())
       build_blend_section(obj, obj_grp);
