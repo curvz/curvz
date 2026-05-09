@@ -1280,16 +1280,23 @@ void LayersPanel::add_child_row(SceneNode *obj, int layer_idx, int indent,
     name_lbl->set_ellipsize(Pango::EllipsizeMode::END);
     row->append(*name_lbl);
 
-    // Click to select
+    // s177 m6 v2: single combined controller on the name label,
+    // mirroring the path-row pattern exactly: single-click selects,
+    // double-click renames inline. The earlier two-controller scheme
+    // (row-level select + label-level rename) didn't activate the
+    // entry because the controllers raced for the click sequence.
     auto name_click = Gtk::GestureClick::create();
     name_click->set_button(1);
-    name_click->signal_pressed().connect([this, layer_idx, obj_idx,
-                                          name_click](int, double, double) {
+    name_click->signal_pressed().connect([this, layer_idx, obj_idx, name_lbl,
+                                          type_lbl, grip, row, name_click](
+                                             int n_press, double, double) {
       if (m_rebuilding || obj_idx < 0)
         return;
       // s112 — locked layer: child rows are non-selectable.
       if (layer_at_locked(layer_idx))
         return;
+
+      // Single click — select on canvas (matches path-row).
       m_active_layer = layer_idx;
       m_doc->active_layer_index = layer_idx;
       m_sig_layer_selected.emit(layer_idx);
@@ -1320,8 +1327,64 @@ void LayersPanel::add_child_row(SceneNode *obj, int layer_idx, int indent,
         }
       }
       refresh_highlights();
+
+      // Double-click — rename inline (not when shift-clicking).
+      auto *g2 = dynamic_cast<Gtk::GestureClick *>(name_click.get());
+      bool sh2 = false;
+      if (g2) {
+        auto ev2 = g2->get_last_event(g2->get_current_sequence());
+        if (ev2)
+          sh2 = (ev2->get_modifier_state() & Gdk::ModifierType::SHIFT_MASK) !=
+                Gdk::ModifierType::NO_MODIFIER_MASK;
+      }
+      if (n_press >= 2 && !sh2 &&
+          layer_idx < (int)m_doc->layers.size() &&
+          obj_idx < (int)m_doc->layers[layer_idx]->children.size()) {
+        auto *entry = Gtk::make_managed<CurvzEntry>();
+        curvz::utils::set_name(entry, "lp_re_ref",
+                               "layers_panel_rename_ref_entry");
+        auto &obj_ref = *m_doc->layers[layer_idx]->children[obj_idx];
+        entry->set_text(obj_ref.name);
+        entry->set_hexpand(true);
+        entry->set_max_length(0);
+        entry->set_width_chars(16);
+        entry->add_css_class("layer-name-entry");
+        // Remove the trailing visible widgets (grip + type + name)
+        // and append the entry, exactly mirroring path-row.
+        row->remove(*grip);
+        row->remove(*type_lbl);
+        row->remove(*name_lbl);
+        row->append(*entry);
+        entry->grab_focus();
+        entry->select_region(0, -1);
+
+        auto committed = std::make_shared<bool>(false);
+        auto do_commit = [this, layer_idx, obj_idx, entry, committed]() {
+          if (*committed)
+            return;
+          *committed = true;
+          if (layer_idx < (int)m_doc->layers.size() &&
+              obj_idx < (int)m_doc->layers[layer_idx]->children.size()) {
+            const std::string typed = entry->get_text();
+            if (!typed.empty()) {
+              SceneNode *self =
+                  m_doc->layers[layer_idx]->children[obj_idx].get();
+              m_doc->layers[layer_idx]->children[obj_idx]->name =
+                  m_doc->uniquify_name(typed, self);
+            }
+          }
+          m_sig_layer_changed.emit();
+          Glib::signal_idle().connect_once([this]() { rebuild(); });
+        };
+
+        entry->on_commit(do_commit);
+        auto focus_ctrl = Gtk::EventControllerFocus::create();
+        focus_ctrl->signal_leave().connect([do_commit]() { do_commit(); });
+        entry->add_controller(focus_ctrl);
+      }
     });
-    row->add_controller(name_click);
+    name_lbl->add_controller(name_click);
+
     parent->append(*row);
     return;
   }

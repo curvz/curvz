@@ -15,18 +15,20 @@
 // origin at canvas top-left, raw pixel units). The exporter translates
 // every refpt's (x, y) so:
 //
-//   1. The chosen origin reads as (0, 0). The origin is one of:
-//        a. The Ref node with `is_export_origin == true`, if any.
-//        b. Canvas (0, 0) — i.e. doc-space origin — if no refpt is
-//           promoted. In Y-up display terms this is the artboard's
-//           bottom-left corner.
+//   1. The doc's ruler origin reads as (0, 0). The user controls
+//      this origin via the corner-square on the rulers — what the
+//      ruler shows is what gets exported. (Pre-s177 the export had
+//      its own per-refpt promotion concept; that was wrong and was
+//      removed: save/restore is sacred and export concerns don't
+//      touch it.)
 //
 //   2. Y is flipped from Y-down to Y-up (engineering convention).
-//      The exporter is the OUTPUT-time consumer of CoordSpace's
-//      to_user_y rule.
+//      Up is positive, down is negative.
 //
-//   3. Values are converted to the document's display unit
-//      (canvas.display_unit) — px, mm, in, or pt.
+//   3. Values are converted to the document's display unit using
+//      the canonical DocUnits pump — the same conversion the ruler
+//      and inspector use. Honours all three DisplayMode branches
+//      (Pixel, Physical, RatioQuality).
 //
 //   4. Numbers are formatted with 6 decimal places. The exporter
 //      enforces this; callers don't pre-format.
@@ -41,8 +43,10 @@
 // Every format embeds a self-describing header:
 //   format     — "curvz.refpts.v1" (frozen schema id)
 //   document   — doc filename (or "(unnamed)" if empty)
-//   units      — "px" / "mm" / "in" / "pt"
-//   origin     — name of origin refpt, or "(canvas)" if no refpt promoted
+//   units      — "px" / "mm" / "in" / "pt" (the doc's display unit
+//                 at export time)
+//   origin     — "ruler" (always — the ruler origin is the export
+//                 origin; coordinates are user-space relative to it)
 //   y_axis     — "up" (always — declared for honesty)
 //   precision  — 6
 //   generated  — ISO-8601 UTC timestamp
@@ -86,15 +90,19 @@ struct Refpt {
 };
 
 // Bundle of everything a serializer needs. Built once per export by
-// collect_translated() and consumed by every format writer. The
-// origin_name + units fields are pulled into the metadata header;
-// the refpts list drives the per-row body.
+// collect_translated() and consumed by every format writer.
+//
+// s177: origin_name removed. The export coordinate system is the
+// document's user space — the same space the ruler shows. Origin is
+// always the ruler origin; there is no separate per-export origin
+// concept at the exporter layer. Refpt-as-export-origin promotion
+// remains as a runtime decoration on SceneNode for future use, but
+// does not influence exported coordinates.
 struct ExportData {
     std::string         document_name;   // doc.filename (or "(unnamed)")
     std::string         units_label;     // "px" / "mm" / "in" / "pt"
-    std::string         origin_name;     // promoted refpt's name, or "(canvas)"
     std::string         iso_timestamp;   // ISO-8601 UTC, e.g. "2026-05-09T15:32:00Z"
-    std::vector<Refpt>  refpts;          // origin-translated, Y-up, in display units
+    std::vector<Refpt>  refpts;          // ruler-origin-translated, in display units
 };
 
 // Walk the document, collect every Ref node, and apply the transform
@@ -120,12 +128,11 @@ std::size_t count_exportable(const CurvzDocument& doc);
 
 // Lightweight summary for UI labels — what a given doc would yield
 // without doing the full transform. Returns the count of visible
-// refpts plus the resolved origin name (the promoted refpt's name,
-// or "(canvas)" if no refpt is promoted in this doc). Cheap; safe to
-// call on every dialog-state change.
+// refpts. s177: origin breadcrumb removed; the export coordinate
+// system is the doc's user space (ruler origin), which is visible to
+// the user already.
 struct DocSummary {
     std::size_t refpt_count = 0;
-    std::string origin_name;     // refpt name, or "(canvas)"
 };
 DocSummary summarize(const CurvzDocument& doc);
 

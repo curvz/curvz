@@ -427,6 +427,11 @@ set(SOURCES
     # Unit system
     src/UnitSystem.cpp
 
+    # s177: canonical doc->display coordinate pump (used by
+    # PropertiesPanel and RefptExporter so the export coordinates
+    # match exactly what the inspector and ruler show).
+    src/DocUnits.cpp
+
     # Print manager
     src/PrintManager.cpp
 

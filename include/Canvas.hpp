@@ -829,12 +829,21 @@ private:
   // changed away from the pick set's recorded owner Warp.
   void sync_warp_env_picks_to_selection();
 
+  // snap_move is internal — used by the selection-drag handler to snap
+  // a moving BBX. Stays private; the public point-snap helpers below
+  // are the supported entry point for outside callers.
+  std::pair<double, double> snap_move(double raw_dx, double raw_dy);
+
+public:
   // Snap helpers — return snapped doc coordinate, or original if no snap.
   // Tolerance is in screen pixels. Only snaps when doc->snap.enabled and
-  // the relevant behavior flag is set.
+  // the relevant behavior flag is set. Public so binding-layer code
+  // (ruler-origin commit, ruler-pulled guide creation, etc.) can route
+  // doc-space coords through the same snap stack the canvas uses.
   double snap_x(double doc_x, double tolerance_px = 12.0) const;
   double snap_y(double doc_y, double tolerance_px = 12.0) const;
-  std::pair<double, double> snap_move(double raw_dx, double raw_dy);
+
+private:
 
   // ── Rect for an object (document space) ──────────────────────────────
   // Defined here (above apply_fill) so the gradient-aware fill overload can

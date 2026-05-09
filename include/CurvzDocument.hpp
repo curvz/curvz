@@ -469,7 +469,13 @@ struct CurvzDocument {
         Clip,
         Offset,
         Outline,
-        ExpandedStroke
+        ExpandedStroke,
+        // s177: refpts auto-named "Ref 1", "Ref 2", ... by the funnel.
+        // Pre-s177 the Ref tool wrote "%.6f_%.6f" coordinate-as-name,
+        // and dragging a refpt stomped its name with the new coords —
+        // both violations of the "non-empty name + UUIDs/derived
+        // strings never appear in user-facing UI" rule.
+        Ref
     };
 
     // Walks every SceneNode in the document and inserts its non-empty
@@ -535,6 +541,7 @@ struct CurvzDocument {
             case NameKind::Offset:         prefix = "Offset ";          break;
             case NameKind::Outline:        prefix = "Outline ";         break;
             case NameKind::ExpandedStroke: prefix = "Expanded Stroke "; break;
+            case NameKind::Ref:            prefix = "Ref ";             break;
         }
         std::unordered_set<std::string> taken;
         collect_names(taken);

@@ -648,27 +648,18 @@ void MainWindow::connect_signals() {
     if (!doc)
       return;
 
-    // Snap origin to existing guide positions (8px screen threshold)
-    const double zoom = m_canvas.zoom();
-    const double snap_thresh = 8.0 / zoom; // doc-space tolerance
+    // Snap origin to the full snap stack (guides, refs, grid, margins).
+    // The corner-square emits user-space coords; Canvas::snap_x/snap_y
+    // operate in doc space, so flip Y, snap, flip back. snap_x/snap_y
+    // honour the global Snap toggle (doc->snap.enabled) and per-class
+    // flags — when snap is off they pass the input through unchanged.
     const double ch = (double)doc->canvas_height();
-
-    if (auto *gl = doc->guide_layer()) {
-      for (auto &g : gl->children) {
-        if (!g->is_guide())
-          continue;
-        if (g->guide_is_horizontal()) {
-          double guide_uy = ch - g->guide_y;
-          if (std::abs(uy - guide_uy) <= snap_thresh)
-            uy = guide_uy;
-        } else if (g->guide_is_vertical()) {
-          double guide_ux = g->guide_x;
-          if (std::abs(ux - guide_ux) <= snap_thresh)
-            ux = guide_ux;
-        }
-        // Angled guides: no ruler-origin snap in M1.
-      }
-    }
+    double doc_x = ux;
+    double doc_y = ch - uy;
+    doc_x = m_canvas.snap_x(doc_x);
+    doc_y = m_canvas.snap_y(doc_y);
+    ux = doc_x;
+    uy = ch - doc_y;
 
     doc->ruler_origin_x = ux;
     doc->ruler_origin_y = uy;
@@ -685,25 +676,16 @@ void MainWindow::connect_signals() {
     if (!doc)
       return;
 
-    // Apply same guide snap so preview lines jump visually
-    const double zoom = m_canvas.zoom();
-    const double snap_thresh = 8.0 / zoom;
+    // Apply the same full snap as the commit handler so the preview
+    // shows what will land. user-space → doc-space → snap → user-space.
     const double ch = (double)doc->canvas_height();
-    if (auto *gl = doc->guide_layer()) {
-      for (auto &g : gl->children) {
-        if (!g->is_guide())
-          continue;
-        if (g->guide_is_horizontal()) {
-          double guide_uy = ch - g->guide_y;
-          if (std::abs(uy - guide_uy) <= snap_thresh)
-            uy = guide_uy;
-        } else if (g->guide_is_vertical()) {
-          double guide_ux = g->guide_x;
-          if (std::abs(ux - guide_ux) <= snap_thresh)
-            ux = guide_ux;
-        }
-        // Angled guides: no ruler-origin snap in M1.
-      }
+    {
+      double doc_x = ux;
+      double doc_y = ch - uy;
+      doc_x = m_canvas.snap_x(doc_x);
+      doc_y = m_canvas.snap_y(doc_y);
+      ux = doc_x;
+      uy = ch - doc_y;
     }
 
     RulerState rs;
@@ -750,14 +732,19 @@ void MainWindow::connect_signals() {
     LOG_INFO("Ruler origin reset to 0,0");
   });
 
-  // HRuler — drag downward creates horizontal guide (constant Y)
+  // HRuler — drag downward creates horizontal guide (constant Y).
+  // doc_y comes from the ruler in raw doc space; snap_y routes through
+  // the full snap stack (guides, refs, grid, margins) and respects the
+  // global Snap toggle.
   m_hruler.signal_guide_dragging().connect([this](double doc_y) {
+    doc_y = m_canvas.snap_y(doc_y);
     if (!m_canvas.guide_drag_active())
       m_canvas.begin_guide_drag(doc_y, true);
     else
       m_canvas.update_guide_drag(doc_y);
   });
   m_hruler.signal_guide_created().connect([this](double doc_y) {
+    doc_y = m_canvas.snap_y(doc_y);
     if (!m_canvas.guide_drag_active())
       m_canvas.begin_guide_drag(doc_y, true);
     m_canvas.end_guide_drag(doc_y);
@@ -766,14 +753,17 @@ void MainWindow::connect_signals() {
   m_hruler.signal_guide_drag_cancel().connect(
       [this]() { m_canvas.cancel_guide_drag(); });
 
-  // VRuler — drag rightward creates vertical guide (constant X)
+  // VRuler — drag rightward creates vertical guide (constant X). Same
+  // snap pattern as HRuler but on the X axis.
   m_vruler.signal_guide_dragging().connect([this](double doc_x) {
+    doc_x = m_canvas.snap_x(doc_x);
     if (!m_canvas.guide_drag_active())
       m_canvas.begin_guide_drag(doc_x, false);
     else
       m_canvas.update_guide_drag(doc_x);
   });
   m_vruler.signal_guide_created().connect([this](double doc_x) {
+    doc_x = m_canvas.snap_x(doc_x);
     if (!m_canvas.guide_drag_active())
       m_canvas.begin_guide_drag(doc_x, false);
     m_canvas.end_guide_drag(doc_x);

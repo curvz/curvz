@@ -1,8 +1,8 @@
 #include "RefptExporter.hpp"
 
-#include "CoordSpace.hpp"
 #include "CurvzDocument.hpp"
 #include "CurvzLog.hpp"
+#include "DocUnits.hpp"
 #include "SceneNode.hpp"
 
 #include <chrono>
@@ -37,25 +37,6 @@ void collect_visible_refs(const SceneNode* layer,
         if (!child->visible) continue;
         out.push_back(child.get());
     }
-}
-
-// Find the refpt promoted as export origin, or nullptr if none.
-// Walks the same scope as collect_visible_refs (visible RefLayer
-// children only) — a refpt on a hidden layer can't be the export
-// origin, since the user can't see it. If no refpt is promoted,
-// the caller falls back to canvas (0, 0).
-const SceneNode* find_export_origin(const CurvzDocument& doc) {
-    for (const auto& layer : doc.layers) {
-        if (!layer || !layer->visible) continue;
-        if (!layer->is_ref_layer()) continue;
-        for (const auto& child : layer->children) {
-            if (!child) continue;
-            if (!child->is_ref()) continue;
-            if (!child->visible) continue;
-            if (child->is_export_origin) return child.get();
-        }
-    }
-    return nullptr;
 }
 
 // Build an ISO-8601 UTC timestamp string ("2026-05-09T15:32:00Z").
@@ -137,15 +118,6 @@ DocSummary summarize(const CurvzDocument& doc) {
     // sharing the loop — the function gets called once per doc per UI
     // refresh, and a typical project has under a dozen docs.
     s.refpt_count = count_exportable(doc);
-
-    // Origin: same selection rule as collect_translated. The promoted
-    // refpt wins; fall back to "(canvas)" sentinel.
-    const SceneNode* origin = find_export_origin(doc);
-    if (origin) {
-        s.origin_name = display_name(*origin);
-    } else {
-        s.origin_name = "(canvas)";
-    }
     return s;
 }
 
@@ -161,57 +133,37 @@ ExportData collect_translated(const CurvzDocument& doc) {
     for (const auto& layer : doc.layers)
         collect_visible_refs(layer.get(), refs);
 
-    // Origin selection. The promoted refpt wins if present; otherwise we
-    // fall back to canvas (0, 0). In Y-down storage, canvas (0, 0) is
-    // the top-left; after the Y-flip below, that becomes the bottom-left
-    // corner in user/export coordinates — i.e. the artboard origin under
-    // the engineering convention. A user who wants a different origin
-    // promotes a refpt.
-    const SceneNode* origin_node = find_export_origin(doc);
-    double origin_x_doc = 0.0;
-    double origin_y_doc = 0.0;
-    if (origin_node) {
-        out.origin_name = display_name(*origin_node);
-        origin_x_doc = origin_node->ref_x;
-        origin_y_doc = origin_node->ref_y;
-    } else {
-        out.origin_name = "(canvas)";
-    }
-
-    // Transform pipeline — origin translation → Y-flip → unit conversion.
-    // CoordSpace is the canonical Y-flip; using it here keeps the
-    // "(canvas_height - y) appears nowhere except CoordSpace" rule
-    // intact.
-    const double canvas_h = static_cast<double>(doc.canvas.canvas_height());
-    CoordSpace cs(canvas_h);
-    const Unit display_unit = doc.canvas.display_unit;
+    // Coordinate transform: route every refpt through DocUnits, the
+    // canonical doc->display pump that the ruler and inspector also
+    // use. The pump:
+    //   - subtracts the ruler origin (the user's chosen (0,0))
+    //   - applies CoordSpace's Y-flip (Y-up: above-origin is positive,
+    //     below-origin is negative)
+    //   - converts to the doc's display unit, honouring all three
+    //     DisplayMode branches (Pixel / Physical / RatioQuality)
+    //
+    // s177: pre-fix this loop did its own incomplete conversion that
+    // ignored the ruler origin and assumed Pixel display mode. Routing
+    // through the shared pump fixes both bugs at once and keeps the
+    // export coordinate system identical to what the user sees on the
+    // ruler.
+    const CanvasModel* cm = &doc.canvas;
+    const double ruler_ox = doc.ruler_origin_x;
+    const double ruler_oy = doc.ruler_origin_y;
 
     out.refpts.reserve(refs.size());
     for (const SceneNode* r : refs) {
-        // Step 1: translate so the chosen origin reads as (0, 0) in
-        // doc space. Still Y-down at this point.
-        const double dx_doc = r->ref_x - origin_x_doc;
-        const double dy_doc = r->ref_y - origin_y_doc;
-
-        // Step 2: Y-flip via CoordSpace. We're transforming a delta,
-        // not an absolute position — to_user_dy negates. (X is a
-        // pass-through.)
-        const double user_x = dx_doc;
-        const double user_y = cs.to_user_dy(dy_doc);
-
-        // Step 3: unit conversion. UnitSystem::from_px maps raw pixels
-        // to the display unit (px is identity, mm/in/pt scale).
         Refpt out_pt;
         out_pt.name = display_name(*r);
-        out_pt.x    = UnitSystem::from_px(user_x, display_unit);
-        out_pt.y    = UnitSystem::from_px(user_y, display_unit);
+        out_pt.x = DocUnits::doc_to_display_x(r->ref_x, cm, ruler_ox);
+        out_pt.y = DocUnits::doc_to_display_y(r->ref_y, cm, ruler_oy);
         out.refpts.push_back(out_pt);
     }
 
     LOG_DEBUG("RefptExporter::collect_translated doc='{}' units='{}' "
-              "origin='{}' refpts={}",
-              out.document_name, out.units_label, out.origin_name,
-              out.refpts.size());
+              "ruler_origin=({:.3f},{:.3f}) refpts={}",
+              out.document_name, out.units_label,
+              ruler_ox, ruler_oy, out.refpts.size());
     return out;
 }
 
@@ -260,7 +212,7 @@ std::string serialize_csv(const ExportData& d) {
     os << "# format: curvz.refpts.v1\n";
     os << "# document: " << d.document_name << "\n";
     os << "# units: "    << d.units_label   << "\n";
-    os << "# origin: "   << d.origin_name   << "\n";
+    os << "# origin: ruler\n";
     os << "# y_axis: up\n";
     os << "# precision: 6\n";
     os << "# generated: " << d.iso_timestamp << "\n";

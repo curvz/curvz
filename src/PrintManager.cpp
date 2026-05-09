@@ -1,5 +1,6 @@
 #include "PrintManager.hpp"
 #include "CurvzLog.hpp"
+#include "DocUnits.hpp"
 #include "curvz_utils.hpp"
 #include "math/BezierPath.hpp"
 #include <gtkmm/printoperation.h>
@@ -293,7 +294,39 @@ void PrintManager::update_style_panel() {
         add_check("Show file size", m_show_filesize);
     } else if (m_style == Style::Plot) {
         add_check("Show handles",     m_plot_handles);
-        add_check("Show coordinates", m_plot_coords);
+
+        // Coords checkbox + precision spinner pair. The spinner is
+        // greyed unless coords are enabled — same affordance pattern
+        // as the inspector's dependent fields. Have to build these
+        // by hand (not via add_check / add_spin) so the coords
+        // toggle handler can flip the spinner's sensitivity.
+        auto *cb_coords = Gtk::make_managed<Gtk::CheckButton>("Show coordinates");
+        cb_coords->set_active(m_plot_coords);
+        m_options_box.append(*cb_coords);
+
+        auto *prec_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+        prec_row->set_spacing(8);
+        prec_row->set_margin_start(20); // indent under coords
+        auto *prec_label = Gtk::make_managed<Gtk::Label>("Coord precision");
+        prec_label->set_xalign(0.0f);
+        prec_label->set_hexpand(true);
+        auto prec_adj = Gtk::Adjustment::create(m_plot_precision, 0, 6, 1, 1);
+        auto *prec_spin = Gtk::make_managed<Gtk::SpinButton>(prec_adj, 1, 0);
+        prec_spin->set_width_chars(3);
+        prec_adj->signal_value_changed().connect([this, prec_adj]() {
+            m_plot_precision = (int)prec_adj->get_value();
+        });
+        prec_row->append(*prec_label);
+        prec_row->append(*prec_spin);
+        m_options_box.append(*prec_row);
+
+        // Initial + reactive sensitivity
+        prec_row->set_sensitive(m_plot_coords);
+        cb_coords->signal_toggled().connect([this, cb_coords, prec_row]() {
+            m_plot_coords = cb_coords->get_active();
+            prec_row->set_sensitive(m_plot_coords);
+        });
+
         add_check("Show node indices",m_plot_indices);
     } else {
         // Normal — "show off" mode. Clean gallery print by default; users
@@ -491,6 +524,48 @@ static void collect_plot_paths(const SceneNode& obj,
     }
 }
 
+// s177: Format the doc's artboard dimensions in display units, matching
+// what the inspector shows. Used by both the Plot title block and the
+// Normal-mode header so unit-dependent printed output is self-
+// documenting. Returns "<w> × <h> <unit>" with sensible per-unit
+// precision:
+//   Pixel mode      — "1024 × 1024 px"   (0 dp)
+//   Physical mode   — "3.333 × 3.333 in" (3 dp, in phys_unit)
+//   RatioQuality    — "1.000 × 1.000 ratio"
+//   Pixel + non-px  — "10.667 × 10.667 in" (3 dp) or "270.93 × 270.93 mm" (2 dp)
+// The inspector uses these same per-unit precisions; sharing them keeps
+// printed pages and screen UI saying the same thing.
+static std::string format_doc_dimensions(const CurvzDocument& doc) {
+    const double cw = (double)doc.canvas_width();
+    const double ch = (double)doc.canvas_height();
+    double disp_w = cw, disp_h = ch;
+    std::string unit_lbl = "px";
+    int dec = 0;
+    if (doc.canvas.display_mode == DisplayMode::Physical) {
+        disp_w = doc.canvas.phys_width;
+        disp_h = doc.canvas.phys_height;
+        unit_lbl = doc.canvas.phys_unit;
+        dec = 3;
+    } else if (doc.canvas.display_mode == DisplayMode::RatioQuality) {
+        disp_w = doc.canvas.ratio_w;
+        disp_h = doc.canvas.ratio_h;
+        unit_lbl = "ratio";
+        dec = 3;
+    } else {
+        // Pixel mode — convert via UnitSystem if display_unit isn't px.
+        unit_lbl = UnitSystem::label(doc.canvas.display_unit);
+        if (doc.canvas.display_unit != Unit::Px) {
+            disp_w = UnitSystem::from_px(cw, doc.canvas.display_unit);
+            disp_h = UnitSystem::from_px(ch, doc.canvas.display_unit);
+            dec = (doc.canvas.display_unit == Unit::Mm) ? 2 : 3;
+        }
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%.*f × %.*f %s",
+             dec, disp_w, dec, disp_h, unit_lbl.c_str());
+    return std::string(buf);
+}
+
 void PrintManager::render_icon_cell(const Cairo::RefPtr<Cairo::Context>& cr,
                                      const CurvzDocument& doc,
                                      double x, double y, double side) {
@@ -573,8 +648,11 @@ void PrintManager::render_plot(const Cairo::RefPtr<Cairo::Context>& cr,
     cr->show_text(name);
 
     char sub[128];
-    snprintf(sub, sizeof(sub), "%d paths · %d nodes · %d × %d px",
-             total_paths, total_nodes, (int)cw, (int)ch);
+    // s177: dimensions go through format_doc_dimensions so the printed
+    // page documents the unit (Plot is unit-dependent output).
+    const std::string dim_str = format_doc_dimensions(doc);
+    snprintf(sub, sizeof(sub), "%d paths · %d nodes · %s",
+             total_paths, total_nodes, dim_str.c_str());
     cr->select_font_face("sans", Cairo::ToyFontFace::Slant::NORMAL,
                          Cairo::ToyFontFace::Weight::NORMAL);
     cr->set_font_size(9.0);
@@ -634,8 +712,25 @@ void PrintManager::render_plot(const Cairo::RefPtr<Cairo::Context>& cr,
                         cr->fill();
 
                         if (m_plot_coords) {
-                            char buf[48];
-                            snprintf(buf, sizeof(buf), "%.1f,%.1f", nx, ny);
+                            // s177: route per-node coord labels through
+                            // DocUnits — same pump as the ruler /
+                            // inspector / sidecar exporter — so what's
+                            // printed matches what the user sees on
+                            // screen. Honours doc display unit, ruler
+                            // origin, Y-up convention, and DisplayMode.
+                            // Precision is the user-set m_plot_precision
+                            // (default 3 dp; spinner exposed in the Plot
+                            // options panel only when "Show coordinates"
+                            // is on). Unit label appears once in the
+                            // title block, not per-node.
+                            const double dx = DocUnits::doc_to_display_x(
+                                nx, &doc.canvas, doc.ruler_origin_x);
+                            const double dy = DocUnits::doc_to_display_y(
+                                ny, &doc.canvas, doc.ruler_origin_y);
+                            char buf[64];
+                            snprintf(buf, sizeof(buf), "%.*f,%.*f",
+                                     m_plot_precision, dx,
+                                     m_plot_precision, dy);
                             cr->save();
                             cr->set_identity_matrix();
                             cr->set_source_rgb(0.2, 0.2, 0.6);
@@ -1157,10 +1252,10 @@ static void draw_normal_header(const Cairo::RefPtr<Cairo::Context>& cr,
         add(name);
     }
     if (show_dimensions) {
-        char buf[48];
-        snprintf(buf, sizeof(buf), "%d × %d px",
-                 doc.canvas_width(), doc.canvas_height());
-        add(buf);
+        // s177: route through format_doc_dimensions so unit-dependent
+        // printed output (the Normal-mode header) is self-documenting,
+        // matching the Plot title block's pattern.
+        add(format_doc_dimensions(doc));
     }
     if (show_nodes) {
         int n = 0;

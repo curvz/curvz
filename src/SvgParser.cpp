@@ -2070,7 +2070,15 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 ref->id    = attr(tag, "id");
                 if (ref->id.empty()) ref->id = "obj" + std::to_string(obj_counter++);
                 ref->name  = attr(tag, "data-curvz-name");
-                if (ref->name.empty()) ref->name = "Ref";
+                if (ref->name.empty()) {
+                    // s177: empty-name fallback routed through
+                    // the funnel so two unnamed legacy refpts
+                    // don't both become literal "Ref" and
+                    // collide. Non-empty parsed names pass
+                    // through verbatim — round-trip fidelity
+                    // for user-typed names is non-negotiable.
+                    ref->name = doc->uniquify_name("Ref");
+                }
                 // S99: read data-curvz-iid so ref points keep stable identity
                 // across save→load. Pre-S99 the parser silently dropped this
                 // attribute, and the parser's safety-net assign_iids() sweep
@@ -2082,9 +2090,10 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 ref->ref_x = dbl(attr(tag, "cx"));
                 ref->ref_y = dbl(attr(tag, "cy"));
                 if (!attr(tag, "display").empty()) ref->visible = false;
-                // s176 m1: round-trip refpt-as-export-origin flag.
-                if (attr(tag, "data-curvz-export-origin") == "1")
-                    ref->is_export_origin = true;
+                // s177: data-curvz-export-origin removed from the save
+                // format. is_export_origin remains as a runtime
+                // SceneNode field (in-memory only). Save/restore is
+                // sacred; export concerns don't touch it.
                 LOG_DEBUG("SvgParser: ref point at ({:.4f},{:.4f})", ref->ref_x, ref->ref_y);
                 current_parent()->children.push_back(std::move(ref));
                 continue;

@@ -1042,9 +1042,9 @@ std::string write_svg(const CurvzDocument& doc) {
                     out << " data-curvz-iid=\"" << r->internal_id << "\"";
                 if (!r->name.empty()) out << " data-curvz-name=\"" << r->name << "\"";
                 if (!r->visible)      out << " display=\"none\"";
-                // s176 m1: round-trip the refpt-as-export-origin flag.
-                if (r->is_export_origin)
-                    out << " data-curvz-export-origin=\"1\"";
+                // s177: refpt-as-export-origin was a save-format leak
+                // for an export-only concept; removed. Save/restore is
+                // sacred. Export coords come off the ruler origin.
                 out << "/>\n";
             }
             out << "  </g>\n";

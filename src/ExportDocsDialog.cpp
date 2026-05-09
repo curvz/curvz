@@ -437,11 +437,10 @@ void ExportDocsDialog::refresh_refpts_info() {
     }
 
     // On: live summary. Walk the currently-checked docs and build a
-    // count + per-doc origin breadcrumb. The breadcrumb is the user's
-    // preview of "what origin will appear in the metadata header for
-    // each sidecar" — same UX leak class as the s175 m3 TOP inspector
-    // fix, prevented at source by reading from the resolved origin name
-    // (RefptExporter::summarize) rather than rendering raw iids.
+    // count + per-doc breadcrumb. s177: origin breadcrumb dropped —
+    // export coordinates are always relative to the doc's ruler
+    // origin (which is visible to the user already), so there's no
+    // hidden origin state to surface in the summary.
     if (!m_project) {
         m_refpts_info_label->set_text("Refpts: no project.");
         return;
@@ -465,11 +464,9 @@ void ExportDocsDialog::refresh_refpts_info() {
         if (s.refpt_count > 0) {
             ++docs_with_refpts;
             if (origins_line.tellp() > 0) origins_line << ", ";
-            // Each entry: "<doc-display-name>: <count> from <origin>"
+            // Each entry: "<doc-display-name>: <count>"
             const std::string disp = doc_display_name(*docs[i], i);
-            origins_line << "\"" << disp << "\": "
-                         << s.refpt_count << " from "
-                         << s.origin_name;
+            origins_line << "\"" << disp << "\": " << s.refpt_count;
         }
     }
 

@@ -1482,10 +1482,9 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
       screen_to_doc(m_mouse_x, m_mouse_y, ex, ey);
       m_ref_selected->ref_x = snap(ex) - m_ref_drag_ox;
       m_ref_selected->ref_y = snap(ey) - m_ref_drag_oy;
-      char name_buf[64];
-      snprintf(name_buf, sizeof(name_buf), "%.6f_%.6f", m_ref_selected->ref_x,
-               m_ref_selected->ref_y);
-      m_ref_selected->name = name_buf;
+      // s177: drag changes position; the refpt's name is the
+      // user's, untouched. Pre-s177 every drag stomped the name
+      // with new "%.6f_%.6f" coords, throwing away any rename.
       m_sig_doc_changed.emit();
     }
     // Corner tool: update rubber-band endpoint
@@ -1731,13 +1730,17 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
         SceneNode *rl = m_doc->ensure_ref_layer();
 
         double rx = m_draw_start_dx, ry = m_draw_start_dy;
-        char name_buf[64];
-        snprintf(name_buf, sizeof(name_buf), "%.6f_%.6f", rx, ry);
 
         auto ref = std::make_unique<SceneNode>();
         ref->type = SceneNode::Type::Ref;
         ref->id = next_id();
-        ref->name = name_buf;
+        // s177: route refpt naming through the doc-wide funnel —
+        // "Ref 1", "Ref 2", ... — instead of the pre-s177
+        // "%.6f_%.6f" coordinate-as-name. Coords as a name violated
+        // the "no derived strings in user-facing UI" rule and were
+        // stomped on every drag, throwing away any user rename.
+        ref->name = m_doc->next_default_name(
+            CurvzDocument::NameKind::Ref);
         ref->ref_x = rx;
         ref->ref_y = ry;
 
@@ -3947,13 +3950,14 @@ void Canvas::place_ref_at_display(double ux, double uy) {
 
   SceneNode *rl = m_doc->ensure_ref_layer();
 
-  char name_buf[64];
-  snprintf(name_buf, sizeof(name_buf), "%.6f_%.6f", rx, ry);
-
   auto ref = std::make_unique<SceneNode>();
   ref->type = SceneNode::Type::Ref;
   ref->id = next_id();
-  ref->name = name_buf;
+  // s177 m6: route through name funnel — same as the click-creation
+  // path. Pre-s177 this was a coordinate-as-name string that violated
+  // the "no derived strings in user-facing UI" rule.
+  ref->name = m_doc->next_default_name(
+      CurvzDocument::NameKind::Ref);
   ref->ref_x = rx;
   ref->ref_y = ry;
 

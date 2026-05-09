@@ -101,6 +101,11 @@ private:
     bool   m_plot_handles   = true;
     bool   m_plot_coords    = false;
     bool   m_plot_indices   = false;
+    // s177: precision for coordinate labels in Plot mode. Range 0-6 dp;
+    // 3 is the engineering-default (sub-mm / sub-thou visibility for
+    // mm/in docs; one dp past readable noise for px docs). Only consulted
+    // when m_plot_coords is on; the spinner is greyed otherwise.
+    int    m_plot_precision = 3;
 
     // Normal options — header metadata toggles + footer toggles.
     // All header fields default off ("minimal page furniture"); the user

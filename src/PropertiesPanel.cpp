@@ -3267,9 +3267,9 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
         return;
       double old_x = obj->ref_x;
       obj->ref_x = v;
-      char buf[64];
-      snprintf(buf, sizeof(buf), "%.6f_%.6f", obj->ref_x, obj->ref_y);
-      obj->name = buf;
+      // s177 m6: drop the coordinate-as-name stomp here — same bug
+      // class as Canvas_input's drag handler. Position changes are
+      // position changes; the user's name survives.
       // s168 m1 DIAG — STRIP after triage
       LOG_INFO("[IIDDIAG] RefMove::push X  capturing iid='{}' "
                "obj_name='{}' obj_type={}  old_x={} new_x={} ref_y={}",
@@ -3287,9 +3287,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
         return;
       double old_y = obj->ref_y;
       obj->ref_y = v;
-      char buf[64];
-      snprintf(buf, sizeof(buf), "%.6f_%.6f", obj->ref_x, obj->ref_y);
-      obj->name = buf;
+      // s177 m6: drop the coordinate-as-name stomp here too.
       // s168 m1 DIAG — STRIP after triage
       LOG_INFO("[IIDDIAG] RefMove::push Y  capturing iid='{}' "
                "obj_name='{}' obj_type={}  ref_x={} old_y={} new_y={}",
