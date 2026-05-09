@@ -2082,6 +2082,9 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 ref->ref_x = dbl(attr(tag, "cx"));
                 ref->ref_y = dbl(attr(tag, "cy"));
                 if (!attr(tag, "display").empty()) ref->visible = false;
+                // s176 m1: round-trip refpt-as-export-origin flag.
+                if (attr(tag, "data-curvz-export-origin") == "1")
+                    ref->is_export_origin = true;
                 LOG_DEBUG("SvgParser: ref point at ({:.4f},{:.4f})", ref->ref_x, ref->ref_y);
                 current_parent()->children.push_back(std::move(ref));
                 continue;

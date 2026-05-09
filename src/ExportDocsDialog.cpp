@@ -4,6 +4,7 @@
 #include "CurvzLog.hpp"
 #include "MainWindow.hpp"  // s126: per-purpose last-folder accessors
 #include "PngExporter.hpp"
+#include "RefptExporter.hpp"  // s176 m1: sidecar refpt-coord export
 #include "SvgWriter.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
 
@@ -26,6 +27,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 
 namespace Curvz {
@@ -131,6 +133,8 @@ void ExportDocsDialog::build() {
     root->append(*Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL));
     build_size_section(*root);
     root->append(*Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL));
+    build_refpts_section(*root);  // s176 m1: sidecar coord export
+    root->append(*Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL));
     build_output_section(*root);
 
     // Status — reserved row that's always present so the dialog doesn't
@@ -181,6 +185,11 @@ void ExportDocsDialog::build_targets_section(Gtk::Box& root) {
         }
         auto* cb = Gtk::make_managed<Gtk::CheckButton>(label);
         cb->set_active(true);  // default: all selected
+        // s176 m1: per-target toggle drives refpts summary refresh
+        // (the count + origin list shown in the refpts section is a
+        // function of which targets are checked).
+        cb->signal_toggled().connect(
+            [this]() { refresh_refpts_info(); });
         m_targets_box->append(*cb);
         m_target_checks.push_back(cb);
     }
@@ -328,7 +337,159 @@ void ExportDocsDialog::build_size_section(Gtk::Box& root) {
     }
 }
 
-// ─── output folder ──────────────────────────────────────────────────────────
+// ─── refpts (s176 m1) ───────────────────────────────────────────────────────
+//
+// Sidecar coordinate export. When the checkbox is on, every selected doc
+// produces an additional file `<docname>.refpts.<ext>` alongside its
+// SVG/PNG output, holding the doc's refpt coordinates in the chosen
+// format. The format dropdown is hidden when the checkbox is off.
+//
+// m1 ships with CSV only. m2 will add JSON, G-code, and DXF entries.
+// The dropdown is plumbed for the full set today so adding the m2
+// formats is a one-line addition to kRefptFormatItems.
+//
+// The info label below the dropdown is intentionally lightweight in m1 —
+// "writes alongside each output" — rather than a per-doc count. Counts
+// are reported in the log at write time, not pre-computed in the UI.
+// Keeps the dialog simple and the wiring shallow.
+
+namespace {
+// m1: CSV is the only entry. The position-to-Format mapping below uses
+// the dropdown index. m2 will extend this list and the mapping below;
+// the section build code itself doesn't need to change.
+constexpr const char* kRefptFormatItems[] = { "CSV (.csv)" };
+constexpr int         kRefptFormatCount   =
+    sizeof(kRefptFormatItems) / sizeof(kRefptFormatItems[0]);
+
+RefptExporter::Format refpt_format_for_index(unsigned idx) {
+    // m1: only CSV. m2 extends.
+    (void)idx;
+    return RefptExporter::Format::Csv;
+}
+}  // namespace
+
+void ExportDocsDialog::build_refpts_section(Gtk::Box& root) {
+    auto title = Gtk::make_managed<Gtk::Label>("Refpt coordinates");
+    title->set_xalign(0.0f);
+    title->add_css_class("heading");
+    root.append(*title);
+
+    // Checkbox row — enables the section.
+    m_refpts_check = Gtk::make_managed<Gtk::CheckButton>(
+        "Export refpt coordinates as sidecar file");
+    curvz::utils::set_name(m_refpts_check, "dlg_xd_rpc",
+                           "export_docs_dialog_refpts_check");
+    m_refpts_check->set_active(false);  // default off — opt-in feature
+    m_refpts_check->signal_toggled().connect(
+        [this]() { refresh_refpts_info(); });
+    root.append(*m_refpts_check);
+
+    // Format row — hidden when checkbox is off.
+    m_refpts_format_row =
+        Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+    auto fmt_label = Gtk::make_managed<Gtk::Label>("Format:");
+    fmt_label->set_xalign(0.0f);
+    fmt_label->set_size_request(60, -1);
+    m_refpts_format_row->append(*fmt_label);
+
+    std::vector<Glib::ustring> fmt_items;
+    for (int i = 0; i < kRefptFormatCount; ++i)
+        fmt_items.emplace_back(kRefptFormatItems[i]);
+    auto fmt_list = Gtk::StringList::create(fmt_items);
+    m_refpts_format_drop = Gtk::make_managed<Gtk::DropDown>(fmt_list);
+    curvz::utils::set_name(m_refpts_format_drop, "dlg_xd_rpf",
+                           "export_docs_dialog_refpts_format_dd");
+    m_refpts_format_drop->set_selected(0);
+    m_refpts_format_row->append(*m_refpts_format_drop);
+
+    root.append(*m_refpts_format_row);
+
+    // Info label. Stays present even when section is collapsed (acts as
+    // explanatory text for the checkbox itself).
+    m_refpts_info_label = Gtk::make_managed<Gtk::Label>(
+        "When enabled, writes <docname>.refpts.<ext> alongside each "
+        "exported file. Coordinates are origin-translated to the "
+        "promoted refpt (or canvas 0,0 if none), Y-up, in document units.");
+    curvz::utils::set_name(m_refpts_info_label, "dlg_xd_rpi",
+                           "export_docs_dialog_refpts_info_lbl");
+    m_refpts_info_label->set_xalign(0.0f);
+    m_refpts_info_label->set_wrap(true);
+    m_refpts_info_label->set_max_width_chars(60);
+    m_refpts_info_label->add_css_class("dim-label");
+    root.append(*m_refpts_info_label);
+
+    refresh_refpts_info();
+}
+
+void ExportDocsDialog::refresh_refpts_info() {
+    const bool on = m_refpts_check && m_refpts_check->get_active();
+    if (m_refpts_format_row) m_refpts_format_row->set_visible(on);
+    if (!m_refpts_info_label) return;
+
+    if (!on) {
+        // Off: explanatory text only. The user hasn't opted in yet, so
+        // a count would just be noise.
+        m_refpts_info_label->set_text(
+            "When enabled, writes <docname>.refpts.<ext> alongside each "
+            "exported file. Coordinates are origin-translated to the "
+            "promoted refpt (or canvas 0,0 if none), Y-up, in document units.");
+        return;
+    }
+
+    // On: live summary. Walk the currently-checked docs and build a
+    // count + per-doc origin breadcrumb. The breadcrumb is the user's
+    // preview of "what origin will appear in the metadata header for
+    // each sidecar" — same UX leak class as the s175 m3 TOP inspector
+    // fix, prevented at source by reading from the resolved origin name
+    // (RefptExporter::summarize) rather than rendering raw iids.
+    if (!m_project) {
+        m_refpts_info_label->set_text("Refpts: no project.");
+        return;
+    }
+
+    std::size_t total_refpts = 0;
+    std::size_t docs_with_refpts = 0;
+    std::size_t docs_checked = 0;
+    std::ostringstream origins_line;
+
+    const auto& docs = m_project->documents;
+    for (std::size_t i = 0; i < docs.size() && i < m_target_checks.size();
+         ++i) {
+        auto* cb = m_target_checks[i];
+        if (!cb || !cb->get_active()) continue;
+        if (!docs[i]) continue;
+        ++docs_checked;
+
+        const auto s = RefptExporter::summarize(*docs[i]);
+        total_refpts += s.refpt_count;
+        if (s.refpt_count > 0) {
+            ++docs_with_refpts;
+            if (origins_line.tellp() > 0) origins_line << ", ";
+            // Each entry: "<doc-display-name>: <count> from <origin>"
+            const std::string disp = doc_display_name(*docs[i], i);
+            origins_line << "\"" << disp << "\": "
+                         << s.refpt_count << " from "
+                         << s.origin_name;
+        }
+    }
+
+    std::ostringstream summary;
+    if (docs_checked == 0) {
+        summary << "Refpts: no documents checked.";
+    } else if (total_refpts == 0) {
+        summary << "Refpts: 0 across " << docs_checked
+                << (docs_checked == 1 ? " document" : " documents")
+                << " — sidecar files will be skipped.";
+    } else {
+        summary << "Refpts: " << total_refpts << " across "
+                << docs_with_refpts << " of " << docs_checked
+                << (docs_checked == 1 ? " document" : " documents")
+                << ".  " << origins_line.str() << ".";
+    }
+    m_refpts_info_label->set_text(summary.str());
+}
+
+
 
 void ExportDocsDialog::build_output_section(Gtk::Box& root) {
     auto title = Gtk::make_managed<Gtk::Label>("Output folder");
@@ -681,6 +842,17 @@ void ExportDocsDialog::perform_export(const std::vector<DocTarget>& targets) {
     const double size_value = m_value_spin ? m_value_spin->get_value() : 256.0;
     const int    chosen_px  = chosen_dim_px();
 
+    // s176 m1: refpts sidecar export. Read once before the loop — the
+    // checkbox state shouldn't change per-doc. The format index drives
+    // the file extension and the writer call inside the loop.
+    const bool refpts_on = m_refpts_check && m_refpts_check->get_active();
+    const auto refpts_fmt = refpts_on && m_refpts_format_drop
+        ? refpt_format_for_index(m_refpts_format_drop->get_selected())
+        : RefptExporter::Format::Csv;
+    int refpts_written = 0;
+    int refpts_failed  = 0;
+    int refpts_skipped_empty = 0;
+
     int written = 0;
     int failed  = 0;
     std::vector<std::string> output_files;
@@ -767,6 +939,66 @@ void ExportDocsDialog::perform_export(const std::vector<DocTarget>& targets) {
                  t.path, want_svg ? "svg" : "png", ok,
                  pre_exists, pre_size, post_exists, post_size,
                  size_changed, mtime_changed);
+
+        // s176 m1: refpts sidecar. Only attempted on a successful artwork
+        // write — there's no value in writing the sidecar for a doc whose
+        // primary export failed. If the doc has zero exportable refpts,
+        // the sidecar is skipped (logged at info level — not an error,
+        // just a no-op for that doc). The sidecar path is the artwork
+        // path with the extension swapped: "icon.svg" -> "icon.refpts.csv".
+        if (ok && refpts_on) {
+            const std::size_t n =
+                RefptExporter::count_exportable(*t.doc);
+            if (n == 0) {
+                ++refpts_skipped_empty;
+                LOG_INFO("ExportDocsDialog refpts: '{}' has no refpts — "
+                         "skipping sidecar", t.path);
+            } else {
+                fs::path artwork_path(t.path);
+                fs::path sidecar = artwork_path;
+                // Replace the artwork extension with ".refpts.<ext>".
+                // sidecar.replace_extension expects ".ext"; we build it
+                // manually to keep the doubled extension shape ("foo.svg"
+                // -> "foo.refpts.csv", not "foo.refpts").
+                std::string stem = artwork_path.stem().string();
+                std::string parent = artwork_path.parent_path().string();
+                std::string ext = RefptExporter::extension(refpts_fmt);
+                sidecar = fs::path(parent) /
+                          (stem + ".refpts." + ext);
+
+                std::string body =
+                    RefptExporter::export_refpts(*t.doc, refpts_fmt);
+                std::ofstream out(sidecar, std::ios::binary);
+                if (out.good()) {
+                    out << body;
+                    out.close();
+                    if (out.good()) {
+                        ++refpts_written;
+                        LOG_INFO("ExportDocsDialog refpts: wrote '{}' "
+                                 "({} refpts, {} bytes)",
+                                 sidecar.string(), n, body.size());
+                    } else {
+                        ++refpts_failed;
+                        LOG_ERROR("ExportDocsDialog refpts: write failed "
+                                  "for '{}' (close/flush error)",
+                                  sidecar.string());
+                    }
+                } else {
+                    ++refpts_failed;
+                    LOG_ERROR("ExportDocsDialog refpts: open failed for "
+                              "'{}'", sidecar.string());
+                }
+            }
+        }
+    }
+
+    // s176 m1: refpts sidecar summary. Logged after all docs processed
+    // so the count appears once per export action, not per-doc. Status-
+    // text update happens in the success/failure branches below.
+    if (refpts_on) {
+        LOG_INFO("ExportDocsDialog refpts summary: written={} failed={} "
+                 "skipped_empty={}",
+                 refpts_written, refpts_failed, refpts_skipped_empty);
     }
 
     // Record that the export ran (for the done_cb result flag) and report.

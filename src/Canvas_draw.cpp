@@ -2608,6 +2608,23 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
       cr->stroke();
     }
 
+    // s176 m1: export-origin marker. A refpt promoted as the export
+    // origin is rendered with a square reticle around the crosshair —
+    // distinct from the selection ring (which is a circle) so the two
+    // can compose: a selected origin shows both the ring AND the
+    // square. The marker sits outside the crosshair arms and ring so
+    // it never visually competes with them.
+    if (obj.is_export_origin) {
+      cr->set_source_rgba(0.95, 0.55, 0.10, 1.0);  // orange — distinct
+                                                    // from layer colour
+                                                    // and selection blue
+      cr->set_line_width(1.25);
+      constexpr double SQ = 8.5;  // outside ARM (6.0) and selection
+                                   // ring (5.0) — never overlaps
+      cr->rectangle(sx - SQ, sy - SQ, 2 * SQ, 2 * SQ);
+      cr->stroke();
+    }
+
     cr->set_matrix(saved);
     cr->restore();
     return;

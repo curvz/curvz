@@ -171,6 +171,18 @@ enum class DistAction : std::uint64_t {
   SpaceV       = 1ULL << 3,
 };
 
+// s176 m1: refpt-specific actions. RefAction surfaces only when the
+// selection is a single Ref node — the refpt-shaped operations (set
+// as export origin, clear export origin) don't compose with multi-
+// selection or with non-Ref kinds. SetExportOrigin and ClearExportOrigin
+// are mutually exclusive — exactly one is set at compute time, based
+// on whether the refpt currently holds the flag.
+enum class RefAction : std::uint64_t {
+  None              = 0,
+  SetExportOrigin   = 1ULL << 0,
+  ClearExportOrigin = 1ULL << 1,
+};
+
 // ────────────────────────────────────────────────────────────────────────────
 //  Node-world action enums (smaller vocabulary, separate type space)
 // ────────────────────────────────────────────────────────────────────────────
@@ -221,6 +233,7 @@ CURVZ_BITWISE_ENUM(LayerAction)
 CURVZ_BITWISE_ENUM(VisAction)
 CURVZ_BITWISE_ENUM(AlignAction)
 CURVZ_BITWISE_ENUM(DistAction)
+CURVZ_BITWISE_ENUM(RefAction)
 CURVZ_BITWISE_ENUM(NodeStructAction)
 CURVZ_BITWISE_ENUM(NodeKindAction)
 
@@ -306,11 +319,13 @@ struct ObjectActions {
   VisAction    vis    = VisAction::None;
   AlignAction  align  = AlignAction::None;
   DistAction   dist   = DistAction::None;
+  RefAction    ref_   = RefAction::None;  // s176 m1
 
   // Convenience: anything allowed at all?
   bool any_allowed() const {
     return any(life) || any(struct_) || any(bool_) || any(effect) ||
-           any(layer) || any(vis) || any(align) || any(dist);
+           any(layer) || any(vis) || any(align) || any(dist) ||
+           any(ref_);
   }
 
   void clear() { *this = ObjectActions{}; }

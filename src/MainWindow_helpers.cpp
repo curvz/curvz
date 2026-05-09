@@ -916,7 +916,11 @@ void MainWindow::update_project_sensitive() {
        {"new", "save", "save-as", "save-as-template", "close-project",
         "import-svg", "place-image", "export-theme", "print", "step-repeat",
         "undo", "redo", "zoom-fit", "zoom-in", "zoom-out", "zoom-100",
-        "zoom-200", "zoom-selection"}) {
+        "zoom-200", "zoom-selection",
+        // s176 m1: refpt export-origin actions are project-sensitive
+        // even though they're surfaced via context menu only on Ref
+        // selections — without a project there's nothing to promote.
+        "set-export-origin", "clear-export-origin"}) {
     if (auto act = lookup_action(name)) {
       if (auto sa = std::dynamic_pointer_cast<Gio::SimpleAction>(act))
         sa->set_enabled(open);

@@ -117,6 +117,7 @@ private:
     void build_targets_section(Gtk::Box& root);
     void build_format_section(Gtk::Box& root);
     void build_size_section(Gtk::Box& root);
+    void build_refpts_section(Gtk::Box& root);  // s176 m1
     void build_output_section(Gtk::Box& root);
     void build_footer(Gtk::Box& root);
 
@@ -207,6 +208,22 @@ private:
     // Output
     Gtk::Entry*  m_folder_entry = nullptr;
     Gtk::Button* m_btn_browse   = nullptr;
+
+    // Refpts (s176 m1) — sidecar coordinate export. Only the CSV format
+    // is wired in m1; m2 will add JSON/G-code/DXF entries to the dropdown.
+    // The checkbox enables the section; when off the dropdown is hidden
+    // and no sidecar files are written. The "info" label below the
+    // dropdown shows a count of refpts that will be exported across the
+    // currently selected docs (refreshed on target/origin change so the
+    // user sees the consequence of their selection before clicking Export).
+    Gtk::CheckButton* m_refpts_check = nullptr;
+    Gtk::DropDown*    m_refpts_format_drop = nullptr;
+    Gtk::Box*         m_refpts_format_row  = nullptr;
+    Gtk::Label*       m_refpts_info_label  = nullptr;
+
+    // Update the refpts info label and dropdown sensitivity based on
+    // current selection + checkbox state. Cheap to call on any change.
+    void refresh_refpts_info();
 
     // Footer
     Gtk::Label*  m_status        = nullptr;

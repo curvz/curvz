@@ -403,6 +403,7 @@ set(SOURCES
     src/PngExporter.cpp
     src/IcoExporter.cpp
     src/GResourceExporter.cpp
+    src/RefptExporter.cpp  # s176 m1: refpt-coordinates sidecar export
 
     # System icon scanner
     src/SystemIconScanner.cpp

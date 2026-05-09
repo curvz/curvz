@@ -719,6 +719,26 @@ void MainWindow::setup_menu() {
       [this](const Glib::VariantBase &) { m_canvas.clone_selected(); });
   add_action(act_clone);
 
+  // s176 m1: refpt-as-export-origin promote / clear. Surfaced on a
+  // single-Ref selection via build_object_context_menu's RefAction
+  // section — see compute_object_actions for the policy. The handler
+  // reads the primary selection at activate time (rather than capturing
+  // a SceneNode* in the lambda) because primary_selection is always
+  // current when the menu invokes the action.
+  auto act_set_export_origin = Gio::SimpleAction::create("set-export-origin");
+  act_set_export_origin->signal_activate().connect(
+      [this](const Glib::VariantBase &) {
+        SceneNode *p = m_canvas.primary_selection();
+        if (p && p->is_ref()) m_canvas.set_refpt_as_export_origin(p);
+      });
+  add_action(act_set_export_origin);
+
+  auto act_clear_export_origin =
+      Gio::SimpleAction::create("clear-export-origin");
+  act_clear_export_origin->signal_activate().connect(
+      [this](const Glib::VariantBase &) { m_canvas.clear_refpt_export_origin(); });
+  add_action(act_clear_export_origin);
+
   // s136 m5: select-all and deselect-all promoted to actions so the Edit
   // menu can reach them. The hotkeys (Ctrl+A and Ctrl+Shift+A) are still
   // dispatched through the CAPTURE-phase controller in MainWindow.cpp's
