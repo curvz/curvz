@@ -1456,6 +1456,14 @@ private:
   double m_guide_press_y = 0.0;
   static constexpr double GUIDE_DRAG_THRESHOLD_PX = 4.0;
 
+  // s180 m1: pre-drag snapshot for GuideMoveCommand undo capture. Recorded
+  // when the press lands on a guide (on_select_begin); used at drag-end to
+  // build the before/after deltas that feed the command. Mirrors
+  // m_ref_drag_orig_x/y for refpts.
+  double m_guide_drag_orig_x = 0.0;
+  double m_guide_drag_orig_y = 0.0;
+  double m_guide_drag_orig_angle = 0.0;
+
   double m_snap_bias_x = 0.0; // unused, kept for ABI compat
   double m_snap_bias_y = 0.0;
 

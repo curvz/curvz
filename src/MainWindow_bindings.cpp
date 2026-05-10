@@ -1285,6 +1285,11 @@ void MainWindow::connect_signals() {
                                        m_active_tool == ActiveTool::Node)) {
       m_properties.sync_selection(m_canvas.selected_object());
     }
+    // s180: live-sync the inspector's guide X/Y/A spinners during canvas
+    // guide drag. Cheap and gated — sync_selected_guide bails unless the
+    // single-guide editor is currently built and a guide is selected.
+    // Mirrors the sync_selection call above for path objects.
+    m_properties.sync_selected_guide();
   });
 
   // ── Guide selection — three-way sync: canvas ↔ layers ↔ inspector ──────────

@@ -81,6 +81,7 @@ public:
     void refresh(CanvasModel* canvas, SceneNode* obj);
     void refresh_node(CanvasModel* canvas, SceneNode* obj, int node_idx);
     void sync_selection(SceneNode* obj);  // lightweight position sync during move
+    void sync_selected_guide();           // lightweight guide X/Y/A sync during guide drag
 
     void show_document_props(CanvasModel* canvas);
     void show_object_props(SceneNode* obj);
@@ -329,6 +330,14 @@ private:
     // during refpt drag/nudge, mirroring the path-object path.
     CurvzSpinButton*  m_ref_sp_x = nullptr;
     CurvzSpinButton*  m_ref_sp_y = nullptr;
+    // Guide section X/Y/A spin buttons. Stored so sync_selected_guide
+    // can live-update them during canvas guide drag, the same way the
+    // refpt pointers above support live-update during refpt drag. Cleared
+    // in do_clear()'s prelude alongside m_ref_sp_*; set in
+    // build_object_guides_section's single-guide branch.
+    CurvzSpinButton*  m_guide_sp_x = nullptr;
+    CurvzSpinButton*  m_guide_sp_y = nullptr;
+    CurvzSpinButton*  m_guide_sp_a = nullptr;
     // Keep adj refs for legacy sync_selection path (adj is owned by spinbutton)
     Glib::RefPtr<Gtk::Adjustment> m_sel_adj_x;
     Glib::RefPtr<Gtk::Adjustment> m_sel_adj_y;

@@ -7,6 +7,7 @@
 #include "TemplateLibrary.hpp"
 #include "color/SwatchLibrary.hpp"  // color::load_app_defaults (s69 M2)
 #include <cstdlib>             // s145 m4 — getenv for early prefs.json lookup
+#include <cstring>             // s180 — std::strcmp in warning-filter writer fn
 #include <filesystem>
 #include <fstream>             // s145 m4 — read prefs.json before singleton loads
 #include <nlohmann/json.hpp>   // s145 m4 — parse log_path_override pre-spdlog
@@ -14,6 +15,7 @@ extern "C" {
 #include "curvz-resources.h"
 }
 #include <glibmm/miscutils.h>
+#include <glib.h>  // s180: g_log_set_handler / g_strstr_len for warning filter
 #include <gtkmm/icontheme.h>
 #include <gtkmm/settings.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -120,6 +122,68 @@ Application::Application()
 // here will fire — the controller is the source of truth for dispatch.
 void Application::on_startup() {
   Gtk::Application::on_startup();
+
+  // ── s180: suppress one specific GTK warning ────────────────────────────────
+  //
+  // The cosmetic warning
+  //
+  //   Gtk-WARNING **: Trying to snapshot sb 0x... without a current allocation
+  //
+  // has been firing intermittently since s35 on doc-list mutations (make doc,
+  // delete doc, first switch-into-doc). The widget is the StatusBar root box
+  // (named "sb" in src/StatusBar.cpp via curvz::utils::set_name). It has been
+  // chased across multiple sessions, including:
+  //
+  //   - s35: traced to gtkmm__GtkBox at startup; banked as low priority.
+  //   - s60: deferred initial append to defeat startup-time race.
+  //   - s180: full gdb investigation under G_DEBUG=fatal-warnings. Backtrace
+  //     contains zero Curvz frames — the call chain is pure GTK frame-clock
+  //     paint into gtk_widget_snapshot_child. The StatusBar has cached
+  //     allocation 1496×23, is visible/realized/mapped, but its parent
+  //     (m_root) has marked it alloc_needed and the next paint cycle catches
+  //     it before the size-allocate phase resolves. m_root has a valid
+  //     allocation; only the StatusBar child is dirty.
+  //   - s180 m2: detach/reattach pattern wrapping make/delete handlers
+  //     (with_statusbar_detached). Did NOT silence the warning, confirming
+  //     that the issue is not about the bar being a sibling of the
+  //     mutating subtree — GTK's frame-clock can catch the bar with stale
+  //     allocation regardless. Renderer-independent (cairo and ngl both).
+  //
+  // Verdict: this is a GTK4 layout-cycle timing artefact, not a Curvz bug.
+  // The app behaves correctly; only the warning text is noise. Suppressing
+  // it here keeps the log readable for actual issues. The filter is
+  // narrow — it matches only the exact warning text on this exact widget
+  // name, so any new "snapshot without allocation" warning on a different
+  // widget will still surface.
+  //
+  // Implementation note: GTK4 uses g_log_structured for warning emission,
+  // which bypasses the legacy g_log_set_handler path entirely. The right
+  // hook is g_log_set_writer_func, which sees every structured-log call
+  // for the whole process. We extract the MESSAGE field from the fields
+  // array, match against our specific warning text, and either drop or
+  // forward to g_log_writer_default for everything else.
+  //
+  // To re-enable for diagnosis: comment out g_log_set_writer_func call below.
+  g_log_set_writer_func(
+      [](GLogLevelFlags log_level, const GLogField *fields, gsize n_fields,
+         gpointer user_data) -> GLogWriterOutput {
+        // Find the MESSAGE field. Structured-log fields are key-value pairs
+        // and order isn't guaranteed; we walk the array to find it.
+        const char *msg = nullptr;
+        for (gsize i = 0; i < n_fields; ++i) {
+          if (fields[i].key && std::strcmp(fields[i].key, "MESSAGE") == 0) {
+            msg = static_cast<const char *>(fields[i].value);
+            break;
+          }
+        }
+        if (msg && g_strstr_len(msg, -1, "Trying to snapshot sb") != nullptr) {
+          // Swallow this specific warning. Treat as handled so GLib doesn't
+          // fall through to abort on G_DEBUG=fatal-warnings either.
+          return G_LOG_WRITER_HANDLED;
+        }
+        return g_log_writer_default(log_level, fields, n_fields, user_data);
+      },
+      nullptr, nullptr);
 
   auto bind = [this](const char *action,
                      std::vector<Glib::ustring> accels) {

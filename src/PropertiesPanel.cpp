@@ -2305,96 +2305,114 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
     // Edits disabled when the guide or its layer is locked.
     const bool edit_on = !layer_locked && !g->locked;
 
-    // X position
+    // ── X / Y / A grid ────────────────────────────────────────────────
+    // s180 m1: replaces the previous three single-line rows (X / Y / A
+    // each on its own Box) with a Grid mirroring build_selection_section's
+    // POS row idiom — column-0 row labels, columns 1+2 spinners under
+    // centered "X" / "Y" headers. Keeps the look consistent with how the
+    // single-object section presents POS / WIDTH / HEIGHT.
     {
-      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-      row->add_css_class("prop-row");
-      row->set_spacing(4);
+      auto *grid = Gtk::make_managed<Gtk::Grid>();
+      grid->set_row_spacing(3);
+      grid->set_column_spacing(4);
+      grid->set_margin_start(8);
+      grid->set_margin_end(6);
+      grid->set_margin_top(4);
+      grid->set_margin_bottom(4);
 
-      auto *lbl = Gtk::make_managed<Gtk::Label>("X:");
-      lbl->set_width_chars(2);
-      lbl->set_xalign(1.0f);
-      lbl->add_css_class("prop-lbl");
-      row->append(*lbl);
+      auto make_hdr = [](const char *txt) {
+        auto *l = Gtk::make_managed<Gtk::Label>(txt);
+        l->add_css_class("prop-lbl");
+        l->set_xalign(0.5f);
+        l->set_hexpand(true);
+        return l;
+      };
+      auto make_row_lbl = [](const char *txt) {
+        auto *l = Gtk::make_managed<Gtk::Label>(txt);
+        l->add_css_class("prop-lbl");
+        l->set_xalign(0.0f);
+        return l;
+      };
 
-      auto *sp = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX,
-                                                    m_canvas, m_ruler_ox);
-      curvz::utils::set_name(sp, "ins_obj_gd_x",
+      // Header row 0: "X" "Y" centered above their spinners.
+      grid->attach(*make_hdr("X"), 1, 0);
+      grid->attach(*make_hdr("Y"), 2, 0);
+
+      // Row 1: POS label + X / Y spinners. Spinner styling
+      // (prop-width-entry + node-spin classes, width_chars(10), block_scroll)
+      // matches build_selection_section's make_pos_spin so the guide editor
+      // looks like the object editor.
+      auto *sp_x = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX,
+                                                      m_canvas, m_ruler_ox);
+      curvz::utils::set_name(sp_x, "ins_obj_gd_x",
                              "inspector_object_guide_x_spn");
-      sp->with_value(g->guide_x);
-      sp->set_hexpand(true);
-      sp->set_sensitive(edit_on);
-      sp->on_changed([this, g, gen](double v) {
-        if (m_build_gen != gen)
+      m_guide_sp_x = sp_x;
+      sp_x->with_value(g->guide_x)
+            ->with_css("prop-width-entry")
+            ->with_css("node-spin");
+      sp_x->with_width_chars(10);
+      sp_x->set_hexpand(true);
+      sp_x->set_sensitive(edit_on);
+      block_scroll(sp_x, [this] { emit_canvas_focus(); });
+      sp_x->on_changed([this, g, gen](double v) {
+        if (m_build_gen != gen || m_loading)
           return;
         g->guide_x = v;
         emit_prop_changed();
       });
-      row->append(*sp);
-      if (auto *ul = sp->get_unit_label())
-        row->append(*ul);
-      body->append(*row);
-    }
 
-    // Y position
-    {
-      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-      row->add_css_class("prop-row");
-      row->set_spacing(4);
-
-      auto *lbl = Gtk::make_managed<Gtk::Label>("Y:");
-      lbl->set_width_chars(2);
-      lbl->set_xalign(1.0f);
-      lbl->add_css_class("prop-lbl");
-      row->append(*lbl);
-
-      auto *sp = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY,
-                                                    m_canvas, m_ruler_oy);
-      curvz::utils::set_name(sp, "ins_obj_gd_y",
+      auto *sp_y = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY,
+                                                      m_canvas, m_ruler_oy);
+      curvz::utils::set_name(sp_y, "ins_obj_gd_y",
                              "inspector_object_guide_y_spn");
-      sp->with_value(g->guide_y);
-      sp->set_hexpand(true);
-      sp->set_sensitive(edit_on);
-      sp->on_changed([this, g, gen](double v) {
-        if (m_build_gen != gen)
+      m_guide_sp_y = sp_y;
+      sp_y->with_value(g->guide_y)
+            ->with_css("prop-width-entry")
+            ->with_css("node-spin");
+      sp_y->with_width_chars(10);
+      sp_y->set_hexpand(true);
+      sp_y->set_sensitive(edit_on);
+      block_scroll(sp_y, [this] { emit_canvas_focus(); });
+      sp_y->on_changed([this, g, gen](double v) {
+        if (m_build_gen != gen || m_loading)
           return;
         g->guide_y = v;
         emit_prop_changed();
       });
-      row->append(*sp);
-      if (auto *ul = sp->get_unit_label())
-        row->append(*ul);
-      body->append(*row);
-    }
 
-    // Angle (degrees)
-    {
-      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-      row->add_css_class("prop-row");
-      row->set_spacing(4);
+      grid->attach(*make_row_lbl("POS"), 0, 1);
+      grid->attach(*sp_x, 1, 1);
+      grid->attach(*sp_y, 2, 1);
 
-      auto *lbl = Gtk::make_managed<Gtk::Label>("A:");
-      lbl->set_width_chars(2);
-      lbl->set_xalign(1.0f);
-      lbl->add_css_class("prop-lbl");
-      row->append(*lbl);
+      // Row 2: "ANGLE" header centered above col-1 (matches WIDTH/HEIGHT
+      // header style from selection-section).
+      grid->attach(*make_hdr("ANGLE"), 1, 2);
 
-      auto *sp = Gtk::make_managed<CurvzSpinButton>(SpinType::Angle, m_canvas);
-      curvz::utils::set_name(sp, "ins_obj_gd_a",
+      // Row 3: ANG label + angle spinner. Col-2 left empty — angle is a
+      // single value, not a pair. Same CSS / width / scroll-block as the
+      // pos spinners above so all three look uniform.
+      auto *sp_a = Gtk::make_managed<CurvzSpinButton>(SpinType::Angle, m_canvas);
+      curvz::utils::set_name(sp_a, "ins_obj_gd_a",
                              "inspector_object_guide_angle_spn");
-      sp->with_value(g->guide_angle);
-      sp->set_hexpand(true);
-      sp->set_sensitive(edit_on);
-      sp->on_changed([this, g, gen](double v) {
-        if (m_build_gen != gen)
+      m_guide_sp_a = sp_a;
+      sp_a->with_value(g->guide_angle)
+            ->with_css("prop-width-entry")
+            ->with_css("node-spin");
+      sp_a->with_width_chars(10);
+      sp_a->set_hexpand(true);
+      sp_a->set_sensitive(edit_on);
+      block_scroll(sp_a, [this] { emit_canvas_focus(); });
+      sp_a->on_changed([this, g, gen](double v) {
+        if (m_build_gen != gen || m_loading)
           return;
         g->guide_angle = v;
         emit_prop_changed();
       });
-      row->append(*sp);
-      if (auto *ul = sp->get_unit_label())
-        row->append(*ul);
-      body->append(*row);
+
+      grid->attach(*make_row_lbl("ANG"), 0, 3);
+      grid->attach(*sp_a, 1, 3);
+
+      body->append(*grid);
     }
 
   } else {
@@ -4912,6 +4930,12 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
   m_sel_lbl_hv = nullptr;
   m_ref_sp_x = nullptr;
   m_ref_sp_y = nullptr;
+  // Guide section pointers — same rationale as ref pointers above.
+  // sync_selected_guide guards on these being non-null AND m_selected_guide
+  // matching, so this nullptr reset is the safety net between rebuilds.
+  m_guide_sp_x = nullptr;
+  m_guide_sp_y = nullptr;
+  m_guide_sp_a = nullptr;
   do_clear();
 
   // Snapshot "before" state for the newly selected object so the first
@@ -8416,6 +8440,32 @@ void PropertiesPanel::sync_selection(SceneNode *obj) {
   // Visual readouts ride along — drag-induced position/size changes feed
   // through the same path the spinners already updated above.
   update_visual_labels();
+}
+
+// ── sync_selected_guide ─────────────────────────────────────────────────────
+// Lightweight live-update path for canvas guide drag, mirroring sync_selection
+// for path objects. Pushes m_selected_guide's current guide_x/y/angle into the
+// stored spin pointers under the m_loading guard so the on_changed callbacks
+// (which write back into g->guide_*) recognise the update as programmatic and
+// don't re-fire emit_prop_changed.
+//
+// Identity gate: requires both m_selected_guide non-null AND m_guide_sp_*
+// non-null. Either being null means the inspector isn't currently presenting
+// the single-guide editor for the dragged guide — bail without touching it.
+// Multi-guide selection has no spinners (count + bulk-delete UI), so the
+// gate naturally excludes that path.
+void PropertiesPanel::sync_selected_guide() {
+  if (!m_selected_guide)
+    return;
+  if (!m_guide_sp_x || !m_guide_sp_y || !m_guide_sp_a)
+    return;
+
+  SceneNode *g = m_selected_guide;
+  m_loading = true;
+  m_guide_sp_x->set_internal_value(g->guide_x);
+  m_guide_sp_y->set_internal_value(g->guide_y);
+  m_guide_sp_a->set_internal_value(g->guide_angle);
+  m_loading = false;
 }
 
 // ── Legacy wrappers

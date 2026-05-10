@@ -2103,6 +2103,14 @@ void Canvas::on_select_begin(double x, double y) {
     m_guide_press_x = x;
     m_guide_press_y = y;
 
+    // s180 m1: snapshot pre-drag position for GuideMoveCommand undo
+    // capture at on_select_end. Pre-s180 the drag mutated guide_x/y in
+    // place with no undo entry — Ctrl+Z would skip past the drag entirely.
+    // Mirrors the refpt drag pattern at line ~1085.
+    m_guide_drag_orig_x     = m_guide_hovered->guide_x;
+    m_guide_drag_orig_y     = m_guide_hovered->guide_y;
+    m_guide_drag_orig_angle = m_guide_hovered->guide_angle;
+
     SceneNode *g = m_guide_hovered;
     bool already = std::find(m_guide_selection.begin(), m_guide_selection.end(),
                              g) != m_guide_selection.end();
@@ -2617,6 +2625,14 @@ void Canvas::on_select_update(double /*dx*/, double /*dy*/) {
       m_guide_drag_node->guide_x = cur_dx;
       m_guide_drag_node->guide_y = cur_dy;
     }
+    // s180: emit doc_changed so the inspector's lightweight guide-sync
+    // path runs and the X/Y/A spinners track the drag in real time. The
+    // listener in MainWindow_bindings calls m_properties.sync_selected_guide()
+    // which is gated on m_selected_guide + stored spin pointers, so this
+    // only does work when the dragged guide is the one shown in the
+    // single-guide editor. Mirrors the refpt drag pattern at
+    // Canvas_input.cpp ~line 1500.
+    m_sig_doc_changed.emit();
     queue_draw();
     return;
   }
@@ -3121,6 +3137,23 @@ void Canvas::on_select_end(double /*dx*/, double /*dy*/) {
       } else {
         m_guide_drag_node->guide_x = cur_dx;
         m_guide_drag_node->guide_y = cur_dy;
+      }
+      // s180 m1: push GuideMoveCommand if the drag actually moved the guide.
+      // Pre-s180 this drag mutated guide_x/y in place with no undo entry.
+      // 0.001 epsilon matches the refpt-move threshold at line ~1721.
+      if (m_history) {
+        double cur_x = m_guide_drag_node->guide_x;
+        double cur_y = m_guide_drag_node->guide_y;
+        double cur_a = m_guide_drag_node->guide_angle;
+        if (std::abs(cur_x - m_guide_drag_orig_x) > 0.001 ||
+            std::abs(cur_y - m_guide_drag_orig_y) > 0.001 ||
+            std::abs(cur_a - m_guide_drag_orig_angle) > 0.001) {
+          m_history->push(std::make_unique<GuideMoveCommand>(
+              project(), m_guide_drag_node->internal_id,
+              m_guide_drag_orig_x, m_guide_drag_orig_y,
+              m_guide_drag_orig_angle,
+              cur_x, cur_y, cur_a));
+        }
       }
       m_sig_doc_changed.emit();
     }

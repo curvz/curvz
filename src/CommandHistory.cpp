@@ -336,6 +336,34 @@ void RefMoveCommand::undo() {
     node->ref_y = before_y;
 }
 
+// ── GuideMoveCommand bodies (s180 m1) ────────────────────────────────
+// Axis-aligned and angled guide moves. iid-resolves the guide on every
+// execute/undo so layer-deletion or guide-deletion between push and
+// replay is a clean no-op. Mirrors RefMoveCommand's shape; the only
+// addition is the angle field, carried for symmetry with the inspector's
+// X/Y/A editor even though current canvas drag mutates only x/y.
+void GuideMoveCommand::execute() {
+    if (!proj) return;
+    invalidate_iid_indexes(proj);
+    if (node_iid.empty()) return;
+    auto* node = curvz::utils::find_by_iid(*proj, node_iid);
+    if (!node) return;
+    node->guide_x     = after_x;
+    node->guide_y     = after_y;
+    node->guide_angle = after_angle;
+}
+
+void GuideMoveCommand::undo() {
+    if (!proj) return;
+    invalidate_iid_indexes(proj);
+    if (node_iid.empty()) return;
+    auto* node = curvz::utils::find_by_iid(*proj, node_iid);
+    if (!node) return;
+    node->guide_x     = before_x;
+    node->guide_y     = before_y;
+    node->guide_angle = before_angle;
+}
+
 // ── MoveObjectCommand bodies (s169 m1) ───────────────────────────────
 // Text-anchor and image-origin moves. Branches on the resolved node's
 // type — text writes text_x/text_y, image writes image_x/image_y. The

@@ -1146,6 +1146,33 @@ struct RefMoveCommand : CurvzCommand {
     // SceneNode* is held. Default `references() == false` is correct.
 };
 
+// ── GuideMoveCommand ─────────────────────────────────────────────────────────
+// s180 m1 — Guide drag undo. Same shape as RefMoveCommand: iid + project
+// capture, three doubles before / three doubles after. Carries angle even
+// though canvas drag only mutates x/y for axis-aligned guides — keeps the
+// command symmetrical with the inspector's X/Y/A editor and absorbs any
+// future angle-affecting edit (rotate handle, inspector spinner, snap-to-
+// arbitrary-angle) without schema churn. If the guide has been deleted
+// between push and undo, find_by_iid returns nullptr and the command
+// no-ops cleanly. Default `references() == false` is correct here too.
+struct GuideMoveCommand : CurvzCommand {
+    CurvzProject* proj;
+    std::string   node_iid;
+    double before_x, before_y, before_angle;
+    double after_x,  after_y,  after_angle;
+
+    GuideMoveCommand(CurvzProject* proj, std::string node_iid,
+                     double bx, double by, double ba,
+                     double ax, double ay, double aa)
+        : proj(proj), node_iid(std::move(node_iid))
+        , before_x(bx), before_y(by), before_angle(ba)
+        , after_x(ax),  after_y(ay),  after_angle(aa) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override { return "Move guide"; }
+};
+
 // ── PasteCommand ─────────────────────────────────────────────────────────────
 // Inserts one or more pasted nodes into a parent at the front.
 // Undo removes them by id; redo re-inserts clones.
