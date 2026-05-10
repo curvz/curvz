@@ -3522,78 +3522,70 @@ void Canvas::draw_ruler_overlay(const Cairo::RefPtr<Cairo::Context> &cr,
     std::vector<double> no_dash;
     cr->set_dash(no_dash, 0);
 
-    for (auto &layer : m_doc->layers) {
-      if (!layer->visible || layer->is_special_layer())
-        continue;
+    // s182: pick-map pass driven by ruler_collect_all_endpoints, which
+    // is path nodes (recursive, descending into Compound and Group) plus
+    // refpts (idx=-1 sentinel). Pre-s182 the path-only pass was a flat
+    // layer-children walk identical to the pre-s182 collector, so
+    // compound/group child path nodes were skipped — they neither lit
+    // up nor became pickable. Pre-s182 refpts had a separate magenta-dot
+    // pass with its own A/B blue-fill code, which made them visually
+    // different from path-node candidates. s182 unifies the two: every
+    // pickable point draws as the same hollow white square (filled blue
+    // when it's A or B), regardless of whether it sits on a path or is a
+    // refpt. Refpt identity is still signalled by the layer-coloured
+    // crosshair drawn underneath in the regular scene-draw pass.
+    std::vector<std::pair<SceneNode *, int>> pick_nodes;
+    ruler_collect_all_endpoints(pick_nodes);
 
-      for (auto &obj_uptr : layer->children) {
-        const SceneNode &obj = *obj_uptr;
-        if (obj.type != SceneNode::Type::Path || !obj.path)
+    // Outline pass — one trace per distinct path object. Refpts have no
+    // outline geometry (they're points), so skip them by checking for
+    // a real path. Distinct via "different pointer than previous" — the
+    // collector emits all (obj, ni) entries for one path consecutively.
+    std::vector<SceneNode *> outline_objs;
+    {
+      SceneNode *prev = nullptr;
+      for (auto &[obj, ni] : pick_nodes) {
+        if (obj == prev)
           continue;
-
-        // Draw path as thin outline
-        BezierPath bp = BezierPath::from_path_data(*obj.path);
-        bp.apply_to_cairo(cr);
-        cr->set_source_rgba(0.6, 0.6, 0.6, 0.45);
-        cr->set_line_width(1.0 / m_zoom);
-        cr->stroke();
-
-        // Draw each node as a hollow square
-        double ns = 3.5 / m_zoom; // half-size in doc units
-        for (int ni = 0; ni < (int)obj.path->nodes.size(); ++ni) {
-          const BezierNode &nd = obj.path->nodes[ni];
-          bool is_a = (&obj == m_ruler_node_a_obj && ni == m_ruler_node_a_idx);
-          bool is_b = (&obj == m_ruler_node_b_obj && ni == m_ruler_node_b_idx);
-          if (is_a || is_b) {
-            // Selected nodes — filled blue
-            cr->set_source_rgba(0.084, 0.325, 0.620, 1.0);
-            cr->rectangle(nd.x - ns, nd.y - ns, ns * 2, ns * 2);
-            cr->fill();
-          } else {
-            // Unselected nodes — hollow white square
-            cr->set_source_rgba(0.85, 0.85, 0.85, 0.9);
-            cr->rectangle(nd.x - ns, nd.y - ns, ns * 2, ns * 2);
-            cr->fill();
-            cr->set_source_rgba(0.4, 0.4, 0.4, 0.9);
-            cr->set_line_width(0.75 / m_zoom);
-            cr->rectangle(nd.x - ns, nd.y - ns, ns * 2, ns * 2);
-            cr->stroke();
-          }
-        }
+        if (!obj || !obj->path)
+          continue;  // refpts skipped here (path is null)
+        outline_objs.push_back(obj);
+        prev = obj;
       }
     }
+    for (SceneNode *obj : outline_objs) {
+      BezierPath bp = BezierPath::from_path_data(*obj->path);
+      bp.apply_to_cairo(cr);
+      cr->set_source_rgba(0.6, 0.6, 0.6, 0.45);
+      cr->set_line_width(1.0 / m_zoom);
+      cr->stroke();
+    }
 
-    // ── S89: refpt pick-map pass ───────────────────────────────────────
-    // Refpts are pickable endpoints in ruler mode. Drawn as small filled
-    // circles, magenta-tinted to match the ref layer's default colour so
-    // the user can tell them apart from the node hollow-squares above.
-    // Selected refpts (the live A or B) get the same blue fill as
-    // selected nodes for visual consistency.
+    // Per-endpoint hollow-square pass — direct iteration of the
+    // collector. Position resolved via ruler_endpoint_pos so the same
+    // code handles Path nodes (idx>=0) and refpts (idx=-1) uniformly.
     {
-      double rs = 4.0 / m_zoom; // radius in doc units
-      for (auto &layer : m_doc->layers) {
-        if (!layer->visible || layer->locked || !layer->is_ref_layer())
+      double ns = 3.5 / m_zoom; // half-size in doc units
+      for (auto &[obj, ni] : pick_nodes) {
+        double nx, ny;
+        if (!ruler_endpoint_pos(obj, ni, nx, ny))
           continue;
-        for (auto &child_uptr : layer->children) {
-          SceneNode &child = *child_uptr;
-          if (!child.is_ref() || child.locked)
-            continue;
-          bool is_a = (&child == m_ruler_node_a_obj);
-          bool is_b = (&child == m_ruler_node_b_obj);
-          if (is_a || is_b) {
-            cr->set_source_rgba(0.084, 0.325, 0.620, 1.0);
-            cr->arc(child.ref_x, child.ref_y, rs, 0, 2 * M_PI);
-            cr->fill();
-          } else {
-            // Filled magenta dot with a subtle outline.
-            cr->set_source_rgba(0.85, 0.10, 0.75, 0.9);
-            cr->arc(child.ref_x, child.ref_y, rs, 0, 2 * M_PI);
-            cr->fill();
-            cr->set_source_rgba(0.4, 0.4, 0.4, 0.9);
-            cr->set_line_width(0.75 / m_zoom);
-            cr->arc(child.ref_x, child.ref_y, rs, 0, 2 * M_PI);
-            cr->stroke();
-          }
+        bool is_a = (obj == m_ruler_node_a_obj && ni == m_ruler_node_a_idx);
+        bool is_b = (obj == m_ruler_node_b_obj && ni == m_ruler_node_b_idx);
+        if (is_a || is_b) {
+          // Selected endpoints — filled blue
+          cr->set_source_rgba(0.084, 0.325, 0.620, 1.0);
+          cr->rectangle(nx - ns, ny - ns, ns * 2, ns * 2);
+          cr->fill();
+        } else {
+          // Unselected endpoints — hollow white square
+          cr->set_source_rgba(0.85, 0.85, 0.85, 0.9);
+          cr->rectangle(nx - ns, ny - ns, ns * 2, ns * 2);
+          cr->fill();
+          cr->set_source_rgba(0.4, 0.4, 0.4, 0.9);
+          cr->set_line_width(0.75 / m_zoom);
+          cr->rectangle(nx - ns, ny - ns, ns * 2, ns * 2);
+          cr->stroke();
         }
       }
     }
@@ -3601,34 +3593,13 @@ void Canvas::draw_ruler_overlay(const Cairo::RefPtr<Cairo::Context> &cr,
     cr->restore();
   }
 
-  // Need at least one endpoint picked to draw the triangle
-  if (!m_ruler_node_a_obj)
-    return;
-
-  // S89: endpoint position resolves both Node and Ref kinds.
-  double na_x, na_y;
-  if (!ruler_endpoint_pos(m_ruler_node_a_obj, m_ruler_node_a_idx, na_x, na_y))
-    return;
-
-  // If only A is picked, the filled blue dot drawn during the pick-map
-  // pass is enough — no triangle yet.
-  if (!m_ruler_node_b_obj)
-    return;
-
-  double nb_x, nb_y;
-  if (!ruler_endpoint_pos(m_ruler_node_b_obj, m_ruler_node_b_idx, nb_x, nb_y))
-    return;
-
-  // Convert to user-space (Y-up) and delegate to the shared annotation
-  // renderer. push_labels=true so click-to-copy works on the live triangle.
-  double ax_user = na_x;
-  double ay_user = m_doc->canvas_height() - na_y;
-  double bx_user = nb_x;
-  double by_user = m_doc->canvas_height() - nb_y;
-  draw_measurement_annotations(cr, ax_user, ay_user, bx_user, by_user,
-                               /*push_labels=*/true);
-
   // ── Toast overlay ─────────────────────────────────────────────────────
+  // s182 m4 — hoisted above the A-null early-return so toasts paint
+  // regardless of A/B state. Pre-s182 the toast lived after the triangle
+  // block, so a "no measurement point at this location" toast fired at
+  // a fresh-state click could never appear. Toasts are independent of
+  // ruler state — they're a screen-space message about the most recent
+  // event.
   if (m_ruler_toast_ms > 0 && !m_ruler_toast_text.empty()) {
     double alpha_t = std::min(1.0, m_ruler_toast_ms / 400.0);
     cr->save();
@@ -3648,6 +3619,54 @@ void Canvas::draw_ruler_overlay(const Cairo::RefPtr<Cairo::Context> &cr,
     cr->show_text(m_ruler_toast_text);
     cr->restore();
   }
+
+  // Need at least one endpoint picked to draw the triangle
+  if (!m_ruler_node_a_obj)
+    return;
+
+  // S89: endpoint position resolves both Node and Ref kinds.
+  double na_x, na_y;
+  if (!ruler_endpoint_pos(m_ruler_node_a_obj, m_ruler_node_a_idx, na_x, na_y))
+    return;
+
+  // s182 m3 — A-only state: draw a dashed track line from A to the
+  // current cursor position so the user sees that the tool is in flight
+  // and tracking. Drawn in doc space with the same translate/scale as
+  // the pick-map pass above (which has already restored). The line is
+  // thin and dashed; the filled blue square at A (drawn during the
+  // pick-map pass) anchors the start.
+  if (!m_ruler_node_b_obj) {
+    cr->save();
+    const double ox2 = doc_origin_x();
+    const double oy2 = doc_origin_y();
+    cr->translate(ox2, oy2);
+    cr->scale(m_zoom, m_zoom);
+
+    cr->set_source_rgba(0.084, 0.325, 0.620, 0.85);
+    cr->set_line_width(1.5 / m_zoom);
+    std::vector<double> dash = {4.0 / m_zoom, 3.0 / m_zoom};
+    cr->set_dash(dash, 0);
+    cr->move_to(na_x, na_y);
+    cr->line_to(m_cursor_doc_x, m_cursor_doc_y);
+    cr->stroke();
+    cr->set_dash(std::vector<double>{}, 0);
+
+    cr->restore();
+    return;
+  }
+
+  double nb_x, nb_y;
+  if (!ruler_endpoint_pos(m_ruler_node_b_obj, m_ruler_node_b_idx, nb_x, nb_y))
+    return;
+
+  // Convert to user-space (Y-up) and delegate to the shared annotation
+  // renderer. push_labels=true so click-to-copy works on the live triangle.
+  double ax_user = na_x;
+  double ay_user = m_doc->canvas_height() - na_y;
+  double bx_user = nb_x;
+  double by_user = m_doc->canvas_height() - nb_y;
+  draw_measurement_annotations(cr, ax_user, ay_user, bx_user, by_user,
+                               /*push_labels=*/true);
 }
 
 void Canvas::draw_top_overlay(const Cairo::RefPtr<Cairo::Context> &cr) {

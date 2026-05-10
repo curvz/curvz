@@ -3575,6 +3575,16 @@ void Canvas::on_motion(double x, double y) {
   m_cursor_doc_y = doc_y;
   m_sig_cursor.emit(doc_x, doc_y);
 
+  // s182 m3 — Measure tool: while A is picked but B is not, redraw on
+  // every mouse move so the dashed track line in draw_ruler_overlay
+  // follows the cursor. Cheap; the overlay is a single line plus the
+  // pick-map. Skipped when B is also set (the triangle is static then)
+  // or when no A (no track to draw).
+  if (m_tool == ActiveTool::Measure && m_ruler_node_a_obj &&
+      !m_ruler_node_b_obj) {
+    queue_draw();
+  }
+
   // Guide construct live preview — snap-aware.  Phase 1 follows mouse from
   // the captured p1.  Phase 2 is locked (dialog is open).  Phase 0 just
   // shows the cursor.
@@ -5530,7 +5540,20 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
   // because they shadowed global shortcuts (S → Selection tool,
   // Q → toggle snap) making those global keys unreachable when a node
   // was selected. Node-tool keys only act when no modifier is held.
-  if (!ctrl && !shift && m_selected_node >= 0 && m_selected_node < n) {
+  //
+  // s182 m7: cross-path multiselection. Pre-s182 the loop over
+  // m_node_selection filtered with `ns.obj == m_selected`, which reduced
+  // a cross-path selection to "the subset belonging to the primary
+  // path." The fix mirrors the Delete handler's groups-by-path walk: one
+  // EditPathCommand per affected path, all wrapped in a CompositeCommand
+  // so a single Ctrl+Z undoes the whole multi-path press. Same shape as
+  // s163 m4's cross-path Delete restoration.
+  //
+  // Gate: type-set fires when at least one selected node exists. The
+  // m_selected_node primary index isn't required because the groups walk
+  // reads from m_node_selection directly (with the m_selected_node
+  // singleton synthesised when m_node_selection is empty).
+  if (!ctrl && !shift) {
     BezierNode::Type new_type;
     bool type_key = true;
     switch (keyval) {
@@ -5555,25 +5578,62 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
       break;
     }
     if (type_key) {
-      PathData before = *m_selected->path;
-      // Apply to all nodes in m_node_selection (or just m_selected_node)
-      if (!m_node_selection.empty()) {
-        for (const auto &ns : m_node_selection) {
-          if (ns.obj == m_selected && ns.node_idx >= 0 &&
-              ns.node_idx < (int)bp.nodes.size())
-            bp.set_node_type(ns.node_idx, new_type);
+      // Build (path → indices) groups, preserving first-seen path order.
+      // Same shape as the Delete handler's groups, factored down to the
+      // single inline pattern since the body is small.
+      std::vector<std::pair<SceneNode *, std::vector<int>>> groups;
+      auto add_entry = [&](SceneNode *p, int idx) {
+        if (!p || !p->path)
+          return;
+        const int pn = (int)p->path->nodes.size();
+        if (idx < 0 || idx >= pn)
+          return;
+        for (auto &g : groups) {
+          if (g.first == p) {
+            for (int existing : g.second)
+              if (existing == idx)
+                return;
+            g.second.push_back(idx);
+            return;
+          }
         }
-      } else {
-        bp.set_node_type(m_selected_node, new_type);
+        groups.push_back({p, {idx}});
+      };
+      if (!m_node_selection.empty()) {
+        for (const auto &ns : m_node_selection)
+          add_entry(ns.obj, ns.node_idx);
+      } else if (m_selected_node >= 0) {
+        add_entry(m_selected, m_selected_node);
       }
-      *m_selected->path = bp.to_path_data();
-      if (m_history)
-        m_history->push(std::make_unique<EditPathCommand>(
-            project(), m_selected->internal_id,
-            std::move(before), *m_selected->path, "Set node type"));
-      LOG_INFO("NodeTool: node {} type → {}", m_selected_node, (int)new_type);
+      if (groups.empty())
+        return false;
+
+      // Compose into a single undoable unit. Per-path EditPathCommand,
+      // wrapped in CompositeCommand so a multi-path press is one undo.
+      auto composite = std::make_unique<CompositeCommand>(
+          groups.size() == 1 ? std::string("Set node type")
+                              : std::string("Set node types"));
+
+      for (auto &g : groups) {
+        SceneNode *obj = g.first;
+        PathData before_pd = *obj->path;
+        BezierPath gbp = BezierPath::from_path_data(before_pd);
+        for (int idx : g.second)
+          gbp.set_node_type(idx, new_type);
+        *obj->path = gbp.to_path_data();
+        composite->add(std::make_unique<EditPathCommand>(
+            project(), obj->internal_id, std::move(before_pd), *obj->path,
+            "Set node type"));
+      }
+
+      if (m_history && !composite->steps.empty())
+        m_history->push(std::move(composite));
+
+      LOG_INFO("NodeTool: set node type → {} on {} path(s)",
+               (int)new_type, groups.size());
       m_sig_doc_changed.emit();
-      m_sig_node_changed.emit(m_selected, m_selected_node);
+      if (m_selected_node >= 0)
+        m_sig_node_changed.emit(m_selected, m_selected_node);
       queue_draw();
       return true;
     }
@@ -5595,6 +5655,109 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
     m_sig_doc_changed.emit();
     queue_draw();
     LOG_INFO("NodeTool: reversed path '{}'", m_selected->id);
+    return true;
+  }
+
+  // ── Retract handles on the selected set (Ctrl+Left / Ctrl+Right) ──────
+  // s182 m7: per-node handle retraction across the whole multi-selection,
+  // single-path or multi-path. Mirror of the Delete handler's groups-by-
+  // path pattern — one EditPathCommand per affected path, all wrapped in
+  // a CompositeCommand for atomic undo.
+  //
+  //   Ctrl+Left  → retract IN  handle (cx1, cy1) to anchor.
+  //   Ctrl+Right → retract OUT handle (cx2, cy2) to anchor.
+  //
+  // Symmetric nodes retract both handles regardless of which side the
+  // user pressed — the type's "in == -out" invariant is enforced by
+  // BezierPath itself, so retracting one side without the other would
+  // either be silently bounced back at to_path_data() or break the
+  // invariant. Mirroring the inspector's IN/OUT label-click semantics
+  // (see PropertiesPanel.cpp:5283: "Symmetric: clicking either label
+  // retracts both handles at once").
+  if (ctrl && !shift && !alt &&
+      (keyval == GDK_KEY_Left || keyval == GDK_KEY_Right)) {
+    const bool side_in = (keyval == GDK_KEY_Left);
+
+    // Build (path → indices) groups, same shape as the type-set walk
+    // above and the s163 m4 Delete walk. Synthesise from m_selected_node
+    // when m_node_selection is empty so single-anchor presses still work.
+    std::vector<std::pair<SceneNode *, std::vector<int>>> groups;
+    auto add_entry = [&](SceneNode *p, int idx) {
+      if (!p || !p->path)
+        return;
+      const int pn = (int)p->path->nodes.size();
+      if (idx < 0 || idx >= pn)
+        return;
+      for (auto &g : groups) {
+        if (g.first == p) {
+          for (int existing : g.second)
+            if (existing == idx)
+              return;
+          g.second.push_back(idx);
+          return;
+        }
+      }
+      groups.push_back({p, {idx}});
+    };
+    if (!m_node_selection.empty()) {
+      for (const auto &ns : m_node_selection)
+        add_entry(ns.obj, ns.node_idx);
+    } else if (m_selected_node >= 0) {
+      add_entry(m_selected, m_selected_node);
+    }
+    if (groups.empty())
+      return false;
+
+    auto composite = std::make_unique<CompositeCommand>(
+        side_in ? std::string("Retract in handle")
+                : std::string("Retract out handle"));
+
+    int touched = 0;
+    for (auto &g : groups) {
+      SceneNode *obj = g.first;
+      PathData before_pd = *obj->path;
+      bool any_changed = false;
+      for (int idx : g.second) {
+        BezierNode &nd = obj->path->nodes[idx];
+        // Symmetric retracts both regardless of side. Otherwise just the
+        // requested side. Skip if already retracted (handle == anchor)
+        // so the composite doesn't pile up no-op steps.
+        const bool both = (nd.type == BezierNode::Type::Symmetric);
+        if (side_in || both) {
+          if (nd.cx1 != nd.x || nd.cy1 != nd.y) {
+            nd.cx1 = nd.x;
+            nd.cy1 = nd.y;
+            any_changed = true;
+          }
+        }
+        if (!side_in || both) {
+          if (nd.cx2 != nd.x || nd.cy2 != nd.y) {
+            nd.cx2 = nd.x;
+            nd.cy2 = nd.y;
+            any_changed = true;
+          }
+        }
+        if (any_changed)
+          ++touched;
+      }
+      if (any_changed) {
+        composite->add(std::make_unique<EditPathCommand>(
+            project(), obj->internal_id, std::move(before_pd), *obj->path,
+            side_in ? "Retract in handle" : "Retract out handle"));
+      }
+    }
+
+    if (m_history && !composite->steps.empty())
+      m_history->push(std::move(composite));
+
+    if (touched > 0) {
+      LOG_INFO("NodeTool: retract {} on {} node(s) across {} path(s)",
+               side_in ? "IN" : "OUT", touched, groups.size());
+      m_sig_doc_changed.emit();
+      if (m_selected_node >= 0)
+        m_sig_node_changed.emit(m_selected, m_selected_node);
+      queue_draw();
+    }
     return true;
   }
 
@@ -6415,22 +6578,8 @@ void Canvas::on_ruler_begin(double x, double y) {
             clip->set_content(Gdk::ContentProvider::create(val));
           }
         }
-        m_ruler_toast_text = "Copied measurement data";
-        m_ruler_toast_x = lbl.sx + lbl.sw * 0.5;
-        m_ruler_toast_y = lbl.sy - 6;
-        m_ruler_toast_ms = 1500;
-        if (m_ruler_toast_conn.connected())
-          m_ruler_toast_conn.disconnect();
-        m_ruler_toast_conn = Glib::signal_timeout().connect(
-            [this]() -> bool {
-              m_ruler_toast_ms -= 50;
-              if (m_ruler_toast_ms <= 0) {
-                m_ruler_toast_ms = 0;
-              }
-              queue_draw();
-              return m_ruler_toast_ms > 0;
-            },
-            50);
+        ruler_show_toast("Copied measurement data",
+                         lbl.sx + lbl.sw * 0.5, lbl.sy - 6);
 
         // S89: "Delete on copy" applies only to TRANSIENT measurements —
         // i.e. the live A/B picks shown by the ruler tool overlay. Saved
@@ -6490,7 +6639,8 @@ void Canvas::on_ruler_begin(double x, double y) {
     return;
   }
 
-  // Shift+click — add/remove from the two-node selection
+  // Shift+click — corrective gesture: deselect A or B, or replace A
+  // when the user wants to redo the first pick after already taking it.
   if (m_mod_shift) {
     // If this node is already A or B, deselect it
     bool was_a =
@@ -6506,21 +6656,45 @@ void Canvas::on_ruler_begin(double x, double y) {
       m_ruler_node_b_obj = nullptr;
       m_ruler_node_b_idx = -1;
     } else {
-      // Promote A→B, set new as A
+      // Promote A→B, set new as A. (Pre-s182 this was the only way to
+      // get B set; plain-click now handles the common path so this
+      // branch is for users who want to swap A while keeping the prior A
+      // around as B. Auto-save still fires when {A,B} is fresh.)
       m_ruler_node_b_obj = m_ruler_node_a_obj;
       m_ruler_node_b_idx = m_ruler_node_a_idx;
       m_ruler_node_a_obj = hit_obj;
       m_ruler_node_a_idx = hit_idx;
-      // S89: shift+click that lands a fresh {A,B} pair is a completion
-      // event — auto-save if the doc flag is on. Helper resets A/B on save.
       ruler_try_auto_save();
     }
   } else {
-    // Plain click — set as A, clear B
-    m_ruler_node_a_obj = hit_obj;
-    m_ruler_node_a_idx = hit_idx;
-    m_ruler_node_b_obj = nullptr;
-    m_ruler_node_b_idx = -1;
+    // s182 m3 — plain-click is a two-click measurement gesture:
+    //   1st click sets A (with B null) — tool now tracks mouse with a
+    //          dashed live track line drawn in the overlay.
+    //   2nd click sets B — completion event, fires auto-save if the
+    //          doc flag is on.
+    //   3rd click starts a fresh measurement (A=new winner, B=null).
+    // Clicking the already-set A is a no-op (use shift-click to clear).
+    bool already_a =
+        (hit_obj == m_ruler_node_a_obj && hit_idx == m_ruler_node_a_idx);
+    if (already_a) {
+      // Re-clicking A while A-only → ignore. Use Space or shift to clear.
+      // Re-clicking A while {A,B} set → also ignore; second click landed
+      // on the same first-click target, so no fresh measurement to make.
+      queue_draw();
+      return;
+    }
+    if (m_ruler_node_a_obj && !m_ruler_node_b_obj) {
+      // We have A and the user just picked B. Completion event.
+      m_ruler_node_b_obj = hit_obj;
+      m_ruler_node_b_idx = hit_idx;
+      ruler_try_auto_save();
+    } else {
+      // Fresh measurement — set A, clear B.
+      m_ruler_node_a_obj = hit_obj;
+      m_ruler_node_a_idx = hit_idx;
+      m_ruler_node_b_obj = nullptr;
+      m_ruler_node_b_idx = -1;
+    }
   }
   queue_draw();
 }
@@ -6542,7 +6716,24 @@ void Canvas::on_ruler_end(double /*x*/, double /*y*/) {
   double x2 = std::max(m_marquee_start_dx, m_marquee_cur_dx);
   double y2 = std::max(m_marquee_start_dy, m_marquee_cur_dy);
 
+  // s182 m4 — rule: a measurement always lands on a real, snapped point
+  // (path node, refpt, compound child, group child). A click or drag
+  // that produces no candidate is a rejection event — the user gets a
+  // toast at the click location explaining no anchor was found, and no
+  // ruler state changes. Toast position is the marquee start (in doc
+  // space) converted back to screen space so it appears where the
+  // gesture started.
+  auto fire_rejection_toast = [&]() {
+    double sx, sy;
+    doc_to_screen(m_marquee_start_dx, m_marquee_start_dy, sx, sy);
+    ruler_show_toast("No measurement point at this location", sx, sy - 6);
+  };
+
   if (x2 - x1 < 1.0 || y2 - y1 < 1.0) {
+    // No-drag click in empty space: the press handler armed the marquee
+    // because no candidate was within tolerance. This is the "miss"
+    // path — toast and bail.
+    fire_rejection_toast();
     queue_draw();
     return;
   }
@@ -6561,6 +6752,8 @@ void Canvas::on_ruler_end(double /*x*/, double /*y*/) {
   }
 
   if (inside.size() == 0) {
+    // Marquee enclosed no candidate — same rule as no-drag miss.
+    fire_rejection_toast();
     queue_draw();
     return;
   }

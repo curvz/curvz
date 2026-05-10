@@ -1,12 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
-  <!-- Outer body: filled rect with hole (even-odd) -->
-  <path fill="currentColor" fill-rule="evenodd" stroke="none"
-        d="M 1 5 L 15 5 L 15 11 L 1 11 Z
-           M 2 6 L 14 6 L 14 10 L 2 10 Z"/>
-  <!-- Tick marks: short ticks at 4,6,10,12 and tall tick at 8 -->
-  <rect fill="currentColor" x="3.75" y="8" width="0.8" height="2"/>
-  <rect fill="currentColor" x="5.75" y="8" width="0.8" height="2"/>
-  <rect fill="currentColor" x="7.6"  y="7" width="0.8" height="3"/>
-  <rect fill="currentColor" x="9.75" y="8" width="0.8" height="2"/>
-  <rect fill="currentColor" x="11.75" y="8" width="0.8" height="2"/>
+<svg data-curvz-export-units="px" data-curvz-export-size="1000.0000" data-curvz-export-fit="width" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <g data-curvz-layer="1" id="Layer_1¶5c501233" data-curvz-iid="5c501233-055d-414f-8ab7-2b26ed0d0027" data-curvz-name="Layer 1">
+    <path data-curvz-compound="1" id="Compound_1¶938b52e4" data-curvz-iid="938b52e4-3767-4091-b703-c49a32cf90d2" data-curvz-name="Compound 1" fill-rule="evenodd" d="M 50 200 L 950 200 L 950 800 L 50 800 L 50 200 Z M 850 300 C 850 433.333 850 566.667 850 700 C 816.667 700 783.333 699.999 750 699.999 C 750 633.333 750 566.666 750 500 C 716.667 500 683.333 500 650 500 C 650 566.596 650 633.192 650 699.788 C 650 699.859 650 699.929 650 700 C 616.606 700 583.212 700 549.817 700 C 549.878 600 549.939 500 550 400 C 534.371 400 518.743 400 503.114 400 C 485.41 400 467.705 400 450 400 C 449.966 500 449.932 600 449.897 700 C 427.115 700 404.333 700 381.551 700 C 371.034 700 350 700 350 700 L 350 699.788 C 350 699.788 350 684.216 350 676.431 C 350 617.62 350 558.81 350 500 C 316.667 500 283.333 500 250 500 C 250 558.81 250 617.62 250 676.431 C 250 684.216 250 699.788 250 699.788 C 250 699.788 250 699.929 250 700 C 236.445 700 222.89 700 209.335 700 C 203.776 700 192.659 700 192.659 700 C 192.659 700 180.968 700 175.123 700 C 166.749 700 158.374 700 150 700 C 150 566.667 150 433.333 150 300 C 383.333 300 616.667 300 850 300 Z" data-curvz-types="M K K K|K K K K K K M K K K K K M K K M K K M K M M K M K M" data-curvz-child-ids="e9928123,Subtract¶f5a7e227" fill="currentColor" stroke="none" stroke-width="0"/>
+  </g>
+  <g data-curvz-guide-layer="1" data-curvz-guide-color="0,0.749,1" data-curvz-iid="cd70ac59-2161-4063-8853-17012b65f05d" data-curvz-name="Guides">
+  </g>
 </svg>

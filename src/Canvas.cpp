@@ -4355,21 +4355,55 @@ void Canvas::ruler_try_inherit_node_selection() {
 // hover highlight) that explicitly want path-node-only results — they
 // read obj->path->nodes[ni] directly. Refpt callers must use
 // ruler_collect_all_endpoints.
+//
+// s182: descends into Compound and Group containers so child Path nodes
+// are pickable too. Pre-s182 the walk was flat over each layer's direct
+// children, which silently skipped path nodes that lived inside a
+// compound or group — invisible to the ruler tool's snap-and-highlight
+// pass even though they were real, visible points on the canvas. Special
+// layers (Guide / Grid / Margin / Measure / Ref) stay excluded by the
+// is_special_layer filter at the top; refpts ride a separate explicit
+// pass in ruler_collect_all_endpoints.
+//
+// Lock semantics: the codebase has no automatic ancestor-lock
+// inheritance (a locked group doesn't auto-lock its children — the
+// LayersPanel just greys the names). The recursion still bails on a
+// locked container as a guard rail, since the user's intent in locking
+// a container is generally "leave the contents alone," and the alternative
+// (descending into a locked group's children) would let the ruler tool
+// pick endpoints from a thing the user has signalled is hands-off.
 void Canvas::ruler_collect_all_path_nodes(
     std::vector<std::pair<SceneNode *, int>> &out) const {
   if (!m_doc)
     return;
+  // Recursive walk: emit endpoints from Path nodes, descend into Compound
+  // and Group containers. Anything else (Text, Image, Blend, Warp, ...)
+  // is intentionally skipped — those types don't expose pickable BezierNode
+  // anchors. Future container-style types should be added here.
+  std::function<void(SceneNode &)> walk = [&](SceneNode &node) {
+    if (node.locked)
+      return;
+    if (node.type == SceneNode::Type::Path && node.path) {
+      for (int i = 0; i < (int)node.path->nodes.size(); ++i)
+        out.push_back({&node, i});
+      return;
+    }
+    if (node.type == SceneNode::Type::Compound ||
+        node.type == SceneNode::Type::Group) {
+      for (auto &ch_uptr : node.children) {
+        if (!ch_uptr)
+          continue;
+        walk(*ch_uptr);
+      }
+    }
+  };
   for (auto &layer : m_doc->layers) {
     if (!layer->visible || layer->locked || layer->is_special_layer())
       continue;
     for (auto &obj_uptr : layer->children) {
-      SceneNode &obj = *obj_uptr;
-      if (obj.type != SceneNode::Type::Path || !obj.path)
+      if (!obj_uptr)
         continue;
-      if (obj.locked)
-        continue;
-      for (int i = 0; i < (int)obj.path->nodes.size(); ++i)
-        out.push_back({&obj, i});
+      walk(*obj_uptr);
     }
   }
 }
@@ -4440,6 +4474,30 @@ void Canvas::ruler_clear() {
   queue_draw();
 }
 
+// s182 m4 — show a toast at a given screen-space position. Reused by
+// click-to-copy success ("Copied measurement data") and click-rejection
+// ("No measurement point at this location"). Cancels any in-flight
+// toast and starts a fresh 1500ms countdown ticking at 50ms.
+void Canvas::ruler_show_toast(const std::string &text, double screen_x,
+                              double screen_y) {
+  m_ruler_toast_text = text;
+  m_ruler_toast_x = screen_x;
+  m_ruler_toast_y = screen_y;
+  m_ruler_toast_ms = 1500;
+  if (m_ruler_toast_conn.connected())
+    m_ruler_toast_conn.disconnect();
+  m_ruler_toast_conn = Glib::signal_timeout().connect(
+      [this]() -> bool {
+        m_ruler_toast_ms -= 50;
+        if (m_ruler_toast_ms <= 0)
+          m_ruler_toast_ms = 0;
+        queue_draw();
+        return m_ruler_toast_ms > 0;
+      },
+      50);
+  queue_draw();
+}
+
 // Called when Enter is pressed while Ruler tool is active.
 void Canvas::ruler_place_measurement() {
   if (!m_doc)
@@ -4484,8 +4542,19 @@ void Canvas::ruler_place_measurement() {
   // s159 m2: kept as bare emit — refresh-side-effect, not selection change.
   // Revisit when the s155-backlog "always-visible inspector categories"
   // refactor retires the panel-refresh hijack pattern.
+  //
+  // s182 m6: also emit doc_changed. Adding a Measurement node to the
+  // measure layer is a structural change to the doc tree — same shape
+  // as any other "object added to scene" site. The MainWindow's
+  // doc_changed listener calls m_layers.refresh(), which is what makes
+  // the new measurement appear in Layers > Measurements right away.
+  // Pre-s182 the bare m_sig_selection.emit(nullptr) was hooked to the
+  // inspector refresh path only, leaving the LayersPanel stale until
+  // some unrelated event (selection click, tool switch) re-triggered
+  // the refresh chain.
   m_sig_selection.emit(nullptr);
   m_sig_measurements_changed.emit();
+  m_sig_doc_changed.emit();
   queue_draw();
 }
 

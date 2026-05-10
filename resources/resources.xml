@@ -179,6 +179,10 @@
     <file alias="img/1-4-ratio-diagram.svg">help/img/1-4-ratio-diagram.svg</file>
     <file alias="img/scott-bug.svg">help/img/scott-bug.svg</file>
     <file alias="img/5-2-1-motif-section.png">help/img/5-2-1-motif-section.png</file>
+    <file alias="img/12-1-bool-corners-1-mixed.png">help/img/12-1-bool-corners-1-mixed.png</file>
+    <file alias="img/12-1-bool-corners-2-rounded.png">help/img/12-1-bool-corners-2-rounded.png</file>
+    <file alias="img/12-1-bool-corners-3-retracted.png">help/img/12-1-bool-corners-3-retracted.png</file>
+    <file alias="img/12-1-bool-corners-4-clean.png">help/img/12-1-bool-corners-4-clean.png</file>
 
     <!-- s131: tool icons used by chapter 4 leaves. The same currentColor
          symbolic SVGs that the toolbar serves; copies here keep the help

@@ -89,6 +89,71 @@ because there's no transform stack to reconcile.
 
 > ![Sequence: rotated rectangle slightly off horizontal, measure tool reading −2.4°, rotated +2.4° and now true-parallel](img/12-2-rotate-measure-correct.png)
 
+## Sharp boolean results from corner-looking paths
+
+**The problem.** You ran Subtract (or Union, or Intersect) on
+what looked like two rectangles, expecting a clean rectangular
+result, and got rounded curves where the corners should be. The
+shapes look like rects on the canvas, but the boolean rounded
+them anyway.
+
+**The cause is invisible at first glance.** Boolean operations
+work from each anchor's tangent vector, not from the visual
+silhouette. A path can *look* like sharp corners — straight
+edges, square turns — while one or more of its nodes are typed
+**Smooth** or **Symmetric** with non-zero handles. The handles
+are hidden until you switch to the Node tool. When the boolean
+op enriches geometry at the participating anchors, those handles
+carry through into the output as curve segments. The result has
+sharp corners where the originals had **Corner**/**Cusp** nodes,
+and rounded corners where they had **Smooth**/**Symmetric**
+nodes — even if the visible shape gave no warning.
+
+**The Curvz workflow.**
+
+1. Switch to the **Node tool** (4.2.2 — keyboard **N**) and
+   inspect the path. Smooth/Symmetric nodes show extended
+   handles; Corner/Cusp nodes show no handles or retracted ones.
+2. Select the offending nodes — marquee or shift-click.
+3. Press **Ctrl+Left** to retract the IN handles, **Ctrl+Right**
+   to retract the OUT handles. Symmetric nodes retract both
+   regardless of side. (See 4.2.2 for the full multi-select
+   retract gesture.)
+4. Switch to the **Selection tool** and run the boolean op. The
+   result has the corners you expected.
+
+**Why it works.** Curvz keeps node *type* and node *handles* as
+independent state — a Smooth node with handles retracted to its
+anchor is geometrically identical to a Corner, and the boolean
+engine treats them the same way. Retracting handles before the
+op is the structural fix; converting node types after the op is
+fighting the symptom. The handles are what the math reads, so
+the handles are what you change.
+
+![Rect of six nodes in the Node tool. Nodes 4 and 5 along the bottom edge are typed Smooth, with handles extending well off the anchor. The path looks rectangular but the math says otherwise.](img/12-1-bool-corners-1-mixed.png)
+
+**❶ Before — looks like a rect.** Six nodes; bottom two are
+*Smooth* with extended handles. Visually indistinguishable from
+a Corner-only rect at this zoom.
+
+![Subtract result of the rect minus a small rect inserted below. The bite has rounded walls flowing into the cut, instead of a clean rectangular slot.](img/12-1-bool-corners-2-rounded.png)
+
+**❷ After Subtract — rounded bite.** The bottom edge collapses
+into curved walls because the boolean carried the smooth
+tangents of nodes 4 and 5 into the output.
+
+![Same rect after retracting the handles on nodes 4 and 5. Inspector shows IN, NODE, and OUT all at the same X coordinate — the handles sit on the anchor.](img/12-1-bool-corners-3-retracted.png)
+
+**❸ Fix — handles retracted.** Ctrl+Left + Ctrl+Right on the
+selected pair zeroes the IN/OUT handles to the anchor. Node
+types unchanged; the geometry is now corner-equivalent.
+
+![Subtract result after the retract. The bite is a clean rectangular slot with sharp corners, the original intent.](img/12-1-bool-corners-4-clean.png)
+
+**❹ After Subtract again — clean slot.** Same op, same operands,
+sharp corners — because the math now reads zero-length tangents
+at the participating anchors.
+
 ## More strategies coming
 
 This chapter is incomplete on purpose — strategies get added as

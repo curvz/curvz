@@ -1371,6 +1371,12 @@ private:
   // structured annotations the live overlay was showing, so the user sees
   // visual continuity. Returns true if a measurement was saved.
   bool ruler_try_auto_save();
+  // s182 m4 — show a toast at the given screen-space position. Used both
+  // by the click-to-copy success path ("Copied measurement data") and by
+  // the no-candidate rejection path ("No measurement point at this
+  // location"). Same green-pill style; same 1500ms TTL with 50ms tick.
+  void ruler_show_toast(const std::string &text, double screen_x,
+                        double screen_y);
   // S89 endpoint-kinds: an endpoint is either a path node or a refpt.
   //   kind=Node: obj is a Path SceneNode, idx is the BezierNode index.
   //   kind=Ref:  obj is a Ref SceneNode, idx is unused (-1 by convention).
