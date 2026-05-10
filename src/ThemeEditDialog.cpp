@@ -1341,15 +1341,54 @@ void ThemeEditDialog::on_cancel() {
 
 // ── on_reset ──────────────────────────────────────────────────────────────
 //
-// m2 placeholder. m5 fills in the mode-scoped semantic: "reset only
-// the currently-displayed mode's properties to factory defaults."
-// Until m4 lands the thumbnail mode toggle, there's no "current
-// mode" to read against, so leaving this as a no-op is the right
-// shape — the button is visible (so layout review is honest) and
-// click is captured (so the user doesn't see a crash) but nothing
-// changes.
+// s184 m1 — Mode-scoped reset to factory defaults.
+//
+// Scope: ONLY the motif sub-bundle's currently-displayed pair. If the
+// thumbnail is showing Dark, the dark_* triple resets; if Light, the
+// light_* triple resets. The off-mode pair is untouched. Other
+// sub-bundles (units, guides, grid, margins, snap) are mode-
+// independent and outside the scope of a "reset what I'm looking at"
+// gesture — the user can edit those directly, or Duplicate-and-edit
+// the theme if they want a full clean slate.
+//
+// Source of truth: MotifSettings's default-member-initialisers (see
+// theme/Theme.hpp). Default-constructing a temporary and copying the
+// active mode's three triples gives us the factory values without
+// duplicating constants.
+//
+// Persistence: this only mutates m_working. The user can still Cancel
+// to discard, or OK to commit via UpdateThemeCommand. The live
+// thumbnail and the three motif swatches repaint immediately so the
+// reset state is visible.
 void ThemeEditDialog::on_reset() {
-    LOG_DEBUG("ThemeEditDialog: reset — m2 placeholder, m5 fills semantic");
+    LOG_DEBUG("ThemeEditDialog: reset motif pair for mode {}",
+              m_preview_mode == Motif::Light ? "Light" : "Dark");
+
+    const theme::MotifSettings factory;
+    if (m_preview_mode == Motif::Light) {
+        m_working.motif.light_artboard_r  = factory.light_artboard_r;
+        m_working.motif.light_artboard_g  = factory.light_artboard_g;
+        m_working.motif.light_artboard_b  = factory.light_artboard_b;
+        m_working.motif.light_workspace_r = factory.light_workspace_r;
+        m_working.motif.light_workspace_g = factory.light_workspace_g;
+        m_working.motif.light_workspace_b = factory.light_workspace_b;
+        m_working.motif.light_creation_r  = factory.light_creation_r;
+        m_working.motif.light_creation_g  = factory.light_creation_g;
+        m_working.motif.light_creation_b  = factory.light_creation_b;
+    } else {
+        m_working.motif.dark_artboard_r  = factory.dark_artboard_r;
+        m_working.motif.dark_artboard_g  = factory.dark_artboard_g;
+        m_working.motif.dark_artboard_b  = factory.dark_artboard_b;
+        m_working.motif.dark_workspace_r = factory.dark_workspace_r;
+        m_working.motif.dark_workspace_g = factory.dark_workspace_g;
+        m_working.motif.dark_workspace_b = factory.dark_workspace_b;
+        m_working.motif.dark_creation_r  = factory.dark_creation_r;
+        m_working.motif.dark_creation_g  = factory.dark_creation_g;
+        m_working.motif.dark_creation_b  = factory.dark_creation_b;
+    }
+
+    refresh_motif_swatches();
+    if (m_thumbnail) m_thumbnail->queue_draw();
 }
 
 } // namespace Curvz

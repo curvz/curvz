@@ -69,6 +69,17 @@
          Same metadata-strip discipline as the s154 transforms-section
          icons. -->
     <file preprocess="xml-stripblanks" alias="curvz-align-symbolic.svg">icons/curvz-align-symbolic.svg</file>
+    <!-- s184 m2: align popover verb buttons. Replace the cairo-drawn
+         per-op glyphs (draw_align_icon) with symbolic SVG icons. Stand-ins
+         from Claude — replace with Curvz-authored versions as desired. -->
+    <file preprocess="xml-stripblanks" alias="curvz-align-left-symbolic.svg">icons/curvz-align-left-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-align-center-h-symbolic.svg">icons/curvz-align-center-h-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-align-right-symbolic.svg">icons/curvz-align-right-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-align-top-symbolic.svg">icons/curvz-align-top-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-align-center-v-symbolic.svg">icons/curvz-align-center-v-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-align-bottom-symbolic.svg">icons/curvz-align-bottom-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-distribute-h-symbolic.svg">icons/curvz-distribute-h-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-distribute-v-symbolic.svg">icons/curvz-distribute-v-symbolic.svg</file>
   </gresource>
 
   <!-- ── Bundled non-icon data ────────────────────────────────────────────

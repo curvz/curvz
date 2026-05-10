@@ -393,7 +393,6 @@ struct Toolbar::Impl {
     // Align & Distribute
     Gtk::Button       align_btn;
     Gtk::Popover      align_pop;
-    Gtk::DrawingArea  align_da[8];
     bool              align_enabled = false;
 
     void build_align_button();
@@ -703,8 +702,9 @@ Toolbar::CanvasFocusSignal&
 void Toolbar::set_motif(Motif m) {
     if (m_impl->motif == m) return;
     m_impl->motif = m;
-    m_impl->align_btn.queue_draw();
-    for (auto& da : m_impl->align_da) da.queue_draw();
+    // s184 m2: popover align icons are now symbolic SVG via Gtk::Image —
+    // currentColor recoloration is automatic via CSS. No queue_draw needed.
+    // (The trigger button was already Gtk::Image since s183 m1.)
 }
 
 void Toolbar::set_align_enabled(bool enabled) {
@@ -2813,146 +2813,13 @@ void Toolbar::Impl::sync_from_selection(const std::vector<SceneNode*>& sel,
 // ── Align & Distribute
 // ────────────────────────────────────────────────────────
 
-// Draw a single align/distribute icon into a 32×32 area.
-// Uses the same Cairo-icon pattern as cap/join buttons.
-// S117 m5: align icon was hardcoded for dark motif (light icon on dark
-// surface). On light motif (icon on #dddddd toolbar) the same #e0e0e0
-// rects vanished. Same problem class as the ruler chrome — Cairo paint
-// can't read CSS tokens, so we keep two palettes and pick at draw time.
-// Mirrors RulerPalette in src/Ruler.cpp.
-struct AlignIconPalette {
-  double fg_enabled;   // rect fill when button is enabled
-  double fg_disabled;  // rect fill when button is disabled (faded)
-  double ref;          // reference line / tick colour
-};
-static const AlignIconPalette kAlignDark  = {0.88, 0.50, 0.38};
-static const AlignIconPalette kAlignLight = {0.20, 0.55, 0.40};
-static const AlignIconPalette &align_palette_for(Motif m) {
-  return m == Motif::Light ? kAlignLight : kAlignDark;
-}
-
-static void draw_align_icon(const Cairo::RefPtr<Cairo::Context> &cr, int w,
-                            int h, AlignOp op, bool enabled, Motif motif) {
-  const AlignIconPalette &pal = align_palette_for(motif);
-  double fg = enabled ? pal.fg_enabled : pal.fg_disabled;
-  double ref_col = pal.ref;
-
-  cr->set_antialias(Cairo::Antialias::ANTIALIAS_DEFAULT);
-
-  // Helper: filled rect
-  auto rect = [&](double x, double y, double rw, double rh) {
-    cr->rectangle(x, y, rw, rh);
-    cr->fill();
-  };
-
-  switch (op) {
-  case AlignOp::AlignLeft: {
-    // Vertical reference line on left; two rects of different widths flush left
-    cr->set_source_rgb(ref_col, ref_col, ref_col);
-    cr->set_line_width(1.5);
-    cr->move_to(5.5, 4);
-    cr->line_to(5.5, h - 4);
-    cr->stroke();
-    cr->set_source_rgb(fg, fg, fg);
-    rect(6, 8, 16, 6);
-    rect(6, 18, 10, 6);
-    break;
-  }
-  case AlignOp::AlignCenterH: {
-    // Vertical reference line in centre; rects centred on it
-    double cx = w * 0.5;
-    cr->set_source_rgb(ref_col, ref_col, ref_col);
-    cr->set_line_width(1.5);
-    cr->move_to(cx, 4);
-    cr->line_to(cx, h - 4);
-    cr->stroke();
-    cr->set_source_rgb(fg, fg, fg);
-    rect(cx - 8, 8, 16, 6);
-    rect(cx - 5, 18, 10, 6);
-    break;
-  }
-  case AlignOp::AlignRight: {
-    double rx = w - 5.5;
-    cr->set_source_rgb(ref_col, ref_col, ref_col);
-    cr->set_line_width(1.5);
-    cr->move_to(rx, 4);
-    cr->line_to(rx, h - 4);
-    cr->stroke();
-    cr->set_source_rgb(fg, fg, fg);
-    rect(rx - 16, 8, 16, 6);
-    rect(rx - 10, 18, 10, 6);
-    break;
-  }
-  case AlignOp::AlignTop: {
-    cr->set_source_rgb(ref_col, ref_col, ref_col);
-    cr->set_line_width(1.5);
-    cr->move_to(4, 5.5);
-    cr->line_to(w - 4, 5.5);
-    cr->stroke();
-    cr->set_source_rgb(fg, fg, fg);
-    rect(8, 6, 6, 14);
-    rect(18, 6, 6, 9);
-    break;
-  }
-  case AlignOp::AlignCenterV: {
-    double cy = h * 0.5;
-    cr->set_source_rgb(ref_col, ref_col, ref_col);
-    cr->set_line_width(1.5);
-    cr->move_to(4, cy);
-    cr->line_to(w - 4, cy);
-    cr->stroke();
-    cr->set_source_rgb(fg, fg, fg);
-    rect(8, cy - 7, 6, 14);
-    rect(18, cy - 4, 6, 9);
-    break;
-  }
-  case AlignOp::AlignBottom: {
-    double by = h - 5.5;
-    cr->set_source_rgb(ref_col, ref_col, ref_col);
-    cr->set_line_width(1.5);
-    cr->move_to(4, by);
-    cr->line_to(w - 4, by);
-    cr->stroke();
-    cr->set_source_rgb(fg, fg, fg);
-    rect(8, by - 14, 6, 14);
-    rect(18, by - 9, 6, 9);
-    break;
-  }
-  case AlignOp::DistributeH: {
-    // Three vertical bars with equal gaps indicated by arrows/bars
-    cr->set_source_rgb(ref_col, ref_col, ref_col);
-    cr->set_line_width(1.0);
-    // Left + right edge ticks
-    cr->move_to(4.5, 6);
-    cr->line_to(4.5, h - 6);
-    cr->stroke();
-    cr->move_to(w - 4.5, 6);
-    cr->line_to(w - 4.5, h - 6);
-    cr->stroke();
-    cr->set_source_rgb(fg, fg, fg);
-    // Three equal-width rects spaced evenly
-    double bw = 5, gap = (w - 8 - 3 * bw) / 2.0;
-    for (int i = 0; i < 3; ++i)
-      rect(4 + i * (bw + gap), 8, bw, h - 16);
-    break;
-  }
-  case AlignOp::DistributeV: {
-    cr->set_source_rgb(ref_col, ref_col, ref_col);
-    cr->set_line_width(1.0);
-    cr->move_to(6, 4.5);
-    cr->line_to(w - 6, 4.5);
-    cr->stroke();
-    cr->move_to(6, h - 4.5);
-    cr->line_to(w - 6, h - 4.5);
-    cr->stroke();
-    cr->set_source_rgb(fg, fg, fg);
-    double bh = 5, gap = (h - 8 - 3 * bh) / 2.0;
-    for (int i = 0; i < 3; ++i)
-      rect(8, 4 + i * (bh + gap), w - 16, bh);
-    break;
-  }
-  }
-}
+// s184 m2: the cairo align icon block (AlignIconPalette, kAlignDark/Light,
+// align_palette_for, draw_align_icon) was removed when the popover verb
+// buttons were converted to symbolic SVG icons. The icons now live in
+// resources/icons/ (curvz-align-{left,center-h,right,top,center-v,bottom}-
+// symbolic.svg and curvz-distribute-{h,v}-symbolic.svg) and are loaded
+// via Gtk::Image::set_from_icon_name. currentColor handles motif and
+// disabled-state colouring through CSS — no per-icon palette needed.
 
 void Toolbar::Impl::build_align_button() {
   // s175 m4: opening separator removed and trailing self->append removed.
@@ -3049,15 +2916,20 @@ void Toolbar::Impl::build_align_popover() {
     return hbox;
   };
 
-  // Helper: wrap a DrawingArea in a button that emits an AlignOp
-  auto make_btn = [&](Gtk::DrawingArea &da, AlignOp op,
+  // Helper: build a button containing a symbolic SVG icon. The icon
+  // resources are registered in resources/resources.xml under the
+  // /com/curvz/app/icons prefix; Gtk::Image::set_from_icon_name picks
+  // them up via the registered IconTheme. currentColor recolouring is
+  // automatic — disabled state flows through CSS opacity on the
+  // popover or button, so no per-button motif handling is needed.
+  // s184 m2: replaced the cairo-drawn DrawingArea+draw_align_icon path.
+  auto make_btn = [&](const char* icon_name, AlignOp op,
                       const std::string &tip) -> Gtk::Button * {
-    da.set_size_request(32, 32);
-    da.set_can_target(false);
-    da.set_draw_func([this, op](const Cairo::RefPtr<Cairo::Context> &cr, int w,
-                                int h) { draw_align_icon(cr, w, h, op, true, motif); });
+    auto *img = Gtk::make_managed<Gtk::Image>();
+    img->set_from_icon_name(icon_name);
+    img->set_pixel_size(22);
     auto *btn = Gtk::make_managed<Gtk::Button>();
-    btn->set_child(da);
+    btn->set_child(*img);
     btn->set_has_frame(false);
     btn->add_css_class("tb-icon-btn");
     btn->set_tooltip_text(tip);
@@ -3072,31 +2944,31 @@ void Toolbar::Impl::build_align_popover() {
   // We lay them out as two sub-rows for clarity
   auto *align_h_row = make_section("Align");
   Gtk::Button *al_btn;
-  al_btn = make_btn(align_da[0], AlignOp::AlignLeft, "Align left edges");
+  al_btn = make_btn("curvz-align-left-symbolic", AlignOp::AlignLeft, "Align left edges");
   curvz::utils::set_name(al_btn, "pop_tb_align_l", "popover_toolbar_align_left_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn(align_da[1], AlignOp::AlignCenterH, "Center on vertical axis");
+  al_btn = make_btn("curvz-align-center-h-symbolic", AlignOp::AlignCenterH, "Center on vertical axis");
   curvz::utils::set_name(al_btn, "pop_tb_align_ch", "popover_toolbar_align_center_h_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn(align_da[2], AlignOp::AlignRight, "Align right edges");
+  al_btn = make_btn("curvz-align-right-symbolic", AlignOp::AlignRight, "Align right edges");
   curvz::utils::set_name(al_btn, "pop_tb_align_r", "popover_toolbar_align_right_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn(align_da[3], AlignOp::AlignTop, "Align top edges");
+  al_btn = make_btn("curvz-align-top-symbolic", AlignOp::AlignTop, "Align top edges");
   curvz::utils::set_name(al_btn, "pop_tb_align_t", "popover_toolbar_align_top_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn(align_da[4], AlignOp::AlignCenterV, "Center on horizontal axis");
+  al_btn = make_btn("curvz-align-center-v-symbolic", AlignOp::AlignCenterV, "Center on horizontal axis");
   curvz::utils::set_name(al_btn, "pop_tb_align_cv", "popover_toolbar_align_center_v_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn(align_da[5], AlignOp::AlignBottom, "Align bottom edges");
+  al_btn = make_btn("curvz-align-bottom-symbolic", AlignOp::AlignBottom, "Align bottom edges");
   curvz::utils::set_name(al_btn, "pop_tb_align_b", "popover_toolbar_align_bottom_btn");
   align_h_row->append(*al_btn);
 
   // ── Distribute row ─────────────────────────────────────────────────────
   auto *dist_row = make_section("Distribute");
-  al_btn = make_btn(align_da[6], AlignOp::DistributeH, "Distribute horizontally (equal gaps)");
+  al_btn = make_btn("curvz-distribute-h-symbolic", AlignOp::DistributeH, "Distribute horizontally (equal gaps)");
   curvz::utils::set_name(al_btn, "pop_tb_align_dh", "popover_toolbar_distribute_h_btn");
   dist_row->append(*al_btn);
-  al_btn = make_btn(align_da[7], AlignOp::DistributeV, "Distribute vertically (equal gaps)");
+  al_btn = make_btn("curvz-distribute-v-symbolic", AlignOp::DistributeV, "Distribute vertically (equal gaps)");
   curvz::utils::set_name(al_btn, "pop_tb_align_dv", "popover_toolbar_distribute_v_btn");
   dist_row->append(*al_btn);
 
