@@ -259,9 +259,11 @@ LibraryPanel::render_thumb(const std::string& svg_path, int size) {
     double bg_r = 0.157, bg_g = 0.157, bg_b = 0.157;
     if (m_project) {
         if (auto *active = m_project->active_doc()) {
-            bg_r = active->artboard_bg_r;
-            bg_g = active->artboard_bg_g;
-            bg_b = active->artboard_bg_b;
+            // s183 m5a — doc now carries dual pairs.
+            const Motif mo = m_project->motif;
+            bg_r = active->artboard_bg_r(mo);
+            bg_g = active->artboard_bg_g(mo);
+            bg_b = active->artboard_bg_b(mo);
         }
     }
     bool light_bg = std::max({bg_r, bg_g, bg_b}) > 0.60;

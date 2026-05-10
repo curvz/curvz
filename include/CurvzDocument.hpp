@@ -227,42 +227,125 @@ struct CurvzDocument {
     double guide_color_g = 0.749;
     double guide_color_b = 1.0;
 
-    // ── Editor presentation Motif (s148 m1 — re-promoted to doc-scope) ──
-    // History: per-doc in S98; promoted to project-scope per-motif in
-    // s116 m6 ("every tab in a project shares one tone"); demoted back
-    // to per-doc in s148 m1 because users want per-icon choice — a Print
-    // Setup icon on paper-white, a Web Sketch icon on transparent black.
-    // Single slot per doc (not per-motif): the Application ▸ Appearance
-    // Dark/Light pref no longer swaps colours on the canvas; each doc
-    // carries the colours its author picked.
+    // ── Editor presentation Motif (s183 m5a — dual-pair, mode-aware) ──
     //
-    // Field names kept (artboard_bg_r/g/b, workspace_bg_r/g/b) for
-    // round-trip continuity with s98-era project.json files — those
-    // already wrote these keys per-doc, so old files load directly.
-    // Comment removed: the "LEGACY — write-on-load-only" wording from
-    // s116 m6 no longer applies. Canvas paint and PropertiesPanel
-    // chips read/write these starting m1; ThemeLibrary catches up in
-    // s148 m3 when the Theme struct re-acquires a MotifSettings sub-
-    // bundle.
+    // History:
+    //   * S98: per-doc single triple.
+    //   * s116 m6: promoted to project-scope per-motif (every doc in a
+    //     project shared one tone, swapped by Application Appearance).
+    //   * s148 m1: demoted back to per-doc single-triple — users want
+    //     per-icon choice. App Appearance swap no longer altered canvas
+    //     colours; each doc carried "the colours its author picked".
+    //   * s183 m5a (this commit): per-doc DUAL-PAIR. Each doc carries
+    //     dark and light triples for artboard / workspace / creation.
+    //     Application Appearance toggle (Dark/Light) now selects which
+    //     pair the canvas paints from; the data is on the doc, the
+    //     mode selects the slot. Theme apply writes BOTH pairs so a
+    //     theme defines a doc's appearance in both modes.
     //
-    // The new third field, creation_color_*, was project-scope per-motif
-    // before s148 (used to tint rubber-band, marquee, drag-preview etc.
-    // against the active artboard). It demotes alongside artboard/
-    // workspace because they're a tonal unit: an author picking a paper-
-    // white artboard wants a sympathetic creation tint, not a pre-baked
-    // dark-motif cyan. Default is the s116-era dark-motif blue (0.30 /
-    // 0.60 / 1.00) — m1 ships with hardcoded defaults; m2 adds app-mode-
-    // aware Reset that picks dark vs light defaults from
-    // AppPreferences::appearance_mode().
-    double artboard_bg_r  = 0.157;  // #282828 default
-    double artboard_bg_g  = 0.157;
-    double artboard_bg_b  = 0.157;
-    double workspace_bg_r = 0.09;   // #171717 default
-    double workspace_bg_g = 0.09;
-    double workspace_bg_b = 0.09;
-    double creation_color_r = 0.30; // light-blue, reads against dark artboard
-    double creation_color_g = 0.60;
-    double creation_color_b = 1.00;
+    // Why dual-pair: the theme editor (s183 m2-m4) exposes both pairs
+    // for user editing. Without dual-pair storage on docs, applying a
+    // theme could only write one pair (the current mode's), and
+    // flipping the app's appearance afterwards left the doc looking
+    // wrong in the other mode. s148's "single slot per doc" decision
+    // pre-dated the theme editor's reality; s183 catches up.
+    //
+    // Defaults — match the s149 m1 MotifSettings defaults so a
+    // default-constructed doc looks the same in either mode as it did
+    // pre-s183 in the corresponding mode.
+    //
+    // Field access — every read site passes the active motif. The
+    // accessor functions below dispatch; no caller indexes the raw
+    // fields directly (the dark_* / light_* names are storage detail).
+    // Setter methods accept a motif and write into that slot only.
+
+    // Dark-mode triple
+    double dark_artboard_bg_r  = 0.157;  // #282828
+    double dark_artboard_bg_g  = 0.157;
+    double dark_artboard_bg_b  = 0.157;
+    double dark_workspace_bg_r = 0.09;   // #171717
+    double dark_workspace_bg_g = 0.09;
+    double dark_workspace_bg_b = 0.09;
+    double dark_creation_color_r = 0.30; // light-blue, reads on dark artboard
+    double dark_creation_color_g = 0.60;
+    double dark_creation_color_b = 1.00;
+
+    // Light-mode triple — defaults from MotifSettings's factory light.
+    double light_artboard_bg_r  = 1.00;  // #FFFFFF
+    double light_artboard_bg_g  = 1.00;
+    double light_artboard_bg_b  = 1.00;
+    double light_workspace_bg_r = 0.91;  // #E8E8E8
+    double light_workspace_bg_g = 0.91;
+    double light_workspace_bg_b = 0.91;
+    double light_creation_color_r = 0.10; // dark-blue, reads on light artboard
+    double light_creation_color_g = 0.35;
+    double light_creation_color_b = 0.85;
+
+    // Mode-aware accessors. Reads. Pass m_project->motif (or the
+    // motif the caller is drawing for — e.g. the theme thumbnail
+    // passes its own preview mode, decoupled from app motif).
+    double artboard_bg_r(Motif m) const {
+        return m == Motif::Light ? light_artboard_bg_r  : dark_artboard_bg_r;
+    }
+    double artboard_bg_g(Motif m) const {
+        return m == Motif::Light ? light_artboard_bg_g  : dark_artboard_bg_g;
+    }
+    double artboard_bg_b(Motif m) const {
+        return m == Motif::Light ? light_artboard_bg_b  : dark_artboard_bg_b;
+    }
+    double workspace_bg_r(Motif m) const {
+        return m == Motif::Light ? light_workspace_bg_r : dark_workspace_bg_r;
+    }
+    double workspace_bg_g(Motif m) const {
+        return m == Motif::Light ? light_workspace_bg_g : dark_workspace_bg_g;
+    }
+    double workspace_bg_b(Motif m) const {
+        return m == Motif::Light ? light_workspace_bg_b : dark_workspace_bg_b;
+    }
+    double creation_color_r(Motif m) const {
+        return m == Motif::Light ? light_creation_color_r : dark_creation_color_r;
+    }
+    double creation_color_g(Motif m) const {
+        return m == Motif::Light ? light_creation_color_g : dark_creation_color_g;
+    }
+    double creation_color_b(Motif m) const {
+        return m == Motif::Light ? light_creation_color_b : dark_creation_color_b;
+    }
+
+    // Mode-aware setters. Writes go to the named mode's slot only.
+    void set_artboard_bg(Motif m, double r, double g, double b) {
+        if (m == Motif::Light) {
+            light_artboard_bg_r = r;
+            light_artboard_bg_g = g;
+            light_artboard_bg_b = b;
+        } else {
+            dark_artboard_bg_r = r;
+            dark_artboard_bg_g = g;
+            dark_artboard_bg_b = b;
+        }
+    }
+    void set_workspace_bg(Motif m, double r, double g, double b) {
+        if (m == Motif::Light) {
+            light_workspace_bg_r = r;
+            light_workspace_bg_g = g;
+            light_workspace_bg_b = b;
+        } else {
+            dark_workspace_bg_r = r;
+            dark_workspace_bg_g = g;
+            dark_workspace_bg_b = b;
+        }
+    }
+    void set_creation_color(Motif m, double r, double g, double b) {
+        if (m == Motif::Light) {
+            light_creation_color_r = r;
+            light_creation_color_g = g;
+            light_creation_color_b = b;
+        } else {
+            dark_creation_color_r = r;
+            dark_creation_color_g = g;
+            dark_creation_color_b = b;
+        }
+    }
 
     // Measurement settings
     // measure_save_to_layer: when true, every completed measurement (a pair

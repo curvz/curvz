@@ -142,12 +142,12 @@ void MainWindow::on_new() {
   double pv_ws_r = 0.09, pv_ws_g = 0.09, pv_ws_b = 0.09;
   double pv_ab_r = 0.157, pv_ab_g = 0.157, pv_ab_b = 0.157;
   if (active) {
-    pv_ws_r = active->workspace_bg_r;
-    pv_ws_g = active->workspace_bg_g;
-    pv_ws_b = active->workspace_bg_b;
-    pv_ab_r = active->artboard_bg_r;
-    pv_ab_g = active->artboard_bg_g;
-    pv_ab_b = active->artboard_bg_b;
+    pv_ws_r = active->workspace_bg_r(m_project->motif);
+    pv_ws_g = active->workspace_bg_g(m_project->motif);
+    pv_ws_b = active->workspace_bg_b(m_project->motif);
+    pv_ab_r = active->artboard_bg_r(m_project->motif);
+    pv_ab_g = active->artboard_bg_g(m_project->motif);
+    pv_ab_b = active->artboard_bg_b(m_project->motif);
   }
   m_new_doc_dialog.show(
       *this, ndd_available_themes(),

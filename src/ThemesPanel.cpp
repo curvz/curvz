@@ -369,8 +369,7 @@ void ThemesPanel::rebuild_library_list() {
       });
       row->append(*click_btn);
 
-      // Per-row icon buttons (rename / dup / del). Same icons the
-      // dialog used.
+      // Per-row icon buttons. s183 m2: edit / dup / del.
       auto make_icon_btn = [](const char *icon_name, const char *tooltip) {
         auto *b = Gtk::make_managed<Gtk::Button>();
         b->set_icon_name(icon_name);
@@ -378,10 +377,18 @@ void ThemesPanel::rebuild_library_list() {
         b->add_css_class("flat");
         return b;
       };
-      auto *btn_rename = make_icon_btn("document-edit-symbolic", "Rename");
-      btn_rename->signal_clicked().connect(
-          [this, id]() { on_rename_theme(id); });
-      row->append(*btn_rename);
+      // Per-row icon buttons (edit / dup / del). s183 m2: the
+      // "Rename" inline-prompt button became "Edit" — clicking it
+      // emits signal_request_theme_editor and the host opens the
+      // full ThemeEditDialog. The dialog covers name editing plus
+      // the property surfaces, so the dedicated rename mini-dialog
+      // is redundant. on_rename_theme is retained as the
+      // implementation behind a name-only undo path; nothing on the
+      // panel itself drives it any longer.
+      auto *btn_edit = make_icon_btn("document-edit-symbolic", "Edit theme");
+      btn_edit->signal_clicked().connect(
+          [this, id]() { on_edit_theme(id); });
+      row->append(*btn_edit);
       auto *btn_dup = make_icon_btn("edit-copy-symbolic", "Duplicate");
       btn_dup->signal_clicked().connect(
           [this, id]() { on_duplicate_theme(id); });
@@ -616,6 +623,60 @@ void ThemesPanel::on_apply_clicked() {
 // resolved via root_window() instead of a held m_window, and selection
 // state (m_selected_id) is maintained across mutations where it makes
 // sense (delete clears selection if the deleted theme was the source).
+
+void ThemesPanel::on_edit_theme(const theme::ThemeId &id) {
+  // s183 m2 — emit signal_request_theme_editor so the host can open
+  // the dialog. The closure carries the captured before-snapshot and
+  // the per-OK callback that pushes UpdateThemeCommand. Mirrors
+  // StylesPanel::open_style_editor's signal-emit shape.
+  if (!m_project) return;
+  const theme::Theme *current = m_project->themes.find_theme(id);
+  if (!current) {
+    LOG_WARN("ThemesPanel::on_edit_theme: theme '{}' not found", id);
+    return;
+  }
+  if (m_project->themes.is_built_in(id)) {
+    LOG_WARN("ThemesPanel::on_edit_theme: '{}' is built-in, refusing", id);
+    return;
+  }
+
+  theme::Theme before = *current;
+  // Capture id by value into the closure — m_project->themes can
+  // reorder under us between the emit and the OK callback firing.
+  // before is captured by value too so the command's snapshot is
+  // stable independent of subsequent panel state.
+  m_sig_request_theme_editor.emit(
+      before,
+      [this, id, before](theme::Theme after) {
+        if (!m_project) return;
+        // Defensive: theme might have been deleted while the dialog
+        // was open. Skip the command push on a stale id rather than
+        // crash inside UpdateThemeCommand::apply.
+        if (!m_project->themes.find_theme(id)) {
+          LOG_WARN("ThemesPanel::on_edit_theme commit: theme '{}' "
+                   "no longer in library, dropping edit", id);
+          return;
+        }
+        // No-change short-circuit. Theme's operator== covers every
+        // editable field by construction (see Theme.hpp comment) —
+        // a bare-OK with no edits should not pollute the undo stack.
+        if (after == before) {
+          LOG_DEBUG("ThemesPanel::on_edit_theme commit: no changes");
+          return;
+        }
+        if (m_history) {
+          auto cmd = std::make_unique<UpdateThemeCommand>(
+              &m_project->themes, id, before, after, "Edit theme");
+          cmd->execute();
+          m_history->push(std::move(cmd));
+        } else {
+          theme::Theme copy = after;
+          copy.header.id = id;
+          m_project->themes.update_theme(id, std::move(copy));
+        }
+        notify_changed();
+      });
+}
 
 void ThemesPanel::on_rename_theme(const theme::ThemeId &id) {
   if (!m_project) return;

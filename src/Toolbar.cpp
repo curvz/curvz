@@ -2962,19 +2962,21 @@ void Toolbar::Impl::build_align_button() {
   // construction, drawing, popover wiring, and signal hookup — only the
   // placement-in-the-toolbar concern moved to the caller.
 
-  // The trigger button — Cairo-drawn align icon
-  Gtk::DrawingArea *icon_da = Gtk::make_managed<Gtk::DrawingArea>();
-  curvz::utils::set_name(icon_da, "tb_ab_icon", "main_toolbar_align_btn_icon_da");
-  icon_da->set_size_request(22, 22);
-  icon_da->set_can_target(false);
-  icon_da->set_draw_func(
-      [this](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
-        // s152 sub-ship 1 fix: read the faked-disabled bool, not the
-        // widget's GTK sensitivity (which is permanently true now).
-        bool en = align_enabled;
-        draw_align_icon(cr, w, h, AlignOp::AlignCenterH, en, motif);
-      });
-  align_btn.set_child(*icon_da);
+  // The trigger button — s183 m1: replaced the cairo-drawn AlignCenterH
+  // stand-in with the dedicated curvz-align-symbolic icon. CSS class
+  // .tool-btn-disabled already drives the dim look when align_enabled
+  // is false (set by set_align_enabled below), so the cairo `en`
+  // parameter that previously dimmed the drawing isn't needed —
+  // currentColor + class opacity handles it. set_align_enabled's
+  // dynamic_cast<Gtk::DrawingArea*> on get_child() now returns null
+  // and the queue_draw branch becomes a clean no-op; left in place
+  // as defensive plumbing (no harm, no allocation).
+  Gtk::Image *icon_img = Gtk::make_managed<Gtk::Image>();
+  icon_img->set_from_icon_name("curvz-align-symbolic");
+  icon_img->set_pixel_size(22);
+  curvz::utils::set_name(icon_img, "tb_ab_icon", "main_toolbar_align_btn_icon");
+  icon_img->set_can_target(false);
+  align_btn.set_child(*icon_img);
   curvz::utils::set_name(align_btn, "tb_ab", "main_toolbar_align_btn");
   // S117 m5: was set_has_frame(true). Every other toolbar button uses
   // frame=false (logo, hamburger, zoom, fit, macro, etc.); this one

@@ -284,6 +284,10 @@ set(SOURCES
     src/ColorPickerPopover.cpp
     src/PaintEditor.cpp
     src/StyleEditorDialog.cpp
+    # s183 m2 — Theme editor dialog. Peer to StyleEditorDialog,
+    # opened from the Themes panel's row Edit (✎) button. Self-
+    # deletes via signal_close_request → signal_idle.
+    src/ThemeEditDialog.cpp
     src/PreviewPanel.cpp
     src/ContextBar.cpp
     src/DocTabBar.cpp

@@ -557,36 +557,32 @@ Theme capture_theme_from_doc(const CurvzDocument& doc, Motif current_motif) {
 
     t.units.display_unit = doc.canvas.display_unit;
 
-    // s149 m1: motif sub-bundle. The doc carries one triple at a time
-    // (the active mode's). Capture writes those values into the matching
-    // slot of MotifSettings; the off-mode slot keeps its struct-default
-    // factory values so apply-in-the-other-mode produces a sensible
-    // result rather than the wrong-mode tone. The user can re-capture
-    // in the other mode to overwrite the off-mode slot if they want a
-    // custom Light look paired with their custom Dark look.
-    if (current_motif == Motif::Light) {
-        t.motif.light_artboard_r  = doc.artboard_bg_r;
-        t.motif.light_artboard_g  = doc.artboard_bg_g;
-        t.motif.light_artboard_b  = doc.artboard_bg_b;
-        t.motif.light_workspace_r = doc.workspace_bg_r;
-        t.motif.light_workspace_g = doc.workspace_bg_g;
-        t.motif.light_workspace_b = doc.workspace_bg_b;
-        t.motif.light_creation_r  = doc.creation_color_r;
-        t.motif.light_creation_g  = doc.creation_color_g;
-        t.motif.light_creation_b  = doc.creation_color_b;
-        // dark_* slots stay at MotifSettings struct defaults.
-    } else {
-        t.motif.dark_artboard_r  = doc.artboard_bg_r;
-        t.motif.dark_artboard_g  = doc.artboard_bg_g;
-        t.motif.dark_artboard_b  = doc.artboard_bg_b;
-        t.motif.dark_workspace_r = doc.workspace_bg_r;
-        t.motif.dark_workspace_g = doc.workspace_bg_g;
-        t.motif.dark_workspace_b = doc.workspace_bg_b;
-        t.motif.dark_creation_r  = doc.creation_color_r;
-        t.motif.dark_creation_g  = doc.creation_color_g;
-        t.motif.dark_creation_b  = doc.creation_color_b;
-        // light_* slots stay at MotifSettings struct defaults.
-    }
+    // s183 m5a: doc now carries both dark and light triples (dual-pair
+    // motif storage). Capture writes both pairs directly — the
+    // current_motif arg is no longer load-bearing for this funnel and
+    // is preserved only for API stability; future cleanup can drop it
+    // from the signature once every caller is comfortable not passing
+    // it. The off-mode "factory defaults" trick is gone — both pairs
+    // come from the doc itself.
+    (void)current_motif;
+    t.motif.dark_artboard_r  = doc.dark_artboard_bg_r;
+    t.motif.dark_artboard_g  = doc.dark_artboard_bg_g;
+    t.motif.dark_artboard_b  = doc.dark_artboard_bg_b;
+    t.motif.dark_workspace_r = doc.dark_workspace_bg_r;
+    t.motif.dark_workspace_g = doc.dark_workspace_bg_g;
+    t.motif.dark_workspace_b = doc.dark_workspace_bg_b;
+    t.motif.dark_creation_r  = doc.dark_creation_color_r;
+    t.motif.dark_creation_g  = doc.dark_creation_color_g;
+    t.motif.dark_creation_b  = doc.dark_creation_color_b;
+    t.motif.light_artboard_r  = doc.light_artboard_bg_r;
+    t.motif.light_artboard_g  = doc.light_artboard_bg_g;
+    t.motif.light_artboard_b  = doc.light_artboard_bg_b;
+    t.motif.light_workspace_r = doc.light_workspace_bg_r;
+    t.motif.light_workspace_g = doc.light_workspace_bg_g;
+    t.motif.light_workspace_b = doc.light_workspace_bg_b;
+    t.motif.light_creation_r  = doc.light_creation_color_r;
+    t.motif.light_creation_g  = doc.light_creation_color_g;
+    t.motif.light_creation_b  = doc.light_creation_color_b;
 
     t.guides.color_r = doc.guide_color_r;
     t.guides.color_g = doc.guide_color_g;
@@ -706,37 +702,31 @@ void apply_theme_to_doc(const Theme& theme, CurvzDocument& doc,
 
     doc.canvas.display_unit = theme.units.display_unit;
 
-    // s149 m1: motif sub-bundle. The doc carries a single triple of
-    // artboard/workspace/creation values; the theme carries both Dark
-    // and Light pairs. Write the matching pair for the user's current
-    // appearance mode. The off-mode pair is preserved in the theme but
-    // not written here — flipping appearance mode later doesn't re-run
-    // apply, so a doc currently in Dark gets the theme's dark_* values
-    // and stays with those even if the user later switches to Light.
-    // Switching appearance modes is a workspace-wide CSS flip; per-doc
-    // colour pairs are independent of it (see the s148 m1 demotion
-    // rationale on CurvzDocument::artboard_bg_*).
-    if (current_motif == Motif::Light) {
-        doc.artboard_bg_r  = theme.motif.light_artboard_r;
-        doc.artboard_bg_g  = theme.motif.light_artboard_g;
-        doc.artboard_bg_b  = theme.motif.light_artboard_b;
-        doc.workspace_bg_r = theme.motif.light_workspace_r;
-        doc.workspace_bg_g = theme.motif.light_workspace_g;
-        doc.workspace_bg_b = theme.motif.light_workspace_b;
-        doc.creation_color_r = theme.motif.light_creation_r;
-        doc.creation_color_g = theme.motif.light_creation_g;
-        doc.creation_color_b = theme.motif.light_creation_b;
-    } else {
-        doc.artboard_bg_r  = theme.motif.dark_artboard_r;
-        doc.artboard_bg_g  = theme.motif.dark_artboard_g;
-        doc.artboard_bg_b  = theme.motif.dark_artboard_b;
-        doc.workspace_bg_r = theme.motif.dark_workspace_r;
-        doc.workspace_bg_g = theme.motif.dark_workspace_g;
-        doc.workspace_bg_b = theme.motif.dark_workspace_b;
-        doc.creation_color_r = theme.motif.dark_creation_r;
-        doc.creation_color_g = theme.motif.dark_creation_g;
-        doc.creation_color_b = theme.motif.dark_creation_b;
-    }
+    // s183 m5a: doc carries both dark and light triples. Apply writes
+    // both — flipping app appearance mode afterwards transparently
+    // reflects the right pair without re-applying the theme. The
+    // current_motif arg is no longer load-bearing here and is
+    // preserved only for API stability; future cleanup can drop it
+    // from the signature.
+    (void)current_motif;
+    doc.dark_artboard_bg_r  = theme.motif.dark_artboard_r;
+    doc.dark_artboard_bg_g  = theme.motif.dark_artboard_g;
+    doc.dark_artboard_bg_b  = theme.motif.dark_artboard_b;
+    doc.dark_workspace_bg_r = theme.motif.dark_workspace_r;
+    doc.dark_workspace_bg_g = theme.motif.dark_workspace_g;
+    doc.dark_workspace_bg_b = theme.motif.dark_workspace_b;
+    doc.dark_creation_color_r = theme.motif.dark_creation_r;
+    doc.dark_creation_color_g = theme.motif.dark_creation_g;
+    doc.dark_creation_color_b = theme.motif.dark_creation_b;
+    doc.light_artboard_bg_r  = theme.motif.light_artboard_r;
+    doc.light_artboard_bg_g  = theme.motif.light_artboard_g;
+    doc.light_artboard_bg_b  = theme.motif.light_artboard_b;
+    doc.light_workspace_bg_r = theme.motif.light_workspace_r;
+    doc.light_workspace_bg_g = theme.motif.light_workspace_g;
+    doc.light_workspace_bg_b = theme.motif.light_workspace_b;
+    doc.light_creation_color_r = theme.motif.light_creation_r;
+    doc.light_creation_color_g = theme.motif.light_creation_g;
+    doc.light_creation_color_b = theme.motif.light_creation_b;
 
     doc.guide_color_r = theme.guides.color_r;
     doc.guide_color_g = theme.guides.color_g;

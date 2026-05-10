@@ -1472,51 +1472,49 @@ void PropertiesPanel::build_canvas_colours_section(CurvzDocument *doc,
       *out_swatch = swatch;
   };
 
-  // s148 m1: chip getter/setter lambdas read/write the active doc's
-  // single-slot fields. The motif-aware switch logic from s127 is gone
-  // because each doc carries one set of values — flipping the Theme
-  // switch (Dark/Light) no longer alters chip colours; it only drives
-  // the CSS fork. Capture `doc` by value: panel rebuilds on doc-switch
-  // (via update_all_panels), so a stale `doc` pointer in a still-live
-  // lambda is prevented by the m_build_gen guard already in place at
-  // each lambda entry.
+  // s183 m5a: chips read and write the matching pair of the doc's
+  // dual-pair motif storage. The pair is chosen by m_project->motif
+  // (the app's current appearance mode). Flipping app appearance
+  // re-paints the chips by way of prop_changed → panel rebuild;
+  // the underlying doc storage carries both pairs so the colours
+  // chosen for the off-mode are preserved across flips.
   add_color_row(
       "Artboard",
-      [doc]() {
-        return std::make_tuple(doc->artboard_bg_r, doc->artboard_bg_g,
-                               doc->artboard_bg_b);
+      [this, doc]() {
+        const Motif mo = m_project ? m_project->motif : Motif::Dark;
+        return std::make_tuple(doc->artboard_bg_r(mo),
+                               doc->artboard_bg_g(mo),
+                               doc->artboard_bg_b(mo));
       },
-      [doc](double r, double g, double b) {
-        doc->artboard_bg_r = r;
-        doc->artboard_bg_g = g;
-        doc->artboard_bg_b = b;
+      [this, doc](double r, double g, double b) {
+        const Motif mo = m_project ? m_project->motif : Motif::Dark;
+        doc->set_artboard_bg(mo, r, g, b);
       },
       &motif_artboard_da);
   add_color_row(
       "Workspace",
-      [doc]() {
-        return std::make_tuple(doc->workspace_bg_r, doc->workspace_bg_g,
-                               doc->workspace_bg_b);
+      [this, doc]() {
+        const Motif mo = m_project ? m_project->motif : Motif::Dark;
+        return std::make_tuple(doc->workspace_bg_r(mo),
+                               doc->workspace_bg_g(mo),
+                               doc->workspace_bg_b(mo));
       },
-      [doc](double r, double g, double b) {
-        doc->workspace_bg_r = r;
-        doc->workspace_bg_g = g;
-        doc->workspace_bg_b = b;
+      [this, doc](double r, double g, double b) {
+        const Motif mo = m_project ? m_project->motif : Motif::Dark;
+        doc->set_workspace_bg(mo, r, g, b);
       },
       &motif_workspace_da);
-  // Creation colour — used by every "creating something" preview surface
-  // (rect/ellipse/line/polygon/spiral construction, pen tool segments
-  // and handles).
   add_color_row(
       "Creation",
-      [doc]() {
-        return std::make_tuple(doc->creation_color_r, doc->creation_color_g,
-                               doc->creation_color_b);
+      [this, doc]() {
+        const Motif mo = m_project ? m_project->motif : Motif::Dark;
+        return std::make_tuple(doc->creation_color_r(mo),
+                               doc->creation_color_g(mo),
+                               doc->creation_color_b(mo));
       },
-      [doc](double r, double g, double b) {
-        doc->creation_color_r = r;
-        doc->creation_color_g = g;
-        doc->creation_color_b = b;
+      [this, doc](double r, double g, double b) {
+        const Motif mo = m_project ? m_project->motif : Motif::Dark;
+        doc->set_creation_color(mo, r, g, b);
       },
       &motif_creation_da);
   curvz::utils::set_name(motif_artboard_da, "ins_motif_ab",
@@ -1555,17 +1553,21 @@ void PropertiesPanel::build_canvas_colours_section(CurvzDocument *doc,
         [this, doc, gen, artb_chip, work_chip, crea_chip]() {
           if (m_build_gen != gen)
             return;
-          // Hardcoded dark defaults — match CurvzDocument.hpp field
-          // defaults. m4 polish will make these app-mode-aware.
-          doc->artboard_bg_r = 0.157; // #282828
-          doc->artboard_bg_g = 0.157;
-          doc->artboard_bg_b = 0.157;
-          doc->workspace_bg_r = 0.09; // #171717
-          doc->workspace_bg_g = 0.09;
-          doc->workspace_bg_b = 0.09;
-          doc->creation_color_r = 0.30; // light blue against dark
-          doc->creation_color_g = 0.60;
-          doc->creation_color_b = 1.00;
+          // s183 m5a — mode-targeted reset. Writes the matching pair
+          // of factory defaults for the currently-active mode only;
+          // the off-mode pair is untouched. Dark defaults match the
+          // s148 hardcoded set; Light defaults match the s149 m1
+          // MotifSettings factory pair.
+          const Motif mo = m_project ? m_project->motif : Motif::Dark;
+          if (mo == Motif::Light) {
+            doc->set_artboard_bg(mo, 1.0, 1.0, 1.0);    // #FFFFFF
+            doc->set_workspace_bg(mo, 0.91, 0.91, 0.91); // #E8E8E8
+            doc->set_creation_color(mo, 0.10, 0.35, 0.85);
+          } else {
+            doc->set_artboard_bg(mo, 0.157, 0.157, 0.157); // #282828
+            doc->set_workspace_bg(mo, 0.09, 0.09, 0.09);   // #171717
+            doc->set_creation_color(mo, 0.30, 0.60, 1.00);
+          }
           if (artb_chip)
             artb_chip->queue_draw();
           if (work_chip)

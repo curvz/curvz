@@ -69,6 +69,7 @@
 //
 
 #include "theme/ThemeLibrary.hpp"
+#include "theme/Theme.hpp"
 
 #include <giomm/simpleactiongroup.h>
 #include <gtkmm/box.h>
@@ -77,6 +78,7 @@
 #include <gtkmm/label.h>
 #include <gtkmm/menubutton.h>
 #include <sigc++/connection.h>
+#include <sigc++/signal.h>
 
 #include <functional>
 #include <string>
@@ -125,6 +127,26 @@ public:
     // and the active doc is visually marked.
     void on_documents_changed();
 
+    // s183 m2 — Edit theme request signal.
+    //
+    // Fires when a row's Edit (✎) button is clicked. The host
+    // (MainWindow) listens, instantiates a ThemeEditDialog, and on
+    // OK pushes UpdateThemeCommand for the captured before/after.
+    // The panel itself never owns the dialog — same separation as
+    // StylesPanel's signal_request_style_editor.
+    //
+    // The closure carries the callback that pushes the command. The
+    // panel's rename / dup / del buttons stay independent — Edit is
+    // a fourth, fuller-fat affordance that the (✎) button now serves
+    // (replacing the old "Rename" inline-prompt; see s183 m2 in
+    // on_rename_theme's call site).
+    using RequestThemeEditorSignal =
+        sigc::signal<void(theme::Theme initial,
+                          std::function<void(theme::Theme)> on_committed)>;
+    RequestThemeEditorSignal& signal_request_theme_editor() {
+        return m_sig_request_theme_editor;
+    }
+
 private:
     // ── Build helpers ──────────────────────────────────────────────
     void build_ui();                  // called once from ctor
@@ -146,6 +168,11 @@ private:
     void on_save_current_as_theme();
     void on_import_themes();
     void on_export_themes();
+
+    // s183 m2 — emit signal_request_theme_editor for the given theme.
+    // The host opens the dialog. On OK the host pushes
+    // UpdateThemeCommand against the panel's m_history.
+    void on_edit_theme(const theme::ThemeId& id);
 
     // ── Apply flow ────────────────────────────────────────────────
     // Apply button click — pops confirmation modal, on confirm
@@ -192,6 +219,9 @@ private:
     Gtk::Label*  m_hint_label   = nullptr;       // "Not undoable" warning
 
     Glib::RefPtr<Gio::SimpleActionGroup> m_actions;
+
+    // s183 m2 — request-editor signal. See accessor for rationale.
+    RequestThemeEditorSignal m_sig_request_theme_editor;
 };
 
 } // namespace Curvz

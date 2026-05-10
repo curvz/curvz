@@ -55,6 +55,12 @@
 namespace Curvz {
 
 
+// s183 m5a — Canvas::doc_motif(). See Canvas.hpp for the rationale.
+Motif Canvas::doc_motif() const {
+  return m_project ? m_project->motif : Motif::Dark;
+}
+
+
 // ── Layer colour helper
 // ─────────────────────────────────────────────────────── Parses "#rrggbb" into
 // [0,1] doubles. Returns false and leaves r/g/b unchanged if the string is
@@ -388,9 +394,10 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   // tabs intentionally re-paints the surround. Falls back to the
   // historical #171717 grey only if no doc is wired (early boot).
   if (m_doc) {
-    cr->set_source_rgb(m_doc->workspace_bg_r,
-                       m_doc->workspace_bg_g,
-                       m_doc->workspace_bg_b);
+    const Motif mo = doc_motif();
+    cr->set_source_rgb(m_doc->workspace_bg_r(mo),
+                       m_doc->workspace_bg_g(mo),
+                       m_doc->workspace_bg_b(mo));
   } else {
     cr->set_source_rgb(0.09, 0.09, 0.09);
   }
@@ -432,9 +439,9 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   // s148 m1: read from doc (re-promoted from project per-motif). Each
   // doc carries its own artboard tone — flipping app appearance no
   // longer alters the canvas, the doc owns its colour.
-  cr->set_source_rgb(m_doc->artboard_bg_r,
-                     m_doc->artboard_bg_g,
-                     m_doc->artboard_bg_b);
+  cr->set_source_rgb(m_doc->artboard_bg_r(doc_motif()),
+                     m_doc->artboard_bg_g(doc_motif()),
+                     m_doc->artboard_bg_b(doc_motif()));
   cr->rectangle(0, 0, cw, ch);
   cr->fill();
 
@@ -665,9 +672,9 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     // project per-motif). PenTool stays document-agnostic; receives
     // values, doesn't reach back into the doc.
     m_pen_tool.draw_preview(cr, m_zoom,
-                            m_doc->creation_color_r,
-                            m_doc->creation_color_g,
-                            m_doc->creation_color_b);
+                            m_doc->creation_color_r(doc_motif()),
+                            m_doc->creation_color_g(doc_motif()),
+                            m_doc->creation_color_b(doc_motif()));
     cr->restore();
   }
 
@@ -2179,9 +2186,9 @@ void Canvas::draw_objects(const Cairo::RefPtr<Cairo::Context> &cr) {
       // s148 m1: read artboard bg from doc (re-promoted from project
       // per-motif). Each doc owns its tone; the V-flip threshold below
       // adapts to whichever colour the author chose for THIS doc.
-      double ab_r = m_doc->artboard_bg_r;
-      double ab_g = m_doc->artboard_bg_g;
-      double ab_b = m_doc->artboard_bg_b;
+      double ab_r = m_doc->artboard_bg_r(doc_motif());
+      double ab_g = m_doc->artboard_bg_g(doc_motif());
+      double ab_b = m_doc->artboard_bg_b(doc_motif());
       double bg_v = std::max({ab_r, ab_g, ab_b});
       double target_v;
       if (bg_v < 0.60) {
@@ -2898,9 +2905,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
     double ox = doc_origin_x(), oy = doc_origin_y();
     cr->save();
     // s148 m1: creation colour (per-doc, re-promoted from project per-motif).
-    cr->set_source_rgba(m_doc->creation_color_r,
-                        m_doc->creation_color_g,
-                        m_doc->creation_color_b, 0.9);
+    cr->set_source_rgba(m_doc->creation_color_r(doc_motif()),
+                        m_doc->creation_color_g(doc_motif()),
+                        m_doc->creation_color_b(doc_motif()), 0.9);
     cr->set_line_width(1.5);
     std::vector<double> dashes = {4.0, 3.0};
     cr->set_dash(dashes, 0);
@@ -2919,9 +2926,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
 
     // Draw placed anchor points
     cr->set_dash(std::vector<double>{}, 0);
-    cr->set_source_rgba(m_doc->creation_color_r,
-                        m_doc->creation_color_g,
-                        m_doc->creation_color_b, 1.0);
+    cr->set_source_rgba(m_doc->creation_color_r(doc_motif()),
+                        m_doc->creation_color_g(doc_motif()),
+                        m_doc->creation_color_b(doc_motif()), 1.0);
     for (auto [px, py] : m_line_tool.points) {
       cr->arc(px * m_zoom + ox, py * m_zoom + oy, 3.0, 0, 2 * M_PI);
       cr->fill();
@@ -2972,9 +2979,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
     // Fill alpha 0.12 / outline alpha 0.9 are role-coded — fills always
     // dimmer than outlines at every construction site.
     // Fill
-    cr->set_source_rgba(m_doc->creation_color_r,
-                        m_doc->creation_color_g,
-                        m_doc->creation_color_b, 0.12);
+    cr->set_source_rgba(m_doc->creation_color_r(doc_motif()),
+                        m_doc->creation_color_g(doc_motif()),
+                        m_doc->creation_color_b(doc_motif()), 0.12);
     bool first = true;
     for (const auto &n : pd.nodes) {
       double sx = n.x * m_zoom + ox;
@@ -2989,9 +2996,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
     cr->fill();
 
     // Outline
-    cr->set_source_rgba(m_doc->creation_color_r,
-                        m_doc->creation_color_g,
-                        m_doc->creation_color_b, 0.9);
+    cr->set_source_rgba(m_doc->creation_color_r(doc_motif()),
+                        m_doc->creation_color_g(doc_motif()),
+                        m_doc->creation_color_b(doc_motif()), 0.9);
     cr->set_line_width(1.0);
     std::vector<double> dashes = {4.0, 3.0};
     cr->set_dash(dashes, 0);
@@ -3029,9 +3036,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
 
     cr->save();
     // s148 m1: creation colour (per-doc).
-    cr->set_source_rgba(m_doc->creation_color_r,
-                        m_doc->creation_color_g,
-                        m_doc->creation_color_b, 0.9);
+    cr->set_source_rgba(m_doc->creation_color_r(doc_motif()),
+                        m_doc->creation_color_g(doc_motif()),
+                        m_doc->creation_color_b(doc_motif()), 0.9);
     cr->set_line_width(1.0);
     std::vector<double> dashes = {4.0, 3.0};
     cr->set_dash(dashes, 0);
@@ -3074,9 +3081,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
   cr->save();
 
   // Fill preview — s148 m1: creation colour (per-doc), dim alpha for fill.
-  cr->set_source_rgba(m_doc->creation_color_r,
-                      m_doc->creation_color_g,
-                      m_doc->creation_color_b, 0.12);
+  cr->set_source_rgba(m_doc->creation_color_r(doc_motif()),
+                      m_doc->creation_color_g(doc_motif()),
+                      m_doc->creation_color_b(doc_motif()), 0.12);
   if (m_tool == ActiveTool::Ellipse) {
     cr->save();
     cr->translate(x1 + w * 0.5, y1 + h * 0.5);
@@ -3089,9 +3096,9 @@ void Canvas::draw_rubber_band(const Cairo::RefPtr<Cairo::Context> &cr) {
   cr->fill();
 
   // Outline — s148 m1: creation colour (per-doc), bold alpha for outline.
-  cr->set_source_rgba(m_doc->creation_color_r,
-                      m_doc->creation_color_g,
-                      m_doc->creation_color_b, 0.9);
+  cr->set_source_rgba(m_doc->creation_color_r(doc_motif()),
+                      m_doc->creation_color_g(doc_motif()),
+                      m_doc->creation_color_b(doc_motif()), 0.9);
   cr->set_line_width(1.0);
   std::vector<double> dashes = {4.0, 3.0};
   cr->set_dash(dashes, 0);

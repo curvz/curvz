@@ -64,6 +64,11 @@
     <file preprocess="xml-stripblanks" alias="curvz-union-symbolic.svg">icons/curvz-union-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-subtract-symbolic.svg">icons/curvz-subtract-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-intersect-symbolic.svg">icons/curvz-intersect-symbolic.svg</file>
+    <!-- s183 m1: align trigger button. Replaces the cairo-drawn AlignCenterH
+         stand-in that previously stood in for the popover's trigger glyph.
+         Same metadata-strip discipline as the s154 transforms-section
+         icons. -->
+    <file preprocess="xml-stripblanks" alias="curvz-align-symbolic.svg">icons/curvz-align-symbolic.svg</file>
   </gresource>
 
   <!-- ── Bundled non-icon data ────────────────────────────────────────────

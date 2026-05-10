@@ -133,15 +133,30 @@ bool CurvzProject::save() const {
             // The project-root "workspace" block continues to be written
             // (with motif + per-motif slots) during m1 as a downgrade-
             // safety net. m2 will trim those once doc-scope is settled.
-            {"artboard_bg_r",  doc->artboard_bg_r},
-            {"artboard_bg_g",  doc->artboard_bg_g},
-            {"artboard_bg_b",  doc->artboard_bg_b},
-            {"workspace_bg_r", doc->workspace_bg_r},
-            {"workspace_bg_g", doc->workspace_bg_g},
-            {"workspace_bg_b", doc->workspace_bg_b},
-            {"creation_color_r", doc->creation_color_r},
-            {"creation_color_g", doc->creation_color_g},
-            {"creation_color_b", doc->creation_color_b},
+            // s183 m5a — dual-pair motif storage. Both dark and light
+            // triples written so the doc renders identically in either
+            // mode without re-applying a theme. Old single-slot keys
+            // (artboard_bg_*, workspace_bg_*, creation_color_*) are no
+            // longer written; old files lose their custom colours and
+            // fall to defaults (Scott: "they can just use a default").
+            {"dark_artboard_bg_r",  doc->dark_artboard_bg_r},
+            {"dark_artboard_bg_g",  doc->dark_artboard_bg_g},
+            {"dark_artboard_bg_b",  doc->dark_artboard_bg_b},
+            {"dark_workspace_bg_r", doc->dark_workspace_bg_r},
+            {"dark_workspace_bg_g", doc->dark_workspace_bg_g},
+            {"dark_workspace_bg_b", doc->dark_workspace_bg_b},
+            {"dark_creation_color_r", doc->dark_creation_color_r},
+            {"dark_creation_color_g", doc->dark_creation_color_g},
+            {"dark_creation_color_b", doc->dark_creation_color_b},
+            {"light_artboard_bg_r",  doc->light_artboard_bg_r},
+            {"light_artboard_bg_g",  doc->light_artboard_bg_g},
+            {"light_artboard_bg_b",  doc->light_artboard_bg_b},
+            {"light_workspace_bg_r", doc->light_workspace_bg_r},
+            {"light_workspace_bg_g", doc->light_workspace_bg_g},
+            {"light_workspace_bg_b", doc->light_workspace_bg_b},
+            {"light_creation_color_r", doc->light_creation_color_r},
+            {"light_creation_color_g", doc->light_creation_color_g},
+            {"light_creation_color_b", doc->light_creation_color_b},
             // S98: persist guide colour. Pre-S98 it was a per-session-
             // only field — defaults seeded from CurvzDocument, lost on
             // every project close. Per-doc since guides are doc-scope
@@ -675,16 +690,31 @@ bool CurvzProject::load(const std::string& dir) {
         //     → read directly. Project root may also carry the legacy
         //     per-motif block as a downgrade-safety net but those slots
         //     are no longer canonical for paint.
-        const bool had_doc_bg = entry.contains("artboard_bg_r");
-        doc->artboard_bg_r  = entry.value("artboard_bg_r",  doc->artboard_bg_r);
-        doc->artboard_bg_g  = entry.value("artboard_bg_g",  doc->artboard_bg_g);
-        doc->artboard_bg_b  = entry.value("artboard_bg_b",  doc->artboard_bg_b);
-        doc->workspace_bg_r = entry.value("workspace_bg_r", doc->workspace_bg_r);
-        doc->workspace_bg_g = entry.value("workspace_bg_g", doc->workspace_bg_g);
-        doc->workspace_bg_b = entry.value("workspace_bg_b", doc->workspace_bg_b);
-        doc->creation_color_r = entry.value("creation_color_r", doc->creation_color_r);
-        doc->creation_color_g = entry.value("creation_color_g", doc->creation_color_g);
-        doc->creation_color_b = entry.value("creation_color_b", doc->creation_color_b);
+        // s183 m5a — dual-pair motif storage. Old single-slot keys
+        // (artboard_bg_*, workspace_bg_*, creation_color_*) are not
+        // read; old files load with default mode pairs and the user
+        // re-applies a theme to recover their custom colours.
+        const bool had_doc_bg =
+            entry.contains("dark_artboard_bg_r") ||
+            entry.contains("light_artboard_bg_r");
+        doc->dark_artboard_bg_r  = entry.value("dark_artboard_bg_r",  doc->dark_artboard_bg_r);
+        doc->dark_artboard_bg_g  = entry.value("dark_artboard_bg_g",  doc->dark_artboard_bg_g);
+        doc->dark_artboard_bg_b  = entry.value("dark_artboard_bg_b",  doc->dark_artboard_bg_b);
+        doc->dark_workspace_bg_r = entry.value("dark_workspace_bg_r", doc->dark_workspace_bg_r);
+        doc->dark_workspace_bg_g = entry.value("dark_workspace_bg_g", doc->dark_workspace_bg_g);
+        doc->dark_workspace_bg_b = entry.value("dark_workspace_bg_b", doc->dark_workspace_bg_b);
+        doc->dark_creation_color_r = entry.value("dark_creation_color_r", doc->dark_creation_color_r);
+        doc->dark_creation_color_g = entry.value("dark_creation_color_g", doc->dark_creation_color_g);
+        doc->dark_creation_color_b = entry.value("dark_creation_color_b", doc->dark_creation_color_b);
+        doc->light_artboard_bg_r  = entry.value("light_artboard_bg_r",  doc->light_artboard_bg_r);
+        doc->light_artboard_bg_g  = entry.value("light_artboard_bg_g",  doc->light_artboard_bg_g);
+        doc->light_artboard_bg_b  = entry.value("light_artboard_bg_b",  doc->light_artboard_bg_b);
+        doc->light_workspace_bg_r = entry.value("light_workspace_bg_r", doc->light_workspace_bg_r);
+        doc->light_workspace_bg_g = entry.value("light_workspace_bg_g", doc->light_workspace_bg_g);
+        doc->light_workspace_bg_b = entry.value("light_workspace_bg_b", doc->light_workspace_bg_b);
+        doc->light_creation_color_r = entry.value("light_creation_color_r", doc->light_creation_color_r);
+        doc->light_creation_color_g = entry.value("light_creation_color_g", doc->light_creation_color_g);
+        doc->light_creation_color_b = entry.value("light_creation_color_b", doc->light_creation_color_b);
         // Track per-doc whether the bg key set was present, for the
         // post-loop s116→s148 seed step. Stored on the bool vector
         // declared just above the doc loop (see migration_doc_had_bg).
@@ -749,62 +779,20 @@ bool CurvzProject::load(const std::string& dir) {
     if (documents.empty())
         LOG_INFO("CurvzProject::load: loaded '{}' with empty gallery", dir);
 
-    // ── s116 m6 legacy hoist ──────────────────────────────────────────
-    // If the project root had no "workspace" block, this is a pre-m6
-    // file. Take doc[0]'s legacy artboard/workspace bg as the project's
-    // dark-motif values (pre-m6 was dark-only, so those colours describe
-    // the user's dark workspace). doc[0] was chosen as authoritative —
-    // if pre-m6 docs disagreed about bg colours (rare, since the panel
-    // set them in lockstep most of the time), the user gets doc[0]'s
-    // and can re-pick in the Project → Motif panel. The light pair
-    // stays at struct defaults — the user can customise it on first
-    // motif flip. After the next save these doc-level keys disappear
-    // from project.json.
-    if (!had_project_workspace && !documents.empty()) {
-        const auto& d0 = *documents.front();
-        artboard_dark_r  = d0.artboard_bg_r;
-        artboard_dark_g  = d0.artboard_bg_g;
-        artboard_dark_b  = d0.artboard_bg_b;
-        workspace_dark_r = d0.workspace_bg_r;
-        workspace_dark_g = d0.workspace_bg_g;
-        workspace_dark_b = d0.workspace_bg_b;
-        if (!legacy_doc0_motif.empty()) {
-            motif = (legacy_doc0_motif == "light") ? Motif::Light : Motif::Dark;
-        }
-    }
-
-    // ── s148 m1 seed step: project per-motif → per-doc ────────────────
+    // ── s183 m5a: prior-format migration removed ──────────────────────
     //
-    // For docs whose JSON entry lacked the per-doc artboard_bg_* keys,
-    // fill the doc fields from the project's active-motif slot so the
-    // first paint after load matches what the user had in s116-s147.
-    // The accessors artboard_r() etc. resolve to whichever pair (dark
-    // or light) is currently active per `motif`.
-    //
-    // Skipped for docs that did have per-doc keys (already loaded
-    // canonical above) and for the pre-s116 hoist case (had_project_
-    // workspace==false: project's dark slots were just seeded from
-    // doc[0]'s legacy bg, which means project's active-motif accessor
-    // returns those same values — so the seed would be a no-op for
-    // doc[0] but might silently overwrite doc[N]'s differing legacy
-    // bg. Skip the seed entirely in that case to preserve per-doc
-    // distinctions present in pre-s116 files).
-    if (had_project_workspace) {
-        for (size_t i = 0; i < documents.size(); ++i) {
-            if (i < migration_doc_had_bg.size() && migration_doc_had_bg[i])
-                continue;  // doc had its own keys, leave them
-            auto& d = *documents[i];
-            d.artboard_bg_r  = artboard_r();
-            d.artboard_bg_g  = artboard_g();
-            d.artboard_bg_b  = artboard_b();
-            d.workspace_bg_r = workspace_r();
-            d.workspace_bg_g = workspace_g();
-            d.workspace_bg_b = workspace_b();
-            d.creation_color_r = creation_r();
-            d.creation_color_g = creation_g();
-            d.creation_color_b = creation_b();
-        }
-    }
+    // Pre-s116 hoist (doc[0]'s single-slot bg → project dark workspace)
+    // and the s148 m1 seed step (project per-motif → per-doc single
+    // slot) were both stripped here. Both wrote to the old per-doc
+    // single-slot fields (artboard_bg_r/_g/_b etc.) which no longer
+    // exist — docs now carry dual pairs. Old project.json files
+    // missing the new dual-pair keys load with factory-default colour
+    // pairs in both modes; per Scott "they can just use a default."
+    // The user re-applies a theme (or hand-picks colours on the
+    // Document ▸ Canvas section) to recover their preferred look.
+    (void)had_project_workspace;
+    (void)legacy_doc0_motif;
+    (void)migration_doc_had_bg;
 
     // ── Post-load style re-materialisation (S76 m3b) ─────────────────────
     //

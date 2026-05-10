@@ -356,9 +356,12 @@ DocumentGallery::render_thumb(CurvzDocument *doc, int size) {
   // currentColor at the same point.
   double bg_r = 0.157, bg_g = 0.157, bg_b = 0.157;  // #282828 fallback
   if (doc) {
-    bg_r = doc->artboard_bg_r;
-    bg_g = doc->artboard_bg_g;
-    bg_b = doc->artboard_bg_b;
+    // s183 m5a — doc now carries dual pairs; pick the one matching
+    // the project's current motif.
+    const Motif mo = m_project ? m_project->motif : Motif::Dark;
+    bg_r = doc->artboard_bg_r(mo);
+    bg_g = doc->artboard_bg_g(mo);
+    bg_b = doc->artboard_bg_b(mo);
   }
   bool light_bg = std::max({bg_r, bg_g, bg_b}) > 0.60;
   double cc = light_bg ? 0.10 : 0.88;

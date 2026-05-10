@@ -11,6 +11,7 @@
 #include "SvgParser.hpp"
 #include "SvgWriter.hpp"
 #include "TemplateLibrary.hpp"
+#include "ThemeEditDialog.hpp" // s183 m2 — Edit-theme dialog wiring
 #include <functional>
 #include <giomm/simpleactiongroup.h> // s144 m3 — recents action group
 #include <gtkmm/application.h>
@@ -1513,6 +1514,29 @@ void MainWindow::setup_layout() {
     schedule_save();
   });
   m_themes.set_project(m_project.get());
+
+  // s183 m2 — Edit-theme dialog wiring. Mirrors the StyleEditorDialog
+  // request handler above. The panel emits when its row Edit (✎)
+  // button is clicked; we heap-allocate a ThemeEditDialog whose
+  // signal_close_request handler self-deletes via signal_idle.
+  // on_committed pushes UpdateThemeCommand against m_history (the
+  // panel-side closure handles the push; we just open the dialog).
+  // notify_changed() inside the panel's commit closure runs the
+  // refresh + on_changed cascade (canvas redraw + inspector +
+  // schedule_save), so the visual result follows immediately.
+  m_themes.signal_request_theme_editor().connect(
+      [this](theme::Theme initial,
+             std::function<void(theme::Theme)> on_committed) {
+        // s183 m3: pass the project's current motif so the dialog's
+        // thumbnail opens previewing the mode the user is actually
+        // working in. The toggle inside the dialog flips the
+        // thumbnail; never the chrome.
+        Motif initial_mode =
+            (m_project ? m_project->motif : Motif::Dark);
+        new ThemeEditDialog(*this, std::move(initial), initial_mode,
+                             std::move(on_committed));
+      });
+
   content.container->append(
       *make_section("Themes", m_themes, false, false, &m_sec_open_themes));
 

@@ -795,6 +795,13 @@ void MainWindow::apply_motif_to_window() {
   // the same pattern — refresh both on motif change.
   m_gallery.refresh();
   m_library.refresh();
+  // s183 m5a — inspector Document ▸ Canvas chips read the matching
+  // pair of the doc's dual-pair motif storage. App-mode flip swaps
+  // which pair is active, so the chips need to repaint with the
+  // newly-active pair's colours. refresh_inspector rebuilds the
+  // panel against the current motif via m_project->motif reads in
+  // the chip lambdas.
+  refresh_inspector();
   // BACKLOG: GTK4 caches the rendered pixels of the CSD chrome wrapper
   // (`window.csd > box.vertical`) independently of style. Class change
   // invalidates the style — var() references re-resolve correctly —

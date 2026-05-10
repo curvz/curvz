@@ -127,6 +127,13 @@ public:
   void set_project(CurvzProject *project) { m_project = project; }
   CurvzProject *project() { return m_project; }
 
+  // s183 m5a — the motif Canvas draws for. Reads m_project->motif
+  // when wired; falls back to Motif::Dark when m_project is null
+  // (early-boot — preserves pre-s183 default visual which was the
+  // dark-mode triple). Every doc colour read in Canvas paint uses
+  // this to pick the matching pair.
+  Motif doc_motif() const;
+
   // Public id-minting helper — wraps the file-local next_id() /
   // last_iid() statics so callers outside Canvas.cpp (MainWindow's
   // scratch-Warp build, etc.) can produce fresh SVG ids + internal-
