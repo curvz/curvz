@@ -418,7 +418,7 @@ void MainWindow::setup_menu() {
   edit_sep->append("Copy", "win.copy");
   edit_sep->append("Paste", "win.paste");
   edit_sep->append("Duplicate", "win.duplicate");
-  edit_sep->append("Clone", "win.clone");
+  edit_sep->append("Duplicate in Place", "win.duplicate-in-place");
   // s146 m1: Step and Repeat moved to Path submenu. It's a destructive
   // transform (selection + params → N new objects, no persistent
   // re-editable container, atomic undo) — same shape as Boolean ops, so
@@ -703,10 +703,12 @@ void MainWindow::setup_menu() {
       [this](const Glib::VariantBase &) { m_canvas.delete_selected(); });
   add_action(act_delete_selected);
 
-  auto act_clone = Gio::SimpleAction::create("clone");
-  act_clone->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.clone_selected(); });
-  add_action(act_clone);
+  // s181: was "clone" / clone_selected. Renamed because the operation
+  // never had source/instance semantics — it's a zero-offset duplicate.
+  auto act_duplicate_in_place = Gio::SimpleAction::create("duplicate-in-place");
+  act_duplicate_in_place->signal_activate().connect(
+      [this](const Glib::VariantBase &) { m_canvas.duplicate_in_place_selected(); });
+  add_action(act_duplicate_in_place);
 
   // s136 m5: select-all and deselect-all promoted to actions so the Edit
   // menu can reach them. The hotkeys (Ctrl+A and Ctrl+Shift+A) are still

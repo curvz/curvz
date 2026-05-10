@@ -89,6 +89,16 @@ ImageMeta read_image_meta(const std::string &path);
 std::string png_color_type_str(uint8_t ct);
 std::string format_file_size(uint64_t bytes);
 
+// s181 m2: compound winding normalisation. CCW = outer (union role), CW =
+// hole (subtract role). Even-odd render is invariant to per-subpath winding;
+// these are read by boolean ops to feed Clipper2 well-formed input. Make
+// Compound calls normalize_compound_winding() to set the convention; the
+// SvgParser load path calls _recursive on doc roots; the inspector switch
+// calls reverse_compound_all_children() to flip every child.
+void normalize_compound_winding(SceneNode *compound);
+void normalize_compound_winding_recursive(SceneNode *n);
+void reverse_compound_all_children(SceneNode *compound);
+
 // Defined in Canvas_draw.cpp (DRAW):
 void foreach_corner_node(CurvzDocument *doc,
                          std::function<bool(SceneNode *, int)> fn);

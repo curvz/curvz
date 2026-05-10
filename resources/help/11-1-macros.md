@@ -56,7 +56,7 @@ journey.
 
 The set of recordable operations covers:
 
-- Object — Clone, Duplicate, Delete, Group, Ungroup.
+- Object — Duplicate in Place, Duplicate, Delete, Group, Ungroup.
 - Transform — Move, Scale, Rotate (around centre or named
   pivot), FlipH, FlipV.
 - Alignment — Align L/CenterH/R/T/MiddleV/B, Distribute H/V.

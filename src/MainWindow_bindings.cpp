@@ -1439,8 +1439,13 @@ void MainWindow::connect_signals() {
         auto *focused = get_focus();
         bool text_focused = focused && GTK_IS_EDITABLE(focused->gobj());
 
-        // Ctrl shortcuts always fire regardless of focus
-        if (!ctrl) {
+        // Ctrl AND Alt shortcuts always fire regardless of focus. Alt was
+        // added s181 — without it, plain-Alt shortcuts (only Alt+D currently)
+        // were silently eaten when any text-input had focus, which after a
+        // panel rebuild is essentially "always". Alt is a shortcut signal in
+        // the same way Ctrl is — text-input doesn't care about either —
+        // so the bypass principle is symmetrical.
+        if (!ctrl && !alt) {
           if (text_focused)
             return false;
         }
@@ -1853,7 +1858,7 @@ void MainWindow::connect_signals() {
         // ── Alt shortcuts ───────────────────────────────────────────────────
         if (alt && !ctrl && !shift) {
           if (kv == GDK_KEY_d || kv == GDK_KEY_D) {
-            m_canvas.clone_selected();
+            m_canvas.duplicate_in_place_selected();
             return true;
           }
         }

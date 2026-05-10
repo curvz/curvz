@@ -28,8 +28,9 @@ namespace Curvz {
 struct MacroStep {
     enum class Op {
         // Object ops
-        Clone,          // duplicate in-place (no offset)
-        Duplicate,      // duplicate with (dx, dy) offset
+        DuplicateInPlace,  // duplicate in-place (no offset). s181: renamed
+                           // from Clone — kept de-serializing both names.
+        Duplicate,         // duplicate with (dx, dy) offset
         Delete,
         Group,
         Ungroup,

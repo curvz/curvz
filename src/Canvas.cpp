@@ -134,6 +134,14 @@ build_object_context_menu(const ObjectActions &oa) {
       add(sec, "Paste",     "win.paste",            "<Primary>v");
     if (any(oa.life & LifeAction::Duplicate))
       add(sec, "Duplicate", "win.duplicate",        "<Primary>d");
+    // s181: Duplicate in Place sits under Duplicate. Same eligibility as
+    // Duplicate (zero-offset variant), so gated on the same LifeAction bit
+    // rather than introducing a separate flag — one source of truth for
+    // "this selection can be duplicated." Renamed from "Clone" because
+    // that name promised a source/instance link the operation never had;
+    // see the s174 design-debt note in the handoff.
+    if (any(oa.life & LifeAction::Duplicate))
+      add(sec, "Duplicate in Place", "win.duplicate-in-place", "<Alt>d");
     if (any(oa.life & LifeAction::Delete))
       add(sec, "Delete",    "win.delete-selected",  "Delete");
     append_section_if_nonempty(sec);
@@ -2668,11 +2676,15 @@ void Canvas::duplicate_selected() {
   LOG_INFO("Canvas: duplicated {} object(s)", new_selection.size());
 }
 
-// ── clone_selected
+// ── duplicate_in_place_selected
 // ───────────────────────────────────────────────────────────── Duplicate
-// in-place (zero offset) — clone lands exactly on top of original. Recordable
-// as MacroStep::Op::Clone.
-void Canvas::clone_selected() {
+// in-place (zero offset) — duplicate lands exactly on top of original.
+// Recordable as MacroStep::Op::DuplicateInPlace.
+//
+// s181: renamed from clone_selected. Honest name — there is no source/
+// instance link, no propagation, no live binding to the original. It is
+// a duplicate that does not offset.
+void Canvas::duplicate_in_place_selected() {
   if (m_selection.empty() || !m_doc)
     return;
 
@@ -2689,7 +2701,7 @@ void Canvas::clone_selected() {
   for (auto &e : entries) {
     auto dup = clone_node(*e.node);
     freshen_ids(dup.get(), m_doc, id_counter);
-    // No position offset — clone lands exactly on top
+    // No position offset — duplicate lands exactly on top
     int ins = e.index + shift;
     auto snap = clone_node(*dup);
     new_selection.push_back(dup.get());
@@ -2706,7 +2718,7 @@ void Canvas::clone_selected() {
   // Record macro step
   {
     MacroStep s;
-    s.op = MacroStep::Op::Clone;
+    s.op = MacroStep::Op::DuplicateInPlace;
     record_step_if_recording(s);
   }
 
@@ -2716,7 +2728,7 @@ void Canvas::clone_selected() {
   notify_object_selection_changed();
   m_sig_doc_changed.emit();
   queue_draw();
-  LOG_INFO("Canvas: cloned {} object(s)", new_selection.size());
+  LOG_INFO("Canvas: duplicated-in-place {} object(s)", new_selection.size());
 }
 
 void Canvas::select_object(SceneNode *obj) {

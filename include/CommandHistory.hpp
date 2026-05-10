@@ -1251,9 +1251,10 @@ struct CutCommand : CurvzCommand {
 // partial-recovery semantics. If a parent is gone at execute()/undo()
 // time, that entry no-ops while the others still apply.
 //
-// Used by three push sites: Canvas::duplicate_selected (offset clone),
-// Canvas::clone_selected (in-place), and Canvas_input.cpp Alt-drag
-// (in-place duplicate redirected for move).
+// Used by three push sites: Canvas::duplicate_selected (offset duplicate),
+// Canvas::duplicate_in_place_selected (in-place; renamed s181 from
+// clone_selected), and Canvas_input.cpp Alt-drag (in-place duplicate
+// redirected for move).
 //
 // Inserts duplicated nodes directly above their originals.
 // Undo removes by id; redo re-inserts.

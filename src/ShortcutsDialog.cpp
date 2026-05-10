@@ -132,7 +132,7 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   r = add_row(m_keyboard_grid, "Ctrl+X", "Cut", r);
   r = add_row(m_keyboard_grid, "Ctrl+V", "Paste", r);
   r = add_row(m_keyboard_grid, "Ctrl+D", "Duplicate", r);
-  r = add_row(m_keyboard_grid, "Alt+D", "Clone (duplicate, original stays)", r);
+  r = add_row(m_keyboard_grid, "Alt+D", "Duplicate in Place (zero-offset duplicate)", r);
   r = add_row(m_keyboard_grid, "Del / Backspace", "Delete selected object or guide", r);
 
   // ── File ──────────────────────────────────────────────────────────────

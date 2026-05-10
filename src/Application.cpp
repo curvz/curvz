@@ -214,7 +214,7 @@ void Application::on_startup() {
   bind("win.copy",            {"<Control>c"});
   bind("win.paste",           {"<Control>v"});
   bind("win.duplicate",       {"<Control>d"});
-  bind("win.clone",           {"<Alt>d"});
+  bind("win.duplicate-in-place", {"<Alt>d"}); // s181: was win.clone
   bind("win.step-repeat",     {"<Control><Alt>d"});
 
   // Arrange

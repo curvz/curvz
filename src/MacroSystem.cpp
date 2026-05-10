@@ -17,7 +17,7 @@ namespace Curvz {
 
 static const char* op_name(MacroStep::Op op) {
     switch (op) {
-        case MacroStep::Op::Clone:           return "Clone";
+        case MacroStep::Op::DuplicateInPlace: return "DuplicateInPlace";
         case MacroStep::Op::Duplicate:       return "Duplicate";
         case MacroStep::Op::Delete:          return "Delete";
         case MacroStep::Op::Group:           return "Group";
@@ -53,7 +53,11 @@ static const char* op_name(MacroStep::Op op) {
 }
 
 static MacroStep::Op op_from_name(const std::string& s) {
-    if (s == "Clone")            return MacroStep::Op::Clone;
+    // s181: accept both new and legacy names. "Clone" was the previous name
+    // for this op; preserved here so macros saved on disk before s181 still
+    // load. New macros emit "DuplicateInPlace".
+    if (s == "DuplicateInPlace") return MacroStep::Op::DuplicateInPlace;
+    if (s == "Clone")            return MacroStep::Op::DuplicateInPlace;
     if (s == "Duplicate")        return MacroStep::Op::Duplicate;
     if (s == "Delete")           return MacroStep::Op::Delete;
     if (s == "Group")            return MacroStep::Op::Group;
@@ -94,7 +98,7 @@ static MacroStep::Op op_from_name(const std::string& s) {
 std::string MacroStep::auto_label() const {
     std::ostringstream ss;
     switch (op) {
-        case Op::Clone:     return "Clone";
+        case Op::DuplicateInPlace: return "Duplicate in Place";
         case Op::Duplicate:
             ss << "Duplicate (" << std::fixed << std::setprecision(1)
                << dx << ", " << dy << ")";

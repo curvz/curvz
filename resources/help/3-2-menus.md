@@ -20,7 +20,7 @@ deliberate, not duplication.
   Icon, Place Image, Export Icon Theme, Print). See chapters 2.1,
   2.2, and 2.3.
 - **Edit** — the conventional edit verbs (Undo, Redo, Cut, Copy,
-  Paste, Duplicate, Clone).
+  Paste, Duplicate, Duplicate in Place).
 - **Arrange** — z-order operations (Bring to Front, Bring Forward,
   Send Backward, Send to Back) and per-axis flips (Flip Horizontal,
   Flip Vertical).
@@ -100,7 +100,7 @@ lives in **Keyboard shortcuts** (11.2).
 - `Ctrl+X` / `Ctrl+C` / `Ctrl+V` — Cut / Copy / Paste
 - `Ctrl+A` — Select all
 - `Ctrl+D` — Duplicate
-- `Alt+D` — Clone
+- `Alt+D` — Duplicate in Place
 
 #### Arrange
 

@@ -671,7 +671,10 @@ public:
   void cut_selected();
   void paste_clipboard();
   void duplicate_selected();
-  void clone_selected(); // duplicate in-place (zero offset)
+  void duplicate_in_place_selected(); // s181: renamed from clone_selected.
+                                       // Zero-offset duplicate; lands on top of
+                                       // original. Honest name — no source/
+                                       // instance link, no propagation.
   bool has_clipboard() const { return !m_clipboard.empty(); }
 
   // Reverse the winding direction of the selected path.

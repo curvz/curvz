@@ -286,6 +286,118 @@ void rebuild_blend_cache(SceneNode *obj) {
   }
 }
 
+// ─── s181 m2 / m4: compound winding normalisation ─────────────────────────────
+// Convention: each child of a Compound carries a directional role.
+//   CCW (signed_area < 0 in Y-down doc-space) = OUTER role (union)
+//   CW  (signed_area > 0)                     = HOLE  role (subtract)
+//
+// Make-Compound rule (m4 update): stack-order alternating starting CCW.
+//   children[0] CCW, [1] CW, [2] CCW, [3] CW, ...
+// Stack-order is what the user sees in the layers panel — putting the
+// desired outer at the bottom matches normal vector-editor convention.
+//
+// Cairo and SVG render Compound paths via the even-odd fill rule, which is
+// indifferent to per-subpath winding — so this normalisation is invisible
+// to rendering. Its purpose is to drive boolean ops:
+//   (1) Make-Compound assigns initial roles by stack-order.
+//   (2) The user reorders children in the layers panel, runs Reverse
+//       on a single child via Node tool inspector, or clicks the
+//       compound's ↻↺ switch (m3) to override.
+//   (3) Boolean ops (m4) read winding per child to dispatch the
+//       per-child algorithm: outer ∪/⊖/∩ Y, hole ⊖/∪/∩ Y.
+//
+// Migration: parse_svg calls normalize_compound_winding_recursive() on every
+// Compound after load so legacy documents pick up the convention silently.
+
+// Reverse a PathData in place. Geometry-preserving: handle order on each
+// node swaps, then nodes reverse. Pumps via BezierPath round-trip because
+// BezierPath::reverse already encodes the cx1↔cx2 swap.
+static void reverse_path_data(PathData &pd) {
+  if (pd.nodes.size() < 2) return;
+  BezierPath bp = BezierPath::from_path_data(pd);
+  bp.reverse();
+  pd = bp.to_path_data();
+}
+
+// |signed_area| via shoelace on anchors. Sign indicates winding direction in
+// doc Y-down space: positive = CW, negative = CCW.
+static double child_signed_area(const SceneNode *n) {
+  if (!n || !n->path || n->path->nodes.size() < 3) return 0.0;
+  return BezierPath::from_path_data(*n->path).signed_area();
+}
+
+// Force a child into the requested winding direction. desired_ccw=true means
+// "make this child CCW (outer role)"; false means "make this child CW (hole)".
+// Reads sign of signed_area to decide whether to flip.
+static void force_child_winding(SceneNode *child, bool desired_ccw) {
+  if (!child || !child->path || child->path->nodes.size() < 3) return;
+  double sa = child_signed_area(child);
+  bool is_ccw = (sa < 0.0);  // doc Y-down: negative area = CCW on screen
+  if (is_ccw != desired_ccw) {
+    reverse_path_data(*child->path);
+  }
+}
+
+// Public: walk a Compound's children, set largest-bbox child CCW (outer),
+// the rest CW (holes). First-largest wins ties (strict >). No-op if
+// not a Compound or has fewer than 2 children. Idempotent — safe to
+// call multiple times on the same compound.
+//
+// s181 m2: rule shape — directional roles per child.
+// s181 m4: rule changed from "largest-bbox child CCW" to "stack-order
+// alternating starting CCW."
+// s181 m4 fix: convention flipped — bottom-of-stack (highest index in
+// children vector = visually-bottom in layers panel) is the outer (CCW).
+// Holes alternate going up.
+//
+// Stack-order is what the user sees in the layers panel — putting the
+// desired outer at the bottom matches normal vector-editor mental
+// models. children vector order matches z-order: index 0 is top
+// (front-most), index N-1 is bottom (back-most). Outer at the bottom
+// means children[N-1] = CCW.
+//
+// Index parity (counted from the bottom: N-1, N-2, ..., 0) and winding
+// both encode role, equivalent by construction. Boolean ops read winding
+// at runtime so per-child Reverse and the compound switch both work as
+// overrides.
+void normalize_compound_winding(SceneNode *compound) {
+  if (!compound || compound->type != SceneNode::Type::Compound) return;
+  if (compound->children.size() < 2) return;
+
+  // Apply alternating convention by stack-order index, counted from the
+  // bottom of the stack (visually-bottom = highest index).
+  // Bottom child (children[N-1]) → CCW (outer/union role).
+  // Next up (children[N-2])      → CW  (hole/subtract role).
+  // Then alternating upward.
+  const size_t n = compound->children.size();
+  for (size_t i = 0; i < n; ++i) {
+    // distance_from_bottom = (N-1) - i
+    size_t dfb = (n - 1) - i;
+    bool desired_ccw = ((dfb % 2) == 0);
+    force_child_winding(compound->children[i].get(), desired_ccw);
+  }
+}
+
+// Recursive walker — applies normalize_compound_winding to every Compound in
+// a SceneNode subtree. Used by the doc-load migration in SvgParser.
+void normalize_compound_winding_recursive(SceneNode *n) {
+  if (!n) return;
+  for (auto &ch : n->children) normalize_compound_winding_recursive(ch.get());
+  if (n->type == SceneNode::Type::Compound) normalize_compound_winding(n);
+}
+
+// Reverse winding of every child in a Compound. Used by the inspector
+// switch — flips every per-child role at once. Idempotent in pairs (two
+// applications restore the original state).
+void reverse_compound_all_children(SceneNode *compound) {
+  if (!compound || compound->type != SceneNode::Type::Compound) return;
+  for (auto &ch : compound->children) {
+    if (ch && ch->path && ch->path->nodes.size() >= 3) {
+      reverse_path_data(*ch->path);
+    }
+  }
+}
+
 void Canvas::make_compound_path() {
   if (!m_doc || m_selection.size() < 2)
     return;
@@ -2634,6 +2746,336 @@ void Canvas::boolean_op(BooleanOpType op) {
   // style_source pointer is unused after this point — use the saved_*
   // values in the result-build branches below.
 
+  // ── s181 m4: per-child dispatch for Compound + Path ─────────────────────────
+  // Clipper2 with EvenOdd does not preserve operand role across multi-subpath
+  // input — it sees N peer subpaths and computes N-way EvenOdd, which gives
+  // the wrong answer when one operand is a compound path expressing
+  // outer-minus-hole semantics. Diagnosed via s181 m3 logs: a compound
+  // (rect-with-hole) Unioned with a yellow rect produced 3 disjoint output
+  // pieces because Clipper2 treated the hole as a positive peer region
+  // rather than a subtractive sub-region of the compound.
+  //
+  // Fix: when the selection is exactly one Compound + one Path, decompose
+  // the Compound into its children and run a per-child boolean against the
+  // Path operand. Role assignment is by INDEX FROM THE BOTTOM of the
+  // children stack:
+  //   distance_from_bottom = 0  → OUTER role  (union with opY)
+  //   distance_from_bottom = 1  → HOLE  role  (subtract opY)
+  //   distance_from_bottom = 2  → island       (union with opY)
+  //   ...
+  // i.e. the visually-bottom child of the compound is the foundational
+  // outer; everything stacked above alternates. The user owns role by
+  // stacking order in the layers panel.
+  //
+  // Per-role op dispatch table (unchanged from m4):
+  //                   Outer            Hole
+  //   Union           outer ∪ Y        hole ⊖ Y
+  //   Subtract        outer ⊖ Y        hole ∪ Y
+  //   Intersect       outer ∩ Y        hole ∩ Y
+  //
+  // Result handling: each per-child Clipper2 call produces 0+ loops. All
+  // loops from one input child become children at that input child's slot
+  // in the rebuilt compound (multi-loop ops expand inline). The opY
+  // operand is consumed: removed from parent.
+  //
+  // Wrap-up: the rebuilt compound replaces the original compound at its
+  // original index. Original compound + original opY are captured in
+  // the BooleanOpCommand undo snapshot; the rebuilt compound is the
+  // result snapshot. Atomic undo restores both.
+  bool used_per_child_dispatch = false;
+  if (candidates.size() == 2) {
+    SceneNode *cand_a = candidates[0].node;
+    SceneNode *cand_b = candidates[1].node;
+    const bool a_is_compound = (cand_a->type == SceneNode::Type::Compound);
+    const bool b_is_compound = (cand_b->type == SceneNode::Type::Compound);
+    const bool a_is_path     = (cand_a->path != nullptr);
+    const bool b_is_path     = (cand_b->path != nullptr);
+    if ((a_is_compound && b_is_path) || (b_is_compound && a_is_path)) {
+      SceneNode *cmp_node = a_is_compound ? cand_a : cand_b;
+      SceneNode *path_node = a_is_compound ? cand_b : cand_a;
+      LOG_INFO("Canvas: boolean {} — s181 m4 per-child dispatch "
+               "(compound={} children, +path)",
+               op_name, cmp_node->children.size());
+
+      // Cache opY once.
+      std::vector<BezierPath> opY_subpaths;
+      opY_subpaths.push_back(BezierPath::from_path_data(*path_node->path));
+
+      // Walk children TOP→BOTTOM in index order (i = 0..N-1), but the
+      // role index counts FROM THE BOTTOM. So distance_from_bottom = (N-1)-i.
+      const size_t N = cmp_node->children.size();
+
+      // Build the rebuilt compound's new children list. Walk in original
+      // children order so multi-loop expansions land inline at the right
+      // slot.
+      std::vector<std::unique_ptr<SceneNode>> new_children;
+      new_children.reserve(N);
+
+      for (size_t ci = 0; ci < N; ++ci) {
+        SceneNode *child = cmp_node->children[ci].get();
+        if (!child || !child->path || child->path->nodes.size() < 3) {
+          // Defensive: keep degenerate children verbatim (clone forward).
+          new_children.push_back(clone_node(*child));
+          continue;
+        }
+
+        // dfb = distance from bottom of compound stack.
+        //
+        // Per-child dispatch rule, per user-op:
+        //   user_op = Union     → dfb=0: Union(obj0, opY);  rest: Subtract(_, opY)
+        //   user_op = Subtract  → every child: Subtract(_, opY)  (uniform — opY cuts all)
+        //   user_op = Intersect → every child: Intersect(_, opY) (uniform — opY keeps overlap)
+        //
+        // Only Union has a special-case at dfb=0: opY's additive behaviour
+        // only makes sense for the foundational outer; everywhere else opY
+        // can only be "cut out" because we'd otherwise duplicate opY's
+        // contribution. Subtract and Intersect are uniform — the user-op's
+        // verb applies the same to every child.
+        //
+        // Each child keeps its slot in the recomposed compound. Compound
+        // structure is preserved (children may expand to multiple pieces
+        // if a per-child op produces disjoint output, or drop entirely
+        // if the op produces empty).
+        size_t dfb = (N - 1) - ci;
+        BooleanOpType per_op;
+        switch (op) {
+          case BooleanOpType::Union:
+            per_op = (dfb == 0) ? BooleanOpType::Union
+                                : BooleanOpType::Subtract;
+            break;
+          case BooleanOpType::Subtract:
+            per_op = BooleanOpType::Subtract;  // uniform
+            break;
+          case BooleanOpType::Intersect:
+            per_op = BooleanOpType::Intersect;  // uniform
+            break;
+          default:
+            per_op = op;
+        }
+        // is_outer retained for log output / clarity — the dfb==0 child is
+        // the "outer," everything above is structurally a hole or island.
+        bool is_outer = (dfb == 0);
+
+        // Build 2-operand vector for this per-child call.
+        // s181 m4 fix: BOTH operands must share consistent winding before
+        // Clipper2. Two-operand calls with one subpath each fall through
+        // to the NonZero fill-rule heuristic in BooleanOpsClipper.cpp —
+        // and NonZero with opposite-wound subpaths cancels in their
+        // overlap, producing XOR-like geometry instead of the intended op.
+        //
+        // Winding direction is op-dependent (empirical):
+        //   per_op = Subtract  → both operands CW
+        //   per_op = Union     → both operands CCW
+        //   per_op = Intersect → both operands CCW (assume Union-side
+        //                        until proven otherwise)
+        const bool want_ccw = (per_op != BooleanOpType::Subtract);
+        auto force_dir = [want_ccw](BezierPath bp) -> BezierPath {
+          double sa = bp.signed_area();
+          // Y-down doc: signed_area < 0 = CCW, signed_area > 0 = CW.
+          bool is_ccw = (sa < 0.0);
+          if (is_ccw != want_ccw) bp.reverse();
+          return bp;
+        };
+        std::vector<std::vector<BezierPath>> per_operands;
+        per_operands.reserve(2);
+        std::vector<BezierPath> child_subpaths;
+        child_subpaths.push_back(force_dir(BezierPath::from_path_data(*child->path)));
+        per_operands.push_back(std::move(child_subpaths));
+        std::vector<BezierPath> opY_dir;
+        opY_dir.reserve(opY_subpaths.size());
+        for (const auto &bp : opY_subpaths) opY_dir.push_back(force_dir(bp));
+        per_operands.push_back(std::move(opY_dir));
+
+        LOG_INFO("Canvas: boolean {} — per-child[{}] dfb={} role={} per_op={}",
+                 op_name, ci, dfb, is_outer ? "OUTER" : "HOLE",
+                 (per_op == BooleanOpType::Union)     ? "Union"
+                 : (per_op == BooleanOpType::Subtract) ? "Subtract"
+                                                       : "Intersect");
+
+        // Run enrichment + Clipper2 + cleanup for this child against opY.
+        int q_pc = m_boolean_cleanup_quality;
+        if (q_pc < 0)  q_pc = 0;
+        if (q_pc > 10) q_pc = 10;
+        const bool pc_cleanup_on = (q_pc < 10);
+        double pc_apex = 0.0;
+        int    pc_run  = 0;
+        if (pc_cleanup_on) {
+          if (q_pc <= 5) {
+            const double t = double(q_pc) / 5.0;
+            pc_apex = 30.0 - 15.0 * t;
+            pc_run  = static_cast<int>(std::lround(20.0 - 10.0 * t));
+          } else {
+            const double t = double(q_pc - 5) / 4.0;
+            pc_apex = 15.0 - 10.0 * t;
+            pc_run  = static_cast<int>(std::lround(10.0 - 5.0 * t));
+          }
+        }
+        std::vector<std::vector<BezierPath>> pc_enriched;
+        Curvz::refit::KeeperSet pc_keepers;
+        const auto *pc_for_clipper = &per_operands;
+        if (pc_cleanup_on) {
+          pc_keepers = Curvz::refit::enrich_at_intersections_and_build_keepers(
+              per_operands, pc_enriched, per_op);
+          pc_for_clipper = &pc_enriched;
+        }
+        std::vector<PathData> pc_loops =
+            Curvz::boolean_op_clipper(*pc_for_clipper, per_op);
+        if (pc_cleanup_on && !pc_loops.empty()) {
+          for (auto &loop : pc_loops) {
+            loop = Curvz::refit::cleanup_loop_v4(std::move(loop), pc_keepers,
+                                                 pc_apex, pc_run);
+          }
+        }
+
+        LOG_INFO("Canvas: boolean {} — per-child[{}] produced {} loop(s)",
+                 op_name, ci, pc_loops.size());
+
+        // Empty result → drop this child entirely (skip).
+        // Single result → one new child, mirroring style of the original.
+        // Multi result → multiple new children, all mirroring style.
+        for (auto &loop : pc_loops) {
+          if (loop.nodes.size() < 3) continue;
+          auto new_child = std::make_unique<SceneNode>();
+          new_child->type = SceneNode::Type::Path;
+          new_child->id = next_id();
+          new_child->internal_id = last_iid();
+          new_child->name = child->name;       // preserve original name
+          new_child->fill = child->fill;
+          new_child->stroke = child->stroke;
+          new_child->opacity = child->opacity;
+          new_child->visible = child->visible;
+          new_child->locked = child->locked;
+          new_child->path = std::make_unique<PathData>(std::move(loop));
+          new_children.push_back(std::move(new_child));
+        }
+      }
+
+      // Build the result compound. If new_children is empty, the
+      // operation effectively erased the compound — degrade to the
+      // single-loop / empty branches as the existing flow would.
+      if (new_children.empty()) {
+        LOG_WARN("Canvas: boolean {} — per-child dispatch produced empty result",
+                 op_name);
+        m_sig_show_message.emit(
+            "Boolean Operation Failed",
+            std::string(op_name) +
+                " produced an empty result. No changes were made.");
+        return;
+      }
+
+      // Snapshot originals: both the compound and the path operand. The
+      // compound goes in at its index, the path at its index, sorted by
+      // BooleanOpCommand convention (ascending).
+      std::vector<BooleanOpCommand::Original> per_originals;
+      for (auto &c : candidates) {
+        per_originals.push_back({clone_node(*c.node), c.index});
+      }
+      std::sort(per_originals.begin(), per_originals.end(),
+                [](const BooleanOpCommand::Original &a,
+                   const BooleanOpCommand::Original &b) {
+                  return a.index < b.index;
+                });
+
+      // Build the result compound in place. Single child means we collapse
+      // to a Path; multi means a Compound. Mirrors the existing branch.
+      std::unique_ptr<SceneNode> result_node;
+      if (new_children.size() == 1) {
+        result_node = std::move(new_children[0]);
+        result_node->name = std::string(op_name);
+      } else {
+        result_node = std::make_unique<SceneNode>();
+        result_node->type = SceneNode::Type::Compound;
+        result_node->id = next_id();
+        result_node->internal_id = last_iid();
+        result_node->name = std::string(op_name);
+        result_node->fill = saved_fill;
+        result_node->stroke = saved_stroke;
+        result_node->opacity = saved_opacity;
+        result_node->visible = true;
+        result_node->locked = false;
+        for (auto &nc : new_children) {
+          result_node->children.push_back(std::move(nc));
+        }
+      }
+
+      // Find the parent insert position — same logic as existing flow:
+      // result lands at the highest index = back-most slot. After erasing
+      // both originals (descending), the clamp ensures we're in bounds.
+      int per_insert_idx = candidates[0].index;
+
+      // Remove both originals from parent (descending order).
+      std::vector<int> per_indices;
+      for (auto &c : candidates) per_indices.push_back(c.index);
+      std::sort(per_indices.rbegin(), per_indices.rend());
+      for (int idx : per_indices)
+        parent->children.erase(parent->children.begin() + idx);
+
+      // Insert the result at the clamped position.
+      int per_ins = std::clamp(per_insert_idx, 0,
+                                (int)parent->children.size());
+      SceneNode *result_raw = result_node.get();
+      parent->children.insert(parent->children.begin() + per_ins,
+                              std::move(result_node));
+
+      // Build result snapshot for undo.
+      std::vector<std::unique_ptr<SceneNode>> per_result_snaps;
+      per_result_snaps.push_back(clone_node(*parent->children[per_ins]));
+
+      // Push atomic undo command.
+      if (m_history)
+        m_history->push(std::make_unique<BooleanOpCommand>(
+            project(), parent->internal_id,
+            std::move(per_originals), std::move(per_result_snaps),
+            per_insert_idx, std::string(op_name)));
+
+      // Notify if any objects were skipped during validation.
+      if (skipped_open > 0 || skipped_nopath > 0) {
+        std::string msg;
+        if (skipped_open > 0)
+          msg += std::to_string(skipped_open) + " open path(s) were skipped.\n";
+        if (skipped_nopath > 0)
+          msg += std::to_string(skipped_nopath) +
+                 " non-path object(s) were skipped.\n";
+        msg += "The operation was performed on the remaining closed paths.";
+        m_sig_show_message.emit("Boolean " + std::string(op_name), msg);
+      }
+
+      // Selection update — point at the new result.
+      m_selected = result_raw;
+      m_selection.clear();
+      m_selection.push_back(result_raw);
+      m_selected_node = -1;
+      m_node_selection.clear();
+
+      LOG_INFO("Canvas: boolean {} — per-child dispatch DONE, "
+               "result has {} children",
+               op_name, result_raw->children.size());
+
+      notify_object_selection_changed();
+      notify_node_selection_changed();
+      m_sig_doc_changed.emit();
+      queue_draw();
+
+      // s181 m4: Macro recording — same op type, same recording machinery.
+      // We don't enter the existing post-Clipper2 flow at all; the recording
+      // sites past this point would never see the op. Mirror them here.
+      MacroStep s_rec;
+      switch (op) {
+        case BooleanOpType::Union:     s_rec.op = MacroStep::Op::BooleanUnion; break;
+        case BooleanOpType::Subtract:  s_rec.op = MacroStep::Op::BooleanSubtract; break;
+        case BooleanOpType::Intersect: s_rec.op = MacroStep::Op::BooleanIntersect; break;
+      }
+      record_step_if_recording(s_rec);
+
+      used_per_child_dispatch = true;
+      return;  // ← skip the existing N-way Clipper2 flow entirely
+    }
+  }
+  // ── End s181 m4 per-child dispatch branch ───────────────────────────────────
+  // If we get here, used_per_child_dispatch was false — fall through to the
+  // existing N-way Clipper2 path that handles Path+Path, Compound+Compound,
+  // and N>=3 cases. (Dispatch path early-returns above.)
+
   std::vector<std::vector<BezierPath>> operands;
   operands.reserve(candidates.size());
   for (auto &c : candidates) {
@@ -2646,6 +3088,19 @@ void Canvas::boolean_op(BooleanOpType op) {
       return;
     }
     operands.push_back(std::move(sub));
+  }
+
+  // s181 m4 fix: force every operand subpath to CCW before handing to
+  // Clipper2. The NonZero fill-rule path (binary 2-subpath calls) cancels
+  // opposite-wound operands in their overlap regions, producing XOR-like
+  // geometry instead of Union/Subtract/Intersect. EvenOdd (multi-subpath)
+  // is winding-invariant and unaffected, but the same per-operand
+  // canonicalisation is harmless there. Path-by-path: signed_area > 0 in
+  // doc Y-down means CW; reverse to flip to CCW.
+  for (auto &op_subpaths : operands) {
+    for (auto &bp : op_subpaths) {
+      if (bp.signed_area() > 0.0) bp.reverse();
+    }
   }
 
   // ── Math call ─────────────────────────────────────────────────────────────
@@ -4938,8 +5393,8 @@ void Canvas::run_macro(const std::string &macro_id, int from_step) {
     for (int i = std::max(0, from_step); i < end; ++i) {
       const MacroStep &s = macro->steps[i];
       switch (s.op) {
-      case MacroStep::Op::Clone:
-        clone_selected();
+      case MacroStep::Op::DuplicateInPlace:
+        duplicate_in_place_selected();
         break;
       case MacroStep::Op::Duplicate:
         duplicate_selected();
