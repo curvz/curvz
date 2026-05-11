@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
 # widget_names_sync — regenerate widget_names.db from source.
 #
-# Source is the single source of truth. Every curvz::utils::set_name(w, "abbrev",
-# "long_name") call in src/ or include/ becomes one row in widget_names.db.
+# Source is the single source of truth. The harvester recognises two
+# shapes that emit one DB row each:
+#
+#   1. curvz::utils::set_name(widget, "abbrev", "long_name");
+#      The base case. Every named widget has one of these somewhere —
+#      either inline at the construction site or inside a funnel.
+#
+#   2. <funnel>("abbrev", "long_name", ...);
+#      where <funnel> is a recognised naming-first funnel (see
+#      NAMING_FUNNELS below). Funnels exist because the construction
+#      work (radio invariants, CSS classes, signal wiring) is shared
+#      across many call sites, but the abbrev/long_name pair stays
+#      literal at the call site so the harvester can see it. Adding a
+#      naming funnel is a one-line change to NAMING_FUNNELS.
 #
 # Usage:
 #   ./widget_names_sync           # regenerate DB from source (default)
@@ -19,17 +31,36 @@ set -euo pipefail
 DB="widget_names.db"
 MODE="generate"
 
+# Naming funnels — functions whose first two arguments are abbrev and
+# long_name (matching the set_name signature, with the widget argument
+# absent because the funnel constructs the widget itself). Adding a new
+# naming funnel is one line here; the awk trigger and the sed extract
+# below are built from this list.
+#
+# Convention for adding a funnel: its signature MUST be
+#   ReturnType funnel_name(const char* abbrev, const char* long_name, ...)
+# and it MUST call curvz::utils::set_name(*widget, abbrev, long_name)
+# internally so GTK widget-name and scriptable registry name agree.
+# Current funnels:
+#   add_tool_button   src/Toolbar.cpp   builds-and-appends a tool toggle
+#   make_tool_button  src/Toolbar.cpp   builds without appending (Corner)
+NAMING_FUNNELS=(add_tool_button make_tool_button)
+
 usage() {
     cat <<EOF
 widget_names_sync — regenerate widget_names.db from source.
 
 DEFAULT BEHAVIOUR
     Running this script with no arguments rewrites widget_names.db in the
-    current directory. It scans src/ and include/ for every line of the form
+    current directory. It scans src/ and include/ for two patterns and
+    produces one DB row per recognised call:
 
         curvz::utils::set_name(widget, "abbrev", "long_name");
+        <naming-funnel>("abbrev", "long_name", ...);
 
-    and produces one DB row per call. Run from the repo root.
+    Run from the repo root. The current naming funnels are listed in the
+    NAMING_FUNNELS array near the top of this script — add new funnels
+    there to teach the harvester their shape.
 
 USAGE
     ./widget_names_sync           Rewrite widget_names.db from source. (default)
@@ -48,11 +79,12 @@ WORKFLOW
     Comment lines (starting with //) are ignored, so doc-comment examples
     don't pollute the DB.
 
-    Multi-line set_name calls are folded automatically — a call whose parens
+    Multi-line calls are folded automatically — a call whose parens
     haven't closed by end-of-line is joined to the next line before the
     regex extracts the abbrev / long_name. The reported file:line is where
     the call STARTS, matching the convention used by editors and the
-    closest_name resolver.
+    closest_name resolver. Applies to both set_name and naming-funnel
+    calls.
 
 LOOKUP (after generating the DB)
     awk -F'\t' '\$1=="tb"' widget_names.db    # decode one abbrev to file:line
@@ -76,33 +108,49 @@ case "${1:-}" in
                     exit 2 ;;
 esac
 
-# Harvest every curvz::utils::set_name call.
+# Harvest every curvz::utils::set_name call AND every naming-funnel call.
 #
-# Regex captures:
-#   \1 = file path
-#   \2 = line number
-#   \3 = abbrev (first string argument)
-#   \4 = long name (second string argument)
+# Two regex extractors at the end of the pipeline:
+#   set_name:    widget arg + abbrev + long_name → cols 1,2 are strings 2,3
+#   funnel call: abbrev + long_name              → cols 1,2 are strings 1,2
 #
-# Multi-line set_name calls are common in the codebase — the call site
-# routinely splits at the comma between the two string args when the
-# long_name is wordy:
+# The awk trigger fires on ANY of: set_name OR any funnel name. The fold
+# tracker (paren-depth) is the same regardless of which trigger fired —
+# both shapes are function calls that may continuation-line.
+#
+# Multi-line calls are common in the codebase — the call site routinely
+# splits at the comma between args when the long_name is wordy:
 #
 #     curvz::utils::set_name(spin, "ins_foo",
 #                            "inspector_foo_long_name");
+#     add_tool_button("tb_sel", "main_toolbar_select_tool_btn",
+#                     "curvz-select-symbolic", "Select (S)",
+#                     ActiveTool::Selection);
 #
-# The harvester first folds any continuation lines (a set_name call
-# whose parens haven't closed by end-of-line gets glued to the next
-# line) before the regex runs. Per-file awk pass with a paren-depth
-# tracker. Output line number is the line where the call STARTS, which
-# is the convention the rest of the codebase uses for the "file:line"
-# trace column.
+# The harvester first folds any continuation lines (a call whose parens
+# haven't closed by end-of-line gets glued to the next line) before the
+# regex runs. Per-file awk pass with a paren-depth tracker. Output line
+# number is the line where the call STARTS, which is the convention the
+# rest of the codebase uses for the "file:line" trace column.
 harvest() {
+    # Build the awk trigger regex: matches set_name OR any naming funnel.
+    # Word-boundary the funnel names so "make_tool_button" doesn't trip on
+    # a stray "tool_button" substring.
+    local funnel_alt=""
+    for f in "${NAMING_FUNNELS[@]}"; do
+        funnel_alt="${funnel_alt}|${f}"
+    done
+    local trigger_re="curvz::utils::set_name${funnel_alt}"
+
+    # Build the sed alternation: same funnel list, ORed into one pattern.
+    local funnel_sed_alt
+    funnel_sed_alt=$(IFS='|'; echo "${NAMING_FUNNELS[*]}")
+
     find src/ include/ -type f \( -name '*.cpp' -o -name '*.hpp' \) \
         2>/dev/null \
     | while read -r f; do
-        awk -v fname="$f" '
-            /curvz::utils::set_name/ || in_call {
+        awk -v fname="$f" -v trigger="$trigger_re" '
+            $0 ~ trigger || in_call {
                 if (!in_call) {
                     start_line = NR
                     buf = ""
@@ -110,14 +158,14 @@ harvest() {
                     in_call = 1
                 }
                 # Strip line comments (//...) before counting parens so a
-                # // in a comment doesnt confuse the depth tracker. The
-                # set_name call itself never legitimately contains //.
+                # // in a comment doesnt confuse the depth tracker. Neither
+                # set_name nor the funnel calls legitimately contain //.
                 line = $0
                 sub(/\/\/.*$/, "", line)
                 buf = buf " " line
                 # Count unescaped parens. Good enough for this codebase:
-                # set_name args are short strings without literal parens
-                # or escapes that would fool a naive count.
+                # the captured args are short strings without literal
+                # parens or escapes that would fool a naive count.
                 for (i = 1; i <= length(line); i++) {
                     c = substr(line, i, 1)
                     if (c == "(") depth++
@@ -137,7 +185,9 @@ harvest() {
         ' "$f"
     done \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
-    | sed -nE 's|^([^:]+):([0-9]+):.*curvz::utils::set_name\([^,]+,[[:space:]]*"([^"]+)"[[:space:]]*,[[:space:]]*"([^"]+)".*|\3\t\4\t\1:\2|p' \
+    | sed -nE \
+        -e 's|^([^:]+):([0-9]+):.*curvz::utils::set_name\([^,]+,[[:space:]]*"([^"]+)"[[:space:]]*,[[:space:]]*"([^"]+)".*|\3\t\4\t\1:\2|p' \
+        -e "s#^([^:]+):([0-9]+):.*(${funnel_sed_alt})\\([[:space:]]*\"([^\"]+)\"[[:space:]]*,[[:space:]]*\"([^\"]+)\".*#\\4\\t\\5\\t\\1:\\2#p" \
     | sort -t$'\t' -k1,1
 }
 

@@ -1,5 +1,6 @@
 #include "MainWindow.hpp"
 #include "AppPreferences.hpp" // s139 m2 / s143 m1 — boolean-cleanup quality pref + sync
+#include "Application.hpp" // s190 m2 — Application::present_scripter() (CURVZ_DIAGNOSTIC)
 #include "ContextBar.hpp"
 #include "CoordSpace.hpp"
 #include "CurvzLog.hpp"
@@ -12,6 +13,10 @@
 #include "SvgWriter.hpp"
 #include "TemplateLibrary.hpp"
 #include "ThemeEditDialog.hpp" // s183 m2 — Edit-theme dialog wiring
+#include "curvz/widgets/ToggleButton.hpp" // s190 m2 — substrate-routed Scripter toggle (CURVZ_DIAGNOSTIC)
+#ifdef CURVZ_DIAGNOSTIC
+#include "scripting/ScripterWindow.hpp" // s190 m2 — present/get_visible/property_visible
+#endif
 #include <functional>
 #include <giomm/simpleactiongroup.h> // s144 m3 — recents action group
 #include <gtkmm/application.h>
@@ -292,6 +297,93 @@ void MainWindow::setup_headerbar() {
     dlg->present();
   });
   m_headerbar.pack_start(m_logo_btn);
+
+#ifdef CURVZ_DIAGNOSTIC
+  // s190 m2 — Scripter quick-open toggle. Diagnostic-mode-only; gives
+  // an accidental-close recovery path and a way to hide the Scripter
+  // without searching for its X button.
+  //
+  // Sits immediately after the app logo (left edge of the headerbar)
+  // so the diagnostic-surface entry point is the first thing visible
+  // alongside the application's primary brand mark. Symbolic icon —
+  // face-monkey is stock Adwaita and reads as "diagnostic / playful
+  // operator surface" without conflicting with any tool-button icon
+  // in the toolbar.
+  //
+  // s190 m2-rev2 — promoted to ToggleButton so the checked state is
+  // a live indicator of whether the Scripter is currently visible.
+  // Bidirectional sync:
+  //   toggle.signal_toggled  →  show/hide the Scripter (forward)
+  //   scripter.property_visible.signal_changed  →  flip the toggle
+  //                                                 (back-channel,
+  //                                                 catches X-button)
+  // A shared bool flag (`syncing`) suppresses re-entry during
+  // programmatic state changes — the back-channel listener flips
+  // the toggle, which would re-fire signal_toggled and chase its
+  // own tail without the guard.
+  //
+  // Substrate-routed (curvz::widgets::ToggleButton) so the scriptable
+  // registry sees it under the abbrev "mw_scripter". Toggling from a
+  // script via `mw_scripter toggle` works the same as a real click.
+  auto* scripter_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+      "mw_scripter");
+  scripter_btn->set_icon_name("face-monkey-symbolic");
+  scripter_btn->set_tooltip_text("Scripter (toggle visibility)");
+  scripter_btn->set_has_frame(false);
+  scripter_btn->add_css_class("mw-scripter-btn");  // for :checked accent
+  curvz::utils::set_name(*scripter_btn, "mw_scripter",
+                         "main_window_scripter_open_btn");
+
+  // Seed the toggle's checked state from the Scripter's current
+  // visibility. Construction order: Application::on_activate creates
+  // MainWindow first, then the Scripter — so at the time this lambda
+  // runs (during MainWindow construction), the Scripter doesn't exist
+  // yet. We defer the initial sync via signal_idle so application
+  // setup can finish first.
+  //
+  // s190 m2-rev4 lesson — both sides of the toggle MUST flip the same
+  // property symmetrically. present() is "make me visible AND focus
+  // me" — a stronger guarantee than set_visible(true) and a different
+  // shape than its inverse set_visible(false). The asymmetric pairing
+  // caused a mousedown-hide / mouseup-show flicker; symmetric
+  // set_visible(true/false) eliminates it.
+  auto syncing = std::make_shared<bool>(false);
+  scripter_btn->signal_toggled().connect([this, scripter_btn, syncing]() {
+    if (*syncing) return;  // change came from back-channel; don't recurse
+    auto app_ref = get_application();
+    auto* app = dynamic_cast<Curvz::Application*>(app_ref.get());
+    if (!app) return;
+    auto* sw = app->scripter();
+    if (!sw) return;
+    sw->set_visible(scripter_btn->get_active());
+  });
+
+  // Back-channel: keep the toggle in sync with the actual window
+  // visibility. property_visible fires on any visibility change
+  // regardless of cause (X-button close, set_visible(false), present
+  // from cold), which is the correct signal for "stay in sync."
+  Glib::signal_idle().connect_once(
+      [this, scripter_btn, syncing]() {
+        auto app_ref = get_application();
+        auto* app = dynamic_cast<Curvz::Application*>(app_ref.get());
+        if (!app) return;
+        auto* sw = app->scripter();
+        if (!sw) return;
+        // Initial seed.
+        *syncing = true;
+        scripter_btn->set_active(sw->get_visible());
+        *syncing = false;
+        // Live sync.
+        sw->property_visible().signal_changed().connect(
+            [scripter_btn, sw, syncing]() {
+              *syncing = true;
+              scripter_btn->set_active(sw->get_visible());
+              *syncing = false;
+            });
+      });
+
+  m_headerbar.pack_start(*scripter_btn);
+#endif
 
   // S60 M3: "Documents" label + vertical separator packed into
   // pack_start immediately after the logo so they hug the left edge.

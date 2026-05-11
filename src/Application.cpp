@@ -395,6 +395,7 @@ void Application::on_activate() {
   auto* scripter = new curvz::scripting::ScripterWindow(scripts_dir);
   add_window(*scripter);
   scripter->present();
+  m_scripter = scripter;  // s190 m2 — held for MainWindow's Scripter toggle
   LOG_INFO("Application: CURVZ_DIAGNOSTIC build — Scripter window opened "
            "(scripts dir: {})", scripts_dir);
 

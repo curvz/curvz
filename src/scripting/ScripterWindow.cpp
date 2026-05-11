@@ -31,6 +31,15 @@ ScripterWindow::ScripterWindow(const std::string& initial_folder)
     set_title("Curvz Scripter (diagnostic)");
     set_default_size(900, 600);
 
+    // s190 m2 — hide-instead-of-destroy on close. The Scripter is a
+    // single persistent instance owned by Application; closing it via
+    // the X button (or any close path) hides the window so the next
+    // present() call from MainWindow's headerbar Scripter button can
+    // bring it back with editor state intact. Codebase idiom — same
+    // call used by HelpWindow, ShortcutsDialog, BlendDialog,
+    // MacroEditorWindow, MacroManagerWindow.
+    set_hide_on_close(true);
+
     m_listener = std::make_unique<ScriptListener>();
     m_listener->set_output_callback([this](const std::string& s) {
         append_output(s);

@@ -223,6 +223,26 @@ headerbar.titlebar button {
 }
 headerbar.titlebar button:hover  { background-color: var(--bg-edge); color: var(--fg-primary); }
 headerbar.titlebar button:active { background-color: var(--bg-edge); color: var(--fg-primary); }
+/* s190 m2 — Diagnostic-mode Scripter toggle in the headerbar. :checked
+   means the Scripter window is currently visible; unchecked means it's
+   hidden. Accent blue mirrors the tool-btn:checked styling so "active /
+   engaged" reads consistently across the app. The button is wired
+   bidirectionally with the Scripter's property_visible so the X-button
+   close path also flips the toggle.
+   s190 m2-final — added `background-image: none` to override system-
+   theme gradients painted on headerbar buttons. The toolbar's
+   .tool-btn:checked rule has the same line for the same reason. Without
+   it, background-color is masked by the theme gradient and the blue
+   never shows through. */
+headerbar.titlebar button.mw-scripter-btn:checked,
+headerbar.titlebar button.mw-scripter-btn:checked:hover {
+    background-color: var(--accent-deep);
+    background-image: none;
+    color: #ffffff;
+}
+headerbar.titlebar button.mw-scripter-btn:checked image {
+    color: #ffffff;
+}
 
 /* ── Notebook (tabs + page) ──────────────────────────────── */
 notebook > header {
