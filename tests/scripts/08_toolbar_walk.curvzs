@@ -1,0 +1,69 @@
+# 08_toolbar_walk — the radio invariant, proven by script.
+#
+# Walks a sequence of tool buttons, clicking each one and asserting:
+#   1. The clicked button reads as active.
+#   2. The previously-active button reads as inactive.
+#
+# That's the radio invariant: among the toolbar's tool toggles, one
+# and only one is active at any time. Pre-s188 this was a property
+# we trusted by visual inspection — there was no way to script it.
+# Post-s188 m1, with all 15 tool buttons addressable by abbrev, we
+# can walk the toolbar and prove the invariant verb-by-verb.
+#
+# The walk visits a representative sample (not exhaustive) to keep
+# the script readable. Add lines for any tool you want to exercise.
+#
+# Test protocol:
+#   1. Open the Scripter window.
+#   2. Load this script.
+#   3. Run. Watch the toolbar visually flip through tools.
+#   4. Every line should PASS.
+#
+# This is also a nice demo with the pacing knob (s187 m4): crank it
+# to 200-300ms and the script becomes a watchable animation of the
+# toolbar driving itself.
+
+# ── Start from a known state ────────────────────────────────────────
+# Click Select. Whatever was active before, Select is now active.
+tb_sel click
+assert tb_sel active == true
+
+# ── Walk through the Creation section ───────────────────────────────
+# Each click activates the new tool. The radio invariant says the
+# previously-active tool deactivates automatically — we assert both
+# sides at each step.
+tb_nod click
+assert tb_nod active == true
+assert tb_sel active == false
+
+tb_pen click
+assert tb_pen active == true
+assert tb_nod active == false
+
+tb_rec click
+assert tb_rec active == true
+assert tb_pen active == false
+
+tb_ova click
+assert tb_ova active == true
+assert tb_rec active == false
+
+tb_lin click
+assert tb_lin active == true
+assert tb_ova active == false
+
+# ── Jump into the Utility section ───────────────────────────────────
+# Different visual region of the toolbar; same invariant.
+tb_zom click
+assert tb_zom active == true
+assert tb_lin active == false
+
+tb_meas click
+assert tb_meas active == true
+assert tb_zom active == false
+
+# ── Return to Select ────────────────────────────────────────────────
+# End in a known state so subsequent script runs start clean.
+tb_sel click
+assert tb_sel active == true
+assert tb_meas active == false

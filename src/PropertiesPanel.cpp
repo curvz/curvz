@@ -12,6 +12,13 @@
 #include "color/ColorRegion.hpp" // S83 m4h v2: region_name fallback when swatch.header.name is empty
 #include "color/SwatchLibrary.hpp" // S83 m4h: find_swatch + PaintSlot for binding-indicator rows
 #include "curvz_utils.hpp" // s119 — curvz::utils::set_name
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/CheckButton.hpp"
+#include "curvz/widgets/DropDown.hpp"
+#include "curvz/widgets/Entry.hpp"
+#include "curvz/widgets/Scale.hpp"
+#include "curvz/widgets/SpinButton.hpp"
+#include "curvz/widgets/ToggleButton.hpp"
 #include "math/BezierPath.hpp"
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector appearance writers
 #include "style/StyleLibrary.hpp" // S80 m4b: find_style for "Bound: <n>" indicator
@@ -760,7 +767,7 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
       if (k_units[i] == cm->display_unit)
         u_sel = i;
     }
-    auto *u_drop = Gtk::make_managed<Gtk::DropDown>(u_list);
+    auto *u_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_can_un", u_list);
     curvz::utils::set_name(u_drop, "ins_can_un", "inspector_canvas_units_dd");
     u_drop->set_selected(u_sel);
     u_drop->set_hexpand(true);
@@ -800,7 +807,7 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     m_row->append(*m_key);
 
     auto m_list = Gtk::StringList::create({"Pixel", "Physical", "Ratio"});
-    auto *m_drop = Gtk::make_managed<Gtk::DropDown>(m_list);
+    auto *m_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_can_md", m_list);
     curvz::utils::set_name(m_drop, "ins_can_md", "inspector_canvas_mode_dd");
     guint m_sel = 0;
     if (cm->display_mode == DisplayMode::Physical)
@@ -856,10 +863,10 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     const bool is_landscape = (cur_w > cur_h);
     const bool is_portrait = !is_landscape; // W < H, or square (W == H)
 
-    auto *portrait_btn = Gtk::make_managed<Gtk::Button>();
+    auto *portrait_btn = Gtk::make_managed<curvz::widgets::Button>("ins_can_op");
     curvz::utils::set_name(portrait_btn, "ins_can_op",
                            "inspector_canvas_orient_portrait_btn");
-    auto *landscape_btn = Gtk::make_managed<Gtk::Button>();
+    auto *landscape_btn = Gtk::make_managed<curvz::widgets::Button>("ins_can_ol");
     curvz::utils::set_name(landscape_btn, "ins_can_ol",
                            "inspector_canvas_orient_landscape_btn");
 
@@ -1057,7 +1064,7 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     static const int DPI_VALS[] = {72, 96, 150, 300, 600};
     static const int DPI_PRESET_COUNT = 5;
     static const guint DPI_CUSTOM_INDEX = 5;
-    auto *dpi_drop = Gtk::make_managed<Gtk::DropDown>(dpi_list);
+    auto *dpi_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_can_dpi", dpi_list);
     curvz::utils::set_name(dpi_drop, "ins_can_dpi", "inspector_canvas_dpi_dd");
     // Pick the matching preset index, else "Custom"
     guint dpi_sel = DPI_CUSTOM_INDEX;
@@ -1077,7 +1084,8 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     // print; lower bound 1 prevents divide-by-zero downstream.
     auto dpi_adj =
         Gtk::Adjustment::create((double)cm->dpi, 1.0, 9600.0, 1.0, 10.0);
-    auto *dpi_spin = Gtk::make_managed<Gtk::SpinButton>(dpi_adj, 1.0, 0);
+    auto *dpi_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+        "ins_can_dpi_spn", dpi_adj, 1.0, 0);
     curvz::utils::set_name(dpi_spin, "ins_can_dpi_spn",
                            "inspector_canvas_dpi_spn");
     dpi_spin->set_width_chars(5);
@@ -1537,7 +1545,7 @@ void PropertiesPanel::build_canvas_colours_section(CurvzDocument *doc,
     row->set_spacing(6);
     row->set_halign(Gtk::Align::END);
 
-    auto *btn = Gtk::make_managed<Gtk::Button>("Reset");
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>("ins_motif_rst", "Reset");
     curvz::utils::set_name(btn, "ins_motif_rst", "inspector_motif_reset_btn");
     btn->add_css_class("flat");
     btn->set_tooltip_text("Restore this document's artboard, workspace, and "
@@ -1793,7 +1801,8 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
       auto adj = Gtk::Adjustment::create(
           double(AppPreferences::instance().recent_projects_max_count()), 1.0,
           50.0, 1.0, 5.0, 0.0);
-      auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+      auto *spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+          "ins_app_recents_max", adj, 1.0, 0);
       curvz::utils::set_name(spin, "ins_app_recents_max",
                              "inspector_app_recent_projects_max_count_spin");
       spin->set_valign(Gtk::Align::CENTER);
@@ -1887,7 +1896,8 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
       auto adj = Gtk::Adjustment::create(
           double(AppPreferences::instance().undo_history_depth()), 50.0,
           10000.0, 50.0, 100.0, 0.0);
-      auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+      auto *spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+          "ins_app_undo_depth", adj, 1.0, 0);
       curvz::utils::set_name(spin, "ins_app_undo_depth",
                              "inspector_app_undo_history_depth_spin");
       spin->set_valign(Gtk::Align::CENTER);
@@ -1933,7 +1943,8 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
       auto adj = Gtk::Adjustment::create(
           double(AppPreferences::instance().tooltip_delay_ms()), 0.0, 2000.0,
           50.0, 100.0, 0.0);
-      auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+      auto *spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+          "ins_app_tooltip_delay", adj, 1.0, 0);
       curvz::utils::set_name(spin, "ins_app_tooltip_delay",
                              "inspector_app_tooltip_delay_ms_spin");
       spin->set_valign(Gtk::Align::CENTER);
@@ -2079,7 +2090,7 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
       double(AppPreferences::instance().boolean_cleanup_quality()), 0.0, 10.0,
       1.0, 1.0, 0.0);
   auto *scale =
-      Gtk::make_managed<Gtk::Scale>(adj, Gtk::Orientation::HORIZONTAL);
+      Gtk::make_managed<curvz::widgets::Scale>("ins_app_bcq", adj);
   curvz::utils::set_name(scale, "ins_app_bcq",
                          "inspector_app_boolean_cleanup_quality_scale");
   scale->set_digits(0); // integer values only
@@ -2252,7 +2263,7 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
       // one-shot action that flips state and rebuilds the section,
       // not a stateful toggle (state lives on the SceneNode, not on
       // the button).
-      auto *lock_btn = Gtk::make_managed<Gtk::Button>();
+      auto *lock_btn = Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_lock");
       curvz::utils::set_name(lock_btn, "ins_obj_gd_lock",
                              "inspector_object_guide_lock_btn");
       lock_btn->set_has_frame(false);
@@ -2273,7 +2284,7 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
       });
       row->append(*lock_btn);
 
-      auto *del_btn = Gtk::make_managed<Gtk::Button>("×");
+      auto *del_btn = Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_del", "×");
       curvz::utils::set_name(del_btn, "ins_obj_gd_del",
                              "inspector_object_guide_delete_btn");
       del_btn->set_has_frame(false);
@@ -2432,7 +2443,7 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
     count_lbl->add_css_class("prop-val-lbl");
     row->append(*count_lbl);
 
-    auto *del_btn = Gtk::make_managed<Gtk::Button>("×");
+    auto *del_btn = Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_mdel", "×");
     curvz::utils::set_name(del_btn, "ins_obj_gd_mdel",
                            "inspector_object_guides_multi_delete_btn");
     del_btn->set_has_frame(false);
@@ -2476,7 +2487,7 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
     tools_row->set_spacing(4);
     tools_row->set_margin_top(4);
 
-    auto *from_nodes_btn = Gtk::make_managed<Gtk::Button>("From 2 points…");
+    auto *from_nodes_btn = Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_f2p", "From 2 points…");
     curvz::utils::set_name(from_nodes_btn, "ins_obj_gd_f2p",
                            "inspector_object_guides_from_2_points_btn");
     from_nodes_btn->set_has_frame(false);
@@ -2520,7 +2531,7 @@ void PropertiesPanel::build_grid_section(CurvzDocument *doc, Gtk::Box *parent) {
   en_lbl->add_css_class("prop-lbl");
   en_lbl->set_width_chars(8);
   en_lbl->set_xalign(0.0f);
-  auto *en_sw = Gtk::make_managed<Gtk::CheckButton>();
+  auto *en_sw = Gtk::make_managed<curvz::widgets::CheckButton>("ins_grd_en");
   curvz::utils::set_name(en_sw, "ins_grd_en", "inspector_grid_enable_check");
   en_sw->set_active(enabled);
   en_sw->set_halign(Gtk::Align::START);
@@ -2550,7 +2561,7 @@ void PropertiesPanel::build_grid_section(CurvzDocument *doc, Gtk::Box *parent) {
     lbl->add_css_class("prop-lbl");
     lbl->set_width_chars(8);
     lbl->set_xalign(0.0f);
-    auto *drop = Gtk::make_managed<Gtk::DropDown>(
+    auto *drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_grd_st", 
         Gtk::StringList::create({"Lines", "Dots"}));
     curvz::utils::set_name(drop, "ins_grd_st", "inspector_grid_style_dd");
     drop->set_selected(gl->grid_dots ? 1 : 0);
@@ -2771,7 +2782,7 @@ void PropertiesPanel::build_margin_section(CurvzDocument *doc,
   en_lbl->add_css_class("prop-lbl");
   en_lbl->set_width_chars(8);
   en_lbl->set_xalign(0.0f);
-  auto *en_sw = Gtk::make_managed<Gtk::CheckButton>();
+  auto *en_sw = Gtk::make_managed<curvz::widgets::CheckButton>("ins_mrg_en");
   curvz::utils::set_name(en_sw, "ins_mrg_en", "inspector_margins_enable_check");
   en_sw->set_active(enabled);
   en_sw->set_halign(Gtk::Align::START);
@@ -2907,7 +2918,8 @@ void PropertiesPanel::build_margin_section(CurvzDocument *doc,
 
     auto adj_cols =
         Gtk::Adjustment::create((double)ml->margin_columns, 1, 100, 1, 5);
-    m_margin_sp_cg = Gtk::make_managed<Gtk::SpinButton>(adj_cols, 1.0, 0);
+    m_margin_sp_cg = Gtk::make_managed<curvz::widgets::SpinButton>(
+        "ins_mrg_cn", adj_cols, 1.0, 0);
     curvz::utils::set_name(m_margin_sp_cg, "ins_mrg_cn",
                            "inspector_margins_col_count_spn");
     m_margin_sp_cg->set_hexpand(true);
@@ -2960,7 +2972,8 @@ void PropertiesPanel::build_margin_section(CurvzDocument *doc,
 
     auto adj_rows =
         Gtk::Adjustment::create((double)ml->margin_rows, 1, 100, 1, 5);
-    m_margin_sp_rg = Gtk::make_managed<Gtk::SpinButton>(adj_rows, 1.0, 0);
+    m_margin_sp_rg = Gtk::make_managed<curvz::widgets::SpinButton>(
+        "ins_mrg_rn", adj_rows, 1.0, 0);
     curvz::utils::set_name(m_margin_sp_rg, "ins_mrg_rn",
                            "inspector_margins_row_count_spn");
     m_margin_sp_rg->set_hexpand(true);
@@ -3327,7 +3340,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       flip_row->set_margin_end(6);
       flip_row->set_margin_top(4);
       flip_row->set_margin_bottom(6);
-      auto *btn_fh = Gtk::make_managed<Gtk::Button>("⇔ Flip H");
+      auto *btn_fh = Gtk::make_managed<curvz::widgets::Button>("ins_sel_ref_fh", "⇔ Flip H");
       curvz::utils::set_name(btn_fh, "ins_sel_ref_fh",
                              "inspector_selection_ref_flip_h_btn");
       btn_fh->add_css_class("prop-toggle");
@@ -3337,7 +3350,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
           m_sig_request_flip.emit(true);
       });
       flip_row->append(*btn_fh);
-      auto *btn_fv = Gtk::make_managed<Gtk::Button>("⇕ Flip V");
+      auto *btn_fv = Gtk::make_managed<curvz::widgets::Button>("ins_sel_ref_fv", "⇕ Flip V");
       curvz::utils::set_name(btn_fv, "ins_sel_ref_fv",
                              "inspector_selection_ref_flip_v_btn");
       btn_fv->add_css_class("prop-toggle");
@@ -3385,7 +3398,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     content_row->set_margin_top(4);
     content_row->set_margin_bottom(2);
     content_row->append(*make_lbl("Text"));
-    auto *content_entry = Gtk::make_managed<Gtk::Entry>();
+    auto *content_entry = Gtk::make_managed<curvz::widgets::Entry>("ins_txt_ct");
     curvz::utils::set_name(content_entry, "ins_txt_ct",
                            "inspector_text_content_entry");
     content_entry->set_text(obj->text_content);
@@ -3481,7 +3494,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
           sel_idx = fi;
       }
 
-      auto *font_drop = Gtk::make_managed<Gtk::DropDown>(slist);
+      auto *font_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_txt_fam", slist);
       curvz::utils::set_name(font_drop, "ins_txt_fam",
                              "inspector_text_font_family_dd");
       font_drop->set_enable_search(true);
@@ -3534,8 +3547,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       style_row->set_margin_end(6);
       style_row->set_margin_top(4);
       style_row->set_margin_bottom(2);
-      auto *bold_btn = Gtk::make_managed<Gtk::CheckButton>("Bold");
-      auto *italic_btn = Gtk::make_managed<Gtk::CheckButton>("Italic");
+      auto *bold_btn = Gtk::make_managed<curvz::widgets::CheckButton>("ins_txt_b", "Bold");
+      auto *italic_btn = Gtk::make_managed<curvz::widgets::CheckButton>("ins_txt_i", "Italic");
       curvz::utils::set_name(bold_btn, "ins_txt_b",
                              "inspector_text_bold_check");
       curvz::utils::set_name(italic_btn, "ins_txt_i",
@@ -3641,10 +3654,10 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       align_row->set_margin_bottom(6);
       align_row->append(*make_lbl("Align"));
 
-      auto *btn_l = Gtk::make_managed<Gtk::ToggleButton>("⇤"); // ⇤
-      auto *btn_c = Gtk::make_managed<Gtk::ToggleButton>("≡"); // ≡
-      auto *btn_r = Gtk::make_managed<Gtk::ToggleButton>("⇥"); // ⇥
-      auto *btn_j = Gtk::make_managed<Gtk::ToggleButton>("≣"); // ≣
+      auto *btn_l = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_txt_al", "⇤"); // ⇤
+      auto *btn_c = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_txt_ac", "≡"); // ≡
+      auto *btn_r = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_txt_ar", "⇥"); // ⇥
+      auto *btn_j = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_txt_aj", "≣"); // ≣
       curvz::utils::set_name(btn_l, "ins_txt_al",
                              "inspector_text_align_left_btn");
       curvz::utils::set_name(btn_c, "ins_txt_ac",
@@ -3738,7 +3751,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       path_row->append(*path_val);
 
       if (!obj->text_path_id.empty()) {
-        auto *detach_btn = Gtk::make_managed<Gtk::Button>("Detach");
+        auto *detach_btn = Gtk::make_managed<curvz::widgets::Button>("ins_txt_dt", "Detach");
         curvz::utils::set_name(detach_btn, "ins_txt_dt",
                                "inspector_text_path_detach_btn");
         detach_btn->add_css_class("prop-toggle");
@@ -3799,7 +3812,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
         flip_key->set_xalign(0.0f);
         flip_row2->append(*flip_key);
 
-        auto *flip_chk = Gtk::make_managed<Gtk::CheckButton>("Below path");
+        auto *flip_chk = Gtk::make_managed<curvz::widgets::CheckButton>("ins_txt_pfp", "Below path");
         curvz::utils::set_name(flip_chk, "ins_txt_pfp",
                                "inspector_text_path_flip_check");
         flip_chk->set_active(obj->text_path_flip);
@@ -4009,7 +4022,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     flip_row->set_margin_end(6);
     flip_row->set_margin_bottom(6);
 
-    auto *btn_fh = Gtk::make_managed<Gtk::Button>("⇔ Flip H");
+    auto *btn_fh = Gtk::make_managed<curvz::widgets::Button>("ins_sel_img_fh", "⇔ Flip H");
     curvz::utils::set_name(btn_fh, "ins_sel_img_fh",
                            "inspector_selection_image_flip_h_btn");
     btn_fh->add_css_class("prop-toggle");
@@ -4021,7 +4034,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     });
     flip_row->append(*btn_fh);
 
-    auto *btn_fv = Gtk::make_managed<Gtk::Button>("⇕ Flip V");
+    auto *btn_fv = Gtk::make_managed<curvz::widgets::Button>("ins_sel_img_fv", "⇕ Flip V");
     curvz::utils::set_name(btn_fv, "ins_sel_img_fv",
                            "inspector_selection_image_flip_v_btn");
     btn_fv->add_css_class("prop-toggle");
@@ -4440,7 +4453,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     spin_sy->set_width_chars(10);
 
     // Clickable "SCALE" label = Apply
-    auto *apply_lbl = Gtk::make_managed<Gtk::Button>();
+    auto *apply_lbl = Gtk::make_managed<curvz::widgets::Button>("ins_sel_sa");
     curvz::utils::set_name(apply_lbl, "ins_sel_sa",
                            "inspector_selection_scale_apply_btn");
     apply_lbl->add_css_class("flat");
@@ -4468,7 +4481,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     });
 
     // Link toggle — monochrome, bright = linked, dim = independent
-    auto *link_btn = Gtk::make_managed<Gtk::ToggleButton>();
+    auto *link_btn = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_sel_sln");
     curvz::utils::set_name(link_btn, "ins_sel_sln",
                            "inspector_selection_scale_link_toggle");
     link_btn->set_active(m_scale_linked);
@@ -4528,7 +4541,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       Glib::signal_idle().connect_once([this] { m_loading = false; });
     };
 
-    auto *spin_r = Gtk::make_managed<Gtk::SpinButton>(adj_r, 0.000001, 6);
+    auto *spin_r = Gtk::make_managed<curvz::widgets::SpinButton>(
+        "ins_sel_rt", adj_r, 0.000001, 6);
     curvz::utils::set_name(spin_r, "ins_sel_rt",
                            "inspector_selection_rotate_spn");
     spin_r->set_hexpand(true);
@@ -4537,7 +4551,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     spin_r->add_css_class("node-spin");
     block_scroll(spin_r, do_rotate);
 
-    auto *apply_lbl = Gtk::make_managed<Gtk::Button>();
+    auto *apply_lbl = Gtk::make_managed<curvz::widgets::Button>("ins_sel_ra");
     curvz::utils::set_name(apply_lbl, "ins_sel_ra",
                            "inspector_selection_rotate_apply_btn");
     apply_lbl->add_css_class("flat");
@@ -4606,7 +4620,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     spin_kx->set_width_chars(10);
     spin_ky->set_width_chars(10);
 
-    auto *apply_lbl = Gtk::make_managed<Gtk::Button>();
+    auto *apply_lbl = Gtk::make_managed<curvz::widgets::Button>("ins_sel_ka");
     curvz::utils::set_name(apply_lbl, "ins_sel_ka",
                            "inspector_selection_skew_apply_btn");
     apply_lbl->add_css_class("flat");
@@ -4656,7 +4670,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     flip_row->set_margin_end(6);
     flip_row->set_margin_top(4);
     flip_row->set_margin_bottom(6);
-    auto *btn_fh = Gtk::make_managed<Gtk::Button>("⇔ Flip H");
+    auto *btn_fh = Gtk::make_managed<curvz::widgets::Button>("ins_sel_fh", "⇔ Flip H");
     curvz::utils::set_name(btn_fh, "ins_sel_fh",
                            "inspector_selection_flip_h_btn");
     btn_fh->add_css_class("prop-toggle");
@@ -4667,7 +4681,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
         m_sig_request_flip.emit(true);
     });
     flip_row->append(*btn_fh);
-    auto *btn_fv = Gtk::make_managed<Gtk::Button>("⇕ Flip V");
+    auto *btn_fv = Gtk::make_managed<curvz::widgets::Button>("ins_sel_fv", "⇕ Flip V");
     curvz::utils::set_name(btn_fv, "ins_sel_fv",
                            "inspector_selection_flip_v_btn");
     btn_fv->add_css_class("prop-toggle");
@@ -4874,7 +4888,7 @@ void PropertiesPanel::build_metadata_section(Gtk::Box *parent) {
       if (k_categories[ci] == doc->export_category)
         cat_sel = ci;
     }
-    auto *cat_drop = Gtk::make_managed<Gtk::DropDown>(cat_list);
+    auto *cat_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_meta_xc", cat_list);
     curvz::utils::set_name(cat_drop, "ins_meta_xc",
                            "inspector_metadata_export_category_dd");
     cat_drop->set_selected(cat_sel);
@@ -5434,7 +5448,7 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
     auto items = Gtk::StringList::create(
         {"Symmetric \xe2\x97\x86", "Smooth \xe2\x97\x87", "Cusp \xe2\x96\xa1",
          "Corner \xe2\x97\x8b"});
-    auto *dd = Gtk::make_managed<Gtk::DropDown>(items);
+    auto *dd = Gtk::make_managed<curvz::widgets::DropDown>("ins_nod_tp", items);
     curvz::utils::set_name(dd, "ins_nod_tp", "inspector_node_type_dd");
     dd->set_hexpand(true);
     dd->add_css_class("prop-dropdown");
@@ -5512,7 +5526,7 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
     split_row->set_margin_top(4);
 
     if (can_open) {
-      auto *open_btn = Gtk::make_managed<Gtk::Button>("Open here");
+      auto *open_btn = Gtk::make_managed<curvz::widgets::Button>("ins_nod_op", "Open here");
       curvz::utils::set_name(open_btn, "ins_nod_op",
                              "inspector_node_open_here_btn");
       open_btn->add_css_class("prop-toggle");
@@ -5527,7 +5541,7 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
     }
 
     if (can_split) {
-      auto *split_btn = Gtk::make_managed<Gtk::Button>("Split here");
+      auto *split_btn = Gtk::make_managed<curvz::widgets::Button>("ins_nod_sp", "Split here");
       curvz::utils::set_name(split_btn, "ins_nod_sp",
                              "inspector_node_split_here_btn");
       split_btn->add_css_class("prop-toggle");
@@ -5569,7 +5583,8 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
 
     bool closed = obj->path->closed;
     auto *close_btn =
-        Gtk::make_managed<Gtk::ToggleButton>(closed ? "Closed" : "Open");
+        Gtk::make_managed<curvz::widgets::ToggleButton>(
+            "ins_nod_cl", closed ? "Closed" : "Open");
     curvz::utils::set_name(close_btn, "ins_nod_cl",
                            "inspector_node_path_closed_toggle");
     close_btn->set_active(closed);
@@ -5609,7 +5624,7 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
     dir_lbl->set_tooltip_text(dir_tip);
     path_row->append(*dir_lbl);
 
-    auto *rev_btn = Gtk::make_managed<Gtk::Button>("Reverse");
+    auto *rev_btn = Gtk::make_managed<curvz::widgets::Button>("ins_nod_rv", "Reverse");
     curvz::utils::set_name(rev_btn, "ins_nod_rv", "inspector_node_reverse_btn");
     rev_btn->add_css_class("prop-toggle");
     rev_btn->set_tooltip_text("Reverse path direction  (R in Node tool)");
@@ -5670,7 +5685,8 @@ void PropertiesPanel::build_blend_section(SceneNode *obj, Gtk::Box *parent) {
   grid->attach(*make_lbl("STEPS"), 0, row);
   auto adj_steps =
       Gtk::Adjustment::create(std::clamp(obj->blend_steps, 1, 50), 1, 50, 1, 5);
-  auto *sp_steps = Gtk::make_managed<Gtk::SpinButton>(adj_steps, 1.0, 0);
+  auto *sp_steps = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "ins_blnd_st", adj_steps, 1.0, 0);
   curvz::utils::set_name(sp_steps, "ins_blnd_st", "inspector_blend_steps_spn");
   sp_steps->set_hexpand(true);
   sp_steps->add_css_class("prop-width-entry");
@@ -5712,7 +5728,8 @@ void PropertiesPanel::build_blend_section(SceneNode *obj, Gtk::Box *parent) {
   // surgery is needed.
   {
     auto *chk =
-        Gtk::make_managed<Gtk::CheckButton>("Reverse direction (swap A↔B)");
+        Gtk::make_managed<curvz::widgets::CheckButton>(
+            "ins_blnd_rv", "Reverse direction (swap A↔B)");
     curvz::utils::set_name(chk, "ins_blnd_rv", "inspector_blend_reverse_check");
     chk->set_active(false);
     grid->attach(*chk, 0, row, 3, 1);
@@ -5733,7 +5750,8 @@ void PropertiesPanel::build_blend_section(SceneNode *obj, Gtk::Box *parent) {
 
   // ── Stroke-width override ─────────────────────────────────────────────
   auto *chk_over =
-      Gtk::make_managed<Gtk::CheckButton>("Override stroke width range");
+      Gtk::make_managed<curvz::widgets::CheckButton>(
+          "ins_blnd_so", "Override stroke width range");
   curvz::utils::set_name(chk_over, "ins_blnd_so",
                          "inspector_blend_stroke_override_check");
   chk_over->set_active(obj->blend_stroke_w_user_set);
@@ -5826,7 +5844,7 @@ void PropertiesPanel::build_blend_section(SceneNode *obj, Gtk::Box *parent) {
     row_box->set_margin_top(4);
     row_box->set_margin_bottom(6);
     row_box->set_halign(Gtk::Align::END);
-    auto *btn = Gtk::make_managed<Gtk::Button>("Release");
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>("ins_blnd_rl", "Release");
     curvz::utils::set_name(btn, "ins_blnd_rl", "inspector_blend_release_btn");
     btn->set_tooltip_text("Dissolve this Blend into A, a Group of baked "
                           "step paths, and B as siblings.");
@@ -5924,7 +5942,8 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
   }
 
   auto adj_top = Gtk::Adjustment::create(top_n, 2, 4, 1, 1);
-  auto *sp_top = Gtk::make_managed<Gtk::SpinButton>(adj_top, 1.0, 0);
+  auto *sp_top = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "ins_wrp_tn", adj_top, 1.0, 0);
   curvz::utils::set_name(sp_top, "ins_wrp_tn", "inspector_warp_top_count_spn");
   sp_top->set_hexpand(true);
   sp_top->add_css_class("prop-width-entry");
@@ -5934,7 +5953,8 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
   ++row;
 
   auto adj_bot = Gtk::Adjustment::create(bot_n, 2, 4, 1, 1);
-  auto *sp_bot = Gtk::make_managed<Gtk::SpinButton>(adj_bot, 1.0, 0);
+  auto *sp_bot = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "ins_wrp_bn", adj_bot, 1.0, 0);
   curvz::utils::set_name(sp_bot, "ins_wrp_bn", "inspector_warp_bot_count_spn");
   sp_bot->set_hexpand(true);
   sp_bot->add_css_class("prop-width-entry");
@@ -5968,7 +5988,7 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
     preset_strs.push_back(names[i]);
   }
   auto preset_model = Gtk::StringList::create(preset_strs);
-  auto *dd_preset = Gtk::make_managed<Gtk::DropDown>(preset_model);
+  auto *dd_preset = Gtk::make_managed<curvz::widgets::DropDown>("ins_wrp_pr", preset_model);
   curvz::utils::set_name(dd_preset, "ins_wrp_pr", "inspector_warp_preset_dd");
   dd_preset->set_hexpand(true);
   // Initial selection:
@@ -6001,7 +6021,7 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
                       : std::clamp(obj->warp_quality, 1, 16);
   auto adj_q = Gtk::Adjustment::create(initial_q, 1, 16, 1, 1);
   auto *sc_q =
-      Gtk::make_managed<Gtk::Scale>(adj_q, Gtk::Orientation::HORIZONTAL);
+      Gtk::make_managed<curvz::widgets::Scale>("ins_wrp_q", adj_q);
   curvz::utils::set_name(sc_q, "ins_wrp_q", "inspector_warp_quality_scale");
   sc_q->set_hexpand(true);
   sc_q->set_draw_value(true);
@@ -6203,7 +6223,7 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
     row_box->set_spacing(6);
     row_box->set_halign(Gtk::Align::END);
 
-    auto *btn_release = Gtk::make_managed<Gtk::Button>("Release");
+    auto *btn_release = Gtk::make_managed<curvz::widgets::Button>("ins_wrp_rl", "Release");
     curvz::utils::set_name(btn_release, "ins_wrp_rl",
                            "inspector_warp_release_btn");
     btn_release->set_tooltip_text(
@@ -6214,7 +6234,7 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
       m_sig_request_release_warp.emit();
     });
 
-    auto *btn_flatten = Gtk::make_managed<Gtk::Button>("Flatten");
+    auto *btn_flatten = Gtk::make_managed<curvz::widgets::Button>("ins_wrp_fl", "Flatten");
     curvz::utils::set_name(btn_flatten, "ins_wrp_fl",
                            "inspector_warp_flatten_btn");
     btn_flatten->set_tooltip_text(
@@ -6283,7 +6303,7 @@ void PropertiesPanel::build_shadow_section(SceneNode *obj, Gtk::Box *parent) {
   // ── Enable toggle ──────────────────────────────────────────────────
   // Spans all three columns. Drives the sensitive() state of every other
   // row in the section.
-  auto *chk_enable = Gtk::make_managed<Gtk::CheckButton>("Enable shadow");
+  auto *chk_enable = Gtk::make_managed<curvz::widgets::CheckButton>("ins_shdw_en", "Enable shadow");
   curvz::utils::set_name(chk_enable, "ins_shdw_en",
                          "inspector_shadow_enable_check");
   chk_enable->set_active(obj->shadow_enabled);
@@ -6432,7 +6452,7 @@ void PropertiesPanel::build_shadow_section(SceneNode *obj, Gtk::Box *parent) {
   // Colour alpha slider — 0..100 mapped to 0..1.
   auto adj_ca = Gtk::Adjustment::create(obj->shadow_color_a * 100.0, 0.0, 100.0,
                                         1.0, 10.0);
-  auto *sl_ca = Gtk::make_managed<Gtk::Scale>(adj_ca);
+  auto *sl_ca = Gtk::make_managed<curvz::widgets::Scale>("ins_shdw_ca", adj_ca);
   curvz::utils::set_name(sl_ca, "ins_shdw_ca",
                          "inspector_shadow_color_alpha_slider");
   sl_ca->set_draw_value(true);
@@ -6448,7 +6468,7 @@ void PropertiesPanel::build_shadow_section(SceneNode *obj, Gtk::Box *parent) {
   grid->attach(*make_lbl("OPACITY"), 0, row);
   auto adj_op = Gtk::Adjustment::create(obj->shadow_opacity * 100.0, 0.0, 100.0,
                                         1.0, 10.0);
-  auto *sl_op = Gtk::make_managed<Gtk::Scale>(adj_op);
+  auto *sl_op = Gtk::make_managed<curvz::widgets::Scale>("ins_shdw_op", adj_op);
   curvz::utils::set_name(sl_op, "ins_shdw_op",
                          "inspector_shadow_opacity_slider");
   sl_op->set_draw_value(true);
@@ -7961,9 +7981,9 @@ void PropertiesPanel::add_fill_stroke_section(SceneNode *obj,
       cap_row->set_homogeneous(false);
       cap_row->set_halign(Gtk::Align::START);
 
-      auto *cap_butt = Gtk::make_managed<Gtk::ToggleButton>();
-      auto *cap_round = Gtk::make_managed<Gtk::ToggleButton>();
-      auto *cap_square = Gtk::make_managed<Gtk::ToggleButton>();
+      auto *cap_butt = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_cb");
+      auto *cap_round = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_cr");
+      auto *cap_square = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_cs");
       curvz::utils::set_name(cap_butt, "ins_fs_strk_cb",
                              "inspector_fill_stroke_cap_butt_btn");
       curvz::utils::set_name(cap_round, "ins_fs_strk_cr",
@@ -8086,9 +8106,9 @@ void PropertiesPanel::add_fill_stroke_section(SceneNode *obj,
       join_row->set_homogeneous(false);
       join_row->set_halign(Gtk::Align::START);
 
-      auto *join_miter = Gtk::make_managed<Gtk::ToggleButton>();
-      auto *join_round = Gtk::make_managed<Gtk::ToggleButton>();
-      auto *join_bevel = Gtk::make_managed<Gtk::ToggleButton>();
+      auto *join_miter = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_jm");
+      auto *join_round = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_jr");
+      auto *join_bevel = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_jb");
       curvz::utils::set_name(join_miter, "ins_fs_strk_jm",
                              "inspector_fill_stroke_join_miter_btn");
       curvz::utils::set_name(join_round, "ins_fs_strk_jr",

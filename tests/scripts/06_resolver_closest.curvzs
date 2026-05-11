@@ -1,17 +1,27 @@
 # 06_resolver_closest — proof closest_name considers all naming surfaces.
 #
-# Asks for `tool.nod` — a typo of `tool.node` (the only registry entry).
-# Edit distance is 1. Should produce a "did you mean 'tool.node'?"
-# suggestion.
+# Asks for `tb_no` — a one-character typo of `tb_nod` (a real registry
+# entry post-s188 m1). Edit distance is 1. Should produce a "did you
+# mean 'tb_nod'?" suggestion.
 #
 # This validates that closest_name_across_columns walks the live
 # registry as one of its candidate pools. Without that, only DB names
-# would be suggested and the user typing a typo of a hand-picked name
-# would get no help.
+# would be suggested; with it, real registry entries also surface.
+#
+# Pre-s188 this script asked for `tool.nod` and the suggestion was
+# `tool.node` — the hand-picked s186 m2 name. The funnel migration
+# replaced `tool.node` with `tb_nod` (every tool button addressable
+# by its widget_names.db abbrev), so the typo target moved with it.
 #
 # Expected output:
 #
-#   > tool.nod click
-#   error unknown object 'tool.nod' (did you mean 'tool.node'?)
+#   > tb_no click
+#   error unknown object 'tb_no' (did you mean 'tb_nod'?)
+#
+# The suggestion can also surface near-matches from widget_names.db's
+# long_name column — e.g. a typo of `main_toolbar_node_tool_btn` would
+# suggest the full name, then the resolver would translate to `tb_nod`
+# on retry. The closest-name pool is union: live registry abbrevs +
+# DB abbrevs + DB long_names.
 
-tool.nod click
+tb_no click

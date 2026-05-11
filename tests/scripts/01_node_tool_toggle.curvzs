@@ -1,18 +1,21 @@
-# 01_node_tool_toggle — the canonical m2 reference test.
+# 01_node_tool_toggle — canonical reference test for the substrate.
 #
-# Two lines. Driven from the Curvz Scripter window (visible only in
-# CURVZ_DIAGNOSTIC builds). Same shape as the sandbox m1 reference.
+# Two lines. Driven from the Curvz Scripter window. The Node-tool
+# ToggleButton on the main toolbar is now addressable as `tb_nod`
+# (s188 m1 — funnel migration). It's a normal GTK::ToggleButton
+# augmented with the curvz::scripting substrate; clicking it from a
+# script goes through the exact same code path as a user click,
+# including the radio-invariant logic that sets it as the active tool.
 #
-# tool.node is the Node-tool ToggleButton on the main toolbar. It's
-# a normal GTK::ToggleButton augmented with the curvz::scripting
-# substrate — clicking it from a script goes through the exact same
-# code path as a user click, including the radio-invariant logic
-# that sets it as the active tool.
+# Pre-s188 this script said `tool.node` — the hand-picked name from
+# s186 m2 when only the Node button used the wrapper. The migration
+# unified GTK widget-names and scriptable names: every tool button is
+# addressable by its widget_names.db abbrev (tb_sel, tb_nod, tb_pen, …).
 #
 # Run this from the Scripter window and check that:
 #   1. The Node button visibly turns on in the toolbar.
 #   2. The Canvas's active tool becomes Node.
 #   3. The assert prints PASS.
 
-tool.node click
-assert tool.node active == true
+tb_nod click
+assert tb_nod active == true

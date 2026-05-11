@@ -29,6 +29,16 @@ public:
     Scale(std::string_view name,
           double min, double max, double step);
 
+    // s189 m2 overload — pre-built Adjustment. Inspector call sites
+    // sometimes need the Adjustment to feed multiple controls or read
+    // its value from external lambdas; build it up front, hand it
+    // here, get a scriptable Scale wrapping the same range backing.
+    // Orientation defaults to horizontal — the only direction Curvz
+    // uses for slider controls today.
+    Scale(std::string_view name,
+          Glib::RefPtr<Gtk::Adjustment> adj,
+          Gtk::Orientation orientation = Gtk::Orientation::HORIZONTAL);
+
     curvz::scripting::ScriptValue invoke(
             std::string_view verb,
             const curvz::scripting::ScriptArgs& args) override;

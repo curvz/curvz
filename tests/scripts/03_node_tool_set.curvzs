@@ -1,6 +1,6 @@
 # 03_node_tool_set — cold-path diagnostic, set verb.
 #
-# Diagnostic for s186 m2 close-out: tests the cold path using the
+# Diagnostic for cold-vs-warm execution: tests the cold path using the
 # `set` verb (set_active(bool)) rather than `click` (activate()).
 #
 # Both verbs ultimately fire signal_toggled and route through the
@@ -30,6 +30,8 @@
 #   - Session D: run 02 cold first, then 01 immediately. What happens?
 #
 # Pattern across A/B/C/D points at where the cold path lives.
+#
+# s188 m1: addressed as `tb_nod` (was `tool.node` pre-migration).
 
-tool.node set true
-assert tool.node active == true
+tb_nod set true
+assert tb_nod active == true

@@ -1,9 +1,9 @@
 # 02_node_tool_query — cold-path diagnostic, read-only verb.
 #
-# Diagnostic for s186 m2 close-out: is the "first script FAILs"
-# behaviour we observe with 01_node_tool_toggle a property of THAT
-# script's verb sequence, or of running ANY script for the first
-# time in a fresh process?
+# Diagnostic for cold-vs-warm script execution: is the "first script
+# FAILs" behaviour we sometimes observe with 01_node_tool_toggle a
+# property of THAT script's verb sequence, or of running ANY script
+# for the first time in a fresh process?
 #
 # This script exercises only the read path:
 #   - get  reads a property (no state change)
@@ -29,7 +29,9 @@
 # normally be "" for an icon-only toolbar button. We assert that;
 # any non-empty string would also be reportable but the empty
 # string is what the Node tool ships with.
+#
+# s188 m1: addressed as `tb_nod` (was `tool.node` pre-migration).
 
-get tool.node active
-get tool.node label
-assert tool.node label == ""
+get tb_nod active
+get tb_nod label
+assert tb_nod label == ""

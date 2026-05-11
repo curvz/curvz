@@ -16,6 +16,18 @@ DropDown::DropDown(std::string_view name,
     init_scriptable();
 }
 
+// s189 m1 — accept a pre-built StringList directly. Inspector call sites
+// often need to walk the model in a loop while building (to find the index
+// of the current value), so building the StringList in user code first and
+// handing it to the wrapper is the natural shape.
+DropDown::DropDown(std::string_view name,
+                    const Glib::RefPtr<Gtk::StringList>& model)
+    : ScriptableWidget<Gtk::DropDown>(name) {
+    m_model = model;
+    set_model(m_model);
+    init_scriptable();
+}
+
 void DropDown::bind_canonical() {
     // GTK4: DropDown exposes signal-of-property-change for "selected".
     // We bind to it so changes from either user clicks or set_selected()

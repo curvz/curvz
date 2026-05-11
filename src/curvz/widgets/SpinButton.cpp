@@ -18,6 +18,19 @@ SpinButton::SpinButton(std::string_view name,
     init_scriptable();
 }
 
+// s189 m2 — pre-built Adjustment overload. The Adjustment-taking
+// Gtk::SpinButton ctor is `(adj, climb_rate, digits)`; we route those
+// three args through the template base's perfect-forwarding. Inspector
+// call sites that connect adj->signal_value_changed() or share the
+// Adjustment across widgets keep that external handle alive — same
+// Adjustment, now wrapped by a scriptable SpinButton.
+SpinButton::SpinButton(std::string_view name,
+                       Glib::RefPtr<Gtk::Adjustment> adj,
+                       double climb_rate, int digits)
+    : ScriptableWidget<Gtk::SpinButton>(name, adj, climb_rate, digits) {
+    init_scriptable();
+}
+
 void SpinButton::bind_canonical() {
     signal_value_changed().connect([this]() {
         emit("value_changed", ScriptValue::real(get_value()));

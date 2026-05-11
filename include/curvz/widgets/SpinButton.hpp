@@ -35,6 +35,19 @@ public:
                 double min, double max, double step,
                 int digits = 0);
 
+    // s189 m2 overload — inspector call sites build an external
+    // Glib::RefPtr<Gtk::Adjustment> up front (sometimes to connect
+    // signals on it directly, sometimes to share it across widgets,
+    // sometimes to read get_value() in lambdas captured by other UI).
+    // The wrapper accepts a pre-built Adjustment and routes it through
+    // Gtk::SpinButton's adjustment-taking ctor via the base template's
+    // perfect-forwarding. climb_rate is the canonical SpinButton
+    // parameter — the same value GTK uses for set_increments(step,
+    // step*10).
+    SpinButton(std::string_view name,
+                Glib::RefPtr<Gtk::Adjustment> adj,
+                double climb_rate, int digits = 0);
+
     curvz::scripting::ScriptValue invoke(
             std::string_view verb,
             const curvz::scripting::ScriptArgs& args) override;

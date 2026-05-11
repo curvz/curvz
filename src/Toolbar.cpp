@@ -3,9 +3,10 @@
 #include "color/SwatchLibrary.hpp"  // S87 m1 — picker section in popovers
 #include "color/Swatch.hpp"         // S87 m1 — SolidSwatch resolve
 #include "curvz_utils.hpp"          // s118 — curvz::utils::set_name
-#ifdef CURVZ_DIAGNOSTIC
-#include "curvz/widgets/ToggleButton.hpp"  // s186 m2 — Node-tool wrapper
-#endif
+// s188 m1: every tool button now a curvz::widgets::ToggleButton —
+// the funnel constructs them. Unconditional include (was diagnostic-
+// only in s186/s187 when only the Node tool used the wrapper).
+#include "curvz/widgets/ToggleButton.hpp"
 #include <algorithm>
 #include <cairomm/context.h>
 #include <cmath>
@@ -206,13 +207,36 @@ struct Toolbar::Impl {
     void build();
 
     // ── Tool-button building blocks ──────────────────────────────────────
-    void add_tool_button(const char* icon, const char* tooltip, ActiveTool tool);
-    void add_tool_button(Gtk::Picture* pic, const char* tooltip, ActiveTool tool);
+    // s188 m1: funnels take abbrev + long_name up front. They construct
+    // curvz::widgets::ToggleButton (not plain Gtk::ToggleButton) and call
+    // curvz::utils::set_name internally, so every tool button is
+    // scriptable by its abbrev and discoverable by its long_name through
+    // the resolver. The s186/s187 Picture overload had no callers and was
+    // removed in this ship — git -L any past version if needed.
+    //
+    // build_tool_btn is the shared helper: constructs the wrapper,
+    // applies icon/tooltip/CSS, wires the radio-invariant lambda, calls
+    // set_name, and registers in buttons/button_tools. Returns the
+    // pointer so the caller decides whether to append. add_tool_button
+    // appends; make_tool_button doesn't.
+    Gtk::ToggleButton* build_tool_btn(const char* abbrev, const char* long_name,
+                                      const char* icon, const char* tooltip,
+                                      ActiveTool tool);
+    void add_tool_button(const char* abbrev, const char* long_name,
+                         const char* icon, const char* tooltip,
+                         ActiveTool tool);
     // s175 m4: build-but-don't-append overload. Returns the button so the
     // caller can place it manually (e.g. inside build_transforms_section
     // where alphabetical ordering of mixed widget types — toggle buttons
     // and plain buttons — needs the caller to control append order).
-    Gtk::ToggleButton* make_tool_button(const char* icon, const char* tooltip,
+    // s188 m1: same naming-first signature shape as add_tool_button.
+    // Returns Gtk::ToggleButton* (not curvz::widgets::ToggleButton*) so
+    // the corner_tool_btn member and get_corner_btn() public API don't
+    // have to change. The actual object is a curvz::widgets::ToggleButton
+    // upcast — script registry sees it as "tb_cor".
+    Gtk::ToggleButton* make_tool_button(const char* abbrev,
+                                        const char* long_name,
+                                        const char* icon, const char* tooltip,
                                         ActiveTool tool);
 
     // ── Tool selection (the radio invariant) ─────────────────────────────
@@ -744,46 +768,17 @@ void Toolbar::set_snap_settings(const SnapSettings& s) {
 // `self->` is reserved for genuinely Gtk::Widget-side calls
 // (`self->append(...)`, `self->get_root()`, `self->get_width()`).
 void Toolbar::Impl::build() {
-    add_tool_button("curvz-select-symbolic", "Select (S)", ActiveTool::Selection);
-    curvz::utils::set_name(buttons.back(), "tb_sel", "main_toolbar_select_tool_btn");
-#ifdef CURVZ_DIAGNOSTIC
-    // s186 m2: Node-tool button built by hand so it's a
-    // curvz::widgets::ToggleButton (scriptable name "tool.node") rather
-    // than a bare Gtk::ToggleButton. Replicates exactly what
-    // add_tool_button does — icon, tooltip, framing, CSS class, the
-    // radio-invariant signal_clicked lambda, and the buttons/
-    // button_tools push — so the rest of the toolbar's tool-selection
-    // machinery sees no difference. Production builds drop to the
-    // #else branch and use the regular add_tool_button path.
-    //
-    // Once m3 widens this to all ToggleButtons, the #ifdef branch
-    // goes away entirely: add_tool_button itself will construct
-    // curvz::widgets::ToggleButton.
-    {
-        auto* btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
-            "tool.node");
-        btn->set_icon_name("curvz-node-symbolic");
-        btn->set_tooltip_text("Nodes (N)");
-        btn->set_has_frame(false);
-        btn->add_css_class("tool-btn");
-        btn->set_halign(Gtk::Align::FILL);
-        btn->set_hexpand(false);
-        btn->signal_clicked().connect([this, btn]() {
-            if (btn->get_active()) {
-                select_tool(ActiveTool::Node);
-            } else if (active == ActiveTool::Node) {
-                btn->set_active(true);
-                select_tool(ActiveTool::Node);
-            }
-        });
-        self->append(*btn);
-        buttons.push_back(btn);
-        button_tools.push_back(ActiveTool::Node);
-    }
-#else
-    add_tool_button("curvz-node-symbolic", "Nodes (N)", ActiveTool::Node);
-#endif
-    curvz::utils::set_name(buttons.back(), "tb_nod", "main_toolbar_node_tool_btn");
+    // s188 m1: every tool button now flows through the funnel as a
+    // curvz::widgets::ToggleButton. The abbrev/long_name args ride in
+    // up front; the funnel calls curvz::utils::set_name internally so
+    // the GTK widget-name and scriptable name stay in sync. The s186 m2
+    // CURVZ_DIAGNOSTIC hand-rolled Node block is gone — funnel handles
+    // it like every other tool button.
+    add_tool_button("tb_sel", "main_toolbar_select_tool_btn",
+                    "curvz-select-symbolic", "Select (S)",
+                    ActiveTool::Selection);
+    add_tool_button("tb_nod", "main_toolbar_node_tool_btn",
+                    "curvz-node-symbolic", "Nodes (N)", ActiveTool::Node);
     // Density picker only opens on Selection or empty space — see comment
     // above the right-click controller at the end of build(). Swallow
     // right-click here so density doesn't leak through.
@@ -796,51 +791,53 @@ void Toolbar::Impl::build() {
         self->append(*sep);
     }
 
-    add_tool_button("curvz-pen-symbolic", "Pen (P)", ActiveTool::Pen);
-    curvz::utils::set_name(buttons.back(), "tb_pen", "main_toolbar_pen_tool_btn");
+    add_tool_button("tb_pen", "main_toolbar_pen_tool_btn",
+                    "curvz-pen-symbolic", "Pen (P)", ActiveTool::Pen);
     add_rclick_swallow(*buttons.back());
-    add_tool_button("curvz-rect-symbolic",
+    add_tool_button("tb_rec", "main_toolbar_rect_tool_btn",
+                    "curvz-rect-symbolic",
                     "Rectangle (R)  —  Right-click to place precisely",
                     ActiveTool::Rect);
     Gtk::ToggleButton* rect_tool_btn = buttons.back();
-    curvz::utils::set_name(rect_tool_btn, "tb_rec", "main_toolbar_rect_tool_btn");
-    add_tool_button("curvz-oval-symbolic",
+    add_tool_button("tb_ova", "main_toolbar_ellipse_tool_btn",
+                    "curvz-oval-symbolic",
                     "Ellipse (E)  —  Right-click to place precisely",
                     ActiveTool::Ellipse);
     Gtk::ToggleButton* ellipse_tool_btn = buttons.back();
-    curvz::utils::set_name(ellipse_tool_btn, "tb_ova", "main_toolbar_ellipse_tool_btn");
-    add_tool_button("curvz-line-symbolic",
+    add_tool_button("tb_lin", "main_toolbar_line_tool_btn",
+                    "curvz-line-symbolic",
                     "Line (L)  —  Right-click to place precisely",
                     ActiveTool::Line);
     Gtk::ToggleButton* line_tool_btn = buttons.back();
-    curvz::utils::set_name(line_tool_btn, "tb_lin", "main_toolbar_line_tool_btn");
-    add_tool_button("curvz-ref-symbolic",
+    add_tool_button("tb_ref", "main_toolbar_ref_tool_btn",
+                    "curvz-ref-symbolic",
                     "Reference Point (F)  —  Right-click to place precisely",
                     ActiveTool::Ref);
     Gtk::ToggleButton* ref_tool_btn = buttons.back();
-    curvz::utils::set_name(ref_tool_btn, "tb_ref", "main_toolbar_ref_tool_btn");
-    add_tool_button("curvz-text-symbolic", "Text (T)  —  Right-click for options",
+    add_tool_button("tb_txt", "main_toolbar_text_tool_btn",
+                    "curvz-text-symbolic",
+                    "Text (T)  —  Right-click for options",
                     ActiveTool::Text);
     Gtk::ToggleButton* text_tool_btn = buttons.back();
-    curvz::utils::set_name(text_tool_btn, "tb_txt", "main_toolbar_text_tool_btn");
-    add_tool_button("curvz-text-on-path-symbolic",
+    add_tool_button("tb_top", "main_toolbar_text_on_path_tool_btn",
+                    "curvz-text-on-path-symbolic",
                     "Text on Path (U)  —  Click text then path to link",
                     ActiveTool::TextOnPath);
-    curvz::utils::set_name(buttons.back(), "tb_top", "main_toolbar_text_on_path_tool_btn");
     add_rclick_swallow(*buttons.back());
     // s175 m4: Polygon and Spiral moved here from below — they're
     // shape-creation tools, they belong in the Creation section. Both
     // pop a configuration popover on right-click; popover wiring happens
     // alongside the rest of the placement popovers further down.
-    add_tool_button("curvz-polygon-symbolic",
+    add_tool_button("tb_pol", "main_toolbar_polygon_tool_btn",
+                    "curvz-polygon-symbolic",
                     "Polygon / Star (G)  —  Right-click to configure",
                     ActiveTool::Polygon);
     Gtk::ToggleButton* polygon_tool_btn = buttons.back();
-    curvz::utils::set_name(polygon_tool_btn, "tb_pol", "main_toolbar_polygon_tool_btn");
-    add_tool_button("curvz-spiral-symbolic",
-                    "Spiral (W)  —  Right-click to configure", ActiveTool::Spiral);
+    add_tool_button("tb_spi", "main_toolbar_spiral_tool_btn",
+                    "curvz-spiral-symbolic",
+                    "Spiral (W)  —  Right-click to configure",
+                    ActiveTool::Spiral);
     Gtk::ToggleButton* spiral_tool_btn = buttons.back();
-    curvz::utils::set_name(spiral_tool_btn, "tb_spi", "main_toolbar_spiral_tool_btn");
 
     {
         auto* sep2 = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
@@ -860,20 +857,21 @@ void Toolbar::Impl::build() {
     // and navigation-only tools; no geometry effect. Polygon, Spiral,
     // and Corner used to live here mixed in; they moved to Creation
     // and Transforms respectively, leaving the section vocabulary clean.
-    add_tool_button("curvz-eyedropper-symbolic", "Eyedropper (I)",
+    add_tool_button("tb_eyd", "main_toolbar_eyedropper_tool_btn",
+                    "curvz-eyedropper-symbolic", "Eyedropper (I)",
                     ActiveTool::Eyedropper);
-    curvz::utils::set_name(buttons.back(), "tb_eyd", "main_toolbar_eyedropper_tool_btn");
     add_rclick_swallow(*buttons.back());
-    add_tool_button("curvz-ruler-symbolic",
+    add_tool_button("tb_meas", "main_toolbar_measure_tool_btn",
+                    "curvz-ruler-symbolic",
                     "Measure (M)  —  Measure between two nodes; "
                     "right-click to configure",
                     ActiveTool::Measure);
     Gtk::ToggleButton* measure_tool_btn = buttons.back();
-    curvz::utils::set_name(measure_tool_btn, "tb_meas", "main_toolbar_measure_tool_btn");
-    add_tool_button("curvz-zoom-symbolic", "Zoom (Z)  —  Right-click to set level",
+    add_tool_button("tb_zom", "main_toolbar_zoom_tool_btn",
+                    "curvz-zoom-symbolic",
+                    "Zoom (Z)  —  Right-click to set level",
                     ActiveTool::Zoom);
     Gtk::ToggleButton* zoom_tool_btn = buttons.back();
-    curvz::utils::set_name(zoom_tool_btn, "tb_zom", "main_toolbar_zoom_tool_btn");
 
     // Spacer — everything below floats to the bottom
     {
@@ -1022,10 +1020,24 @@ void Toolbar::Impl::build() {
     select_tool(ActiveTool::Selection);  // apply :checked CSS on startup
 }
 
-// ── Impl::add_tool_button (icon-name overload) ───────────────────────────
-void Toolbar::Impl::add_tool_button(const char* icon, const char* tooltip,
-                                     ActiveTool tool) {
-    auto* btn = Gtk::make_managed<Gtk::ToggleButton>();
+// ── Impl::add_tool_button / make_tool_button (s188 m1) ───────────────────
+// Both funnels construct a curvz::widgets::ToggleButton — every tool
+// button is scriptable by its abbrev (e.g. "tb_nod") from this point on.
+// The lambda that owns the radio-invariant (signal_clicked → select_tool
+// with the re-arm if you click the already-active button) is the same
+// shape that lived in three duplicated copies before this migration.
+//
+// Shared helper builds, configures, names, and registers the button —
+// returning it for the caller to optionally append. add_tool_button
+// appends to self; make_tool_button does not (its caller appends
+// explicitly to control alphabetical section order — used by
+// build_transforms_section for the Corner button).
+Gtk::ToggleButton* Toolbar::Impl::build_tool_btn(const char* abbrev,
+                                                  const char* long_name,
+                                                  const char* icon,
+                                                  const char* tooltip,
+                                                  ActiveTool tool) {
+    auto* btn = Gtk::make_managed<curvz::widgets::ToggleButton>(abbrev);
     btn->set_icon_name(icon);
     btn->set_tooltip_text(tooltip);
     btn->set_has_frame(false);
@@ -1034,72 +1046,56 @@ void Toolbar::Impl::add_tool_button(const char* icon, const char* tooltip,
     btn->set_hexpand(false);
     // s152: size is governed by CSS .tool-btn min-width/min-height,
     // which scales with the density class on the toolbar root.
+    //
+    // Radio-invariant lambda: if the click flipped this to active, the
+    // tool becomes the active tool. If the user clicked the already-
+    // active button (which GTK would have flipped OFF), we re-flip it
+    // ON and re-apply select_tool so the active-tool CSS class stays
+    // attached. This guarantees one and only one tool button reads as
+    // checked at any given time, matching every other vector editor's
+    // toolbar idiom.
     btn->signal_clicked().connect([this, btn, tool]() {
         if (btn->get_active()) {
             select_tool(tool);
         } else if (active == tool) {
             btn->set_active(true);
-            select_tool(tool);   // re-apply tool-active class
+            select_tool(tool);  // re-apply tool-active class
         }
     });
-    self->append(*btn);
-    buttons.push_back(btn);
-    button_tools.push_back(tool);
-}
-
-// ── Impl::add_tool_button (Picture overload) ─────────────────────────────
-void Toolbar::Impl::add_tool_button(Gtk::Picture* pic, const char* tooltip,
-                                     ActiveTool tool) {
-    auto* btn = Gtk::make_managed<Gtk::ToggleButton>();
-    btn->set_child(*pic);
-    btn->set_tooltip_text(tooltip);
-    btn->set_has_frame(true);
-    btn->add_css_class("tool-btn");
-    btn->set_halign(Gtk::Align::FILL);
-    btn->set_hexpand(false);
-    btn->signal_clicked().connect([this, btn, tool]() {
-        if (btn->get_active())
-            select_tool(tool);
-        else if (active == tool)
-            btn->set_active(true);
-    });
-    self->append(*btn);
-    buttons.push_back(btn);
-    button_tools.push_back(tool);
-}
-
-// ── Impl::make_tool_button (s175 m4) ─────────────────────────────────────
-// Same body as the icon-name add_tool_button overload above, but does NOT
-// call self->append(). Caller appends explicitly. Returns the button so
-// the caller can capture the pointer (for popover wiring or member
-// storage) and place it where the section's append order requires.
-//
-// Used by build_transforms_section to fold Corner (a toggle tool button)
-// into the alphabetical ordering of the section's six widgets, where the
-// other five are plain Gtk::Button (Align, Blend, Bool, SnR, Warp) and
-// can't be added via add_tool_button — the section function appends all
-// six explicitly in alphabetical order.
-Gtk::ToggleButton* Toolbar::Impl::make_tool_button(const char* icon,
-                                                   const char* tooltip,
-                                                   ActiveTool tool) {
-    auto* btn = Gtk::make_managed<Gtk::ToggleButton>();
-    btn->set_icon_name(icon);
-    btn->set_tooltip_text(tooltip);
-    btn->set_has_frame(false);
-    btn->add_css_class("tool-btn");
-    btn->set_halign(Gtk::Align::FILL);
-    btn->set_hexpand(false);
-    btn->signal_clicked().connect([this, btn, tool]() {
-        if (btn->get_active()) {
-            select_tool(tool);
-        } else if (active == tool) {
-            btn->set_active(true);
-            select_tool(tool);
-        }
-    });
+    // s188 m1: GTK widget name + scriptable registry name in lock-step.
+    // The wrapper constructor took abbrev as the scriptable name above;
+    // set_name applies the same string as the GTK widget name. Both
+    // addressing systems now agree by construction.
+    curvz::utils::set_name(*btn, abbrev, long_name);
     buttons.push_back(btn);
     button_tools.push_back(tool);
     return btn;
+}
+
+void Toolbar::Impl::add_tool_button(const char* abbrev, const char* long_name,
+                                     const char* icon, const char* tooltip,
+                                     ActiveTool tool) {
+    auto* btn = build_tool_btn(abbrev, long_name, icon, tooltip, tool);
+    self->append(*btn);
+}
+
+// ── Impl::make_tool_button (s175 m4 / s188 m1) ───────────────────────────
+// Build-but-don't-append variant. Caller appends explicitly. Used by
+// build_transforms_section to fold Corner (a toggle tool button) into
+// the alphabetical ordering of the section's six widgets, where the
+// other five are plain Gtk::Button (Align, Blend, Bool, SnR, Warp) and
+// can't be added via add_tool_button — the section function appends
+// all six explicitly in alphabetical order.
+//
+// Returns Gtk::ToggleButton* (not curvz::widgets::ToggleButton*) so
+// the corner_tool_btn member and the public get_corner_btn() API stay
+// type-stable — the upcast is silent and lossless.
+Gtk::ToggleButton* Toolbar::Impl::make_tool_button(const char* abbrev,
+                                                   const char* long_name,
+                                                   const char* icon,
+                                                   const char* tooltip,
+                                                   ActiveTool tool) {
+    return build_tool_btn(abbrev, long_name, icon, tooltip, tool);
 }
 
 // ── Impl::set_active_tool_icon ───────────────────────────────────────────
@@ -3201,11 +3197,12 @@ void Toolbar::Impl::build_transforms_section() {
   // make_tool_button registers Corner in the tool-buttons vector
   // (so cycle_tool and select_tool work) but does NOT append — this
   // function controls the section's append order alphabetically.
-  corner_tool_btn = make_tool_button("curvz-corner-symbolic",
+  // s188 m1: abbrev/long_name ride in up front; funnel sets the name.
+  corner_tool_btn = make_tool_button("tb_cor",
+                                     "main_toolbar_corner_tool_btn",
+                                     "curvz-corner-symbolic",
                                      "Corner Treatment (K)",
                                      ActiveTool::Corner);
-  curvz::utils::set_name(corner_tool_btn, "tb_cor",
-                         "main_toolbar_corner_tool_btn");
   add_rclick_swallow(*corner_tool_btn);
 
   // ── Align (s175 m4) — folded into the Transforms section ───────────

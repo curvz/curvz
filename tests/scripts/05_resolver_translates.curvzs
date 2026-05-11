@@ -1,4 +1,4 @@
-# 05_resolver_translates — proof the listener tries long-name resolution.
+# 05_resolver_translates — proof the listener translates long_name → abbrev.
 #
 # The DB at /com/curvz/app/data/widget_names.db has 386 rows; one of
 # them is:
@@ -7,25 +7,35 @@
 #
 # This script asks for `main_toolbar_node_tool_btn` — a long_name in
 # the DB. The listener's resolver translates it to the abbrev `tb_nod`
-# and looks `tb_nod` up in the registry. The registry doesn't have
-# `tb_nod` (because the Node tool button registered under the hand-
-# picked name `tool.node`, not under its widget_names.db abbrev), so
-# the listener reports unknown — BUT critically, the error message
-# describes the resolved abbrev, not the input. That's the proof.
+# and looks `tb_nod` up in the registry.
 #
-# Expected output:
+# This is the "same script, two outcomes across the milestone
+# boundary" test. The body never changed:
+#
+#   main_toolbar_node_tool_btn click
+#
+# Pre-s188 m1 (script-registry had only `tool.node`):
 #
 #   > main_toolbar_node_tool_btn click
 #   error unknown object 'main_toolbar_node_tool_btn' (did you mean
 #     'tool.node'?)
 #
-# The suggestion happens because closest_name_across_columns considers
-# the live registry (which has `tool.node`) alongside the DB columns.
+#   — the resolver translated to `tb_nod`, the registry didn't have
+#     `tb_nod`, and the closest-name suggestion fell through to the
+#     hand-picked `tool.node` entry.
 #
-# After the funnel migration registers all toolbar buttons under their
-# abbrevs, this same script will instead PASS — `tb_nod` will be a
-# real registry entry, the long_name will resolve, and the click will
-# fire. That's the through-line: same script, two outcomes across the
-# milestone boundary.
+# Post-s188 m1 (script-registry has `tb_nod`):
+#
+#   > main_toolbar_node_tool_btn click
+#   (no error — the Node tool button clicks)
+#
+#   — the resolver translates to `tb_nod`, the registry has it, the
+#     click dispatches. The user-visible toolbar reflects the change.
+#
+# Run this script post-migration and verify the Node tool turns on,
+# the same way running `tb_nod click` would. This validates that the
+# resolver is genuinely a translation layer — scripts can address
+# widgets by their full GTK widget-name (read off `widget_names.db`
+# or a Curvz log line) without needing to know the abbrev.
 
 main_toolbar_node_tool_btn click

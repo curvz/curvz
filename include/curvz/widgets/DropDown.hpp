@@ -33,6 +33,14 @@ public:
     DropDown(std::string_view name,
               const std::vector<Glib::ustring>& options);
 
+    // s189 m1 overload — inspector call sites build the StringList up front
+    // (often appending in a loop with simultaneous index-of-current tracking),
+    // so the wrapper accepts a pre-built model directly. The TODO from s187
+    // m3's "if a callsite needs a different model shape" became the first
+    // such case during the inspector migration.
+    DropDown(std::string_view name,
+              const Glib::RefPtr<Gtk::StringList>& model);
+
     curvz::scripting::ScriptValue invoke(
             std::string_view verb,
             const curvz::scripting::ScriptArgs& args) override;

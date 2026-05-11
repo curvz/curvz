@@ -15,6 +15,22 @@ Scale::Scale(std::string_view name, double min, double max, double step)
     init_scriptable();
 }
 
+// s189 m2 — pre-built Adjustment overload. Routes (adj, orientation)
+// through the base template's perfect-forwarding to Gtk::Scale's
+// (Adjustment, Orientation) ctor. Range / step come from the
+// Adjustment; orientation defaults to horizontal. draw_value is left
+// to the caller — slider visual style (value-pos, draw_value,
+// set_digits) is set at the call site after construction. (Contrast
+// the primitive-form ctor above, which set_draw_value(true) was the
+// matching expectation: with a pre-built Adjustment the call site
+// already chose its display style.)
+Scale::Scale(std::string_view name,
+             Glib::RefPtr<Gtk::Adjustment> adj,
+             Gtk::Orientation orientation)
+    : ScriptableWidget<Gtk::Scale>(name, adj, orientation) {
+    init_scriptable();
+}
+
 void Scale::bind_canonical() {
     // Gtk::Range (Scale's base) emits signal_value_changed when its
     // value moves — regardless of whether the move came from user drag

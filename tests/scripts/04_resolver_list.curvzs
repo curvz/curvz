@@ -1,22 +1,45 @@
-# 04_resolver_list — first proof of the s187 m2 long-name resolver.
+# 04_resolver_list — post-migration registry inspection.
 #
-# Runs `list` and shows the registry's current contents. After s187 m1
-# this is exactly one entry — `tool.node` — because only the Node tool
-# button was hand-converted to a curvz::widgets::ToggleButton during
-# s186 m2. The six new wrappers (Button, Entry, SpinButton, Scale,
-# DropDown, CheckButton) compile in but no construction sites use them
-# yet — that's the next session's funnel migration.
+# Runs `list` and shows the registry's current contents. After s188 m1
+# (toolbar funnel migration) this was fifteen entries — every tool
+# button on the main toolbar registered under its widget_names.db
+# abbrev. After s189 m1 (inspector migration) that grows by 49
+# entries — every named Button / Entry / CheckButton / ToggleButton /
+# DropDown construction site in PropertiesPanel.cpp now routes
+# through curvz::widgets wrappers and registers in lock-step with
+# its set_name abbrev.
 #
-# After this script runs you should see one line:
-#   tool.node
+# Sample of new inspector entries (selection — not exhaustive):
 #
-# Note: NO "(long_name)" decoration after `tool.node`, because the
-# script registry entry "tool.node" is hand-picked and not present in
-# widget_names.db. The decoration only appears once widget construction
-# sites start registering under the widget_names.db abbrev as their
-# scriptable name. That arrives with the funnel migration.
+#   ins_blnd_rl   (inspector_blend_release_btn)
+#   ins_blnd_rv   (inspector_blend_reverse_check)
+#   ins_blnd_so   (inspector_blend_stroke_override_check)
+#   ins_can_dpi   (inspector_canvas_dpi_dd)
+#   ins_can_md    (inspector_canvas_mode_dd)
+#   ins_can_un    (inspector_canvas_units_dd)
+#   ins_grd_en    (inspector_grid_enable_check)
+#   ins_grd_st    (inspector_grid_style_dd)
+#   ins_mrg_en    (inspector_margins_enable_check)
+#   ins_nod_cl    (inspector_node_path_closed_toggle)
+#   ins_nod_tp    (inspector_node_type_dd)
+#   ins_txt_b     (inspector_text_bold_check)
+#   ins_txt_fam   (inspector_text_family_dd)
+#   ins_fs_strk_cb / ..._cr / ..._cs  (cap toggles)
+#   ins_fs_strk_jm / ..._jr / ..._jb  (join toggles)
+#   …
+#
+# Carryover from s188 — toolbar entries still present:
+#
+#   tb_sel  tb_nod  tb_pen  tb_rec  tb_ova  tb_lin  tb_ref
+#   tb_txt  tb_top  tb_pol  tb_spi  tb_eyd  tb_meas tb_zom  tb_cor
+#
+# Some inspector entries may render without a `(long_name)` decoration
+# until `widget_names_sync` is re-run against the migrated source —
+# same pattern as `tb_cor` in s188 (its set_name landed post-DB-rebuild
+# and only re-syncing fills in the long_name column).
 #
 # This script is a sanity check, not an assertion-based test — read
 # the output by eye.
 
 list
+

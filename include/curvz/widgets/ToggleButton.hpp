@@ -1,9 +1,9 @@
 // curvz/widgets/ToggleButton.hpp ─────────────────────────────────────────────
 //
 // Scriptable wrapper around Gtk::ToggleButton. First widget type lifted
-// into Curvz proper during s186 m2. The Node-tool button is the only
-// production-side site that uses it for m2; m3 widens the migration
-// across the rest of the Toolbar's toggle buttons.
+// into Curvz proper during s186 m2. The Node-tool button was the only
+// production-side site that used it through s187; s188 m1 widened it
+// to every tool button on the main toolbar via the funnel migration.
 //
 // Verbs:
 //   click               → toggles active, fires signal_clicked
@@ -17,11 +17,13 @@
 //   toggled <bool>      on signal_toggled (real OR script-driven)
 //
 // Note on coexistence with curvz::utils::set_name:
-//   The wrapper's scriptable name (e.g. "tool.node") lives in the
-//   script registry — a parallel addressing scheme. The GTK widget-
-//   name set by curvz::utils::set_name(*this, "tb_nod", ...) is the
-//   same one as before and still applies. Both naming systems are
-//   independent and coexist.
+//   The wrapper's scriptable name (e.g. "tb_nod") lives in the script
+//   registry — a parallel addressing scheme. The GTK widget-name set by
+//   curvz::utils::set_name(*this, "tb_nod", ...) is the same string,
+//   though they live in separate stores. s188 m1's toolbar funnel
+//   ensures both names always agree by construction: the funnel
+//   constructs the wrapper with abbrev and calls set_name with the
+//   same abbrev — no drift possible.
 
 #pragma once
 #include "scripting/ScriptableWidget.hpp"

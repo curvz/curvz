@@ -48,6 +48,12 @@ WORKFLOW
     Comment lines (starting with //) are ignored, so doc-comment examples
     don't pollute the DB.
 
+    Multi-line set_name calls are folded automatically — a call whose parens
+    haven't closed by end-of-line is joined to the next line before the
+    regex extracts the abbrev / long_name. The reported file:line is where
+    the call STARTS, matching the convention used by editors and the
+    closest_name resolver.
+
 LOOKUP (after generating the DB)
     awk -F'\t' '\$1=="tb"' widget_names.db    # decode one abbrev to file:line
     grep -P '^tb' widget_names.db             # all abbrevs starting with tb
@@ -78,11 +84,58 @@ esac
 #   \3 = abbrev (first string argument)
 #   \4 = long name (second string argument)
 #
-# Style convention: one curvz::utils::set_name call per line. Multi-line calls
-# are out of scope — keep them on one line and the harvester sees them.
+# Multi-line set_name calls are common in the codebase — the call site
+# routinely splits at the comma between the two string args when the
+# long_name is wordy:
+#
+#     curvz::utils::set_name(spin, "ins_foo",
+#                            "inspector_foo_long_name");
+#
+# The harvester first folds any continuation lines (a set_name call
+# whose parens haven't closed by end-of-line gets glued to the next
+# line) before the regex runs. Per-file awk pass with a paren-depth
+# tracker. Output line number is the line where the call STARTS, which
+# is the convention the rest of the codebase uses for the "file:line"
+# trace column.
 harvest() {
-    grep -rn 'curvz::utils::set_name' src/ include/ \
-        --include='*.cpp' --include='*.hpp' 2>/dev/null \
+    find src/ include/ -type f \( -name '*.cpp' -o -name '*.hpp' \) \
+        2>/dev/null \
+    | while read -r f; do
+        awk -v fname="$f" '
+            /curvz::utils::set_name/ || in_call {
+                if (!in_call) {
+                    start_line = NR
+                    buf = ""
+                    depth = 0
+                    in_call = 1
+                }
+                # Strip line comments (//...) before counting parens so a
+                # // in a comment doesnt confuse the depth tracker. The
+                # set_name call itself never legitimately contains //.
+                line = $0
+                sub(/\/\/.*$/, "", line)
+                buf = buf " " line
+                # Count unescaped parens. Good enough for this codebase:
+                # set_name args are short strings without literal parens
+                # or escapes that would fool a naive count.
+                for (i = 1; i <= length(line); i++) {
+                    c = substr(line, i, 1)
+                    if (c == "(") depth++
+                    else if (c == ")") depth--
+                }
+                if (depth <= 0) {
+                    # Skip lines that begin with // (comments / doc text
+                    # examples in headers); start-line is the trigger.
+                    getline_text = buf
+                    sub(/^[[:space:]]+/, "", getline_text)
+                    if (getline_text !~ /^\/\//) {
+                        print fname ":" start_line ":" buf
+                    }
+                    in_call = 0
+                }
+            }
+        ' "$f"
+    done \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
     | sed -nE 's|^([^:]+):([0-9]+):.*curvz::utils::set_name\([^,]+,[[:space:]]*"([^"]+)"[[:space:]]*,[[:space:]]*"([^"]+)".*|\3\t\4\t\1:\2|p' \
     | sort -t$'\t' -k1,1
