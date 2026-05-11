@@ -1,0 +1,22 @@
+# 04_resolver_list — first proof of the s187 m2 long-name resolver.
+#
+# Runs `list` and shows the registry's current contents. After s187 m1
+# this is exactly one entry — `tool.node` — because only the Node tool
+# button was hand-converted to a curvz::widgets::ToggleButton during
+# s186 m2. The six new wrappers (Button, Entry, SpinButton, Scale,
+# DropDown, CheckButton) compile in but no construction sites use them
+# yet — that's the next session's funnel migration.
+#
+# After this script runs you should see one line:
+#   tool.node
+#
+# Note: NO "(long_name)" decoration after `tool.node`, because the
+# script registry entry "tool.node" is hand-picked and not present in
+# widget_names.db. The decoration only appears once widget construction
+# sites start registering under the widget_names.db abbrev as their
+# scriptable name. That arrives with the funnel migration.
+#
+# This script is a sanity check, not an assertion-based test — read
+# the output by eye.
+
+list

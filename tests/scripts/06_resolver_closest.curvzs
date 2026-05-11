@@ -1,0 +1,17 @@
+# 06_resolver_closest — proof closest_name considers all naming surfaces.
+#
+# Asks for `tool.nod` — a typo of `tool.node` (the only registry entry).
+# Edit distance is 1. Should produce a "did you mean 'tool.node'?"
+# suggestion.
+#
+# This validates that closest_name_across_columns walks the live
+# registry as one of its candidate pools. Without that, only DB names
+# would be suggested and the user typing a typo of a hand-picked name
+# would get no help.
+#
+# Expected output:
+#
+#   > tool.nod click
+#   error unknown object 'tool.nod' (did you mean 'tool.node'?)
+
+tool.nod click

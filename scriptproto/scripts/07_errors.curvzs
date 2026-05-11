@@ -1,0 +1,16 @@
+# 07_errors — exercises the error reporting surface.
+#
+# All four lines should produce structured errors. The runner's exit
+# status should be 1 (errors > 0) even though no asserts fail.
+
+# Unknown object → suggest closest match.
+tool.nod click
+
+# Unknown property → query returns null.
+get tool.node nonexistent
+
+# Bad assert syntax.
+assert tool.node active = true
+
+# Bad arg type.
+opacity.spin set "not-a-number"

@@ -1,0 +1,18 @@
+# 01_node_tool_toggle — the canonical m2 reference test.
+#
+# Two lines. Driven from the Curvz Scripter window (visible only in
+# CURVZ_DIAGNOSTIC builds). Same shape as the sandbox m1 reference.
+#
+# tool.node is the Node-tool ToggleButton on the main toolbar. It's
+# a normal GTK::ToggleButton augmented with the curvz::scripting
+# substrate — clicking it from a script goes through the exact same
+# code path as a user click, including the radio-invariant logic
+# that sets it as the active tool.
+#
+# Run this from the Scripter window and check that:
+#   1. The Node button visibly turns on in the toolbar.
+#   2. The Canvas's active tool becomes Node.
+#   3. The assert prints PASS.
+
+tool.node click
+assert tool.node active == true

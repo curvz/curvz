@@ -47,7 +47,7 @@ StepRepeatPopover::StepRepeatPopover()
     m_grid.attach(*make_label("Copies:"), 0, row);
     m_copies.set_hexpand(true);
     m_copies.set_width_chars(6);
-    curvz::utils::set_name(m_copies, "dlg_sr_cp", "step_repeat_dialog_copies_spn");
+    curvz::utils::set_name(m_copies, "pop_sr_cp", "step_repeat_popover_copies_spn");
     m_grid.attach(m_copies, 1, row);
     ++row;
 
@@ -85,7 +85,7 @@ StepRepeatPopover::StepRepeatPopover()
 
     // Rotate enable + mode dropdown on the same row
     m_rotate_enable.set_active(false);
-    curvz::utils::set_name(m_rotate_enable, "dlg_sr_re", "step_repeat_dialog_rotate_enable_check");
+    curvz::utils::set_name(m_rotate_enable, "pop_sr_re", "step_repeat_popover_rotate_enable_check");
     m_grid.attach(m_rotate_enable, 0, row, 1, 1);
 
     {
@@ -93,7 +93,7 @@ StepRepeatPopover::StepRepeatPopover()
         m_angle_mode.set_model(items);
         m_angle_mode.set_selected(0);
         m_angle_mode.set_hexpand(true);
-        curvz::utils::set_name(m_angle_mode, "dlg_sr_am", "step_repeat_dialog_angle_mode_dd");
+        curvz::utils::set_name(m_angle_mode, "pop_sr_am", "step_repeat_popover_angle_mode_dd");
         m_grid.attach(m_angle_mode, 1, row);
     }
     ++row;
@@ -124,7 +124,7 @@ StepRepeatPopover::StepRepeatPopover()
     m_preview.set_content_height(100);
     m_preview.set_halign(Gtk::Align::CENTER);
     m_preview.set_margin_top(4);
-    curvz::utils::set_name(m_preview, "dlg_sr_pv", "step_repeat_dialog_preview_da");
+    curvz::utils::set_name(m_preview, "pop_sr_pv", "step_repeat_popover_preview_da");
     m_preview.set_draw_func(sigc::mem_fun(*this,
         &StepRepeatPopover::on_preview_draw));
 
@@ -158,14 +158,14 @@ StepRepeatPopover::StepRepeatPopover()
     btn_bar->set_halign(Gtk::Align::END);
 
     m_btn_cancel.set_has_frame(true);
-    curvz::utils::set_name(m_btn_cancel, "dlg_sr_cnc", "step_repeat_dialog_cancel_btn");
+    curvz::utils::set_name(m_btn_cancel, "pop_sr_cnc", "step_repeat_popover_cancel_btn");
     m_btn_cancel.signal_clicked().connect(
         sigc::mem_fun(*this, &StepRepeatPopover::on_cancel));
     btn_bar->append(m_btn_cancel);
 
     m_btn_ok.set_has_frame(true);
     m_btn_ok.add_css_class("suggested-action");
-    curvz::utils::set_name(m_btn_ok, "dlg_sr_ok", "step_repeat_dialog_ok_btn");
+    curvz::utils::set_name(m_btn_ok, "pop_sr_ok", "step_repeat_popover_ok_btn");
     m_btn_ok.signal_clicked().connect(
         sigc::mem_fun(*this, &StepRepeatPopover::on_ok));
     btn_bar->append(m_btn_ok);
@@ -255,7 +255,7 @@ void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
 
     // Offset X/Y — Distance (signed, doc units)
     m_offset_x = Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, model);
-    curvz::utils::set_name(m_offset_x, "dlg_sr_ox", "step_repeat_dialog_offset_x_spn");
+    curvz::utils::set_name(m_offset_x, "pop_sr_ox", "step_repeat_popover_offset_x_spn");
     m_offset_x->with_value(m_last_dx)
                ->with_tooltip("Horizontal offset between copies")
                ->with_width_chars(8);
@@ -265,7 +265,7 @@ void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
     if (auto* ul = m_offset_x->get_unit_label()) m_off_x_row.append(*ul);
 
     m_offset_y = Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, model);
-    curvz::utils::set_name(m_offset_y, "dlg_sr_oy", "step_repeat_dialog_offset_y_spn");
+    curvz::utils::set_name(m_offset_y, "pop_sr_oy", "step_repeat_popover_offset_y_spn");
     m_offset_y->with_value(m_last_dy)
                ->with_tooltip("Vertical offset between copies")
                ->with_width_chars(8);
@@ -276,7 +276,7 @@ void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
 
     // Angle — degrees
     m_angle_spin = Gtk::make_managed<CurvzSpinButton>(SpinType::Angle, model);
-    curvz::utils::set_name(m_angle_spin, "dlg_sr_ang", "step_repeat_dialog_angle_spn");
+    curvz::utils::set_name(m_angle_spin, "pop_sr_ang", "step_repeat_popover_angle_spn");
     m_angle_spin->with_value(m_last_angle)
                 ->with_tooltip("Rotation applied per copy")
                 ->with_width_chars(8);
@@ -295,7 +295,7 @@ void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
     // coords, matching Canvas::on_pivot_dialog).
     m_pivot_x = Gtk::make_managed<CurvzSpinButton>(
         SpinType::PositionX, model, 0.0);
-    curvz::utils::set_name(m_pivot_x, "dlg_sr_px", "step_repeat_dialog_pivot_x_spn");
+    curvz::utils::set_name(m_pivot_x, "pop_sr_px", "step_repeat_popover_pivot_x_spn");
     m_pivot_x->with_value(m_pivot_dx)
              ->with_tooltip("Pivot X (doc coords)")
              ->with_width_chars(8);
@@ -306,7 +306,7 @@ void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
 
     m_pivot_y = Gtk::make_managed<CurvzSpinButton>(
         SpinType::PositionY, model, 0.0);
-    curvz::utils::set_name(m_pivot_y, "dlg_sr_py", "step_repeat_dialog_pivot_y_spn");
+    curvz::utils::set_name(m_pivot_y, "pop_sr_py", "step_repeat_popover_pivot_y_spn");
     m_pivot_y->with_value(m_pivot_dy)
              ->with_tooltip("Pivot Y (doc coords)")
              ->with_width_chars(8);

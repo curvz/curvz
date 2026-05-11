@@ -1,0 +1,5 @@
+# 08_list — registry introspection.
+# `list` prints every registered name in alphabetical order. Useful
+# manually; here we just exercise it.
+
+list

@@ -1,0 +1,35 @@
+# 03_node_tool_set — cold-path diagnostic, set verb.
+#
+# Diagnostic for s186 m2 close-out: tests the cold path using the
+# `set` verb (set_active(bool)) rather than `click` (activate()).
+#
+# Both verbs ultimately fire signal_toggled and route through the
+# Toolbar's signal_clicked lambda that calls select_tool. But:
+#   - click  → activate() → signal_clicked → flips active → signal_toggled
+#   - set    → set_active(true) → signal_toggled (and signal_clicked
+#              if state changed)
+#
+# Slightly different paths through Gtk::ToggleButton's internals.
+# If both 01 (click) and this (set) FAIL cold-start, then it's not
+# specific to activate() — both write paths share the cold cost,
+# pointing at the cascade beyond the widget itself (select_tool →
+# canvas → inspector).
+#
+# Test protocol:
+#   1. Fresh Curvz launch.
+#   2. Load this script.
+#   3. Run.
+#   4. Note: PASS or FAIL?
+#   5. Run again.
+#   6. Note: PASS this time?
+#
+# Comparison matrix to fill out across sessions:
+#   - Session A: run 01 cold → FAIL?  run 01 warm → PASS?
+#   - Session B: run 02 cold → FAIL?  run 02 warm → PASS?
+#   - Session C: run 03 cold → FAIL?  run 03 warm → PASS?
+#   - Session D: run 02 cold first, then 01 immediately. What happens?
+#
+# Pattern across A/B/C/D points at where the cold path lives.
+
+tool.node set true
+assert tool.node active == true

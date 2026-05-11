@@ -83,11 +83,17 @@
   </gresource>
 
   <!-- ── Bundled non-icon data ────────────────────────────────────────────
-       Plain JSON, no xml-stripblanks. Currently just the starter-template
-       seed list (S63), extracted to ~/.config/curvz/templates/ on first
-       run so users can customise their copy. -->
+       Plain JSON / DB files, no xml-stripblanks. Currently:
+       - seeds.json (S63) — starter-template seed list, extracted to
+         ~/.config/curvz/templates/ on first run so users can customise.
+       - widget_names.db (s187 m2) — abbrev↔long_name table for the
+         script substrate's long-name resolver. Generated from source
+         by widget_names_sync; bundled here so the listener can resolve
+         "main_toolbar_node_tool_btn" to "tb_nod" without a runtime
+         file-system dependency. Read-only from the binary's POV. -->
   <gresource prefix="/com/curvz/app/data">
-    <file>data/seeds.json</file>
+    <file alias="seeds.json">data/seeds.json</file>
+    <file alias="widget_names.db">data/widget_names.db</file>
   </gresource>
 
   <!-- ── In-app manual ────────────────────────────────────────────────────

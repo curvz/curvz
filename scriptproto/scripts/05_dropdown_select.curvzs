@@ -1,0 +1,10 @@
+# 05_dropdown_select — indexed-selection intake
+
+# Two ways to select: by index, or by string match.
+units.dropdown set 2
+assert units.dropdown selected == 2
+assert units.dropdown text     == "mm"
+
+units.dropdown pick "in"
+assert units.dropdown selected == 3
+assert units.dropdown text     == "in"

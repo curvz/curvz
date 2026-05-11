@@ -1,0 +1,79 @@
+# 07_substrate_manifest — what the script substrate supports today.
+#
+# This file documents the verb/query surface of every curvz::widgets
+# wrapper type lifted into the substrate during s187 m1. Not a test —
+# nothing to assert against — but a runnable manifest: read the
+# comments below; uncomment any line and Run to see if it dispatches.
+#
+# Today (s187 m2 close-out) the only registered wrapper instance is
+# `tool.node` (a ToggleButton). The other six wrapper types compile in
+# but have no construction sites yet. The funnel migration in a
+# following session wires up the toolbar (~22 tool buttons), at which
+# point the abbrev-keyed tests below start dispatching against real
+# widgets.
+#
+# ── ToggleButton ────────────────────────────────────────────────────
+#   verbs:    click            (signal-bound, uses synchronizer)
+#             set <bool>       (synchronous setter)
+#   queries:  active           → Bool
+#             label            → String
+#   emits:    toggled <bool>
+#
+# Live example (uncomment to run):
+#   # tool.node click
+#   # assert tool.node active == true
+#
+# ── Button ──────────────────────────────────────────────────────────
+#   verbs:    click            (signal-bound, uses synchronizer)
+#   queries:  label            → String
+#   emits:    clicked
+#
+# ── Entry ───────────────────────────────────────────────────────────
+#   verbs:    set "<text>"     (synchronous setter)
+#             clear            (same as set "")
+#   queries:  text             → String
+#   emits:    changed <text>
+#
+# ── SpinButton ──────────────────────────────────────────────────────
+#   verbs:    set <number>     (synchronous setter)
+#             step <int>       (positive forward, negative backward)
+#   queries:  value            → Double
+#             min              → Double
+#             max              → Double
+#   emits:    value_changed <number>
+#
+# ── Scale ───────────────────────────────────────────────────────────
+#   verbs:    set <number>     (synchronous setter)
+#   queries:  value            → Double
+#             min              → Double
+#             max              → Double
+#   emits:    value_changed <number>
+#
+# ── DropDown ────────────────────────────────────────────────────────
+#   verbs:    set <int>        (zero-based index)
+#             pick "<text>"    (lookup by visible text)
+#   queries:  selected         → Int
+#             text             → String (text of selected entry)
+#             count            → Int (number of options)
+#   emits:    selected <int>
+#
+# ── CheckButton ─────────────────────────────────────────────────────
+#   verbs:    click            (toggles via synchronous set_active)
+#             set <bool>       (synchronous setter)
+#   queries:  active           → Bool
+#             label            → String
+#   emits:    toggled <bool>
+#
+# ── Built-in listener verbs ─────────────────────────────────────────
+#   list                                 print registered objects + long_names
+#   get <object> <property>              query, echo
+#   assert <object> <property> == <lit>  query, compare
+#   subscribe                            start logging emit events
+#   sleep <ms>                           yield to main loop
+#   quit                                 end the script early
+#
+# Run this file to confirm the listener is alive — it'll just print
+# the file content as comments (every line starts with #) and a
+# trivial summary.
+
+# end of manifest

@@ -1,0 +1,35 @@
+# 02_node_tool_query — cold-path diagnostic, read-only verb.
+#
+# Diagnostic for s186 m2 close-out: is the "first script FAILs"
+# behaviour we observe with 01_node_tool_toggle a property of THAT
+# script's verb sequence, or of running ANY script for the first
+# time in a fresh process?
+#
+# This script exercises only the read path:
+#   - get  reads a property (no state change)
+#   - assert reads a property and compares
+#
+# No invoke. No state mutation. If this FAILs cold-start and PASSes
+# warm, then the cold path isn't per-verb — it's session-wide
+# warm-up of the substrate's pump machinery.
+#
+# If this PASSes cold-start while 01 FAILs cold-start, then the
+# cold path is specific to invoke()-bearing verbs (probably the
+# signal_clicked cascade on first tool switch).
+#
+# Test protocol:
+#   1. Fresh Curvz launch.
+#   2. Load this script.
+#   3. Run.
+#   4. Note: PASS or FAIL?
+#   5. Run again.
+#   6. Note: PASS this time?
+#
+# The "label" property reads get_label() on the button. Should
+# normally be "" for an icon-only toolbar button. We assert that;
+# any non-empty string would also be reportable but the empty
+# string is what the Node tool ships with.
+
+get tool.node active
+get tool.node label
+assert tool.node label == ""

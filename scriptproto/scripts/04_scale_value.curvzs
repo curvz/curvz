@@ -1,0 +1,6 @@
+# 04_scale_value — range intake (Scale slider)
+
+opacity.slider set 0.25
+assert opacity.slider value == 0.25
+assert opacity.slider min   == 0.0
+assert opacity.slider max   == 1.0

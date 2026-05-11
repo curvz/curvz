@@ -1,0 +1,31 @@
+# 05_resolver_translates — proof the listener tries long-name resolution.
+#
+# The DB at /com/curvz/app/data/widget_names.db has 386 rows; one of
+# them is:
+#
+#   tb_nod    main_toolbar_node_tool_btn    src/Toolbar.cpp:786
+#
+# This script asks for `main_toolbar_node_tool_btn` — a long_name in
+# the DB. The listener's resolver translates it to the abbrev `tb_nod`
+# and looks `tb_nod` up in the registry. The registry doesn't have
+# `tb_nod` (because the Node tool button registered under the hand-
+# picked name `tool.node`, not under its widget_names.db abbrev), so
+# the listener reports unknown — BUT critically, the error message
+# describes the resolved abbrev, not the input. That's the proof.
+#
+# Expected output:
+#
+#   > main_toolbar_node_tool_btn click
+#   error unknown object 'main_toolbar_node_tool_btn' (did you mean
+#     'tool.node'?)
+#
+# The suggestion happens because closest_name_across_columns considers
+# the live registry (which has `tool.node`) alongside the DB columns.
+#
+# After the funnel migration registers all toolbar buttons under their
+# abbrevs, this same script will instead PASS — `tb_nod` will be a
+# real registry entry, the long_name will resolve, and the click will
+# fire. That's the through-line: same script, two outcomes across the
+# milestone boundary.
+
+main_toolbar_node_tool_btn click

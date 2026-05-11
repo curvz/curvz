@@ -6,6 +6,11 @@
 #include "RecentProjects.hpp"  // s144 m3 — load recents list at startup
 #include "TemplateLibrary.hpp"
 #include "color/SwatchLibrary.hpp"  // color::load_app_defaults (s69 M2)
+#ifdef CURVZ_DIAGNOSTIC
+#include "scripting/ScripterWindow.hpp"  // s186 m2
+#include <filesystem>
+#include <glibmm/main.h>                 // s186 m2 close-out: warmup
+#endif
 #include <cstdlib>             // s145 m4 — getenv for early prefs.json lookup
 #include <cstring>             // s180 — std::strcmp in warning-filter writer fn
 #include <filesystem>
@@ -360,6 +365,72 @@ void Application::on_activate() {
   auto *win = new MainWindow(*this);
   add_window(*win);
   win->present();
+
+#ifdef CURVZ_DIAGNOSTIC
+  // s186 m2: Scripter window — the developer/QA surface for the
+  // script-driven substrate. Visible only in diagnostic builds.
+  //
+  // Script library location: prefer ./tests/scripts (run from build
+  // tree during dev) and ../tests/scripts (run from inside build/).
+  // Falls back to "tests/scripts" so the picker shows a folder name
+  // even if nothing's there yet — user can use the Folder… button
+  // to point elsewhere.
+  //
+  // Theme: this is a regular Gtk::ApplicationWindow added to the
+  // application, so MainWindow::apply_motif_to_window() walks every
+  // top-level via gtk_window_get_toplevels() and stamps curvz-light
+  // on the next project-load / motif-change. First-present may show
+  // the system theme briefly — acceptable for a diagnostic window.
+  namespace fs = std::filesystem;
+  std::string scripts_dir = "tests/scripts";
+  for (auto candidate : {
+          fs::path("tests/scripts"),
+          fs::path("../tests/scripts"),
+       }) {
+      if (fs::exists(candidate) && fs::is_directory(candidate)) {
+          scripts_dir = fs::absolute(candidate).string();
+          break;
+      }
+  }
+  auto* scripter = new curvz::scripting::ScripterWindow(scripts_dir);
+  add_window(*scripter);
+  scripter->present();
+  LOG_INFO("Application: CURVZ_DIAGNOSTIC build — Scripter window opened "
+           "(scripts dir: {})", scripts_dir);
+
+  // s186 m2 close-out: warm the GLib main-loop dispatch mechanism.
+  //
+  // Empirical observation (s186 matrix: sessions 1/2/3 with verb
+  // permutations): the FIRST script that hits the async activate()
+  // path FAILs cold-start, every other path / every subsequent
+  // script PASSes. set_active() (synchronous setter) and queries
+  // are cold-safe; only activate() — which queues a click event
+  // for main-loop dispatch — is cold-bound.
+  //
+  // The hypothesis under test: GLib's main-context dispatch
+  // mechanism (signal_idle / signal_timeout / event queue) pays
+  // a first-iteration overhead. The listener's 5ms wait between
+  // script lines isn't long enough to cover that first-iteration
+  // cost. By pre-firing one idle and one timeout at startup, we
+  // pay the warmup cost during launch (where it's invisible
+  // against existing startup time) instead of during the user's
+  // first test (where it lies about state).
+  //
+  // If this fixes 01_node_tool_toggle's cold-start FAIL: the
+  // mechanism is GLib-side. m3 calibration formalises this as
+  // a wait-class system.
+  //
+  // If this DOESN'T fix it: the cold path is in the click cascade
+  // itself (gesture-controller init, signal_realize chain, lazy
+  // tool-state lookup). Different fix needed; this five-line
+  // change costs nothing if it doesn't work.
+  Glib::signal_idle().connect_once([]() {
+      LOG_INFO("Application: GLib main-loop idle warmup fired");
+  });
+  Glib::signal_timeout().connect_once([]() {
+      LOG_INFO("Application: GLib main-loop timeout warmup fired");
+  }, 0);
+#endif
 }
 
 } // namespace Curvz

@@ -1,0 +1,11 @@
+# 03_spin_value — numeric intake (SpinButton)
+
+opacity.spin set 0.75
+assert opacity.spin value == 0.75
+
+opacity.spin set 0.5
+assert opacity.spin value == 0.5
+
+# Out-of-range gets clamped by GTK to the configured range.
+opacity.spin set 1.5
+assert opacity.spin value == 1.0

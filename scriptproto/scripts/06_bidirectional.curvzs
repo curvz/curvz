@@ -1,0 +1,23 @@
+# 06_bidirectional — proves real-input and script-input emit identical
+# events on the outbound channel.
+#
+# Subscribe at the top → every later widget change emits an
+# `event <name> <event> <payload>` line on stdout.
+#
+# What this DOESN'T prove inside the runner (because there's no real
+# user here): that a human clicking the toggle produces the same
+# event format. That's verified by `--watch` mode (no script file)
+# combined with reading the stdout trace as the user clicks. The
+# convergence is structural — both paths go through emit() and the
+# subscriber list, so if script paths emit, user paths emit too.
+
+subscribe
+
+tool.node click
+assert tool.node active == true
+
+opacity.slider set 0.5
+assert opacity.slider value == 0.5
+
+snap.check set true
+assert snap.check active == true

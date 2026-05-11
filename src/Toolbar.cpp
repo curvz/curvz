@@ -3,6 +3,9 @@
 #include "color/SwatchLibrary.hpp"  // S87 m1 — picker section in popovers
 #include "color/Swatch.hpp"         // S87 m1 — SolidSwatch resolve
 #include "curvz_utils.hpp"          // s118 — curvz::utils::set_name
+#ifdef CURVZ_DIAGNOSTIC
+#include "curvz/widgets/ToggleButton.hpp"  // s186 m2 — Node-tool wrapper
+#endif
 #include <algorithm>
 #include <cairomm/context.h>
 #include <cmath>
@@ -743,7 +746,43 @@ void Toolbar::set_snap_settings(const SnapSettings& s) {
 void Toolbar::Impl::build() {
     add_tool_button("curvz-select-symbolic", "Select (S)", ActiveTool::Selection);
     curvz::utils::set_name(buttons.back(), "tb_sel", "main_toolbar_select_tool_btn");
+#ifdef CURVZ_DIAGNOSTIC
+    // s186 m2: Node-tool button built by hand so it's a
+    // curvz::widgets::ToggleButton (scriptable name "tool.node") rather
+    // than a bare Gtk::ToggleButton. Replicates exactly what
+    // add_tool_button does — icon, tooltip, framing, CSS class, the
+    // radio-invariant signal_clicked lambda, and the buttons/
+    // button_tools push — so the rest of the toolbar's tool-selection
+    // machinery sees no difference. Production builds drop to the
+    // #else branch and use the regular add_tool_button path.
+    //
+    // Once m3 widens this to all ToggleButtons, the #ifdef branch
+    // goes away entirely: add_tool_button itself will construct
+    // curvz::widgets::ToggleButton.
+    {
+        auto* btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+            "tool.node");
+        btn->set_icon_name("curvz-node-symbolic");
+        btn->set_tooltip_text("Nodes (N)");
+        btn->set_has_frame(false);
+        btn->add_css_class("tool-btn");
+        btn->set_halign(Gtk::Align::FILL);
+        btn->set_hexpand(false);
+        btn->signal_clicked().connect([this, btn]() {
+            if (btn->get_active()) {
+                select_tool(ActiveTool::Node);
+            } else if (active == ActiveTool::Node) {
+                btn->set_active(true);
+                select_tool(ActiveTool::Node);
+            }
+        });
+        self->append(*btn);
+        buttons.push_back(btn);
+        button_tools.push_back(ActiveTool::Node);
+    }
+#else
     add_tool_button("curvz-node-symbolic", "Nodes (N)", ActiveTool::Node);
+#endif
     curvz::utils::set_name(buttons.back(), "tb_nod", "main_toolbar_node_tool_btn");
     // Density picker only opens on Selection or empty space — see comment
     // above the right-click controller at the end of build(). Swallow

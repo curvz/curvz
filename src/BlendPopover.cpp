@@ -30,14 +30,14 @@ BlendPopover::BlendPopover()
     m_warn_lbl.set_hexpand(true);
     m_warn_lbl.set_wrap(true);
     m_warn_lbl.set_max_width_chars(38);
-    curvz::utils::set_name(m_warn_lbl, "dlg_bld_warn", "blend_dialog_warn_lbl");
+    curvz::utils::set_name(m_warn_lbl, "pop_bld_warn", "blend_popover_warn_lbl");
     m_warn_row.append(m_warn_lbl);
     m_btn_equalize.set_valign(Gtk::Align::CENTER);
     m_btn_equalize.set_tooltip_text("Insert nodes into the shorter path so "
                                     "both have the same count. The path "
                                     "shape is preserved (De Casteljau "
                                     "subdivision).");
-    curvz::utils::set_name(m_btn_equalize, "dlg_bld_eq", "blend_dialog_equalize_btn");
+    curvz::utils::set_name(m_btn_equalize, "pop_bld_eq", "blend_popover_equalize_btn");
     m_btn_equalize.signal_clicked().connect([this]() {
         if (!m_equalize_cb) return;
         int new_count = m_equalize_cb();
@@ -71,12 +71,12 @@ BlendPopover::BlendPopover()
     m_steps.set_hexpand(true);
     m_steps.set_width_chars(6);
     m_steps.set_tooltip_text("Number of intermediate paths (1..50)");
-    curvz::utils::set_name(m_steps, "dlg_bld_st", "blend_dialog_steps_spn");
+    curvz::utils::set_name(m_steps, "pop_bld_st", "blend_popover_steps_spn");
     m_grid.attach(m_steps, 1, row);
     ++row;
 
     // Reverse
-    curvz::utils::set_name(m_reverse, "dlg_bld_rv", "blend_dialog_reverse_check");
+    curvz::utils::set_name(m_reverse, "pop_bld_rv", "blend_popover_reverse_check");
     m_grid.attach(m_reverse, 0, row, 2, 1);
     ++row;
 
@@ -90,7 +90,7 @@ BlendPopover::BlendPopover()
     }
 
     // Stroke-width override
-    curvz::utils::set_name(m_stroke_override, "dlg_bld_so", "blend_dialog_stroke_override_check");
+    curvz::utils::set_name(m_stroke_override, "pop_bld_so", "blend_popover_stroke_override_check");
     m_grid.attach(m_stroke_override, 0, row, 2, 1);
     ++row;
 
@@ -122,8 +122,8 @@ BlendPopover::BlendPopover()
     m_btn_cancel.signal_clicked().connect([this]() { on_cancel(); });
     m_btn_ok.signal_clicked().connect([this]() { on_ok(); });
     m_btn_ok.add_css_class("suggested-action");
-    curvz::utils::set_name(m_btn_cancel, "dlg_bld_cnc", "blend_dialog_cancel_btn");
-    curvz::utils::set_name(m_btn_ok, "dlg_bld_ok", "blend_dialog_ok_btn");
+    curvz::utils::set_name(m_btn_cancel, "pop_bld_cnc", "blend_popover_cancel_btn");
+    curvz::utils::set_name(m_btn_ok, "pop_bld_ok", "blend_popover_ok_btn");
     m_btn_row.append(m_btn_cancel);
     m_btn_row.append(m_btn_ok);
     m_outer.append(m_btn_row);
@@ -157,7 +157,7 @@ void BlendPopover::build_model_spins(const CanvasModel* model) {
                                                : m_seed_b_stroke_w;
 
     m_stroke_start = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, model);
-    curvz::utils::set_name(m_stroke_start, "dlg_bld_sw", "blend_dialog_start_w_spn");
+    curvz::utils::set_name(m_stroke_start, "pop_bld_sw", "blend_popover_start_w_spn");
     m_stroke_start->with_value(start_val)
                    ->with_tooltip("Stroke width at A (first intermediate "
                                   "uses a value close to this)")
@@ -169,7 +169,7 @@ void BlendPopover::build_model_spins(const CanvasModel* model) {
         m_stroke_start_row.append(*ul);
 
     m_stroke_end = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, model);
-    curvz::utils::set_name(m_stroke_end, "dlg_bld_ew", "blend_dialog_end_w_spn");
+    curvz::utils::set_name(m_stroke_end, "pop_bld_ew", "blend_popover_end_w_spn");
     m_stroke_end->with_value(end_val)
                  ->with_tooltip("Stroke width at B (last intermediate "
                                 "uses a value close to this)")
