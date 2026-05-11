@@ -1650,6 +1650,35 @@ void MainWindow::setup_layout() {
     }
   });
 
+#ifdef CURVZ_DIAGNOSTIC
+  // s191 m3 — caption bar. Lives between the work area and the
+  // status bar. Hidden by default; set_subtitle() reveals it with
+  // the supplied text. Styled via .mw-caption-bar / .mw-caption-
+  // label in css.hpp — accent-tinted background, large readable
+  // text, single-line with ellipsize. Reveal animation is slide-up
+  // so the caption rises into the user's field of view rather than
+  // appearing abruptly.
+  //
+  // Substrate routing: m_caption_label is a plain Gtk::Label (not
+  // a substrate wrapper) because it's display-only — no script
+  // verbs to address it through. The revealer is also plain;
+  // visibility is driven by ScriptListener via Application's
+  // SubtitleCallback bridge, not by user scripts.
+  m_caption_label.set_text("");
+  m_caption_label.set_halign(Gtk::Align::CENTER);
+  m_caption_label.set_hexpand(true);
+  m_caption_label.set_ellipsize(Pango::EllipsizeMode::END);
+  m_caption_label.set_single_line_mode(true);
+  m_caption_label.add_css_class("mw-caption-label");
+  m_caption_revealer.set_child(m_caption_label);
+  m_caption_revealer.set_transition_type(
+      Gtk::RevealerTransitionType::SLIDE_UP);
+  m_caption_revealer.set_transition_duration(180);
+  m_caption_revealer.set_reveal_child(false);
+  m_caption_revealer.add_css_class("mw-caption-bar");
+  m_root.append(m_caption_revealer);
+#endif
+
   // Status bar — deferred append to avoid snapshot-before-allocation
   // warning on startup (S60). If appended synchronously at the end of
   // setup_layout, GTK's frame_clock_paint_idle can tick between our
@@ -1854,5 +1883,32 @@ void MainWindow::show_corner_panel(bool show) {
 void MainWindow::update_corner_panel_position() {
   // No-op for now — position managed by alignment + margins
 }
+
+#ifdef CURVZ_DIAGNOSTIC
+// ─────────────────────────────────────────────────────────────────────
+// ━━━ caption bar ━━━ Subtitle-driven caption row above the status bar.
+// ─────────────────────────────────────────────────────────────────────
+
+void MainWindow::set_subtitle(const std::string& text) {
+  // Empty text hides the caption. Non-empty shows the bar with the
+  // new text. Replacing text while already visible is instant — we
+  // don't toggle reveal off-and-on for replacements because the
+  // SLIDE_UP transition is 180ms and would visibly flicker between
+  // captions during a paced script run. Only the show-from-empty
+  // and hide-to-empty transitions animate.
+  if (text.empty()) {
+    m_caption_revealer.set_reveal_child(false);
+    // Defer the text clear by one idle so the slide-down animation
+    // doesn't fight visibly with an empty-string mid-fade. Keeps
+    // the caption visible during the slide.
+    Glib::signal_idle().connect_once([this]() {
+      m_caption_label.set_text("");
+    });
+    return;
+  }
+  m_caption_label.set_text(text);
+  m_caption_revealer.set_reveal_child(true);
+}
+#endif
 
 } // namespace Curvz

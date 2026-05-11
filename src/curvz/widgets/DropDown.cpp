@@ -38,7 +38,7 @@ void DropDown::bind_canonical() {
     });
 }
 
-ScriptValue DropDown::invoke(std::string_view verb, const ScriptArgs& args) {
+ScriptValue DropDown::invoke_leaf(std::string_view verb, const ScriptArgs& args) {
     if (verb == "set") {
         if (args.size() != 1 || args[0].kind != ValueKind::Int)
             throw std::runtime_error("DropDown.set expects one int arg");
@@ -66,7 +66,7 @@ ScriptValue DropDown::invoke(std::string_view verb, const ScriptArgs& args) {
         "DropDown: unknown verb '" + std::string(verb) + "'");
 }
 
-ScriptValue DropDown::query(std::string_view property) const {
+ScriptValue DropDown::query_leaf(std::string_view property) const {
     if (property == "selected")
         return ScriptValue::integer(static_cast<long long>(get_selected()));
     if (property == "text") {
@@ -79,10 +79,10 @@ ScriptValue DropDown::query(std::string_view property) const {
     return ScriptValue::null();
 }
 
-std::vector<std::string> DropDown::verbs() const {
+std::vector<std::string> DropDown::leaf_verbs() const {
     return { "set", "pick" };
 }
-std::vector<std::string> DropDown::properties() const {
+std::vector<std::string> DropDown::leaf_properties() const {
     return { "selected", "text", "count" };
 }
 

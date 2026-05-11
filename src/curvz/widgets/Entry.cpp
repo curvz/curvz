@@ -19,7 +19,7 @@ void Entry::bind_canonical() {
     });
 }
 
-ScriptValue Entry::invoke(std::string_view verb, const ScriptArgs& args) {
+ScriptValue Entry::invoke_leaf(std::string_view verb, const ScriptArgs& args) {
     if (verb == "set") {
         if (args.size() != 1 || args[0].kind != ValueKind::String)
             throw std::runtime_error("Entry.set expects one string arg");
@@ -37,15 +37,15 @@ ScriptValue Entry::invoke(std::string_view verb, const ScriptArgs& args) {
         "Entry: unknown verb '" + std::string(verb) + "'");
 }
 
-ScriptValue Entry::query(std::string_view property) const {
+ScriptValue Entry::query_leaf(std::string_view property) const {
     if (property == "text") return ScriptValue::text(get_text());
     return ScriptValue::null();
 }
 
-std::vector<std::string> Entry::verbs() const {
+std::vector<std::string> Entry::leaf_verbs() const {
     return { "set", "clear" };
 }
-std::vector<std::string> Entry::properties() const {
+std::vector<std::string> Entry::leaf_properties() const {
     return { "text" };
 }
 

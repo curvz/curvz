@@ -53,6 +53,13 @@ class ScripterWindow : public Gtk::ApplicationWindow {
 public:
     explicit ScripterWindow(const std::string& initial_folder);
 
+    // s191 m3 — Application bridges the listener's SubtitleCallback
+    // to MainWindow's caption bar. Exposed as a raw pointer (the
+    // unique_ptr keeps ownership inside ScripterWindow); null if
+    // construction has not yet wired m_listener (should never be
+    // observed by a caller in practice).
+    ScriptListener* listener() { return m_listener.get(); }
+
 private:
     void build_ui();
     void rescan_library();

@@ -15,6 +15,7 @@
 // DSL grammar (m1, sandbox / m2, Curvz integration — unchanged):
 //
 //   # comment                                  (ignored)
+//   #[sub] subtitle text                       (rendered as a caption)
 //   <object> <verb> [arg ...]                  invoke
 //   get <object> <property>                    query, echo
 //   assert <object> <property> == <literal>    query, compare
@@ -22,6 +23,13 @@
 //   list                                       print registered names
 //   subscribe                                  start logging emit events
 //   quit                                       end the script early
+//
+// Tag markers (s191) — the `#[tag]` shape is a small extensible DSL
+// inside the comment marker. Today only `#[sub]` is defined; future
+// tags (e.g. `#[chapter]`, `#[pause ms]`) can be added without
+// changing the grammar shell. Unknown tags are treated as plain
+// comments (skipped silently) so a script using a future tag stays
+// forward-compatible with an older listener.
 //
 // Output protocol (one line per script line, sent to the output cb):
 //
@@ -31,6 +39,8 @@
 //   PASS / FAIL: expected <a>, got <b>         on assert
 //   event <name> <event> <repr>                on subscribed emit
 //   error <message>                            on parse / dispatch error
+//
+//   ── <subtitle text> ──                      on `#[sub]` line
 //
 // Lifted from scriptproto/ during s186 m2. Gated by CURVZ_DIAGNOSTIC
 // — production builds don't compile this TU at all.
@@ -82,6 +92,31 @@ public:
     using DoneCallback = std::function<void()>;
     void set_done_callback(DoneCallback cb) { m_on_done = std::move(cb); }
 
+    // s191 m3 — subtitle callback. Fires when a `#[sub] text` line is
+    // pumped. The body text is the caption to display (or empty to
+    // clear). The listener still emits the trace-pane caption via the
+    // output callback alongside — two surfaces, same trigger.
+    //
+    // Wiring: ScripterWindow does NOT install this (it's already
+    // handling the trace pane). Application installs it after both
+    // MainWindow and ScripterWindow exist, bridging the listener to
+    // MainWindow's caption bar.
+    using SubtitleCallback = std::function<void(const std::string& text)>;
+    void set_subtitle_callback(SubtitleCallback cb) { m_sub = std::move(cb); }
+
+    // s191 m3 — next-line delay multiplier. After a `#[sub]` line
+    // fires, the next line's step delay is doubled so the caption
+    // sits visible long enough to read (relative to whatever pace
+    // the user picked via the Scripter's Step-delay spin button).
+    // The pump scheduler calls take_delay_multiplier() once after
+    // each pump_next() and uses it to scale the next timeout. The
+    // value resets to 1 after each take_*.
+    //
+    // Honest at delay=0: the user opted into "no pacing"; subtitles
+    // fly past with everything else. If you want readable subtitles,
+    // raise the step delay.
+    int take_delay_multiplier();
+
 private:
     void run_line(const std::string& raw);
     void emit_trace(const std::string& name,
@@ -96,7 +131,9 @@ private:
     bool                     m_subscribed = false;
     bool                     m_finished   = false;
     OutputCallback           m_out;
+    SubtitleCallback         m_sub;
     DoneCallback             m_on_done;
+    int                      m_next_delay_mult = 1;
 };
 
 // Lexer / literal parser exposed for the listener but useful for tests.

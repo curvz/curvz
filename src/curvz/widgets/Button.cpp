@@ -17,7 +17,7 @@ void Button::bind_canonical() {
     });
 }
 
-ScriptValue Button::invoke(std::string_view verb, const ScriptArgs&) {
+ScriptValue Button::invoke_leaf(std::string_view verb, const ScriptArgs&) {
     if (verb == "click") {
         // activate() routes through GTK's gesture path — same thread-
         // crossing issue as ToggleButton::click. Synchronizer waits
@@ -34,12 +34,12 @@ ScriptValue Button::invoke(std::string_view verb, const ScriptArgs&) {
         "Button: unknown verb '" + std::string(verb) + "'");
 }
 
-ScriptValue Button::query(std::string_view property) const {
+ScriptValue Button::query_leaf(std::string_view property) const {
     if (property == "label") return ScriptValue::text(get_label());
     return ScriptValue::null();
 }
 
-std::vector<std::string> Button::verbs() const      { return { "click" }; }
-std::vector<std::string> Button::properties() const { return { "label" }; }
+std::vector<std::string> Button::leaf_verbs() const      { return { "click" }; }
+std::vector<std::string> Button::leaf_properties() const { return { "label" }; }
 
 } // namespace curvz::widgets

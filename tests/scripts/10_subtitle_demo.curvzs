@@ -1,0 +1,41 @@
+# 10_subtitle_demo — s191 subtitle support proof.
+#
+# Lines starting `#[sub]` render in two places at once:
+#
+#   1. The Scripter output pane gets a flanked caption (── text ──)
+#      with blank lines either side. Useful when reading the trace.
+#   2. MainWindow's caption bar (above the status bar) shows the
+#      text in a large readable banner. That's where the user's
+#      eyes are while they watch Curvz drive itself.
+#
+# Plain `#` lines stay comment-skip, so the file-header docstring
+# at the top of every script keeps its meaning. The marker is
+# opt-in. The bracketed-tag shape (`#[sub]`, future `#[chapter]`,
+# etc.) is a small extensible DSL — unknown tags are skipped, so
+# scripts using future tags stay forward-compatible.
+#
+# Pacing: after a `#[sub]` line the next-line delay is doubled, so
+# the caption sits visible for 2× the user's step-delay setting
+# before the next verb dispatches. Set the Step delay spin button
+# to 300–500ms before Running and the captions arrive at reading
+# speed. (At step delay 0 — "no pacing" — captions fly past with
+# everything else; the user opted out of pacing.)
+
+#[sub] Let's walk three toolbar tools
+
+tb_sel click
+assert tb_sel active == true
+
+#[sub] Now switch to the Node tool
+
+tb_nod click
+assert tb_nod active == true
+assert tb_sel active == false
+
+#[sub] Finally, the Pen tool
+
+tb_pen click
+assert tb_pen active == true
+assert tb_nod active == false
+
+#[sub] Done. Three tools clicked, radio invariant held throughout.

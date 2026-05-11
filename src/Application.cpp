@@ -399,6 +399,24 @@ void Application::on_activate() {
   LOG_INFO("Application: CURVZ_DIAGNOSTIC build — Scripter window opened "
            "(scripts dir: {})", scripts_dir);
 
+  // s191 m3 — bridge `#[sub]` lines from the Scripter's listener to
+  // MainWindow's caption bar. Two surfaces, one trigger: the
+  // listener still emits its flanked-caption line to the Scripter
+  // output pane (driven by the OutputCallback wired inside
+  // ScripterWindow), and ALSO hands the body text to MainWindow's
+  // set_subtitle() via this bridge. Where the user's eyes are —
+  // watching Curvz drive itself — is where the caption lands.
+  //
+  // Wired here in Application rather than inside ScripterWindow
+  // because ScripterWindow has no handle on MainWindow; Application
+  // is the only place that knows both. Both windows exist by this
+  // point: MainWindow at line 365, ScripterWindow at line 395.
+  if (auto* lst = scripter->listener()) {
+    lst->set_subtitle_callback([win](const std::string& text) {
+      win->set_subtitle(text);
+    });
+  }
+
   // s186 m2 close-out: warm the GLib main-loop dispatch mechanism.
   //
   // Empirical observation (s186 matrix: sessions 1/2/3 with verb

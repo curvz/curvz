@@ -244,6 +244,25 @@ headerbar.titlebar button.mw-scripter-btn:checked image {
     color: #ffffff;
 }
 
+/* s191 m3 — Diagnostic-mode caption bar above the status bar.
+   Subtitled scripts (`#[sub]` lines in the Scripter) show captions
+   here while paced playback runs. Translucent accent-tinted
+   background (30% alpha) so the canvas reads through — the caption
+   narrates the action without blocking it. The label itself stays
+   fully opaque so the text remains readable against whatever's
+   showing through. */
+.mw-caption-bar {
+    background-color: alpha(var(--accent-bg), 0.3);
+    border-top: 1px solid alpha(var(--bg-deepest), 0.3);
+    border-bottom: 1px solid alpha(var(--bg-deepest), 0.3);
+}
+.mw-caption-label {
+    color: var(--fg-primary);
+    font-size: 16pt;
+    font-weight: 500;
+    padding: 10px 16px;
+}
+
 /* ── Notebook (tabs + page) ──────────────────────────────── */
 notebook > header {
     background-color: var(--bg-surface);

@@ -1,0 +1,42 @@
+# 11_universal_hide_show — s191 m4 universal hide/show verbs.
+#
+# Every curvz::widgets::* substrate widget gains `hide` / `show` /
+# `visible` for free — the base ScriptableWidget intercepts them
+# before the leaf's invoke()/query() runs. Adding a leaf type later
+# (Label, Box, whatever) inherits the verbs automatically. Leaves
+# can't forget to support them because they never see the call.
+#
+# This script proves it across three different leaf types:
+#   - ToggleButton (Node tool on the main toolbar — tb_nod)
+#   - ToggleButton (Scripter toggle in the headerbar — mw_scripter,
+#                   diagnostic-only)
+#   - Button       (one inspector button if a doc is open)
+#
+# After each hide, the script asserts visible == false; after each
+# show, asserts visible == true. The widget actually disappears on
+# screen — the verb writes through set_visible, the same path the
+# rest of the app uses.
+
+#[sub] First the Node toolbar button
+
+assert tb_nod visible == true
+tb_nod hide
+assert tb_nod visible == false
+
+#[sub] Now bring it back
+
+tb_nod show
+assert tb_nod visible == true
+
+#[sub] Now the Scripter toggle itself
+
+assert mw_scripter visible == true
+mw_scripter hide
+assert mw_scripter visible == false
+
+#[sub] And restore it
+
+mw_scripter show
+assert mw_scripter visible == true
+
+#[sub] Done. hide/show works the same on every substrate widget.

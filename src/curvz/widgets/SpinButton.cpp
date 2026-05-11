@@ -37,7 +37,7 @@ void SpinButton::bind_canonical() {
     });
 }
 
-ScriptValue SpinButton::invoke(std::string_view verb, const ScriptArgs& args) {
+ScriptValue SpinButton::invoke_leaf(std::string_view verb, const ScriptArgs& args) {
     if (verb == "set") {
         if (args.size() != 1)
             throw std::runtime_error("SpinButton.set expects one numeric arg");
@@ -62,17 +62,17 @@ ScriptValue SpinButton::invoke(std::string_view verb, const ScriptArgs& args) {
         "SpinButton: unknown verb '" + std::string(verb) + "'");
 }
 
-ScriptValue SpinButton::query(std::string_view property) const {
+ScriptValue SpinButton::query_leaf(std::string_view property) const {
     if (property == "value") return ScriptValue::real(get_value());
     if (property == "min")   return ScriptValue::real(get_adjustment()->get_lower());
     if (property == "max")   return ScriptValue::real(get_adjustment()->get_upper());
     return ScriptValue::null();
 }
 
-std::vector<std::string> SpinButton::verbs() const {
+std::vector<std::string> SpinButton::leaf_verbs() const {
     return { "set", "step" };
 }
-std::vector<std::string> SpinButton::properties() const {
+std::vector<std::string> SpinButton::leaf_properties() const {
     return { "value", "min", "max" };
 }
 

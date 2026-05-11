@@ -319,8 +319,14 @@ void ScripterWindow::on_run() {
     auto step = std::make_shared<std::function<void()>>();
     *step = [lst, step, delay_ms]() {
         if (!lst->pump_next()) return;   // chain ends; shared_ptr releases
+        // s191 m3 — after a `#[sub]` line, the listener sets a delay
+        // multiplier so the caption sits visible long enough to read
+        // (default 2× the user's step delay). take_delay_multiplier()
+        // returns the value and resets it to 1, so this only affects
+        // the single step following the subtitle.
+        int mult = lst->take_delay_multiplier();
         Glib::signal_timeout().connect_once(
-            [step]() { (*step)(); }, delay_ms);
+            [step]() { (*step)(); }, delay_ms * mult);
     };
     Glib::signal_timeout().connect_once([step]() { (*step)(); }, 0);
 }

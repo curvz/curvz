@@ -108,6 +108,7 @@
 #include <gtkmm/grid.h>
 #include <gtkmm/togglebutton.h>
 #include <gtkmm/paned.h>
+#include <gtkmm/revealer.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/menubutton.h>
 #include <gtkmm/popovermenu.h>
@@ -140,6 +141,19 @@ public:
     std::string get_last_folder(const std::string& purpose) const;  // category: helper: persistence
     void        set_last_folder(const std::string& purpose,
                                 const std::string& path);  // category: helper: persistence
+
+#ifdef CURVZ_DIAGNOSTIC
+    // s191 m3 — caption bar driven by the Scripter's `#[sub]` lines.
+    // Empty text hides the bar (reveals collapses). Non-empty shows
+    // the text and reveals. Replacement is instant (no fade between
+    // captions); the reveal animation only plays on show-from-empty
+    // and hide-to-empty transitions.
+    //
+    // Application wires this to the ScriptListener's subtitle
+    // callback after both MainWindow and ScripterWindow exist. The
+    // diagnostic gate keeps production builds free of the surface.
+    void set_subtitle(const std::string& text);  // category: zone: caption-bar
+#endif
 
 private:
     void setup_headerbar();  // category: zone: headerbar
@@ -432,6 +446,15 @@ private:
     SwatchesPanel   m_swatches;
     StylesPanel     m_styles;
     ThemesPanel     m_themes;
+
+#ifdef CURVZ_DIAGNOSTIC
+    // s191 m3 — caption bar. Sits between m_middle and m_statusbar
+    // in the root vertical box; revealed by set_subtitle(). See the
+    // public method's comment for the wiring story.
+    Gtk::Revealer       m_caption_revealer;
+    Gtk::Label          m_caption_label;
+#endif
+
     StatusBar       m_statusbar;
 
     // Inspector section open-state flags — set by make_section, used by load_project

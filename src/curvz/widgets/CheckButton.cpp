@@ -17,7 +17,7 @@ void CheckButton::bind_canonical() {
     });
 }
 
-ScriptValue CheckButton::invoke(std::string_view verb, const ScriptArgs& args) {
+ScriptValue CheckButton::invoke_leaf(std::string_view verb, const ScriptArgs& args) {
     if (verb == "click") {
         // Gtk::CheckButton derives from Widget, not Button. The
         // canonical "click equivalent" is toggling active. set_active()
@@ -36,16 +36,16 @@ ScriptValue CheckButton::invoke(std::string_view verb, const ScriptArgs& args) {
         "CheckButton: unknown verb '" + std::string(verb) + "'");
 }
 
-ScriptValue CheckButton::query(std::string_view property) const {
+ScriptValue CheckButton::query_leaf(std::string_view property) const {
     if (property == "active") return ScriptValue::boolean(get_active());
     if (property == "label")  return ScriptValue::text(get_label());
     return ScriptValue::null();
 }
 
-std::vector<std::string> CheckButton::verbs() const {
+std::vector<std::string> CheckButton::leaf_verbs() const {
     return { "click", "set" };
 }
-std::vector<std::string> CheckButton::properties() const {
+std::vector<std::string> CheckButton::leaf_properties() const {
     return { "active", "label" };
 }
 

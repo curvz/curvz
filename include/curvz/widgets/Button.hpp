@@ -32,13 +32,13 @@ class Button
 public:
     Button(std::string_view name, const Glib::ustring& label = {});
 
-    curvz::scripting::ScriptValue invoke(
+    curvz::scripting::ScriptValue invoke_leaf(
             std::string_view verb,
             const curvz::scripting::ScriptArgs& args) override;
-    curvz::scripting::ScriptValue query(
+    curvz::scripting::ScriptValue query_leaf(
             std::string_view property) const override;
-    std::vector<std::string> verbs()      const override;
-    std::vector<std::string> properties() const override;
+    std::vector<std::string> leaf_verbs()      const override;
+    std::vector<std::string> leaf_properties() const override;
 
 protected:
     void bind_canonical() override;

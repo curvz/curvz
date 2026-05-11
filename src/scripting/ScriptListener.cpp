@@ -22,6 +22,7 @@
 #include "scripting/WidgetNameResolver.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <glib.h>   // g_usleep for `sleep` verb
 
@@ -121,9 +122,16 @@ void ScriptListener::reset() {
     m_cursor   = 0;
     m_stats    = {};
     m_finished = false;
+    m_next_delay_mult = 1;  // s191 m3 — drop any leftover subtitle hint
     // m_subscribed is preserved — if the previous run subscribed, the
     // subscription on the registry is still live; flipping it back to
     // false here would silently drop emit_trace output on the next run.
+}
+
+int ScriptListener::take_delay_multiplier() {
+    int m = m_next_delay_mult;
+    m_next_delay_mult = 1;
+    return m;
 }
 
 int ScriptListener::exit_status() const {
@@ -139,6 +147,11 @@ bool ScriptListener::pump_next() {
             + std::to_string(m_stats.asserts_fail)  + " fail, "
             + std::to_string(m_stats.errors)        + " error\n");
         m_finished = true;
+        // s191 m3 — clear any visible caption from the last `#[sub]`
+        // line so the bar doesn't linger across runs. Empty body is
+        // the documented "clear" signal in the subtitle callback
+        // contract.
+        if (m_sub) m_sub("");
         if (m_on_done) m_on_done();
         return false;
     }
@@ -248,9 +261,71 @@ static ScriptValue token_to_value(const Token& t) {
     return parse_literal(t.text);
 }
 
+// s191 — extract a `#[tag]` marker from a trimmed `#…`-prefixed
+// line. Returns the tag name (lowercased) and the body that
+// follows. If the line is a plain comment (no `[tag]` after the
+// `#`) or malformed (unclosed bracket, etc.) the tag is empty
+// and the line should be treated as a plain comment-skip.
+//
+// The `#[tag]` shape is a small extensible DSL: today `[sub]` is
+// the only defined tag, but `[chapter]`, `[pause 500]`, `[mark]`
+// can slot in without changing the grammar shell. Unknown tags
+// fall through to comment-skip so old listeners are forward-
+// compatible with new scripts.
+struct CommentTag {
+    std::string tag;   // lowercased, empty if no marker
+    std::string body;  // trimmed text after the closing bracket
+};
+
+static CommentTag parse_comment_tag(const std::string& line) {
+    // Caller guarantees line is trimmed and starts with '#'.
+    if (line.size() < 2 || line[1] != '[') return {};
+    auto close = line.find(']', 2);
+    if (close == std::string::npos) return {};
+    CommentTag ct;
+    ct.tag = line.substr(2, close - 2);
+    std::transform(ct.tag.begin(), ct.tag.end(), ct.tag.begin(),
+                   [](unsigned char c){ return std::tolower(c); });
+    ct.body = trim(line.substr(close + 1));
+    return ct;
+}
+
 void ScriptListener::run_line(const std::string& raw) {
     std::string line = trim(raw);
-    if (line.empty() || line[0] == '#') return;
+    if (line.empty()) return;
+
+    // s191 — `#` starts a comment. The `#[tag]` shape selects a
+    // tagged-comment dispatch; everything else is plain comment-
+    // skip. Today only `[sub]` is wired (renders as a flanked
+    // caption in the output pane). Existing scripts use `#` for
+    // file-header docstrings (10-30 lines each, common across all
+    // tests/scripts/*.curvzs) and stay zero-touch under this rule:
+    // plain `#` lines never tripped a tag check, so they keep
+    // skipping silently.
+    //
+    // Tutorial scripts paired with the s187 m4 pacing knob
+    // (200-300ms step delay) use `#[sub]` for mid-script narration
+    // between verbs. The marker is opt-in.
+    if (line[0] == '#') {
+        CommentTag ct = parse_comment_tag(line);
+        if (ct.tag == "sub" && !ct.body.empty()) {
+            // Two surfaces, same trigger:
+            //   trace pane — flanked caption in the script output
+            //   caption bar — MainWindow's diagnostic-only overlay
+            out("\n── " + ct.body + " ──\n\n");
+            if (m_sub) m_sub(ct.body);
+            // s191 m3 — make the next line wait long enough to read
+            // the caption. We double the user's existing step delay
+            // rather than inventing our own duration: the spin
+            // button in the Scripter window already represents the
+            // user's chosen pace, and doubling respects it. Honest
+            // at delay=0: subtitles fly past with everything else,
+            // because the user opted out of pacing.
+            m_next_delay_mult = 2;
+        }
+        // Unknown tag, empty-body sub, or plain comment — skip.
+        return;
+    }
     out("> " + line + "\n");
     ++m_stats.lines_run;
 

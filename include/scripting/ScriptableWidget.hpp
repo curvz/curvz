@@ -64,6 +64,21 @@
 //   at compile time: a leaf that doesn't override it can't be
 //   instantiated, which means the template can't ship a leaf with no
 //   emit-side wiring.
+//
+// Universal verbs (s191 m4):
+//
+//   Every wrapped widget gains `hide` / `show` write verbs and a
+//   `visible` read query for free — the base implements them in terms
+//   of GtkBase's set_visible/get_visible and intercepts them before
+//   the leaf's invoke()/query() runs. Leaves implement invoke_leaf()
+//   / query_leaf() (the new names for their dispatch tables); the
+//   base's invoke()/query() handle universals first, then delegate.
+//
+//   Adding a universal verb later is one place to edit. Leaves can't
+//   forget to support hide/show because they never see the call.
+//   "Make the right thing the easy thing and the wrong thing
+//   impossible" — the leaves can't override the universals' shape
+//   even if they wanted to.
 
 #pragma once
 #include "scripting/Scriptable.hpp"
@@ -134,7 +149,62 @@ public:
                "ScriptableWidget: leaf forgot init_scriptable() in its ctor");
     }
 
+    // ── Universal verbs (s191 m4) ───────────────────────────────────────
+    //
+    // hide / show / visible are wired here once for every widget that
+    // inherits from this template. Leaves implement invoke_leaf() and
+    // query_leaf(); the public invoke()/query() check the universals
+    // first and only fall through if the verb wasn't a universal.
+    //
+    // verbs() and properties() concat the universal list with the leaf's
+    // own list so `list` and introspection surface the full vocabulary.
+    //
+    // Note that hide/show speak `set_visible` directly — no signal
+    // synchronizer. set_visible is a synchronous property write; there's
+    // no thread-crossing "did the bool flip yet" gap to wait on. (visible
+    // is just the same property's getter.)
+    ScriptValue invoke(std::string_view verb,
+                       const ScriptArgs& args) override final {
+        if (verb == "hide") {
+            this->set_visible(false);
+            return ScriptValue::null();
+        }
+        if (verb == "show") {
+            this->set_visible(true);
+            return ScriptValue::null();
+        }
+        return invoke_leaf(verb, args);
+    }
+
+    ScriptValue query(std::string_view property) const override final {
+        if (property == "visible") return ScriptValue::boolean(this->get_visible());
+        return query_leaf(property);
+    }
+
+    std::vector<std::string> verbs() const override final {
+        auto v = leaf_verbs();
+        v.push_back("hide");
+        v.push_back("show");
+        return v;
+    }
+
+    std::vector<std::string> properties() const override final {
+        auto p = leaf_properties();
+        p.push_back("visible");
+        return p;
+    }
+
 protected:
+    // Leaf-facing dispatch. invoke()/query()/verbs()/properties() above
+    // are sealed (`final`) so leaves can't accidentally override the
+    // universal-intercept layer. Each leaf overrides the *_leaf forms
+    // with its own verb/property table.
+    virtual ScriptValue invoke_leaf(std::string_view verb,
+                                     const ScriptArgs& args) = 0;
+    virtual ScriptValue query_leaf(std::string_view property) const = 0;
+    virtual std::vector<std::string> leaf_verbs()      const = 0;
+    virtual std::vector<std::string> leaf_properties() const = 0;
+
     // Leaf calls this from its ctor's last line. Subsequent calls are
     // no-ops — guarded so re-call from a sub-leaf (if anyone ever
     // extends a leaf) doesn't double-bind.

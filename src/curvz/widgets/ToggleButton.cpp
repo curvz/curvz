@@ -23,7 +23,7 @@ void ToggleButton::bind_canonical() {
     });
 }
 
-ScriptValue ToggleButton::invoke(std::string_view verb,
+ScriptValue ToggleButton::invoke_leaf(std::string_view verb,
                                   const ScriptArgs& args) {
     if (verb == "click") {
         // GTK is threaded — activate() routes through the gesture
@@ -51,17 +51,17 @@ ScriptValue ToggleButton::invoke(std::string_view verb,
         "ToggleButton: unknown verb '" + std::string(verb) + "'");
 }
 
-ScriptValue ToggleButton::query(std::string_view property) const {
+ScriptValue ToggleButton::query_leaf(std::string_view property) const {
     if (property == "active") return ScriptValue::boolean(get_active());
     if (property == "label")  return ScriptValue::text(get_label());
     return ScriptValue::null();
 }
 
-std::vector<std::string> ToggleButton::verbs() const {
+std::vector<std::string> ToggleButton::leaf_verbs() const {
     return { "click", "set" };
 }
 
-std::vector<std::string> ToggleButton::properties() const {
+std::vector<std::string> ToggleButton::leaf_properties() const {
     return { "active", "label" };
 }
 

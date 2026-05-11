@@ -40,7 +40,7 @@ void Scale::bind_canonical() {
     });
 }
 
-ScriptValue Scale::invoke(std::string_view verb, const ScriptArgs& args) {
+ScriptValue Scale::invoke_leaf(std::string_view verb, const ScriptArgs& args) {
     if (verb == "set") {
         if (args.size() != 1)
             throw std::runtime_error("Scale.set expects one numeric arg");
@@ -56,14 +56,14 @@ ScriptValue Scale::invoke(std::string_view verb, const ScriptArgs& args) {
         "Scale: unknown verb '" + std::string(verb) + "'");
 }
 
-ScriptValue Scale::query(std::string_view property) const {
+ScriptValue Scale::query_leaf(std::string_view property) const {
     if (property == "value") return ScriptValue::real(get_value());
     if (property == "min")   return ScriptValue::real(get_adjustment()->get_lower());
     if (property == "max")   return ScriptValue::real(get_adjustment()->get_upper());
     return ScriptValue::null();
 }
 
-std::vector<std::string> Scale::verbs() const      { return { "set" }; }
-std::vector<std::string> Scale::properties() const { return { "value", "min", "max" }; }
+std::vector<std::string> Scale::leaf_verbs() const      { return { "set" }; }
+std::vector<std::string> Scale::leaf_properties() const { return { "value", "min", "max" }; }
 
 } // namespace curvz::widgets
