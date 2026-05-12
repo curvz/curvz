@@ -1651,13 +1651,16 @@ void MainWindow::setup_layout() {
   });
 
 #ifdef CURVZ_DIAGNOSTIC
-  // s191 m3 — caption bar. Lives between the work area and the
-  // status bar. Hidden by default; set_subtitle() reveals it with
-  // the supplied text. Styled via .mw-caption-bar / .mw-caption-
-  // label in css.hpp — accent-tinted background, large readable
-  // text, single-line with ellipsize. Reveal animation is slide-up
-  // so the caption rises into the user's field of view rather than
-  // appearing abruptly.
+  // s191 m3 + s192 m4 — caption bar. Floats above the canvas as an
+  // overlay rather than taking a row in m_root's layout flow. Anchored
+  // to the bottom edge of the canvas overlay, full width, with the
+  // SLIDE_UP transition revealing it from below the canvas edge into
+  // view. The 30%-alpha background (s191 m3-followup) lets the canvas
+  // read through; this only became visually honest once the bar moved
+  // onto the canvas (m4) — before that it was alpha-blending against
+  // the window chrome between m_middle and m_statusbar, which looked
+  // muddy. m_can_target(false) routes pointer events through to the
+  // canvas underneath so the caption never steals clicks.
   //
   // Substrate routing: m_caption_label is a plain Gtk::Label (not
   // a substrate wrapper) because it's display-only — no script
@@ -1676,7 +1679,14 @@ void MainWindow::setup_layout() {
   m_caption_revealer.set_transition_duration(180);
   m_caption_revealer.set_reveal_child(false);
   m_caption_revealer.add_css_class("mw-caption-bar");
-  m_root.append(m_caption_revealer);
+  // Overlay positioning: full canvas width, bottom-anchored.
+  m_caption_revealer.set_halign(Gtk::Align::FILL);
+  m_caption_revealer.set_valign(Gtk::Align::END);
+  m_caption_revealer.set_hexpand(true);
+  // Pointer events fall through to the canvas underneath. Same idiom
+  // used on m_text_fixed (the text-tool overlay above).
+  m_caption_revealer.set_can_target(false);
+  m_canvas_overlay.add_overlay(m_caption_revealer);
 #endif
 
   // Status bar — deferred append to avoid snapshot-before-allocation

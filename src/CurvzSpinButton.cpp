@@ -1,6 +1,6 @@
 #include "CurvzSpinButton.hpp"
 #include "UnitSystem.hpp"
-#include "CoordSpace.hpp"
+#include "CoordConvert.hpp"   // s192 m2 — canonical doc<->display helpers
 #include "CurvzLog.hpp"
 #include <cmath>
 #include <algorithm>
@@ -39,52 +39,10 @@ static const char* display_mode_name(const CanvasModel* m) {
     return "?";
 }
 
-// ── DPI-aware unit conversion ─────────────────────────────────────────────────
-//
-// UnitSystem::from_px / to_px hard-code 96 dpi (CSS standard).  For Physical
-// mode we need to respect the document's explicit dpi instead.  The rule:
-//
-//   Pixel / Ratio modes   → effective_dpi = 96
-//   Physical mode         → effective_dpi = model->dpi
-//
-// Conversion: inches = internal / effective_dpi, then scale to target unit.
-//   Px → display = internal                  (identity)
-//   In → display = internal / effective_dpi
-//   Mm → display = internal / effective_dpi * 25.4
-//   Pt → display = internal / effective_dpi * 72
-
-static double effective_dpi(const CanvasModel* m) {
-    if (!m) return 96.0;
-    if (m->display_mode == DisplayMode::Physical && m->dpi > 0)
-        return (double)m->dpi;
-    return 96.0;
-}
-
-// doc-px → display unit
-static double px_to_unit(double internal, Unit u, const CanvasModel* m) {
-    double dpi = effective_dpi(m);
-    if (dpi <= 0.0) dpi = 96.0;
-    switch (u) {
-    case Unit::Px: return internal;
-    case Unit::In: return internal / dpi;
-    case Unit::Mm: return internal / dpi * 25.4;
-    case Unit::Pt: return internal / dpi * 72.0;
-    }
-    return internal;
-}
-
-// display unit → doc-px
-static double unit_to_px(double display, Unit u, const CanvasModel* m) {
-    double dpi = effective_dpi(m);
-    if (dpi <= 0.0) dpi = 96.0;
-    switch (u) {
-    case Unit::Px: return display;
-    case Unit::In: return display * dpi;
-    case Unit::Mm: return display / 25.4 * dpi;
-    case Unit::Pt: return display / 72.0 * dpi;
-    }
-    return display;
-}
+// ── DPI-aware unit conversion ────────────────────────────────────────────────
+// s192 m2 — promoted to CoordConvert.hpp as inline namespace helpers so
+// both this file and the right-click guide dialog use the same math.
+// effective_dpi / px_to_unit / unit_to_px now live there.
 
 
 // ── Construction ──────────────────────────────────────────────────────────────
@@ -354,12 +312,9 @@ void CurvzSpinButton::update_unit_label()
 // ── Coordinate conversion ─────────────────────────────────────────────────────
 //
 // Distance / Width: pure UnitSystem px conversion, no origin or flip.
-//
-// PositionX: subtract ruler origin, apply quality/mode scaling.
-//   doc_x → user_x = doc_x - ruler_ox → scale → display
-//
-// PositionY: Y-flip via CoordSpace, subtract ruler origin, apply scaling.
-//   doc_y → user_y = (canvas_h - doc_y) - ruler_oy → scale → display
+// PositionX / Y:    delegate to CoordConvert helpers (the canonical seam shared
+//                   with the right-click guide dialog and any other doc-space
+//                   <-> display-space consumer).
 
 double CurvzSpinButton::to_display(double internal) const
 {
@@ -374,19 +329,13 @@ double CurvzSpinButton::to_display(double internal) const
         result = px_to_unit(internal, m_model->display_unit, m_model);
         break;
 
-    case SpinType::PositionX: {
-        double user_x = internal - m_ruler_origin;
-        result = px_to_unit(user_x, m_model->display_unit, m_model);
+    case SpinType::PositionX:
+        result = doc_to_display_x(internal, m_model, m_ruler_origin);
         break;
-    }
 
-    case SpinType::PositionY: {
-        double ch = (double)m_model->canvas_height();
-        CoordSpace cs{ch};
-        double user_y = cs.to_user_y(internal) - m_ruler_origin;
-        result = px_to_unit(user_y, m_model->display_unit, m_model);
+    case SpinType::PositionY:
+        result = doc_to_display_y(internal, m_model, m_ruler_origin);
         break;
-    }
 
     default:
         result = internal;
@@ -423,20 +372,13 @@ double CurvzSpinButton::to_internal(double display) const
         result = unit_to_px(display, m_model->display_unit, m_model);
         break;
 
-    case SpinType::PositionX: {
-        double user_x = unit_to_px(display, m_model->display_unit, m_model);
-        result = user_x + m_ruler_origin;
+    case SpinType::PositionX:
+        result = display_to_doc_x(display, m_model, m_ruler_origin);
         break;
-    }
 
-    case SpinType::PositionY: {
-        double user_y = unit_to_px(display, m_model->display_unit, m_model);
-        user_y += m_ruler_origin;
-        double ch = (double)m_model->canvas_height();
-        CoordSpace cs{ch};
-        result = cs.to_doc_y(user_y);
+    case SpinType::PositionY:
+        result = display_to_doc_y(display, m_model, m_ruler_origin);
         break;
-    }
 
     default:
         result = display;

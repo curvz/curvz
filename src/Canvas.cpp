@@ -1,5 +1,6 @@
 #include "Canvas.hpp"
 #include "CommandHistory.hpp"
+#include "CoordConvert.hpp"  // s192 m2 — doc<->display helpers for guide dialog
 #include "CurvzLog.hpp"
 #include "CurvzProject.hpp"  // s116 m6 — m_project field reads workspace appearance
 #include "CurvzSpinButton.hpp"
@@ -585,6 +586,36 @@ Canvas::Canvas() {
       const std::string giid = g->internal_id;
 
       std::vector<curvz::utils::FormField> fields;
+
+      // s192 m2 — Pre-convert defaults to display space, then post-convert
+      // OK values back to doc space. Inspector spin buttons run the same
+      // pipeline via doc_to_display_x/y / display_to_doc_x/y in
+      // CoordConvert.hpp; this dialog calls the same helpers so the two
+      // edit surfaces agree byte-for-byte. Without this conversion the
+      // dialog showed raw doc-space Y (Y-down, top-left origin) while the
+      // inspector showed user-space Y (Y-up, ruler-origin) — the same
+      // guide read two different values depending on which surface the
+      // user opened. Angle flips via CoordSpace::to_user_angle_deg.
+      const CanvasModel* mdl = m_doc ? &m_doc->canvas : nullptr;
+      const double rox = m_doc ? m_doc->ruler_origin_x : 0.0;
+      const double roy = m_doc ? m_doc->ruler_origin_y : 0.0;
+      // canvas_h needed for the CoordSpace angle flip — same Y-axis-inverted
+      // convention CoordSpace uses everywhere else.
+      CoordSpace cs{mdl ? (double)mdl->canvas_height() : 1.0};
+
+      const double dx = doc_to_display_x(bx, mdl, rox);
+      const double dy = doc_to_display_y(by, mdl, roy);
+      const double da = cs.to_user_angle_deg(ba);
+
+      // Label suffix shows the unit the user is typing in. Matches the
+      // inspector spin button's m_unit_label widget — same "(in)" / "(mm)"
+      // / "(px)" / "(pt)" tag, just inlined into the form label because
+      // show_form has no companion-label slot.
+      const char* unit_lbl = UnitSystem::label(
+          mdl ? mdl->display_unit : Unit::Px);
+      const std::string x_label = std::string("X (") + unit_lbl + ")";
+      const std::string y_label = std::string("Y (") + unit_lbl + ")";
+
       auto make_num = [](double dflt) {
         curvz::utils::NumberField nf;
         nf.default_value = dflt;
@@ -598,19 +629,19 @@ Canvas::Canvas() {
         return nf;
       };
       if (is_h) {
-        fields.push_back({"y", "Y",
-                          make_num(by)});
+        fields.push_back({"y", y_label,
+                          make_num(dy)});
       } else if (is_v) {
-        fields.push_back({"x", "X",
-                          make_num(bx)});
+        fields.push_back({"x", x_label,
+                          make_num(dx)});
       } else {
-        // Angled — anchor (x,y) plus angle.
-        fields.push_back({"x",     "X",     make_num(bx)});
-        fields.push_back({"y",     "Y",     make_num(by)});
-        auto na = make_num(ba);
+        // Angled — anchor (x,y) plus angle (degrees, no unit suffix).
+        fields.push_back({"x",     x_label,    make_num(dx)});
+        fields.push_back({"y",     y_label,    make_num(dy)});
+        auto na = make_num(da);
         na.min = -360.0;
         na.max =  360.0;
-        fields.push_back({"angle", "Angle", na});
+        fields.push_back({"angle", "Angle (\u00B0)", na});
       }
 
       std::string title = is_h ? "Set horizontal guide position" :
@@ -621,12 +652,13 @@ Canvas::Canvas() {
       // outlive its parts. `this` is needed for m_history and
       // m_sig_doc_changed. giid resolves the guide via find_by_iid
       // inside the GuideMoveCommand — safe even if the guide were
-      // somehow deleted between dialog show and OK.
+      // somehow deleted between dialog show and OK. mdl/rox/roy
+      // captured for post-conversion of the user-typed values.
       curvz::utils::show_form(
           *win, title, /*detail=*/"",
           fields, {"Cancel", "OK"},
           /*default_button=*/1, /*cancel_button=*/0,
-          [this, giid, bx, by, ba, is_h, is_v](
+          [this, giid, bx, by, ba, is_h, is_v, mdl, rox, roy](
               int button,
               const std::map<std::string, curvz::utils::FormFieldValue>&
                   values) {
@@ -639,21 +671,33 @@ Canvas::Canvas() {
             SceneNode *g = curvz::utils::find_by_iid(*proj, giid);
             if (!g || !g->is_guide()) return;
 
-            double nx = bx, ny = by, na = ba;
+            // Pull user-typed (display-space) values, default to the
+            // pre-conversion display values so an unchanged field
+            // round-trips cleanly to its original doc-space value.
+            CoordSpace cs2{mdl ? (double)mdl->canvas_height() : 1.0};
+            double user_x = doc_to_display_x(bx, mdl, rox);
+            double user_y = doc_to_display_y(by, mdl, roy);
+            double user_a = cs2.to_user_angle_deg(ba);
             if (is_h) {
               auto it = values.find("y");
-              if (it != values.end()) ny = it->second.num();
+              if (it != values.end()) user_y = it->second.num();
             } else if (is_v) {
               auto it = values.find("x");
-              if (it != values.end()) nx = it->second.num();
+              if (it != values.end()) user_x = it->second.num();
             } else {
               auto ix = values.find("x");
               auto iy = values.find("y");
               auto ia = values.find("angle");
-              if (ix != values.end()) nx = ix->second.num();
-              if (iy != values.end()) ny = iy->second.num();
-              if (ia != values.end()) na = ia->second.num();
+              if (ix != values.end()) user_x = ix->second.num();
+              if (iy != values.end()) user_y = iy->second.num();
+              if (ia != values.end()) user_a = ia->second.num();
             }
+
+            // Post-convert display -> doc. Same pipeline the inspector
+            // spin button runs on every adjustment commit.
+            const double nx = display_to_doc_x(user_x, mdl, rox);
+            const double ny = display_to_doc_y(user_y, mdl, roy);
+            const double na = cs2.to_doc_angle_deg(user_a);
 
             // No-op guard. Same epsilon as the drag's push path.
             if (std::abs(nx - bx) < 0.001 &&
@@ -1303,7 +1347,12 @@ double Canvas::snap_x(double doc_x, double tolerance_px) const {
 
   if (m_doc->snap.snap_guides) {
     const SceneNode *gl = m_doc->guide_layer();
-    if (gl && gl->visible && !gl->locked) {
+    // s192 m1 — snap-candidacy gates on visibility, not lock. Locking a
+    // guide (or its layer) is a write-protection: the user still sees the
+    // guide on canvas and expects to be able to snap to it. Hiding it is
+    // the gesture that says "do not consider this." Same rule applies to
+    // refs / grid / margins below and in snap_y / snap_move.
+    if (gl && gl->visible) {
       for (const auto &child : gl->children) {
         if (!child->is_guide() || !child->guide_is_vertical())
           continue;
@@ -1320,7 +1369,7 @@ double Canvas::snap_x(double doc_x, double tolerance_px) const {
     }
     // Ref points snap X
     const SceneNode *rl = m_doc->ref_layer();
-    if (rl && rl->visible && !rl->locked) {
+    if (rl && rl->visible) {
       for (const auto &child : rl->children) {
         if (!child->is_ref())
           continue;
@@ -1341,7 +1390,7 @@ double Canvas::snap_x(double doc_x, double tolerance_px) const {
   // Closest vertical gridline to doc_x. Arithmetic — O(1), no enumeration.
   if (m_doc->snap.snap_grid) {
     const SceneNode *grid = m_doc->grid_layer();
-    if (grid && grid->visible && !grid->locked &&
+    if (grid && grid->visible &&
         grid->grid_spacing_x >= 0.5) {
       double sx = grid->grid_spacing_x;
       double ox = grid->grid_offset_x;
@@ -1362,7 +1411,7 @@ double Canvas::snap_x(double doc_x, double tolerance_px) const {
   // Left edge, right edge, and column gutter dividers (if any).
   if (m_doc->snap.snap_margins) {
     const SceneNode *ml = m_doc->margin_layer();
-    if (ml && ml->visible && !ml->locked) {
+    if (ml && ml->visible) {
       const double cw = (double)m_doc->canvas_width();
       const double left  = ml->margin_left;
       const double right = cw - ml->margin_right;
@@ -1403,7 +1452,7 @@ double Canvas::snap_y(double doc_y, double tolerance_px) const {
 
   if (m_doc->snap.snap_guides) {
     const SceneNode *gl = m_doc->guide_layer();
-    if (gl && gl->visible && !gl->locked) {
+    if (gl && gl->visible) {
       for (const auto &child : gl->children) {
         if (!child->is_guide() || !child->guide_is_horizontal())
           continue;
@@ -1420,7 +1469,7 @@ double Canvas::snap_y(double doc_y, double tolerance_px) const {
     }
     // Ref points snap Y
     const SceneNode *rl = m_doc->ref_layer();
-    if (rl && rl->visible && !rl->locked) {
+    if (rl && rl->visible) {
       for (const auto &child : rl->children) {
         if (!child->is_ref())
           continue;
@@ -1440,7 +1489,7 @@ double Canvas::snap_y(double doc_y, double tolerance_px) const {
   // ── Grid Y ─────────────────────────────────────────────────────────────
   if (m_doc->snap.snap_grid) {
     const SceneNode *grid = m_doc->grid_layer();
-    if (grid && grid->visible && !grid->locked &&
+    if (grid && grid->visible &&
         grid->grid_spacing_y >= 0.5) {
       double sy = grid->grid_spacing_y;
       double oy = grid->grid_offset_y;
@@ -1460,7 +1509,7 @@ double Canvas::snap_y(double doc_y, double tolerance_px) const {
   // ── Margin Y ───────────────────────────────────────────────────────────
   if (m_doc->snap.snap_margins) {
     const SceneNode *ml = m_doc->margin_layer();
-    if (ml && ml->visible && !ml->locked) {
+    if (ml && ml->visible) {
       const double ch = (double)m_doc->canvas_height();
       const double top    = ml->margin_top;
       const double bottom = ch - ml->margin_bottom;
@@ -1506,18 +1555,18 @@ std::pair<double, double> Canvas::snap_move(double raw_dx, double raw_dy) {
 
   const SceneNode *gl = m_doc->guide_layer();
   bool guides_active = m_doc->snap.snap_guides &&
-                       (gl && gl->visible && !gl->locked);
+                       (gl && gl->visible);
   const SceneNode *rl = m_doc->ref_layer();
   bool refs_active = m_doc->snap.snap_guides &&
-                     (rl && rl->visible && !rl->locked);
+                     (rl && rl->visible);
   const SceneNode *grid_l = m_doc->grid_layer();
   bool grid_active = m_doc->snap.snap_grid &&
-                     (grid_l && grid_l->visible && !grid_l->locked &&
+                     (grid_l && grid_l->visible &&
                       grid_l->grid_spacing_x >= 0.5 &&
                       grid_l->grid_spacing_y >= 0.5);
   const SceneNode *ml = m_doc->margin_layer();
   bool margins_active = m_doc->snap.snap_margins &&
-                        (ml && ml->visible && !ml->locked);
+                        (ml && ml->visible);
   if (!guides_active && !refs_active && !grid_active && !margins_active)
     return {raw_dx, raw_dy};
 
