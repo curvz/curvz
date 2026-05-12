@@ -28,6 +28,18 @@
 
 namespace curvz::scripting {
 
+// Forward declarations for static helpers defined later in this TU.
+// is_runnable_line() (s193 m1) needs both before line ~140; rather
+// than reorder the file, declare them here. The CommentTag struct
+// belongs to the `#[tag]` extensible-comment-DSL (s191) — see
+// parse_comment_tag below for the full grammar treatment.
+static std::string trim(const std::string& s);
+struct CommentTag {
+    std::string tag;   // lowercased, empty if no marker
+    std::string body;  // trimmed text after the closing bracket
+};
+static CommentTag parse_comment_tag(const std::string& line);
+
 // ── tokenise ─────────────────────────────────────────────────────────────────
 std::vector<Token> tokenise(const std::string& line) {
     std::vector<Token> toks;
@@ -132,6 +144,30 @@ int ScriptListener::take_delay_multiplier() {
     int m = m_next_delay_mult;
     m_next_delay_mult = 1;
     return m;
+}
+
+// s193 m1 — same skip rules as run_line(), but as a pure predicate.
+// Kept structurally aligned with run_line's early-return branches so
+// the two can't drift; if a new "silently skip" case is added there,
+// add the same case here.
+bool ScriptListener::is_runnable_line(const std::string& raw) {
+    std::string line = trim(raw);
+    if (line.empty()) return false;
+    if (line[0] == '#') {
+        CommentTag ct = parse_comment_tag(line);
+        // Only `#[sub]` with a non-empty body is "runnable" — it emits
+        // the flanked caption and triggers the subtitle callback.
+        return (ct.tag == "sub" && !ct.body.empty());
+    }
+    return true;
+}
+
+size_t ScriptListener::next_runnable_index_from(size_t from) const {
+    size_t i = from;
+    while (i < m_lines.size() && !is_runnable_line(m_lines[i])) {
+        ++i;
+    }
+    return i;
 }
 
 int ScriptListener::exit_status() const {
@@ -272,10 +308,8 @@ static ScriptValue token_to_value(const Token& t) {
 // can slot in without changing the grammar shell. Unknown tags
 // fall through to comment-skip so old listeners are forward-
 // compatible with new scripts.
-struct CommentTag {
-    std::string tag;   // lowercased, empty if no marker
-    std::string body;  // trimmed text after the closing bracket
-};
+// (CommentTag struct forward-declared at top of TU; definition with
+// field comments lives there.)
 
 static CommentTag parse_comment_tag(const std::string& line) {
     // Caller guarantees line is trimmed and starts with '#'.

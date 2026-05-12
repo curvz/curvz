@@ -5,28 +5,41 @@
 // protocol. Watch Curvz and the scripter side by side as the script
 // runs.
 //
-// Layout (same as sandbox):
+// Layout (s193 m1 redesign):
 //
 //   ┌──────────────────────────────────────────────────────────────────┐
-//   │  [Folder…]  [Reload]                    [Clear output]  [Run]    │
-//   ├───────────┬──────────────────────────────┬───────────────────────┤
-//   │ Script    │  Script editor (TextView)    │  Output (TextView,    │
-//   │ library   │                              │   read-only,          │
-//   │ (ListBox) │                              │   monospace)          │
-//   └───────────┴──────────────────────────────┴───────────────────────┘
+//   │  📁 …/tests/scripts/ [Change…] [Reload]  │ ▶ Run ☐ Step [delay] │
+//   ├─────────────────────┬─────────────────────────────────────────────┤
+//   │ ▾ All Scripts       │  ┌───────────┬───────────┐                  │
+//   │   ☐ 01_node_…       │  │ Script    │ Output    │                  │
+//   │   ☑ 02_node_…       │  ├───────────┴───────────┴──────────────────┤
+//   │ ▸ Tutorials         │  │  (editor / output buffer)                │
+//   │ ▸ Diagnostics       │  │                                          │
+//   └─────────────────────┴──────────────────────────────────────────────┘
 //
-// Library: lists *.curvzs files in the current folder. Click a row,
-// the script body loads into the editor. Edit freely in the editor;
-// Run dispatches the editor's current body.
+// Library: subfolders under the workspace become collapsible groups
+// (Gtk::Expander). Loose *.curvzs at the workspace root sit in an
+// "All Scripts" group. Each script row carries a checkbox + filename.
 //
-// Output: streams the listener's output through the OutputCallback.
-// Cleared on each Run start.
+//   - Checkbox  = "include this script in the next Run". Multiple
+//                 checks = run-in-sequence.
+//   - Row body  = "load this script into the editor" (one at a time).
 //
-// Theme integration: this is a regular Gtk::ApplicationWindow, so
-// MainWindow::apply_motif_to_window() walks every top-level via
-// gtk_window_get_toplevels() and stamps the curvz-light CSS class
-// automatically. The Scripter window picks it up like every other
-// surface.
+// Run-set semantics:
+//   - 1+ checked → those scripts run in order. The editor's current
+//                  contents are NOT used.
+//   - 0 checked  → the editor's current contents run (the historical
+//                  shape: "edit freely, run what's in front of you").
+//
+// Editor + Output sit in a Gtk::Notebook (tabs: Script, Output). Run
+// auto-switches to Output. A Save button writes the editor back to
+// the loaded file; the editor tab carries a `*` marker when dirty,
+// and clicking a different library row while dirty prompts to discard.
+//
+// Theme integration: Curvz's MainWindow::apply_motif_to_window() walks
+// every top-level GTK window via gtk_window_get_toplevels() and stamps
+// the curvz-light CSS class, so this window picks up Dark/Light
+// automatically.
 //
 // Lifted from scriptproto/ during s186 m2. Gated by CURVZ_DIAGNOSTIC.
 
@@ -36,13 +49,22 @@
 #include <gtkmm/applicationwindow.h>
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
+#include <gtkmm/checkbutton.h>
+#include <gtkmm/eventcontrollerkey.h>
+#include <gtkmm/expander.h>
+#include <gtkmm/image.h>
 #include <gtkmm/label.h>
 #include <gtkmm/listbox.h>
+#include <gtkmm/notebook.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/spinbutton.h>
+#include <gtkmm/textbuffer.h>
+#include <gtkmm/texttag.h>
 #include <gtkmm/textview.h>
 
+#include <chrono>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -61,48 +83,143 @@ public:
     ScriptListener* listener() { return m_listener.get(); }
 
 private:
+    // ── Lifecycle ───────────────────────────────────────────────────────
     void build_ui();
     void rescan_library();
+    void on_folder_pick();
+
+    // ── Library / editor ────────────────────────────────────────────────
+    // s193 m1: a row in the library is one of these. Created on
+    // rescan_library() and pinned for the lifetime of the scan; the
+    // managed widgets get re-parented by GTK on the next rescan.
+    struct ScriptRow {
+        std::filesystem::path  path;
+        Gtk::CheckButton*      check  = nullptr;  // managed
+        Gtk::Button*           label  = nullptr;  // managed (flat-styled)
+    };
+
     void load_script_into_editor(const std::filesystem::path& p);
+    void save_editor_to_loaded_file();
+    void try_load_with_dirty_check(const std::filesystem::path& p);
+    void mark_dirty(bool dirty);
+    void update_editor_tab_title();
+
+    // s193 m1 — step-feedback. While parked waiting for spacebar in
+    // step mode, the editor highlights the line that the next press
+    // will dispatch. Pass -1 to clear the highlight. The editor also
+    // scrolls so the highlighted line is visible.
+    void highlight_step_line(int line_index);
+
+    // ── Run plumbing ────────────────────────────────────────────────────
     void on_run();
+    void on_run_or_stop();              // s193 m1: dual-mode Run/Stop
+    void abort_run();                   // s193 m1: clean abort path
+    void update_run_button_label();     // s193 m1: "Run" vs "Stop"
+    void run_next_in_queue();           // s193 m1: pump the multi-script queue
+    void start_single_script(const std::string& body,
+                              const std::string& display_name);
+
+    // ── Output helpers ──────────────────────────────────────────────────
     void on_clear_output();
     void on_copy_output();
-    void on_folder_pick();
     void append_output(const std::string& s);
+    void show_output_tab();              // s193 m1: auto-switch on Run
 
+    // ── State ──────────────────────────────────────────────────────────
     std::filesystem::path m_folder;
 
-    Gtk::Button m_btn_folder      { "Folder…" };
-    Gtk::Button m_btn_reload      { "Reload" };
-    Gtk::Button m_btn_clear       { "Clear output" };
-    Gtk::Button m_btn_copy        { "Copy output" };
-    Gtk::Button m_btn_run         { "Run" };
-    Gtk::Label  m_lbl_folder;
+    // s193 m1 redesign — top toolbar is playback-only. Output buffer
+    // actions (Clear, Copy) live in the Output tab's content header;
+    // Save lives in the Script tab's content header; Reload lives in
+    // the sidebar header; Change-folder lives in the statusbar at the
+    // window bottom. Every action sits next to its target.
+
+    // Playback cluster.
+    Gtk::Button       m_btn_run         { "Run" };
 
     // s187 m4 — pacing knob. Step delay (ms) between script lines.
-    // 0 = run as fast as the scheduler allows (signal_timeout(0) chain,
-    // which still yields to the main loop between lines so signals
-    // dispatch). 5+ = visible pacing for "watch Curvz drive itself"
-    // demos. 1000+ = slow enough to read each line as it dispatches.
-    // Range 0–5000ms. Default 5ms (matches the pre-m4 hard-coded value
-    // so existing scripts behave identically out of the box).
-    Gtk::Label       m_lbl_delay  { "Step delay (ms):" };
-    Gtk::SpinButton  m_spn_delay;
+    Gtk::Label        m_lbl_delay       { "Step delay (ms):" };
+    Gtk::SpinButton   m_spn_delay;
 
-    Gtk::ListBox          m_library;
-    Gtk::ScrolledWindow   m_library_scroll;
+    // s193 m1 — step-through playback. When checked, Run pauses
+    // between script lines and advances on spacebar.
+    Gtk::CheckButton  m_btn_step        { "Step" };
 
-    Gtk::TextView         m_editor;
-    Gtk::ScrolledWindow   m_editor_scroll;
+    // s193 m2 — auto-lower. When checked + timed playback, Run lowers
+    // the Scripter window behind MainWindow at start and presents it
+    // back at end. Lets the user keep eyes on Curvz during demos
+    // without manually managing window stacking. Ignored in step mode
+    // (where the Scripter needs focus to receive spacebar).
+    Gtk::CheckButton  m_btn_lower       { "Auto-lower" };
 
-    Gtk::TextView         m_output;
-    Gtk::ScrolledWindow   m_output_scroll;
+    // Contextual action buttons — each lives next to its target.
+    Gtk::Button       m_btn_save;        // Script tab content header
+    Gtk::Button       m_btn_clear;       // Output tab content header
+    Gtk::Button       m_btn_copy;        // Output tab content header
+
+    // s193 m1 — statusbar at bottom: whole strip is the change-folder
+    // affordance. Button with a Box child (icon + path label) and the
+    // "flat" CSS class so the strip reads like a status row, not a
+    // button, while still being fully clickable.
+    Gtk::Button       m_btn_statusbar;
+    Gtk::Label        m_lbl_folder;
+
+    // s193 m1 — sidebar: collapsible category groups + script rows.
+    Gtk::Box          m_sidebar         { Gtk::Orientation::VERTICAL, 0 };
+    Gtk::ScrolledWindow m_sidebar_scroll;
+    std::vector<Gtk::Expander*>          m_category_expanders;   // managed
+    std::vector<std::unique_ptr<ScriptRow>> m_rows;
+
+    // s193 m1 — center notebook with two tabs.
+    Gtk::Notebook     m_notebook;
+    Gtk::TextView     m_editor;
+    Gtk::ScrolledWindow m_editor_scroll;
+    Gtk::TextView     m_output;
+    Gtk::ScrolledWindow m_output_scroll;
+    Gtk::Label        m_editor_tab_label { "Script" };
+    Gtk::Label        m_output_tab_label { "Output" };
+
+    // s193 m1 — Script tab content header has a dim label showing the
+    // current state (loaded filename, dirty marker, step-mode hint).
+    // The Save button (m_btn_save above) hides when nothing's dirty.
+    Gtk::Label        m_lbl_script_state;
+
+    // s193 m1 — editor state: what file is loaded, is it dirty?
+    // Loaded-file path is empty when nothing's been loaded (scratchpad).
+    std::filesystem::path m_loaded_path;
+    bool m_dirty = false;
+    sigc::connection m_editor_changed_conn;
+
+    // s193 m1 — text tag for step-mode line highlight. Created once
+    // in build_ui; applied/removed by highlight_step_line.
+    Glib::RefPtr<Gtk::TextTag> m_step_tag;
 
     std::unique_ptr<ScriptListener> m_listener;
 
-    std::vector<std::filesystem::path> m_scripts;
-
     bool m_running = false;
+    bool m_aborted = false;             // s193 m1: set by Stop click; the
+                                        //   step lambda checks this and bails
+    bool m_run_lowered = false;         // s193 m2: this Run called lower();
+                                        //   end-of-run / abort calls present()
+
+    // s193 m1 — run queue. on_run snapshots the checked rows into
+    // this list (or fills it with one entry for editor-fallback) and
+    // run_next_in_queue pumps them in order. Each entry carries the
+    // body to run and the display name to show in the per-script
+    // banner.
+    struct QueueEntry {
+        std::string body;
+        std::string display_name;
+    };
+    std::vector<QueueEntry> m_run_queue;
+    size_t                  m_run_queue_idx = 0;
+    std::chrono::steady_clock::time_point m_script_start;
+
+    // s193 m1 — step-through advance signal. The Run loop installs
+    // a step lambda that, in step mode, parks itself waiting on this
+    // function being called. The key controller's spacebar handler
+    // calls it; calling it when no step is pending is a no-op.
+    std::function<void()> m_step_advance;
 };
 
 } // namespace curvz::scripting

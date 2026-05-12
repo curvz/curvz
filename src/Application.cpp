@@ -365,6 +365,7 @@ void Application::on_activate() {
   auto *win = new MainWindow(*this);
   add_window(*win);
   win->present();
+  m_main_window = win;  // s193 m2 — held for Scripter's Auto-lower toggle
 
 #ifdef CURVZ_DIAGNOSTIC
   // s186 m2: Scripter window — the developer/QA surface for the

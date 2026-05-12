@@ -7,9 +7,17 @@ namespace curvz::scripting { class ScripterWindow; }
 
 namespace Curvz {
 
+class MainWindow;
+
 class Application : public Gtk::Application {
 public:
     static Glib::RefPtr<Application> create();
+
+    // s193 m2 — access the main window for window-stacking control
+    // (the Scripter's Auto-lower toggle raises MainWindow above
+    // itself at Run start). Held since on_activate constructed it;
+    // nullptr only if startup hasn't completed.
+    MainWindow* main_window() { return m_main_window; }
 
 #ifdef CURVZ_DIAGNOSTIC
     // s190 m2 — access the diagnostic Scripter window. Built once at
@@ -29,8 +37,10 @@ protected:
     void on_startup() override;
     void on_activate() override;
 
-#ifdef CURVZ_DIAGNOSTIC
 private:
+    MainWindow* m_main_window = nullptr;
+
+#ifdef CURVZ_DIAGNOSTIC
     curvz::scripting::ScripterWindow* m_scripter = nullptr;
 #endif
 };

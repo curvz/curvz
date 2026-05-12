@@ -79,6 +79,31 @@ public:
     // Idle-callback friendly.
     bool pump_next();
 
+    // s193 m1 — peek the cursor for editor-highlight feedback during
+    // step mode. Returns the 0-based index of the line that the NEXT
+    // pump_next() will dispatch (or lines_count() if the script is
+    // exhausted). The Scripter uses this to highlight the about-to-
+    // run line in the editor when parked waiting for spacebar.
+    size_t next_line_index() const { return m_cursor; }
+    size_t lines_count()     const { return m_lines.size(); }
+
+    // s193 m1 — comment-skip in step mode. Returns the index of the
+    // next "runnable" line at or after `from` (a line that produces
+    // visible output or state change: verbs, get, assert, sleep,
+    // quit, list, subscribe, or `#[sub]` markers). Lines that would
+    // be silently skipped — empty lines, plain `#` comments, unknown
+    // `#[tag]` markers, `#[sub]` with empty body — are passed over.
+    // Returns lines_count() if no runnable line remains. Used by the
+    // Scripter's step lambda to jump past comment headers so each
+    // spacebar press lands on a line that DOES something.
+    size_t next_runnable_index_from(size_t from) const;
+
+    // s193 m1 — same classification, single line. Returns true if
+    // pump_next on this line would do something visible (output,
+    // dispatch, caption). Exposed for tests; the Scripter uses
+    // next_runnable_index_from() instead.
+    static bool is_runnable_line(const std::string& raw);
+
     int exit_status() const;
 
     struct Stats {
