@@ -522,6 +522,162 @@ Canvas::Canvas() {
         return;
       }
     }
+
+    // s191 m5 — Guide right-click: "Set position…" dialog.
+    //
+    // The hover hit-test (on_motion) keeps m_guide_hovered current; we
+    // re-use it here. If the right-click landed within hover range of
+    // a guide, route to the guide dialog before the object hit-test
+    // runs — guides sit visually above the object layer and the user's
+    // intent is to address the guide they can see under the cursor,
+    // not the object behind it.
+    //
+    // Field shape follows the guide's geometry: each kind exposes
+    // exactly the degrees of freedom it has. A horizontal guide has
+    // one position (Y); a vertical has one (X); an angled guide has
+    // an anchor point plus angle. No "set X on a horizontal" trap.
+    //
+    // Write path is the canonical one: capture before-state, mutate,
+    // push GuideMoveCommand, emit signal_doc_changed. Matches the
+    // drag's path at on_select_end in Canvas_input.cpp — same undo
+    // command, same emit, same coalescing semantics. The inspector's
+    // direct write path (no command) is a separate concern; this new
+    // entry point lands on the undo stack from day one.
+    if (m_guide_hovered) {
+      auto *win = dynamic_cast<Gtk::Window *>(get_root());
+      if (!win) return;  // no toplevel, can't show modal
+
+      SceneNode *g = m_guide_hovered;
+
+      // s191 m5 followup — refuse the dialog when the guide (or its
+      // layer) is locked. The drag path at on_select_update already
+      // swallows drag on a locked guide; the inspector spinners go
+      // insensitive via edit_on = !layer_locked && !g->locked. Without
+      // this check the right-click dialog would be the one edit path
+      // that ignores locked state — silently inconsistent. An alert
+      // is the right surface: silent no-op would have the user
+      // re-clicking thinking the right-click didn't register.
+      bool layer_locked = false;
+      if (m_doc) {
+        const SceneNode *gl = m_doc->guide_layer();
+        if (gl) layer_locked = gl->locked;
+      }
+      if (g->locked || layer_locked) {
+        curvz::utils::show_alert(
+            *win, "Guide locked",
+            layer_locked
+                ? "The guide layer is locked. Unlock the layer to edit "
+                  "guide positions."
+                : "This guide is locked. Unlock it from the inspector "
+                  "to edit its position.");
+        return;
+      }
+
+      const bool is_h = g->guide_is_horizontal();
+      const bool is_v = g->guide_is_vertical();
+      // For undo capture — read once before showing the dialog so the
+      // before-state is stable even if some other code path touches
+      // the guide while the dialog is open (defensive; user input
+      // shouldn't normally do this since the dialog is modal).
+      const double bx = g->guide_x;
+      const double by = g->guide_y;
+      const double ba = g->guide_angle;
+      const std::string giid = g->internal_id;
+
+      std::vector<curvz::utils::FormField> fields;
+      auto make_num = [](double dflt) {
+        curvz::utils::NumberField nf;
+        nf.default_value = dflt;
+        // Wide range — guides can live anywhere on the canvas
+        // including off-edge. Six decimals matches the s180 m1
+        // inspector guide precision contract.
+        nf.min      = -1e7;
+        nf.max      =  1e7;
+        nf.step     = 1.0;
+        nf.decimals = 6;
+        return nf;
+      };
+      if (is_h) {
+        fields.push_back({"y", "Y",
+                          make_num(by)});
+      } else if (is_v) {
+        fields.push_back({"x", "X",
+                          make_num(bx)});
+      } else {
+        // Angled — anchor (x,y) plus angle.
+        fields.push_back({"x",     "X",     make_num(bx)});
+        fields.push_back({"y",     "Y",     make_num(by)});
+        auto na = make_num(ba);
+        na.min = -360.0;
+        na.max =  360.0;
+        fields.push_back({"angle", "Angle", na});
+      }
+
+      std::string title = is_h ? "Set horizontal guide position" :
+                           is_v ? "Set vertical guide position"   :
+                                  "Set guide position and angle";
+
+      // Capture by value into the callback so the lambda doesn't
+      // outlive its parts. `this` is needed for m_history and
+      // m_sig_doc_changed. giid resolves the guide via find_by_iid
+      // inside the GuideMoveCommand — safe even if the guide were
+      // somehow deleted between dialog show and OK.
+      curvz::utils::show_form(
+          *win, title, /*detail=*/"",
+          fields, {"Cancel", "OK"},
+          /*default_button=*/1, /*cancel_button=*/0,
+          [this, giid, bx, by, ba, is_h, is_v](
+              int button,
+              const std::map<std::string, curvz::utils::FormFieldValue>&
+                  values) {
+            if (button != 1) return;  // Cancel or close
+
+            // Resolve guide fresh — the user may have done something
+            // in the gap. find_by_iid returns nullptr cleanly if gone.
+            auto *proj = project();
+            if (!proj) return;
+            SceneNode *g = curvz::utils::find_by_iid(*proj, giid);
+            if (!g || !g->is_guide()) return;
+
+            double nx = bx, ny = by, na = ba;
+            if (is_h) {
+              auto it = values.find("y");
+              if (it != values.end()) ny = it->second.num();
+            } else if (is_v) {
+              auto it = values.find("x");
+              if (it != values.end()) nx = it->second.num();
+            } else {
+              auto ix = values.find("x");
+              auto iy = values.find("y");
+              auto ia = values.find("angle");
+              if (ix != values.end()) nx = ix->second.num();
+              if (iy != values.end()) ny = iy->second.num();
+              if (ia != values.end()) na = ia->second.num();
+            }
+
+            // No-op guard. Same epsilon as the drag's push path.
+            if (std::abs(nx - bx) < 0.001 &&
+                std::abs(ny - by) < 0.001 &&
+                std::abs(na - ba) < 0.001) {
+              return;
+            }
+
+            g->guide_x     = nx;
+            g->guide_y     = ny;
+            g->guide_angle = na;
+
+            if (m_history) {
+              m_history->push(std::make_unique<GuideMoveCommand>(
+                  project(), giid,
+                  bx, by, ba,
+                  nx, ny, na));
+            }
+            m_sig_doc_changed.emit();
+            queue_draw();
+          });
+      return;
+    }
+
     double dx, dy;
     screen_to_doc(x, y, dx, dy);
     SceneNode *hit = hit_test(dx, dy);

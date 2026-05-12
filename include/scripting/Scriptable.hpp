@@ -47,6 +47,27 @@ public:
 
     const std::string& scriptable_name() const { return m_name; }
 
+    // s191 m7 — early-unregister escape hatch for inspector rebuild.
+    //
+    // The substrate registry refuses two live Scriptables under the
+    // same name. The inspector's rebuild pattern destroys and
+    // reconstructs the entire section's widget tree; GTK4 destroys
+    // widgets at idle priority, so under a self-rebuild click handler
+    // the new widgets construct (and try to register) before the old
+    // ones finish destroying. Result: registry collision, crash.
+    //
+    // force_unregister() removes our entry from the registry *now*,
+    // synchronously, before the widget's actual destruction. The
+    // dtor's unregister is idempotent (registry::erase on missing
+    // name is a no-op), so calling this twice — or letting the dtor
+    // run after a force-unregister — is safe.
+    //
+    // Called from PropertiesPanel::do_clear via a subtree walk before
+    // m_inner.remove(*c). That's the structural fix for the s191 m6
+    // registry-collision crash — replaces the brittle signal_timeout
+    // workaround.
+    void force_unregister();
+
     // Write path. Returns a ScriptValue holding any result (Null for
     // pure side-effect verbs). args are positional, lex'd from the
     // script line.

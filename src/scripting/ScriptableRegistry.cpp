@@ -25,6 +25,14 @@ Scriptable::~Scriptable() {
     ScriptableRegistry::instance().unregister_object(m_name);
 }
 
+// s191 m7 — synchronous unregister for the subtree-clear path.
+// See Scriptable.hpp's comment block for the lifecycle rationale.
+// Idempotent: erase-on-missing is a no-op, so the dtor's
+// unregister_object after force_unregister is safe.
+void Scriptable::force_unregister() {
+    ScriptableRegistry::instance().unregister_object(m_name);
+}
+
 void Scriptable::emit(std::string_view event, const ScriptValue& payload) {
     ScriptableRegistry::instance().emit(m_name,
                                         std::string(event),

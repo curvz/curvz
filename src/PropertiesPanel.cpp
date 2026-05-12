@@ -456,6 +456,36 @@ void PropertiesPanel::do_clear() {
   m_margin_sp_rg = nullptr;
   m_margin_sp_cgap = nullptr;
   m_margin_sp_rgap = nullptr;
+
+  // s191 m7 — force-unregister every Scriptable widget in the subtree
+  // BEFORE GTK's remove/destroy work runs. GTK4 destroys widgets at
+  // idle priority; under a self-rebuild click handler (lock toggle,
+  // delete buttons) the rebuild constructs new substrate widgets and
+  // tries to register them while the old ones are still alive in the
+  // about-to-be-destroyed subtree. Registry refuses the duplicate
+  // name, throws, app crashes. Replaces the s191 m6 signal_timeout(1ms)
+  // workaround, which was a timing patch on a lifecycle problem.
+  //
+  // The walk is recursive: Scriptable widgets can contain non-Scriptable
+  // children which can contain more Scriptable widgets. Each Scriptable
+  // we encounter gets unregister'd synchronously here; its dtor's
+  // unregister is idempotent so the eventual GTK-driven destruction
+  // is safe.
+  std::function<void(Gtk::Widget*)> walk = [&walk](Gtk::Widget* w) {
+    if (!w) return;
+    if (auto* s = dynamic_cast<curvz::scripting::Scriptable*>(w)) {
+      s->force_unregister();
+    }
+    for (Gtk::Widget* c = w->get_first_child(); c;
+         c = c->get_next_sibling()) {
+      walk(c);
+    }
+  };
+  for (Gtk::Widget* c = m_inner.get_first_child(); c;
+       c = c->get_next_sibling()) {
+    walk(c);
+  }
+
   // Remove all children
   while (auto *c = m_inner.get_first_child())
     m_inner.remove(*c);
@@ -2277,6 +2307,12 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
           return;
         g->locked = !g->locked;
         emit_prop_changed();
+        // s191 m7 — back to signal_idle. The s191 m6 signal_timeout(1ms)
+        // was a timing patch on the registry-collision crash; m7 fixes
+        // the underlying lifecycle issue (do_clear now force-unregisters
+        // every Scriptable in the subtree before m_inner.remove runs).
+        // With the structural fix in place, the original signal_idle
+        // pattern is correct — no timing dependency.
         Glib::signal_idle().connect_once([this]() {
           if (m_project && m_canvas)
             show_document_props(m_canvas);
@@ -2306,6 +2342,7 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
         }
         emit_prop_changed();
         m_sig_guide_layer_changed.emit();
+        // s191 m7 — back to signal_idle (structural fix in do_clear).
         Glib::signal_idle().connect_once([this]() {
           if (m_project && m_canvas)
             show_document_props(m_canvas);
@@ -2467,6 +2504,7 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
       m_selected_guide = nullptr;
       emit_prop_changed();
       m_sig_guide_layer_changed.emit();
+      // s191 m7 — back to signal_idle (structural fix in do_clear).
       Glib::signal_idle().connect_once([this]() {
         if (m_project && m_canvas)
           show_document_props(m_canvas);

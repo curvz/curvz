@@ -3610,9 +3610,17 @@ void Canvas::on_motion(double x, double y) {
 
   // ── Guide hover hit-test — runs for all tools ─────────────────────────
   // Test within 5px screen tolerance. Update m_guide_hovered and cursor.
-  // Only active when the guide layer is visually above (lower index = on top)
-  // the current active layer — if guides are below other layers they are
-  // obscured and should not grab the cursor.
+  //
+  // Gates: guide layer must exist, be visible, and be unlocked. That's
+  // the full gate. The earlier "guide must be visually on top of active
+  // layer" predicate was wrong — guides aren't visually occluded by
+  // other layers in any meaningful sense (they're canvas-z furniture,
+  // not document-z content), and the active-layer index isn't a
+  // visibility concern. Pre-s191 m5 the gate blocked drag whenever the
+  // active layer was above the guide layer in z-order, which made
+  // guides un-draggable unless the user had explicitly switched to the
+  // Guide layer first — surprising and inconsistent with how every
+  // other vector editor treats guides.
   //
   // S66 — Phase 3: skip entirely for Eyedropper. Eyedropper doesn't
   // interact with guides, and the guide-hovered path early-returns out
@@ -3624,19 +3632,7 @@ void Canvas::on_motion(double x, double y) {
     SceneNode *prev_hovered = m_guide_hovered;
     m_guide_hovered = nullptr;
 
-    // Find guide layer index (lower index = drawn on top)
-    int guide_idx = -1;
-    for (int i = 0; i < (int)m_doc->layers.size(); ++i)
-      if (m_doc->layers[i]->is_guide_layer()) {
-        guide_idx = i;
-        break;
-      }
-
-    // Only hover-test when guide layer is on top of (index ≤) active layer
-    bool guide_on_top =
-        (guide_idx >= 0 && guide_idx <= m_doc->active_layer_index);
-
-    if (gl && gl->visible && !gl->locked && guide_on_top) {
+    if (gl && gl->visible && !gl->locked) {
       static constexpr double GUIDE_HIT_PX = 5.0;
       const double ox = doc_origin_x();
       const double oy = doc_origin_y();
