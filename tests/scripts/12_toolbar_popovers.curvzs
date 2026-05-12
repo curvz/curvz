@@ -1,0 +1,92 @@
+# 12_toolbar_popovers — exercise the s195 m5 toolbar-popover substrate.
+#
+# Confirms the zoom popover's preset buttons and the snap-options
+# popover's six category checkboxes are addressable via the script
+# DSL. Pre-s195 these were raw Gtk widgets with set_name'd abbrevs
+# (visible to widget_names.db, invisible to the script registry);
+# s195 m5 migrated them to curvz::widgets::* substrate so the
+# abbrevs resolve in the registry too.
+#
+# The tested abbrevs:
+#
+#   Zoom popover  pop_tb_zom_p25 / p50 / p100 / p200 / p400
+#                 pop_tb_zom_fit
+#                 pop_tb_zom_apl
+#
+#   Snap popover  pop_tb_snap_g  (guides)
+#                 pop_tb_snap_gr (grid)
+#                 pop_tb_snap_m  (margins)
+#                 pop_tb_snap_n  (nodes)
+#                 pop_tb_snap_e  (edges)
+#                 pop_tb_snap_c  (centers)
+#
+# Test protocol:
+#   1. Open the Scripter window.
+#   2. Load this script.
+#   3. Run. Every line should PASS.
+#
+# Side effects: the script flips snap categories during the run and
+# restores them at the end. If you have non-default snap settings
+# they may get clobbered (the script restores from a hard-coded
+# state, not from a captured baseline).
+
+#[sub] Snap-to-guides toggles.
+
+pop_tb_snap_g set true
+assert pop_tb_snap_g active == true
+pop_tb_snap_g set false
+assert pop_tb_snap_g active == false
+
+#[sub] Snap-to-grid toggles.
+
+pop_tb_snap_gr set true
+assert pop_tb_snap_gr active == true
+pop_tb_snap_gr set false
+assert pop_tb_snap_gr active == false
+
+#[sub] Snap-to-margins toggles.
+
+pop_tb_snap_m set true
+assert pop_tb_snap_m active == true
+pop_tb_snap_m set false
+assert pop_tb_snap_m active == false
+
+#[sub] Snap-to-nodes toggles.
+
+pop_tb_snap_n set true
+assert pop_tb_snap_n active == true
+pop_tb_snap_n set false
+assert pop_tb_snap_n active == false
+
+#[sub] Snap-to-edges toggles.
+
+pop_tb_snap_e set true
+assert pop_tb_snap_e active == true
+pop_tb_snap_e set false
+assert pop_tb_snap_e active == false
+
+#[sub] Snap-to-centers toggles.
+
+pop_tb_snap_c set true
+assert pop_tb_snap_c active == true
+pop_tb_snap_c set false
+assert pop_tb_snap_c active == false
+
+#[sub] Zoom presets — labels read back from the registry.
+
+assert pop_tb_zom_p25 label == "25%"
+assert pop_tb_zom_p50 label == "50%"
+assert pop_tb_zom_p100 label == "100%"
+assert pop_tb_zom_p200 label == "200%"
+assert pop_tb_zom_p400 label == "400%"
+
+#[sub] Fit and Apply labels.
+
+assert pop_tb_zom_fit label == "Fit"
+assert pop_tb_zom_apl label == "Apply"
+
+#[sub] Click the 100% preset (sets zoom_adj, doesn't apply yet).
+
+pop_tb_zom_p100 click
+
+#[sub] Done. 13 new substrate widgets, all addressable.

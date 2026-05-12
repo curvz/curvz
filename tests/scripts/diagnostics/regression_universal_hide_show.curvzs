@@ -1,4 +1,12 @@
-# 11_universal_hide_show — s191 m4 universal hide/show verbs.
+# regression_universal_hide_show — s191 m4 universal hide/show verbs.
+#
+# Lives in tests/scripts/diagnostics/ as a regression script: it
+# asserts a structural property of the substrate-widget hierarchy
+# (every curvz::widgets::* leaf inherits hide/show/visible from the
+# base ScriptableWidget) rather than driving a visible demo. Moved
+# out of the top-level test slot in s195 because the universal-verb
+# work is closed and the slot was better used for a watch-mode demo
+# (see 11_feature_tour_demo.curvzs).
 #
 # Every curvz::widgets::* substrate widget gains `hide` / `show` /
 # `visible` for free — the base ScriptableWidget intercepts them

@@ -88,18 +88,43 @@ private:
     void rescan_library();
     void on_folder_pick();
 
+    // s195 m2 — initial sidebar width tuned to the longest filename in
+    // the workspace. Pre-realization Pango isn't available, so we use a
+    // per-char heuristic against the longest filename across loose
+    // scripts and one level of subfolder, plus fixed overhead for the
+    // checkbox + margins + scrollbar. Result clamped to a sensible
+    // range so a workspace with only short filenames doesn't shrink the
+    // sidebar absurdly, and one with monster filenames doesn't grow it
+    // beyond half the window.
+    int compute_initial_sidebar_width() const;
+
     // ── Library / editor ────────────────────────────────────────────────
     // s193 m1: a row in the library is one of these. Created on
     // rescan_library() and pinned for the lifetime of the scan; the
     // managed widgets get re-parented by GTK on the next rescan.
+    // s195 m4: rows gain a flat trash button at the right end.
     struct ScriptRow {
         std::filesystem::path  path;
         Gtk::CheckButton*      check  = nullptr;  // managed
         Gtk::Button*           label  = nullptr;  // managed (flat-styled)
+        Gtk::Button*           del    = nullptr;  // managed (flat-styled, s195 m4)
     };
 
     void load_script_into_editor(const std::filesystem::path& p);
     void save_editor_to_loaded_file();
+    // s195 m1 — Save As… for the scratchpad (and for branching off a
+    // loaded file under a new name). Opens a FileDialog rooted at the
+    // workspace, writes the editor contents, adopts the new path as
+    // m_loaded_path, and triggers a library rescan so the new file
+    // shows up in the sidebar immediately.
+    void on_save_as();
+    // s195 m4 — Delete from the sidebar row. Confirms with an
+    // AlertDialog, sends the file to the system trash (Gio::File::trash
+    // — recoverable, matches what Nautilus does), rescans the library,
+    // and if the deleted file was the currently loaded one, clears
+    // m_loaded_path and marks the editor dirty (the text is still in
+    // memory but no longer has a backing file).
+    void confirm_and_delete(const std::filesystem::path& p);
     void try_load_with_dirty_check(const std::filesystem::path& p);
     void mark_dirty(bool dirty);
     void update_editor_tab_title();
@@ -154,6 +179,7 @@ private:
 
     // Contextual action buttons — each lives next to its target.
     Gtk::Button       m_btn_save;        // Script tab content header
+    Gtk::Button       m_btn_save_as;     // Script tab content header (s195 m1)
     Gtk::Button       m_btn_clear;       // Output tab content header
     Gtk::Button       m_btn_copy;        // Output tab content header
 

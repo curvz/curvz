@@ -1,0 +1,122 @@
+# 11_feature_tour_demo — auto-lower watch-mode showcase.
+#
+# Replaces the s191 universal-hide/show test in this slot. That test
+# moved to tests/scripts/diagnostics/regression_universal_hide_show.curvzs
+# where it lives as a structural regression. The "11" slot is now a
+# pure watch-mode demo: turn on Auto-lower, crank Step delay to
+# 300-500ms, hit Run, set Curvz down, and watch the app drive itself
+# through a coordinated tour of its visible surface.
+#
+# What's on display:
+#
+#   1. Toolbar tool walk — five tools light up in sequence, the
+#      left-side affordance changes with each, the radio invariant
+#      holds throughout.
+#   2. Grid on / style toggle / off — the canvas redraws every time
+#      the grid lights up (Lines/Dots) and again when it disappears.
+#      Most striking visual change in the whole tour.
+#   3. Units walk — picks px, in, mm, pt in sequence. Every numeric
+#      label around the canvas reformats. Cumulative effect: the
+#      canvas is clearly reading the script's commands.
+#   4. Margins on / off — printable-area box appears and vanishes.
+#      Second-most-striking redraw after grid.
+#   5. End on a clean state: Select tool active, grid + margins off,
+#      px units. The next run lands in the same starting state.
+#
+# Captions ride along through `#[sub]` lines. With Step delay set
+# (Scripter top toolbar) each caption sits visible on MainWindow's
+# caption bar for 2x the delay before the next verb dispatches —
+# reading speed at 300-500ms.
+#
+# Demo protocol:
+#   1. Open the Scripter window.
+#   2. Set Step delay to ~400ms in the Scripter top toolbar.
+#   3. Check Auto-lower (also in the Scripter top toolbar).
+#   4. Click this script's row in the sidebar.
+#   5. Hit Run. The Scripter drops behind MainWindow; the tour plays.
+#
+# As a side effect, this script is a smoke test for the toolbar's
+# radio invariant, the units dropdown's four options, and the
+# Document-scope grid/margins enable switches. Every line should
+# PASS at the end of the run.
+
+#[sub] Welcome. A tour of Curvz, driven by script.
+
+# Start from a known state. Select tool, no special view options.
+tb_sel click
+assert tb_sel active == true
+
+#[sub] Five tools, clicking themselves on the toolbar.
+
+tb_nod click
+assert tb_nod active == true
+assert tb_sel active == false
+
+tb_pen click
+assert tb_pen active == true
+assert tb_nod active == false
+
+tb_rec click
+assert tb_rec active == true
+assert tb_pen active == false
+
+tb_ova click
+assert tb_ova active == true
+assert tb_rec active == false
+
+tb_lin click
+assert tb_lin active == true
+assert tb_ova active == false
+
+#[sub] Back to Select. Now watch the canvas itself.
+
+tb_sel click
+assert tb_sel active == true
+assert tb_lin active == false
+
+#[sub] Turn on the grid.
+
+ins_grd_en set true
+assert ins_grd_en active == true
+
+#[sub] Switch grid style: lines, dots, lines again.
+
+ins_grd_st pick "Dots"
+assert ins_grd_st text == "Dots"
+
+ins_grd_st pick "Lines"
+assert ins_grd_st text == "Lines"
+
+#[sub] Walk the units: pixels, inches, millimetres, points.
+
+ins_can_un pick "px"
+assert ins_can_un text == "px"
+
+ins_can_un pick "in"
+assert ins_can_un text == "in"
+
+ins_can_un pick "mm"
+assert ins_can_un text == "mm"
+
+ins_can_un pick "pt"
+assert ins_can_un text == "pt"
+
+#[sub] Back to pixels.
+
+ins_can_un pick "px"
+assert ins_can_un text == "px"
+
+#[sub] Grid off. Margins on.
+
+ins_grd_en set false
+assert ins_grd_en active == false
+
+ins_mrg_en set true
+assert ins_mrg_en active == true
+
+#[sub] And margins off again.
+
+ins_mrg_en set false
+assert ins_mrg_en active == false
+
+#[sub] Done. Clean state — Select tool, no grid, no margins, px.

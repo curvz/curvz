@@ -6,6 +6,8 @@
 // s188 m1: every tool button now a curvz::widgets::ToggleButton —
 // the funnel constructs them. Unconditional include (was diagnostic-
 // only in s186/s187 when only the Node tool used the wrapper).
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/CheckButton.hpp"
 #include "curvz/widgets/ToggleButton.hpp"
 #include <algorithm>
 #include <cairomm/context.h>
@@ -1018,6 +1020,16 @@ void Toolbar::Impl::build() {
 
     LOG_DEBUG("Toolbar created with {} tools", buttons.size());
     select_tool(ActiveTool::Selection);  // apply :checked CSS on startup
+
+    // s195 m6 — force eager density popover construction so the
+    // pop_tb_dn_* substrate abbrevs resolve at launch instead of
+    // only after the user has right-clicked the toolbar background.
+    // Lazy widget construction breaks the substrate contract — the
+    // registry can't resolve an abbrev for a widget that hasn't been
+    // built yet. The build_density_popover() body has its own
+    // density_pop_built idempotency guard, so the original lazy
+    // trigger path still no-ops correctly on subsequent clicks.
+    build_density_popover();
 }
 
 // ── Impl::add_tool_button / make_tool_button (s188 m1) ───────────────────
@@ -1195,10 +1207,18 @@ void Toolbar::Impl::build_density_popover() {
     lbl->set_margin_bottom(4);
     outer->append(*lbl);
 
-    auto* group_master = Gtk::make_managed<Gtk::CheckButton>("Comfortable");
-    auto* opt_std      = Gtk::make_managed<Gtk::CheckButton>("Standard");
-    auto* opt_compact  = Gtk::make_managed<Gtk::CheckButton>("Compact");
-    auto* opt_tight    = Gtk::make_managed<Gtk::CheckButton>("Tight");
+    auto* group_master = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_dn_com", "Comfortable");
+    curvz::utils::set_name(group_master, "pop_tb_dn_com",
+                           "popover_toolbar_density_comfortable_radio");
+    auto* opt_std      = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_dn_std", "Standard");
+    curvz::utils::set_name(opt_std, "pop_tb_dn_std",
+                           "popover_toolbar_density_standard_radio");
+    auto* opt_compact  = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_dn_cpt", "Compact");
+    curvz::utils::set_name(opt_compact, "pop_tb_dn_cpt",
+                           "popover_toolbar_density_compact_radio");
+    auto* opt_tight    = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_dn_tgt", "Tight");
+    curvz::utils::set_name(opt_tight, "pop_tb_dn_tgt",
+                           "popover_toolbar_density_tight_radio");
 
     opt_std->set_group(*group_master);
     opt_compact->set_group(*group_master);
@@ -3387,27 +3407,27 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
     preset_row->append(*btn);
   };
   {
-    auto *btn = Gtk::make_managed<Gtk::Button>("25%");
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p25", "25%");
     curvz::utils::set_name(btn, "pop_tb_zom_p25", "popover_toolbar_zoom_preset_25pct_btn");
     add_zoom_preset(25, btn);
   }
   {
-    auto *btn = Gtk::make_managed<Gtk::Button>("50%");
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p50", "50%");
     curvz::utils::set_name(btn, "pop_tb_zom_p50", "popover_toolbar_zoom_preset_50pct_btn");
     add_zoom_preset(50, btn);
   }
   {
-    auto *btn = Gtk::make_managed<Gtk::Button>("100%");
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p100", "100%");
     curvz::utils::set_name(btn, "pop_tb_zom_p100", "popover_toolbar_zoom_preset_100pct_btn");
     add_zoom_preset(100, btn);
   }
   {
-    auto *btn = Gtk::make_managed<Gtk::Button>("200%");
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p200", "200%");
     curvz::utils::set_name(btn, "pop_tb_zom_p200", "popover_toolbar_zoom_preset_200pct_btn");
     add_zoom_preset(200, btn);
   }
   {
-    auto *btn = Gtk::make_managed<Gtk::Button>("400%");
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p400", "400%");
     curvz::utils::set_name(btn, "pop_tb_zom_p400", "popover_toolbar_zoom_preset_400pct_btn");
     add_zoom_preset(400, btn);
   }
@@ -3423,7 +3443,7 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
   btn_row->set_spacing(8);
   btn_row->set_halign(Gtk::Align::END);
 
-  auto *fit_btn = Gtk::make_managed<Gtk::Button>("Fit");
+  auto *fit_btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_fit", "Fit");
   curvz::utils::set_name(fit_btn, "pop_tb_zom_fit", "popover_toolbar_zoom_fit_btn");
   fit_btn->signal_clicked().connect([this]() {
     zoom_pop.popdown();
@@ -3431,7 +3451,7 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
     sig_canvas_focus.emit();
   });
 
-  auto *apply_btn = Gtk::make_managed<Gtk::Button>("Apply");
+  auto *apply_btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_apl", "Apply");
   curvz::utils::set_name(apply_btn, "pop_tb_zom_apl", "popover_toolbar_zoom_apply_btn");
   apply_btn->add_css_class("suggested-action");
   apply_btn->signal_clicked().connect([this]() {
@@ -3532,7 +3552,7 @@ void Toolbar::Impl::build_measure_popover(Gtk::ToggleButton *measure_btn) {
   };
 
   // ── "Save measurements" checkbox row ────────────────────────────────────
-  measure_save_chk = Gtk::make_managed<Gtk::CheckButton>();
+  measure_save_chk = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_meas_sv");
   curvz::utils::set_name(measure_save_chk, "pop_tb_meas_sv",
                          "popover_toolbar_measure_save_check");
   measure_save_chk->set_tooltip_text(
@@ -3545,7 +3565,7 @@ void Toolbar::Impl::build_measure_popover(Gtk::ToggleButton *measure_btn) {
   outer->append(*make_chk_row(measure_save_chk, save_lbl));
 
   // ── "Delete on copy" checkbox row ───────────────────────────────────────
-  measure_del_chk = Gtk::make_managed<Gtk::CheckButton>();
+  measure_del_chk = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_meas_dc");
   curvz::utils::set_name(measure_del_chk, "pop_tb_meas_dc",
                          "popover_toolbar_measure_destruct_check");
   measure_del_chk->set_tooltip_text(
@@ -4454,32 +4474,32 @@ void Toolbar::Impl::build_snap_popover(Gtk::Widget *widget) {
   };
 
   {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to guides");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_g", "Snap to guides");
     curvz::utils::set_name(cb, "pop_tb_snap_g", "popover_toolbar_snap_guides_check");
     add_snap_cb("Snap to guides", &snap_cb_guides, cb);
   }
   {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to grid");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_gr", "Snap to grid");
     curvz::utils::set_name(cb, "pop_tb_snap_gr", "popover_toolbar_snap_grid_check");
     add_snap_cb("Snap to grid", &snap_cb_grid, cb);
   }
   {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to margins");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_m", "Snap to margins");
     curvz::utils::set_name(cb, "pop_tb_snap_m", "popover_toolbar_snap_margins_check");
     add_snap_cb("Snap to margins", &snap_cb_margins, cb);
   }
   {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to nodes");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_n", "Snap to nodes");
     curvz::utils::set_name(cb, "pop_tb_snap_n", "popover_toolbar_snap_nodes_check");
     add_snap_cb("Snap to nodes", &snap_cb_nodes, cb);
   }
   {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to edges");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_e", "Snap to edges");
     curvz::utils::set_name(cb, "pop_tb_snap_e", "popover_toolbar_snap_edges_check");
     add_snap_cb("Snap to edges", &snap_cb_edges, cb);
   }
   {
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>("Snap to centers");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_c", "Snap to centers");
     curvz::utils::set_name(cb, "pop_tb_snap_c", "popover_toolbar_snap_centers_check");
     add_snap_cb("Snap to centers", &snap_cb_centers, cb);
   }

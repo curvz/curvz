@@ -1,0 +1,89 @@
+# 13_density_and_measure_popovers — substrate-layer suite for the
+# density and measure-tool popovers (s195 m6).
+#
+# Substrate-style test (per TESTING.md grandfather clause): each
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back. Baselines are hardcoded
+# explicitly rather than captured (the DSL doesn't have variable
+# capture yet — banked as a gap).
+#
+# The tested abbrevs:
+#
+#   Density popover  pop_tb_dn_com  (Comfortable — launch default)
+#                    pop_tb_dn_std  (Standard)
+#                    pop_tb_dn_cpt  (Compact)
+#                    pop_tb_dn_tgt  (Tight)
+#
+#   Measure popover  pop_tb_meas_sv (save measurements)
+#                    pop_tb_meas_dc (delete on copy)
+#
+# Side effects: the script flips through density modes and ends on
+# Comfortable (the launch default). If you had density set to
+# something else, this test will reset it — explicit hardcoded
+# baseline per TESTING.md's grandfather discipline. Measure-popover
+# settings are restored to false at the end (their launch default).
+#
+# Test protocol:
+#   1. Open the Scripter window.
+#   2. Load this script.
+#   3. Run. Every line should PASS.
+
+#[sub] Density radio — labels read back from the registry.
+
+assert pop_tb_dn_com label == "Comfortable"
+assert pop_tb_dn_std label == "Standard"
+assert pop_tb_dn_cpt label == "Compact"
+assert pop_tb_dn_tgt label == "Tight"
+
+#[sub] Density radio — Comfortable wins.
+
+pop_tb_dn_com set true
+assert pop_tb_dn_com active == true
+assert pop_tb_dn_std active == false
+assert pop_tb_dn_cpt active == false
+assert pop_tb_dn_tgt active == false
+
+#[sub] Density radio — Standard wins.
+
+pop_tb_dn_std set true
+assert pop_tb_dn_std active == true
+assert pop_tb_dn_com active == false
+assert pop_tb_dn_cpt active == false
+assert pop_tb_dn_tgt active == false
+
+#[sub] Density radio — Compact wins.
+
+pop_tb_dn_cpt set true
+assert pop_tb_dn_cpt active == true
+assert pop_tb_dn_com active == false
+assert pop_tb_dn_std active == false
+assert pop_tb_dn_tgt active == false
+
+#[sub] Density radio — Tight wins.
+
+pop_tb_dn_tgt set true
+assert pop_tb_dn_tgt active == true
+assert pop_tb_dn_com active == false
+assert pop_tb_dn_std active == false
+assert pop_tb_dn_cpt active == false
+
+#[sub] Density — restore to Comfortable (launch default).
+
+pop_tb_dn_com set true
+assert pop_tb_dn_com active == true
+
+#[sub] Measure popover — save toggle round-trip.
+
+pop_tb_meas_sv set true
+assert pop_tb_meas_sv active == true
+pop_tb_meas_sv set false
+assert pop_tb_meas_sv active == false
+
+#[sub] Measure popover — delete-on-copy toggle round-trip.
+
+pop_tb_meas_dc set true
+assert pop_tb_meas_dc active == true
+pop_tb_meas_dc set false
+assert pop_tb_meas_dc active == false
+
+#[sub] Done. 6 new substrate widgets, all addressable.

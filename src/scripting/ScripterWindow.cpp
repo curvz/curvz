@@ -13,6 +13,7 @@
 #include "scripting/ScripterWindow.hpp"
 
 #include <giomm/application.h>        // s193 m2: Gio::Application::get_default()
+#include <giomm/file.h>               // s195 m1: Gio::File::create_for_path for save-as initial folder
 #include <gdkmm/clipboard.h>          // s186 close-out: copy-output button
 #include <gdkmm/contentprovider.h>    // s186 close-out: copy-output button
 #include <gtkmm/alertdialog.h>        // s193 m1: dirty-discard prompt
@@ -257,7 +258,15 @@ void ScripterWindow::build_ui() {
                                  Gtk::PolicyType::AUTOMATIC);
     m_sidebar_scroll.set_vexpand(true);
     sidebar_root->append(m_sidebar_scroll);
-    sidebar_root->set_size_request(240, -1);
+
+    // s195 m2 — compute initial sidebar width once at construction
+    // from the longest filename in the workspace. Floor at 200 so a
+    // short-filename workspace doesn't make the sidebar feel cramped;
+    // ceiling at 420 so a long-filename workspace doesn't swallow the
+    // editor. Users can still drag the Paned divider; we just pick a
+    // better default than a single hardcoded 240.
+    const int sidebar_w = compute_initial_sidebar_width();
+    sidebar_root->set_size_request(sidebar_w, -1);
 
     // -- Notebook with per-tab content headers --
     // Each tab's content is wrapped in a vertical Box: a thin header
@@ -291,6 +300,19 @@ void ScripterWindow::build_ui() {
     m_btn_save.signal_clicked().connect(
         [this]() { save_editor_to_loaded_file(); });
     script_header->append(m_btn_save);
+
+    // s195 m1 — Save As… is always visible. It works on both the
+    // scratchpad (where Save is hidden because there's no loaded path)
+    // and on loaded files (where it branches off a copy under a new
+    // name). After a successful Save As, m_loaded_path is adopted so
+    // subsequent Save writes back to the new file.
+    m_btn_save_as.set_label("Save As…");
+    m_btn_save_as.add_css_class("flat");
+    m_btn_save_as.set_tooltip_text(
+        "Write the editor contents to a new file in the workspace");
+    m_btn_save_as.signal_clicked().connect(
+        [this]() { on_save_as(); });
+    script_header->append(m_btn_save_as);
 
     script_pane->append(*script_header);
     script_pane->append(*Gtk::make_managed<Gtk::Separator>(
@@ -373,7 +395,7 @@ void ScripterWindow::build_ui() {
 
     outer->set_start_child(*sidebar_root);
     outer->set_end_child(m_notebook);
-    outer->set_position(240);
+    outer->set_position(sidebar_w);  // s195 m2 — match computed sidebar width
     outer->set_hexpand(true);
     outer->set_vexpand(true);
     root->append(*outer);
@@ -515,6 +537,21 @@ void ScripterWindow::rescan_library() {
                 });
 
             hb->append(*row->label);
+
+            // s195 m4 — flat trash button. Always visible at low visual
+            // weight; sits next to the file it operates on. Click sends
+            // through confirm_and_delete which prompts before trashing.
+            row->del = Gtk::make_managed<Gtk::Button>();
+            row->del->set_icon_name("edit-delete-symbolic");
+            row->del->add_css_class("flat");
+            row->del->set_tooltip_text(
+                "Send this script to the trash (recoverable)");
+            row->del->signal_clicked().connect(
+                [this, script_path]() {
+                    confirm_and_delete(script_path);
+                });
+            hb->append(*row->del);
+
             rows_box->append(*hb);
 
             m_rows.push_back(std::move(row));
@@ -552,6 +589,55 @@ void ScripterWindow::rescan_library() {
 
     m_lbl_folder.set_text(m_folder.string());
     m_lbl_folder.set_tooltip_text(m_folder.string());
+}
+
+// s195 m2 — auto-tune the sidebar's initial width to fit the workspace.
+//
+// Pre-realization Pango isn't available (the widget tree isn't yet
+// hooked to a display), so we approximate with a per-char heuristic.
+// Filenames are ASCII .curvzs files; for GTK's default UI font around
+// 13–14pt sans, ~8.5 px/char is a reasonable upper bound. We round up
+// to 9 px/char to leave a little breathing room and avoid the ellipsis
+// for typical filenames. Fixed overhead covers checkbox (~24), row
+// margins (~12 left + 6 right), and a scrollbar reservation (~16).
+//
+// Clamped [200, 420] so a workspace with only short filenames doesn't
+// shrink the sidebar absurdly, and one with monster filenames doesn't
+// grow it beyond half the default 1100×700 window. Users who want
+// something else can still drag the Paned divider.
+int ScripterWindow::compute_initial_sidebar_width() const {
+    constexpr int kPxPerChar = 9;
+    constexpr int kFixedOverhead = 58;   // 24 + 12 + 6 + 16
+    constexpr int kMinWidth = 200;
+    constexpr int kMaxWidth = 420;
+
+    if (!fs::exists(m_folder) || !fs::is_directory(m_folder)) {
+        return kMinWidth;
+    }
+
+    size_t longest = 0;
+    auto consider = [&longest](const fs::path& p) {
+        if (p.extension() == ".curvzs") {
+            longest = std::max(longest, p.filename().string().size());
+        }
+    };
+
+    // Loose .curvzs at workspace root.
+    for (auto& e : fs::directory_iterator(m_folder)) {
+        if (e.is_regular_file()) consider(e.path());
+    }
+    // One level of subfolder (matches rescan_library's depth contract).
+    for (auto& e : fs::directory_iterator(m_folder)) {
+        if (!e.is_directory()) continue;
+        for (auto& sub : fs::directory_iterator(e.path())) {
+            if (sub.is_regular_file()) consider(sub.path());
+        }
+    }
+
+    if (longest == 0) return kMinWidth;
+
+    int desired = static_cast<int>(longest) * kPxPerChar + kFixedOverhead;
+    return std::clamp(desired, kMinWidth, kMaxWidth);
 }
 
 // ── Editor load / save / dirty ──────────────────────────────────────────────
@@ -617,6 +703,138 @@ void ScripterWindow::save_editor_to_loaded_file() {
     f.close();
     mark_dirty(false);
     append_output("# saved " + m_loaded_path.filename().string() + "\n");
+}
+
+// s195 m1 — Save As… for the scratchpad (and for branching off a loaded
+// file under a new name). Opens a save FileDialog rooted at the
+// workspace folder, writes the editor contents to whatever path comes
+// back, then adopts that path as the loaded file so subsequent Save
+// writes there. A rescan_library() picks up the new file in the
+// sidebar.
+//
+// Filename hygiene: if the user names a file without an extension we
+// append .curvzs. If they name one with a different extension we
+// respect it (they may be saving a derivative — README, notes, etc).
+void ScripterWindow::on_save_as() {
+    auto dlg = Gtk::FileDialog::create();
+    dlg->set_title("Save script as…");
+
+    // Root the dialog at the workspace folder so the new file lands
+    // somewhere that rescan_library() will pick up.
+    if (fs::exists(m_folder) && fs::is_directory(m_folder)) {
+        dlg->set_initial_folder(Gio::File::create_for_path(m_folder.string()));
+    }
+
+    // Pre-fill the name field. If we already have a loaded path, suggest
+    // a sibling — strip extension, append "_copy". Otherwise default to
+    // "untitled.curvzs".
+    std::string suggested_name;
+    if (!m_loaded_path.empty()) {
+        suggested_name = m_loaded_path.stem().string() + "_copy.curvzs";
+    } else {
+        suggested_name = "untitled.curvzs";
+    }
+    dlg->set_initial_name(suggested_name);
+
+    dlg->save(*this,
+        [this, dlg](Glib::RefPtr<Gio::AsyncResult>& result) {
+            try {
+                auto file = dlg->save_finish(result);
+                if (!file) return;
+
+                fs::path target = file->get_path();
+
+                // Friendly extension default: if no extension at all,
+                // append .curvzs. Respect any extension the user
+                // explicitly typed (including weird ones).
+                if (target.extension().empty()) {
+                    target += ".curvzs";
+                }
+
+                std::ofstream f(target);
+                if (!f.is_open()) {
+                    append_output(
+                        "# save-as failed: " + target.string() + "\n");
+                    return;
+                }
+                f << m_editor.get_buffer()->get_text().raw();
+                f.close();
+
+                // Adopt the new path. From now on Save writes here.
+                m_loaded_path = target;
+                mark_dirty(false);
+                append_output(
+                    "# saved " + target.filename().string() + "\n");
+
+                // Refresh the sidebar so the new file shows up under
+                // its category (loose at root → "All Scripts"; in a
+                // subfolder → that subfolder's expander).
+                rescan_library();
+            } catch (...) {
+                // User dismissed, or filesystem-level error. Either way,
+                // editor state and m_loaded_path stay as they were.
+            }
+        });
+}
+
+// s195 m4 — Delete from the sidebar row. Confirms via AlertDialog,
+// then sends the file to the system trash (Gio::File::trash —
+// recoverable, matches Nautilus / the file manager). On Linux this
+// lands in ~/.local/share/Trash; users can restore from there. After
+// trashing, the sidebar rescans so the row disappears.
+//
+// Side effect on the loaded file: if the deleted file is the one
+// currently in the editor, we clear m_loaded_path and mark the editor
+// dirty. The user's text stays in memory — they can recover it via
+// Save As… to a new file. Save (which writes to m_loaded_path) becomes
+// a no-op since there's no longer a backing path, which is the right
+// thing: writing to a freshly-trashed path would re-create it and the
+// trash entry would dangle.
+void ScripterWindow::confirm_and_delete(const fs::path& p) {
+    auto dlg = Gtk::AlertDialog::create(
+        "Delete " + p.filename().string() + "?");
+    dlg->set_detail(
+        "The script will be moved to the trash. You can restore it "
+        "from your file manager if you change your mind.");
+    dlg->set_buttons({"Cancel", "Delete"});
+    dlg->set_cancel_button(0);
+    dlg->set_default_button(0);
+
+    fs::path target = p;
+    dlg->choose(*this,
+        [this, dlg, target](Glib::RefPtr<Gio::AsyncResult>& result) {
+            int choice = 0;
+            try {
+                choice = dlg->choose_finish(result);
+            } catch (...) {
+                return;  // dismissed
+            }
+            if (choice != 1) return;  // Cancel
+
+            auto gio_file = Gio::File::create_for_path(target.string());
+            try {
+                gio_file->trash();
+            } catch (const Glib::Error& err) {
+                append_output(
+                    "# delete failed: " + target.string()
+                    + " (" + err.what() + ")\n");
+                return;
+            }
+
+            append_output(
+                "# trashed " + target.filename().string() + "\n");
+
+            // If we just trashed the loaded file, the editor's backing
+            // path is gone. Keep the text in memory but detach from
+            // disk — Save becomes a no-op, Save As… is the recovery
+            // path. Mark dirty so the user sees the work is unattached.
+            if (m_loaded_path == target) {
+                m_loaded_path.clear();
+                mark_dirty(true);
+            }
+
+            rescan_library();
+        });
 }
 
 void ScripterWindow::mark_dirty(bool dirty) {
