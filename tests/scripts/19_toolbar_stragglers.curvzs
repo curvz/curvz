@@ -1,0 +1,106 @@
+# 19_toolbar_stragglers — substrate-layer suite for Toolbar.cpp's two
+# value-held SpinButton members (s198 m1).
+#
+# Substrate-style test (per TESTING.md grandfather clause). Each
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back.
+#
+# Scope (s198 m1): the two SpinButton members that were value-held
+# (Gtk::SpinButton zoom_spin / width_spin) and got flipped to
+# pointer-held substrate (curvz::widgets::SpinButton*). Same
+# architectural pattern as s196 m3's Bold/Italic CheckButton flip.
+# Both live in popovers that are built eagerly inside
+# Toolbar::Impl::build(), so their abbrevs are registered at app
+# launch — no popover open required to address them.
+#
+# The flip proves the value→pointer pattern for SpinButton +
+# Adjustment via the s189 m2 Adjustment-taking ctor. The pre-built
+# Adjustment (zoom_adj / width_adj) is created at popover-build
+# time, then handed to the substrate ctor along with climb_rate +
+# digits. Existing application code that reads adj->signal_value_
+# changed continues to work — the substrate's canonical signal
+# (signal_value_changed on the spin itself) is independent of the
+# adjustment's signal, both fire on a script-driven `set`.
+#
+# DSL note (carried from s196 m1): the DSL lexer is kind-strict.
+# SpinButton `value` queries return Double. Round-number literals
+# in asserts against numeric queries must be written with explicit
+# `.0` suffix (`assert ... value == 0.0`, not `== 0`).
+#
+# The tested abbrevs:
+#
+#   Zoom popover    pop_tb_zom_spn   (zoom percentage SpinButton,
+#                                     range 1..9500, digits 0)
+#
+#   Stroke popover  pop_tb_strk_w    (stroke width SpinButton,
+#                                     range 0..9999, digits 1
+#                                     at launch — refresh_stroke_
+#                                     popover shifts to 2 / 3 when
+#                                     display mode changes)
+#
+# Test protocol:
+#   1. Open the Scripter window.
+#   2. Load this script.
+#   3. Run. Every line should PASS.
+#
+# Side effects: both SpinButton values are written to test the
+# set/value round-trip. Zoom is restored to 100% at the end (a
+# fixed, predictable end state — see the note below on why there's
+# no environment-independent "launch default" to restore to). The
+# width_adj signal is wired to emit_defaults() which pushes
+# def_stroke.width; the test transiently moves it and restores 0.0
+# (which is StrokeStyle's real type-level default).
+#
+# Note on zoom's launch value: zoom_adj is constructed with 100.0
+# as its initial value, but by the time scripts can run, the canvas
+# has loaded a document and Toolbar::Impl::set_zoom() has been
+# called via MainWindow's fit-to-window flow, which writes whatever
+# zoom level the document/viewport geometry produces back into
+# zoom_adj. So there is no environment-independent "launch default"
+# to assert against — the value on first script-read depends on the
+# document size and the window size. Pre-DSL-variable-capture
+# (banked from s195), we can't capture-and-restore at script time;
+# the test settles for asserting the round-trip and leaving zoom at
+# a predictable 100% end state.
+
+#[sub] Zoom SpinButton — min/max document the adjustment range.
+
+assert pop_tb_zom_spn min == 1.0
+assert pop_tb_zom_spn max == 9500.0
+
+#[sub] Zoom SpinButton — set/value round-trip.
+
+pop_tb_zom_spn set 250.0
+assert pop_tb_zom_spn value == 250.0
+pop_tb_zom_spn set 50.0
+assert pop_tb_zom_spn value == 50.0
+
+#[sub] Zoom SpinButton — leave at a predictable end state (100%).
+
+pop_tb_zom_spn set 100.0
+assert pop_tb_zom_spn value == 100.0
+
+#[sub] Width SpinButton — launch default is 0.0 (matches StrokeStyle default).
+
+assert pop_tb_strk_w value == 0.0
+
+#[sub] Width SpinButton — min/max document the adjustment range.
+
+assert pop_tb_strk_w min == 0.0
+assert pop_tb_strk_w max == 9999.0
+
+#[sub] Width SpinButton — set/value round-trip.
+
+pop_tb_strk_w set 2.5
+assert pop_tb_strk_w value == 2.5
+pop_tb_strk_w set 12.0
+assert pop_tb_strk_w value == 12.0
+
+#[sub] Width SpinButton — restore launch default.
+
+pop_tb_strk_w set 0.0
+assert pop_tb_strk_w value == 0.0
+
+#[sub] Done. 2 new substrate widgets, both addressable. Toolbar.cpp
+#[sub] is now at zero raw widget sites AND zero value-held
+#[sub] SpinButton stragglers — fully migrated to the substrate.

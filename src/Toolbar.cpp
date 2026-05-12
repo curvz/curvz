@@ -121,9 +121,16 @@ struct Toolbar::Impl {
     // Built lazily by build_zoom_popover() during Impl::build(). Public
     // Toolbar::set_zoom() forwards in to update zoom_level + the
     // Adjustment.
+    //
+    // s198 m1: zoom_spin flipped from value-held Gtk::SpinButton to
+    // pointer-held substrate curvz::widgets::SpinButton — same
+    // architectural pattern as s196 m3's Bold/Italic CheckButton flip.
+    // The substrate ctor takes the abbrev as its first argument, which
+    // has to happen at build_zoom_popover() time (when zoom_adj exists),
+    // not at Impl default-construction.
     Gtk::Popover                  zoom_pop;
     Glib::RefPtr<Gtk::Adjustment> zoom_adj;
-    Gtk::SpinButton               zoom_spin;
+    curvz::widgets::SpinButton*   zoom_spin = nullptr;
     double                        zoom_level = 1.0;
 
     // ── s153 sub-ship 2b: rect / ellipse / line popovers ─────────────────
@@ -307,7 +314,13 @@ struct Toolbar::Impl {
     Gtk::DrawingArea              stroke_swatch;
     // S91: stroke does NOT get a gradient toggle (rare in SVG, not
     // worth a separate stroke-side gradient surface). Fill-only.
-    Gtk::SpinButton               width_spin;
+    //
+    // s198 m1: width_spin flipped from value-held Gtk::SpinButton to
+    // pointer-held substrate curvz::widgets::SpinButton (same pattern
+    // as zoom_spin above; mirrors s196 m3's Bold/Italic flip). The
+    // substrate ctor needs the abbrev at construction time, which has
+    // to happen at build_stroke_popover() time (when width_adj exists).
+    curvz::widgets::SpinButton*   width_spin = nullptr;
     Glib::RefPtr<Gtk::Adjustment> width_adj;
     Gtk::Label                    width_unit_lbl;
     Gtk::Label                    width_label;  // "Width (in):" — unit-aware
@@ -2108,11 +2121,15 @@ void Toolbar::Impl::build_stroke_popover() {
 
   width_adj =
       Gtk::Adjustment::create(def_stroke.width, 0.0, 9999.0, 0.5, 5.0);
+  // s198 m1: substrate construction. Climb rate matches the previous
+  // step (0.5) per the s189 m2 Adjustment-taking ctor contract; digits
+  // start at 1 and shift in refresh_stroke_popover() as the display
+  // mode changes (Physical=3, RatioQuality=2, otherwise=1).
+  width_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "pop_tb_strk_w", width_adj, 0.5, 1);
   curvz::utils::set_name(width_spin, "pop_tb_strk_w", "popover_toolbar_stroke_width_spn");
-  width_spin.set_adjustment(width_adj);
-  width_spin.set_digits(1);
-  width_spin.set_width_chars(5);
-  width_spin.add_css_class("tb-well-spin");
+  width_spin->set_width_chars(5);
+  width_spin->add_css_class("tb-well-spin");
   width_adj->signal_value_changed().connect([this]() {
     // S93 m4: defensive syncing guard. Programmatic set_value
     // calls during a refresh fire this signal synchronously; without
@@ -2139,8 +2156,8 @@ void Toolbar::Impl::build_stroke_popover() {
     }
     emit_defaults();
   });
-  width_spin.signal_activate().connect([this]() {
-    width_spin.update();
+  width_spin->signal_activate().connect([this]() {
+    width_spin->update();
     stroke_pop.popdown();
     sig_canvas_focus.emit();
   });
@@ -2151,7 +2168,7 @@ void Toolbar::Impl::build_stroke_popover() {
     kc->signal_key_pressed().connect(
         [this](guint keyval, guint, Gdk::ModifierType) -> bool {
           if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
-            width_spin.update();
+            width_spin->update();
             stroke_pop.popdown();
             sig_canvas_focus.emit();
             return false;
@@ -2159,9 +2176,9 @@ void Toolbar::Impl::build_stroke_popover() {
           return false;
         },
         false);
-    width_spin.add_controller(kc);
+    width_spin->add_controller(kc);
   }
-  width_row->append(width_spin);
+  width_row->append(*width_spin);
   width_unit_lbl.set_text("px");
     width_label.set_text("Thickness (px):");
   width_unit_lbl.add_css_class("prop-width-unit");
@@ -2367,7 +2384,7 @@ void Toolbar::Impl::refresh_stroke_popover() {
     width_adj->set_step_increment(step);
     width_adj->set_page_increment(step * 10.0);
     width_adj->set_value(display);
-    width_spin.set_digits(3);
+    if (width_spin) width_spin->set_digits(3);
     width_unit_lbl.set_text(cm->phys_unit);
     width_label.set_text("Thickness (" + cm->phys_unit + "):");
   } else if (cm && cm->display_mode == DisplayMode::RatioQuality) {
@@ -2375,14 +2392,14 @@ void Toolbar::Impl::refresh_stroke_popover() {
     width_adj->set_step_increment(0.05);
     width_adj->set_page_increment(0.5);
     width_adj->set_value((def_stroke.width / q) * 100.0);
-    width_spin.set_digits(2);
+    if (width_spin) width_spin->set_digits(2);
     width_unit_lbl.set_text("%");
     width_label.set_text("Thickness (%):");
   } else {
     width_adj->set_step_increment(0.5);
     width_adj->set_page_increment(5.0);
     width_adj->set_value(def_stroke.width);
-    width_spin.set_digits(1);
+    if (width_spin) width_spin->set_digits(1);
     width_unit_lbl.set_text("px");
     width_label.set_text("Thickness (px):");
   }
@@ -3393,18 +3410,20 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
   spin_lbl->set_xalign(0.0f);
 
   zoom_adj = Gtk::Adjustment::create(100.0, 1.0, 9500.0, 1.0, 10.0);
+  // s198 m1: substrate construction. Climb rate matches step (1.0);
+  // digits is 0 (integer-percent zoom levels).
+  zoom_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "pop_tb_zom_spn", zoom_adj, 1.0, 0);
   curvz::utils::set_name(zoom_spin, "pop_tb_zom_spn", "popover_toolbar_zoom_pct_spn");
-  zoom_spin.set_adjustment(zoom_adj);
-  zoom_spin.set_digits(0);
-  zoom_spin.set_numeric(true);
-  zoom_spin.set_hexpand(true);
-  zoom_spin.set_width_chars(6);
+  zoom_spin->set_numeric(true);
+  zoom_spin->set_hexpand(true);
+  zoom_spin->set_width_chars(6);
 
   auto *pct_lbl = Gtk::make_managed<Gtk::Label>("%");
   pct_lbl->add_css_class("tb-pop-label");
 
   spin_row->append(*spin_lbl);
-  spin_row->append(zoom_spin);
+  spin_row->append(*zoom_spin);
   spin_row->append(*pct_lbl);
   outer->append(*spin_row);
 

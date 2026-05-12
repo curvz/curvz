@@ -1,0 +1,116 @@
+# 20_warp_popover — substrate-layer suite for WarpPopover's full
+# control set (s198 m2).
+#
+# Substrate-style test (per TESTING.md grandfather clause). Each
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back.
+#
+# Scope (s198 m2): all 5 widgets in WarpPopover.cpp migrated
+# in a single pass — top/bot anchor SpinButtons, Preset DropDown,
+# Quality Scale, Done Button. WarpPopover is a value-held member
+# of MainWindow, so its ctor runs at app launch and all five
+# substrate widgets are addressable without opening the popover.
+#
+# Architectural firsts banked by this milestone:
+#   - First Scale substrate outside Toolbar.cpp (Toolbar had no
+#     Scale; this is the first time the Scale substrate's
+#     Adjustment-taking ctor proves out in a real call site).
+#   - First DropDown substrate constructed with a runtime-populated
+#     StringList (preset_names walk) where the contents are static
+#     for the popover's lifetime — sits between Toolbar's anchor
+#     dropdown (literal-list ctor) and the palette dropdown (runtime
+#     model-swap). Validates that the StringList ctor path works
+#     for "built once from data" lists.
+#
+# DSL note (carried from s196 m1 / s198 m1): the DSL lexer is
+# kind-strict. SpinButton and Scale `value`/`min`/`max` queries
+# return Double; round-number literals in asserts need explicit
+# `.0` suffix.
+#
+# The tested abbrevs:
+#
+#   pop_wrp_tn    (top anchor count SpinButton — range 2..4)
+#   pop_wrp_bn    (bot anchor count SpinButton — range 2..4)
+#   pop_wrp_pr    (preset DropDown — 8 entries from preset_names())
+#   pop_wrp_q     (quality Scale — range 1..16)
+#   pop_wrp_done  (Done Button — popover dismissal)
+#
+# Test protocol:
+#   1. Open the Scripter window.
+#   2. Load this script.
+#   3. Run. Every line should PASS.
+#
+# Side effects: every value written here also writes through to
+# AppPreferences (the popover's on-change handlers are the same code
+# path real user edits take). The test restores each control to a
+# reasonable default at the end (top=2, bot=2, preset=0, quality=4)
+# — these are NOT necessarily the user's previous values; they're
+# the AppPreferences-installation defaults. Anyone running this
+# test should expect their Warp defaults to be reset to the
+# installation values.
+
+#[sub] Top anchors SpinButton — min/max document the adjustment range.
+
+assert pop_wrp_tn min == 2.0
+assert pop_wrp_tn max == 4.0
+
+#[sub] Top anchors SpinButton — set/value round-trip across the range.
+
+pop_wrp_tn set 3.0
+assert pop_wrp_tn value == 3.0
+pop_wrp_tn set 4.0
+assert pop_wrp_tn value == 4.0
+pop_wrp_tn set 2.0
+assert pop_wrp_tn value == 2.0
+
+#[sub] Bottom anchors SpinButton — min/max document the adjustment range.
+
+assert pop_wrp_bn min == 2.0
+assert pop_wrp_bn max == 4.0
+
+#[sub] Bottom anchors SpinButton — set/value round-trip across the range.
+
+pop_wrp_bn set 3.0
+assert pop_wrp_bn value == 3.0
+pop_wrp_bn set 4.0
+assert pop_wrp_bn value == 4.0
+pop_wrp_bn set 2.0
+assert pop_wrp_bn value == 2.0
+
+#[sub] Preset DropDown — count matches PRESET_COUNT (8 entries from preset_names()).
+
+assert pop_wrp_pr count == 8
+
+#[sub] Preset DropDown — set/selected round-trip by index.
+
+pop_wrp_pr set 0
+assert pop_wrp_pr selected == 0
+pop_wrp_pr set 3
+assert pop_wrp_pr selected == 3
+pop_wrp_pr set 7
+assert pop_wrp_pr selected == 7
+pop_wrp_pr set 0
+assert pop_wrp_pr selected == 0
+
+#[sub] Quality Scale — min/max document the adjustment range.
+
+assert pop_wrp_q min == 1.0
+assert pop_wrp_q max == 16.0
+
+#[sub] Quality Scale — set/value round-trip.
+
+pop_wrp_q set 8.0
+assert pop_wrp_q value == 8.0
+pop_wrp_q set 1.0
+assert pop_wrp_q value == 1.0
+pop_wrp_q set 16.0
+assert pop_wrp_q value == 16.0
+pop_wrp_q set 4.0
+assert pop_wrp_q value == 4.0
+
+#[sub] Done Button — label is "Done".
+
+assert pop_wrp_done label == "Done"
+
+#[sub] Done. 5 new substrate widgets in WarpPopover.cpp — full file
+#[sub] migrated. First Scale substrate outside Toolbar.cpp lands here.

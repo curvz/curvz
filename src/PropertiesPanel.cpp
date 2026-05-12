@@ -729,8 +729,19 @@ static void box_add_row(Gtk::Box *box, const char *label,
 // callers compiling unchanged. Same idiom as make_pop_row in Toolbar.cpp:
 // the harvester regex requires literal strings at the call site, so the
 // helper returns the widget pointer rather than naming it internally.
+//
+// s198 m3: substrate migration via helper threading. The `name` parameter
+// is now required and passed to the substrate SpinButton's ctor — same
+// shape as s196 m1's `make_pop_row` migration and s197 m1's `make_icon_btn`
+// /`make_btn`/`add_op` migrations. The `set_name` calls at each call site
+// stay in place (with literal-string args) so widget_names_sync's harvester
+// still picks up the long-name annotation. The `out_spin` parameter type
+// stays `Gtk::SpinButton**` — substrate IS-A Gtk::SpinButton through
+// inheritance, so assignment is an implicit upcast and call sites can
+// continue storing the result as `Gtk::SpinButton*` without downcast.
 static Glib::RefPtr<Gtk::Adjustment>
-box_add_spin(Gtk::Box *box, const char *label, double val, double lo, double hi,
+box_add_spin(Gtk::Box *box, std::string_view name, const char *label,
+             double val, double lo, double hi,
              double step, double page, int digits, int label_chars = 6,
              const char *tip = nullptr, std::function<void()> on_enter = {},
              Gtk::SpinButton **out_spin = nullptr) {
@@ -741,7 +752,8 @@ box_add_spin(Gtk::Box *box, const char *label, double val, double lo, double hi,
   k->set_width_chars(label_chars);
   k->set_xalign(0.0f);
   auto adj = Gtk::Adjustment::create(val, lo, hi, step, page);
-  auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, step, digits);
+  auto *spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+      name, adj, step, digits);
   spin->set_hexpand(true);
   spin->add_css_class("prop-width-entry");
   if (tip)
@@ -982,12 +994,12 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     int cw = cm->canvas_width(), ch = cm->canvas_height();
     Gtk::SpinButton *can_pw_spin = nullptr, *can_ph_spin = nullptr;
     auto adj_pw = box_add_spin(
-        body, "Width (px)", cw, 1, 65536, 1, 8, 0, 8, "Canvas width in pixels",
-        [this] { emit_canvas_focus(); }, &can_pw_spin);
+        body, "ins_can_pw", "Width (px)", cw, 1, 65536, 1, 8, 0, 8,
+        "Canvas width in pixels", [this] { emit_canvas_focus(); }, &can_pw_spin);
     curvz::utils::set_name(can_pw_spin, "ins_can_pw",
                            "inspector_canvas_pixel_width_spn");
     auto adj_ph = box_add_spin(
-        body, "Height (px)", ch, 1, 65536, 1, 8, 0, 8,
+        body, "ins_can_ph", "Height (px)", ch, 1, 65536, 1, 8, 0, 8,
         "Canvas height in pixels", [this] { emit_canvas_focus(); },
         &can_ph_spin);
     curvz::utils::set_name(can_ph_spin, "ins_can_ph",
@@ -1067,15 +1079,15 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
 
     Gtk::SpinButton *can_phw_spin = nullptr, *can_phh_spin = nullptr;
     auto adj_pw = box_add_spin(
-        body, w_lbl.c_str(), disp_w, 0.001, max_v, step, page, dec, 8,
-        "Physical width in current unit", [this] { emit_canvas_focus(); },
-        &can_phw_spin);
+        body, "ins_can_phw", w_lbl.c_str(), disp_w, 0.001, max_v, step, page,
+        dec, 8, "Physical width in current unit",
+        [this] { emit_canvas_focus(); }, &can_phw_spin);
     curvz::utils::set_name(can_phw_spin, "ins_can_phw",
                            "inspector_canvas_phys_width_spn");
     auto adj_ph = box_add_spin(
-        body, h_lbl.c_str(), disp_h, 0.001, max_v, step, page, dec, 8,
-        "Physical height in current unit", [this] { emit_canvas_focus(); },
-        &can_phh_spin);
+        body, "ins_can_phh", h_lbl.c_str(), disp_h, 0.001, max_v, step, page,
+        dec, 8, "Physical height in current unit",
+        [this] { emit_canvas_focus(); }, &can_phh_spin);
     curvz::utils::set_name(can_phh_spin, "ins_can_phh",
                            "inspector_canvas_phys_height_spn");
 
@@ -1232,14 +1244,14 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     Gtk::SpinButton *can_rw_spin = nullptr, *can_rh_spin = nullptr,
                     *can_rq_spin = nullptr;
     auto adj_rw = box_add_spin(
-        body, "Ratio W", cm->ratio_w, 0.001, 100.0, 0.001, 0.1, 4, 8,
-        "Width ratio (normalised: short axis = 1.0)",
+        body, "ins_can_rw", "Ratio W", cm->ratio_w, 0.001, 100.0, 0.001, 0.1,
+        4, 8, "Width ratio (normalised: short axis = 1.0)",
         [this] { emit_canvas_focus(); }, &can_rw_spin);
     curvz::utils::set_name(can_rw_spin, "ins_can_rw",
                            "inspector_canvas_ratio_w_spn");
     auto adj_rh = box_add_spin(
-        body, "Ratio H", cm->ratio_h, 0.001, 100.0, 0.001, 0.1, 4, 8,
-        "Height ratio (normalised: short axis = 1.0)",
+        body, "ins_can_rh", "Ratio H", cm->ratio_h, 0.001, 100.0, 0.001, 0.1,
+        4, 8, "Height ratio (normalised: short axis = 1.0)",
         [this] { emit_canvas_focus(); }, &can_rh_spin);
     curvz::utils::set_name(can_rh_spin, "ins_can_rh",
                            "inspector_canvas_ratio_h_spn");
@@ -1257,7 +1269,7 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     body->append(*ql_row);
 
     auto adj_q = box_add_spin(
-        body, "Quality", cm->quality, 1, 100000, 100, 1000, 0, 8,
+        body, "ins_can_rq", "Quality", cm->quality, 1, 100000, 100, 1000, 0, 8,
         "Unit count on short axis. Icon=1000 Print=4000 Poster=10000",
         [this] { emit_canvas_focus(); }, &can_rq_spin);
     curvz::utils::set_name(can_rq_spin, "ins_can_rq",

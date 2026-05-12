@@ -1,10 +1,10 @@
 #pragma once
 #include <gtkmm/box.h>
-#include <gtkmm/dropdown.h>
 #include <gtkmm/popover.h>
-#include <gtkmm/scale.h>
-#include <gtkmm/spinbutton.h>
 #include <gtkmm/widget.h>
+#include "curvz/widgets/DropDown.hpp"
+#include "curvz/widgets/Scale.hpp"
+#include "curvz/widgets/SpinButton.hpp"
 
 namespace Curvz {
 
@@ -61,12 +61,12 @@ private:
     // Build the form once (called from ctor).
     void build_form();
 
-    Gtk::Box*        m_outer        = nullptr;
-    Gtk::SpinButton* m_top_spin     = nullptr;
-    Gtk::SpinButton* m_bot_spin     = nullptr;
-    Gtk::DropDown*   m_preset_dd    = nullptr;
-    Gtk::Scale*      m_quality_sc   = nullptr;
-    bool             m_loading      = false;
+    Gtk::Box*                    m_outer        = nullptr;
+    curvz::widgets::SpinButton*  m_top_spin     = nullptr;
+    curvz::widgets::SpinButton*  m_bot_spin     = nullptr;
+    curvz::widgets::DropDown*    m_preset_dd    = nullptr;
+    curvz::widgets::Scale*       m_quality_sc   = nullptr;
+    bool                         m_loading      = false;
 };
 
 } // namespace Curvz

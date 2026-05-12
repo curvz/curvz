@@ -1,11 +1,11 @@
 #include "WarpPopover.hpp"
 #include "AppPreferences.hpp"
 #include "curvz_utils.hpp"
+#include "curvz/widgets/Button.hpp"
 #include <algorithm>
 #include <cmath>
 #include <vector>
 #include <gtkmm/adjustment.h>
-#include <gtkmm/button.h>
 #include <gtkmm/eventcontrollerkey.h>
 #include <gtkmm/label.h>
 #include <gtkmm/stringlist.h>
@@ -67,7 +67,8 @@ void WarpPopover::build_form() {
     // ── Top anchors (2..4 spin) ──────────────────────────────────────────
     {
         auto adj = Gtk::Adjustment::create(2.0, 2.0, 4.0, 1.0, 1.0, 0.0);
-        m_top_spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+        m_top_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+            "pop_wrp_tn", adj, 1.0, 0);
         curvz::utils::set_name(m_top_spin, "pop_wrp_tn",
                                "warp_popover_top_count_spin");
         m_top_spin->set_valign(Gtk::Align::CENTER);
@@ -87,7 +88,8 @@ void WarpPopover::build_form() {
     // ── Bottom anchors (2..4 spin) ───────────────────────────────────────
     {
         auto adj = Gtk::Adjustment::create(2.0, 2.0, 4.0, 1.0, 1.0, 0.0);
-        m_bot_spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+        m_bot_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+            "pop_wrp_bn", adj, 1.0, 0);
         curvz::utils::set_name(m_bot_spin, "pop_wrp_bn",
                                "warp_popover_bot_count_spin");
         m_bot_spin->set_valign(Gtk::Align::CENTER);
@@ -117,7 +119,8 @@ void WarpPopover::build_form() {
             preset_strs.push_back(names[i]);
         }
         auto preset_model = Gtk::StringList::create(preset_strs);
-        m_preset_dd = Gtk::make_managed<Gtk::DropDown>(preset_model);
+        m_preset_dd = Gtk::make_managed<curvz::widgets::DropDown>(
+            "pop_wrp_pr", preset_model);
         curvz::utils::set_name(m_preset_dd, "pop_wrp_pr",
                                "warp_popover_preset_dd");
         m_preset_dd->set_valign(Gtk::Align::CENTER);
@@ -136,8 +139,8 @@ void WarpPopover::build_form() {
     // ── Quality slider (1..16) ───────────────────────────────────────────
     {
         auto adj = Gtk::Adjustment::create(4.0, 1.0, 16.0, 1.0, 1.0, 0.0);
-        m_quality_sc = Gtk::make_managed<Gtk::Scale>(
-            adj, Gtk::Orientation::HORIZONTAL);
+        m_quality_sc = Gtk::make_managed<curvz::widgets::Scale>(
+            "pop_wrp_q", adj, Gtk::Orientation::HORIZONTAL);
         curvz::utils::set_name(m_quality_sc, "pop_wrp_q",
                                "warp_popover_quality_scale");
         m_quality_sc->set_hexpand(true);
@@ -179,7 +182,8 @@ void WarpPopover::build_form() {
         btn_row->set_margin_top(4);
         btn_row->set_halign(Gtk::Align::END);
 
-        auto* done_btn = Gtk::make_managed<Gtk::Button>("Done");
+        auto* done_btn = Gtk::make_managed<curvz::widgets::Button>(
+            "pop_wrp_done", "Done");
         curvz::utils::set_name(done_btn, "pop_wrp_done",
                                "warp_popover_done_btn");
         done_btn->signal_clicked().connect([this]() { popdown(); });

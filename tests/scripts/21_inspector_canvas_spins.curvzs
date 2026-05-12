@@ -1,0 +1,93 @@
+# 21_inspector_canvas_spins — substrate-layer suite for
+# PropertiesPanel.cpp's box_add_spin helper migration (s198 m3).
+#
+# Substrate-style test (per TESTING.md grandfather clause). Each
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back.
+#
+# Scope (s198 m3): box_add_spin helper threading — same shape as
+# s196 m1's make_pop_row and s197 m1's make_icon_btn/make_btn/add_op
+# migrations. One helper-signature edit added a `name` parameter that
+# threads into the substrate SpinButton ctor; 7 callers updated to
+# pass their already-literal abbrev as the new arg. Helper-call sites
+# keep their existing `curvz::utils::set_name` line so widget_names_sync
+# still picks up the long-name annotation.
+#
+# The 7 widgets newly addressable from scripts:
+#
+#   ins_can_pw   Pixel-mode width   (DisplayMode::Pixel, default)
+#   ins_can_ph   Pixel-mode height  (DisplayMode::Pixel, default)
+#   ins_can_phw  Physical width     (DisplayMode::Physical)
+#   ins_can_phh  Physical height    (DisplayMode::Physical)
+#   ins_can_rw   Ratio width        (DisplayMode::RatioQuality)
+#   ins_can_rh   Ratio height       (DisplayMode::RatioQuality)
+#   ins_can_rq   Ratio quality      (DisplayMode::RatioQuality)
+#
+# Display mode subtlety: the Canvas section in PropertiesPanel has
+# three mutually-exclusive display modes (Pixel / Physical /
+# RatioQuality), and at any moment only the active mode's spinners
+# are constructed and registered. A fresh document defaults to
+# DisplayMode::Pixel (see CurvzDocument.hpp), so at app launch
+# `ins_can_pw` and `ins_can_ph` are the registered abbrevs. The
+# other five (`phw / phh / rw / rh / rq`) become addressable when
+# the user (or some future test) switches to that display mode.
+# This test scopes to the launch-mode pair; the others will need
+# a mode-switching verb in the DSL — banked as a follow-up.
+#
+# DSL note (carried from s196 m1 / s198 m1 / m2): SpinButton `value`
+# queries return Double; round-number literals in asserts need
+# explicit `.0` suffix.
+#
+# Test protocol:
+#   1. Open Curvz with a fresh / default document (in Pixel mode).
+#   2. Open the Scripter window.
+#   3. Load this script.
+#   4. Run. Every line should PASS.
+#
+# Side effects: each spin's value is written and restored to the
+# value that was on the spin at test-start. Like test 19 (zoom), the
+# Pixel-mode width/height values depend on the loaded document's
+# geometry — there's no fixed launch default that's portable across
+# environments. The test reads `min` and `max` (which ARE fixed) and
+# does round-trips at chosen test values, then sets back to a
+# predictable end state (256 — a common default canvas size for a
+# fresh icon document).
+
+#[sub] Pixel width SpinButton — min/max document the adjustment range.
+
+assert ins_can_pw min == 1.0
+assert ins_can_pw max == 65536.0
+
+#[sub] Pixel width SpinButton — set/value round-trip.
+
+ins_can_pw set 512.0
+assert ins_can_pw value == 512.0
+ins_can_pw set 1024.0
+assert ins_can_pw value == 1024.0
+
+#[sub] Pixel width SpinButton — leave at a predictable end state (256).
+
+ins_can_pw set 256.0
+assert ins_can_pw value == 256.0
+
+#[sub] Pixel height SpinButton — min/max document the adjustment range.
+
+assert ins_can_ph min == 1.0
+assert ins_can_ph max == 65536.0
+
+#[sub] Pixel height SpinButton — set/value round-trip.
+
+ins_can_ph set 512.0
+assert ins_can_ph value == 512.0
+ins_can_ph set 1024.0
+assert ins_can_ph value == 1024.0
+
+#[sub] Pixel height SpinButton — leave at a predictable end state (256).
+
+ins_can_ph set 256.0
+assert ins_can_ph value == 256.0
+
+#[sub] Done. 1 helper edit → 7 substrate widgets registered (2
+#[sub] addressable in default Pixel mode; 5 more become addressable
+#[sub] when the user switches DisplayMode). box_add_spin force-
+#[sub] multiplier follows the s196 m1 / s197 m1 pattern.
