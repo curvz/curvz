@@ -1,0 +1,230 @@
+# 23_theme_edit_dialog_full — substrate-layer suite for ThemeEditDialog
+# (s200 m2).
+#
+# Substrate-style test per TESTING.md grandfather clause: every
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back. Round-trips on the value-bearing
+# widgets, label read on the buttons.
+#
+# m2 migrated the remaining 16 raw widget sites in ThemeEditDialog
+# to substrate, atop the s199 m1 lifetime conversion (the dialog is
+# now a hide-on-close singleton owned by MainWindow). With the
+# singleton lifetime, the substrate abbrevs register on first show()
+# and stay registered for the app's lifetime — multiple opens of the
+# Theme Editor don't reconstruct anything, so this test runs identically
+# on every reopen.
+#
+# Helper-threading instances in m2 (sixth canonical force-multiplier
+# in the project):
+#
+#   add_chk lambda     — 6 snap-target CheckButtons share one
+#                        substrate-ctor edit (dlg_te_sn_gd / gr / mg /
+#                        nd / eg / cn).
+#   add_count_row lambda — 2 margin count SpinButtons share one
+#                        substrate-ctor edit (dlg_te_mg_col / row).
+#
+# The other 14 sites are single-instance, migrated directly.
+#
+# DSL note: SpinButton `value` queries return a Double. The DSL
+# lexer is kind-strict; round-number literals in asserts need an
+# explicit `.0` suffix.
+#
+# The tested abbrevs:
+#
+#   Mode toggle row     dlg_te_mode_l / mode_d       (ToggleButtons)
+#
+#   Button row          dlg_te_cnc / rst             (Buttons — s200 m2)
+#                       dlg_te_ok                    (Button — s199 m1)
+#
+#   Tab 1 — Colors & Snap
+#     Guides            dlg_te_gd_vis                (CheckButton)
+#     Units             dlg_te_un                    (DropDown)
+#     Snap enable       dlg_te_sn_en                 (CheckButton)
+#     Snap targets      dlg_te_sn_gd / gr / mg /
+#                       nd / eg / cn                  (CheckButtons via add_chk)
+#
+#   Tab 2 — Grid
+#     Toggles           dlg_te_gr_en / vis / dot     (CheckButtons)
+#     Alpha             dlg_te_gr_a                  (SpinButton)
+#
+#   Tab 3 — Margins
+#     Toggles           dlg_te_mg_en / vis           (CheckButtons)
+#     Counts            dlg_te_mg_col / row          (SpinButtons via add_count_row)
+#     Alpha             dlg_te_mg_a                  (SpinButton)
+#
+# Test protocol — REQUIRES ONE MANUAL DIALOG OPEN:
+#
+# Like test 22, this test can't open the dialog itself (the Edit-
+# theme button on ThemesPanel isn't substrate-migrated yet, blocked
+# on the dynamic-widget naming question). But with the s200 m1
+# singleton lifetime, ONE manual open is enough — the widget tree
+# stays built across closes, and subsequent runs find every abbrev
+# still registered.
+#
+#   1. Open Curvz with a fresh / default document and project.
+#   2. Open the Scripter window.
+#   3. Load this script.
+#   4. **Manually**: in the Themes panel (inspector sidebar), click
+#      the Edit icon on any theme row. ThemeEditDialog opens.
+#      build() runs, every substrate abbrev registers. Leave the
+#      dialog open (the Scripter has focus because non-modal).
+#   5. Run the script. Every line should PASS.
+#   6. Optionally close the dialog and reopen it. Run the script
+#      again. Should produce identical PASS results — proves the
+#      singleton's substrate widgets survive close/hide/reopen.
+#
+# Side effects: SpinButton values, CheckButton states, and DropDown
+# selection are written then restored to representative defaults.
+# This mutates the working buffer but does NOT click OK, so no
+# commit happens — close the dialog with Cancel or X to discard.
+# Cancel is the safer choice (also clears the working buffer for
+# the next open).
+
+#[sub] Mode toggles — labels.
+
+assert dlg_te_mode_l label == "Light"
+assert dlg_te_mode_d label == "Dark"
+
+#[sub] Mode toggles — set/active round-trip.
+#[sub] Linked via set_group as a radio pair; setting one true forces
+#[sub] the other false. We exercise both to prove the script-driven
+#[sub] toggle path fires signal_toggled.
+
+dlg_te_mode_l set true
+assert dlg_te_mode_l active == true
+assert dlg_te_mode_d active == false
+dlg_te_mode_d set true
+assert dlg_te_mode_d active == true
+assert dlg_te_mode_l active == false
+
+#[sub] Button row — Cancel / Reset / OK labels.
+#[sub] Buttons are not clicked here — Cancel/OK would close the
+#[sub] dialog and end the script's productive session; Reset would
+#[sub] mutate the working buffer's motif colors. Label readback is
+#[sub] enough substrate-contract coverage.
+
+assert dlg_te_cnc label == "Cancel"
+assert dlg_te_rst label == "Reset"
+assert dlg_te_ok  label == "OK"
+
+#[sub] Tab 1 — Guides Visible CheckButton round-trip.
+
+dlg_te_gd_vis set true
+assert dlg_te_gd_vis active == true
+dlg_te_gd_vis set false
+assert dlg_te_gd_vis active == false
+
+#[sub] Tab 1 — Units DropDown count + selected round-trip.
+#[sub] Built-once-from-data StringList (Pixels / Inches / Millimeters /
+#[sub] Points). Selecting flips m_unit_model.display_unit which
+#[sub] re-formats every CurvzSpinButton in the dialog.
+
+assert dlg_te_un count == 4
+dlg_te_un set 0
+assert dlg_te_un selected == 0
+assert dlg_te_un text == "Pixels"
+dlg_te_un set 2
+assert dlg_te_un selected == 2
+assert dlg_te_un text == "Millimeters"
+dlg_te_un set 0
+assert dlg_te_un selected == 0
+
+#[sub] Tab 1 — Snap enable CheckButton round-trip.
+
+dlg_te_sn_en set true
+assert dlg_te_sn_en active == true
+dlg_te_sn_en set false
+assert dlg_te_sn_en active == false
+
+#[sub] Tab 1 — Snap target CheckButtons (6 via add_chk helper).
+#[sub] Each is set then read to prove the substrate path; final
+#[sub] state restored to false so the working buffer's snap targets
+#[sub] don't accumulate stale truths.
+
+dlg_te_sn_gd set true
+assert dlg_te_sn_gd active == true
+dlg_te_sn_gd set false
+
+dlg_te_sn_gr set true
+assert dlg_te_sn_gr active == true
+dlg_te_sn_gr set false
+
+dlg_te_sn_mg set true
+assert dlg_te_sn_mg active == true
+dlg_te_sn_mg set false
+
+dlg_te_sn_nd set true
+assert dlg_te_sn_nd active == true
+dlg_te_sn_nd set false
+
+dlg_te_sn_eg set true
+assert dlg_te_sn_eg active == true
+dlg_te_sn_eg set false
+
+dlg_te_sn_cn set true
+assert dlg_te_sn_cn active == true
+dlg_te_sn_cn set false
+
+#[sub] Tab 2 — Grid Enabled / Visible / Dots CheckButtons.
+
+dlg_te_gr_en set true
+assert dlg_te_gr_en active == true
+dlg_te_gr_en set false
+
+dlg_te_gr_vis set true
+assert dlg_te_gr_vis active == true
+dlg_te_gr_vis set false
+
+dlg_te_gr_dot set true
+assert dlg_te_gr_dot active == true
+dlg_te_gr_dot set false
+
+#[sub] Tab 2 — Grid Alpha % SpinButton range + round-trip.
+#[sub] Adjustment is 0..100, step 1, digits 0; values display as
+#[sub] integers but the substrate returns Double.
+
+assert dlg_te_gr_a min == 0.0
+assert dlg_te_gr_a max == 100.0
+dlg_te_gr_a set 50.0
+assert dlg_te_gr_a value == 50.0
+dlg_te_gr_a set 35.0
+assert dlg_te_gr_a value == 35.0
+
+#[sub] Tab 3 — Margin Enabled / Visible CheckButtons.
+
+dlg_te_mg_en set true
+assert dlg_te_mg_en active == true
+dlg_te_mg_en set false
+
+dlg_te_mg_vis set true
+assert dlg_te_mg_vis active == true
+dlg_te_mg_vis set false
+
+#[sub] Tab 3 — Margin count SpinButtons (2 via add_count_row helper).
+#[sub] Adjustment is 1..999, integer steps.
+
+assert dlg_te_mg_col min == 1.0
+assert dlg_te_mg_col max == 999.0
+dlg_te_mg_col set 3.0
+assert dlg_te_mg_col value == 3.0
+dlg_te_mg_col set 1.0
+
+assert dlg_te_mg_row min == 1.0
+assert dlg_te_mg_row max == 999.0
+dlg_te_mg_row set 5.0
+assert dlg_te_mg_row value == 5.0
+dlg_te_mg_row set 1.0
+
+#[sub] Tab 3 — Margin Alpha % SpinButton.
+
+assert dlg_te_mg_a min == 0.0
+assert dlg_te_mg_a max == 100.0
+dlg_te_mg_a set 75.0
+assert dlg_te_mg_a value == 75.0
+dlg_te_mg_a set 15.0
+assert dlg_te_mg_a value == 15.0
+
+#[sub] Done. If every line PASSed, every m2-migrated abbrev resolves
+#[sub] in the registry, dispatches its verbs correctly, and queries
+#[sub] read back the live state. 22 new substrate widgets across one
+#[sub] dialog.

@@ -101,6 +101,7 @@
 #include "ShortcutsDialog.hpp"
 #include "HelpWindow.hpp"
 #include "ManageTemplatesDialog.hpp"
+#include "ThemeEditDialog.hpp"  // s200 m1 — hide-on-close singleton
 #include "Ruler.hpp"
 #include <gtkmm/applicationwindow.h>
 #include <gtkmm/headerbar.h>
@@ -335,6 +336,7 @@ private:
     GradientDialog                m_gradient_dialog;
     SaveAsTemplateDialog          m_save_as_template_dialog;
     ManageTemplatesDialog         m_manage_templates_dialog;
+    ThemeEditDialog               m_theme_edit_dialog;  // s200 m1
     ShortcutsDialog               m_shortcuts_dialog;
     HelpWindow                    m_help_window;
 

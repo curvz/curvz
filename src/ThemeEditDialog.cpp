@@ -1,10 +1,14 @@
-// ThemeEditDialog.cpp — s183 m2 skeleton implementation.
+// ThemeEditDialog.cpp — s183 m2 skeleton implementation, s200 m1
+// converted to hide-on-close singleton.
 //
-// Identity section + button row. Body is a placeholder Gtk::Box that
-// m3 (live thumbnail) and m4 (property controls) populate. m5 wires
-// the Reset semantic. Lifetime self-management mirrors
-// StyleEditorDialog: heap-allocated, signal_close_request defers
-// deletion to signal_idle.
+// Identity section + button row + property notebook with three tabs
+// (m3 thumbnail + m4 property controls + m5 reset). Lifetime is now
+// a MainWindow-owned singleton: the dialog is default-constructed
+// once at MainWindow init, the widget tree builds lazily on first
+// show() via the m_built latch, and subsequent show()s re-populate
+// values via sync_from_working(). close() hides the window; the
+// next show() re-presents it. See CANON "Check the elevation before
+// fixing" for the framing.
 
 #include "ThemeEditDialog.hpp"
 
@@ -68,86 +72,106 @@ constexpr int    kThumbnailH = 210;
 } // namespace
 
 // ── Construction ──────────────────────────────────────────────────────────
-ThemeEditDialog::ThemeEditDialog(Gtk::Window& parent,
-                                  theme::Theme initial,
-                                  Motif initial_mode,
-                                  CommittedFn on_committed)
-    : m_working(initial)
-    , m_initial(std::move(initial))
-    , m_on_committed(std::move(on_committed))
-    , m_preview_mode(initial_mode) {
-    m_window = Gtk::make_managed<Gtk::Window>();
-    m_window->set_title("Edit Theme");
-    // s199 m1 — non-modal so the Scripter window stays accessible
-    // while the dialog is open (script-driven testing of the
-    // dialog's substrate widgets needs sibling-window focus). OK
-    // still closes via on_ok → m_window->close(); Cancel via
-    // on_cancel → m_window->close(); user-facing behaviour is
-    // otherwise identical to the prior modal version.
-    m_window->set_modal(false);
+//
+// s200 m1 — singleton form. Default-constructed once as a MainWindow
+// member; show() is what callers invoke per editing session. The
+// widget tree builds lazily on the first show() via the m_built
+// latch and stays in the tree for the app's lifetime; subsequent
+// show()s only refresh values via sync_from_working().
+ThemeEditDialog::ThemeEditDialog() {
+    set_title("Edit Theme");
+    // Non-modal so the Scripter window stays accessible while the
+    // dialog is open (script-driven testing of the dialog's substrate
+    // widgets needs sibling-window focus). OK closes via on_ok →
+    // close(); Cancel via on_cancel → close(); X close-request hides
+    // without firing on_committed.
+    set_modal(false);
     // s183 m4 fix2: allow resize so user can drag to a usable size
     // on small screens. The notebook is the section that grows; the
     // ScrolledWindow inside build() bounds it on the shrink side.
-    m_window->set_resizable(true);
-    m_window->set_transient_for(parent);
-    curvz::utils::apply_motif_class_from_parent(*m_window, parent);
+    set_resizable(true);
     // m3: thumbnail is ~280px wide; identity grid + thumbnail width
     // sets the comfortable column. Height is natural — thumbnail +
     // controls determine it.
-    m_window->set_default_size(420, -1);
-    curvz::utils::set_name(m_window, "dlg_te", "theme_editor_dialog_window");
+    set_default_size(420, -1);
+    // s200 m1 — the singleton shape Curvz uses for long-lived dialogs.
+    // close() now hides the window; the next show() re-presents it.
+    set_hide_on_close(true);
+    curvz::utils::set_name(*this, "dlg_te", "theme_editor_dialog_window");
 
-    build();
-
-    // s183 m4 — attach colour-picker popovers to the dialog window.
-    // attach() once per popover; open() per swatch click. The
-    // signal_close_request handler below detaches before window
-    // finalisation so GTK doesn't warn "Finalizing GtkWindow, but
-    // it still has children left" on the popover children.
-    m_motif_artboard_popover.attach(*m_window);
-    m_motif_workspace_popover.attach(*m_window);
-    m_motif_creation_popover.attach(*m_window);
-    m_guides_popover.attach(*m_window);
-    m_grid_popover.attach(*m_window);
-    m_margin_popover.attach(*m_window);
-
-    // Self-delete on window close. Same idiom as StyleEditorDialog —
-    // the inner Gtk::Window is `make_managed` (lives until close); the
-    // outer ThemeEditDialog object is heap-allocated by the wiring
-    // lambda and we hook signal_close_request to delete `this` on the
-    // next idle tick. Deferring via signal_idle avoids re-entering
-    // GTK's own dispatch from inside the close-request handler.
+    // s200 m1 — close-request handler. Discards the working buffer
+    // and the pending commit callback (cancel semantics on X). The
+    // return-false lets the default close-action proceed, which for
+    // a hide-on-close window means "hide, don't destroy."
     //
-    // s199 m1 pilot — force_unregister_subtree call before the idle-
-    // delete schedule. GTK4 destroys widgets at idle priority, so the
-    // substrate widgets' dtor-driven registry unregister wouldn't run
-    // until *after* a same-tick re-open's substrate ctors had tried
-    // to register under the same abbrev. The walk runs the unregister
-    // synchronously now; the eventual dtor's unregister is idempotent
-    // so double-call is safe. Direct generalisation of s191 m7's
-    // PropertiesPanel::do_clear walk, lifted into curvz::utils for
-    // reuse across heap-allocated dialogs.
-    m_window->signal_close_request().connect(
+    // We do NOT call force_unregister_subtree here — substrate
+    // widgets in this dialog construct exactly once at MainWindow
+    // init time (when this dialog is constructed) and live until
+    // app shutdown. The s199 m1 force_unregister_subtree discipline
+    // was for the heap-allocated lifetime where the widget subtree
+    // died on every close; that no longer happens.
+    //
+    // We do NOT detach the color popovers here — they stay attached
+    // for the app's lifetime, same as every other inner widget.
+    signal_close_request().connect(
         [this]() -> bool {
-            // Detach popovers BEFORE window finalisation. See
-            // StyleEditorDialog's same pattern.
-            m_motif_artboard_popover.detach();
-            m_motif_workspace_popover.detach();
-            m_motif_creation_popover.detach();
-            m_guides_popover.detach();
-            m_grid_popover.detach();
-            m_margin_popover.detach();
-            // s199 m1 — synchronous registry cleanup before deferred
-            // widget destruction. See block-comment above.
-            curvz::utils::force_unregister_subtree(m_window);
-            Glib::signal_idle().connect_once([this]() { delete this; });
-            return false;  // allow default close to proceed
+            LOG_DEBUG("ThemeEditDialog: close-request — discarding "
+                      "working buffer");
+            // Clear the commit callback so a stale closure can't
+            // fire from any subsequent code path. on_committed is
+            // re-supplied per show().
+            m_on_committed = nullptr;
+            return false;  // let hide-on-close proceed
         }, /*after=*/false);
-
-    m_window->present();
 }
 
-ThemeEditDialog::~ThemeEditDialog() = default;
+// ── show ──────────────────────────────────────────────────────────────────
+//
+// s200 m1 — replaces the previous parameterised ctor. Sets the
+// editing state, builds the widget tree on first call, syncs all
+// widgets from the new working theme, and presents.
+//
+// Cancel semantics: if the user closes via X (signal_close_request)
+// or via the Cancel button, the working buffer is discarded and
+// m_on_committed is cleared. The dialog's next show() starts fresh
+// with whatever theme + callback the caller passes.
+void ThemeEditDialog::show(Gtk::Window& parent,
+                            theme::Theme initial,
+                            Motif initial_mode,
+                            CommittedFn on_committed) {
+    m_working      = initial;
+    m_initial      = std::move(initial);
+    m_on_committed = std::move(on_committed);
+    m_preview_mode = initial_mode;
+    m_unit_model.display_unit = m_working.units.display_unit;
+
+    set_transient_for(parent);
+    curvz::utils::apply_motif_class_from_parent(*this, parent);
+
+    if (!m_built) {
+        m_built = true;
+        build();
+
+        // s183 m4 — attach colour-picker popovers to the dialog
+        // window. attach() runs once at first build(); open() per
+        // swatch click. No detach() needed at close-time in the
+        // singleton form (the window doesn't die between opens).
+        m_motif_artboard_popover.attach(*this);
+        m_motif_workspace_popover.attach(*this);
+        m_motif_creation_popover.attach(*this);
+        m_guides_popover.attach(*this);
+        m_grid_popover.attach(*this);
+        m_margin_popover.attach(*this);
+    } else {
+        // s200 m1 — widgets already exist from a prior open; refresh
+        // every value from the new working buffer. build()'s initial
+        // value-reads from m_working only fire on first open; this
+        // is the symmetric refresh for every subsequent open.
+        sync_from_working();
+    }
+
+    present();
+}
 
 // ── build ─────────────────────────────────────────────────────────────────
 void ThemeEditDialog::build() {
@@ -158,11 +182,13 @@ void ThemeEditDialog::build() {
     // the notebook scrolls.
     auto* root = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
     root->set_margin(12);
-    m_window->set_child(*root);
+    set_child(*root);
 
     // s183 m4 fix2 — seed the dialog's CanvasModel from the working
     // theme's display_unit so spinners initially display in the
-    // theme's chosen unit.
+    // theme's chosen unit. (s200 m1: also set in show() so subsequent
+    // re-opens display in the new theme's unit; this initial-build
+    // assignment covers the first show().)
     m_unit_model.display_unit = m_working.units.display_unit;
 
     build_identity_section(*root);
@@ -265,14 +291,16 @@ void ThemeEditDialog::build_body_section(Gtk::Box& root) {
     mode_row->add_css_class("linked");
     body->append(*mode_row);
 
-    m_mode_light_btn = Gtk::make_managed<Gtk::ToggleButton>("Light");
+    m_mode_light_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+        "dlg_te_mode_l", "Light");
     curvz::utils::set_name(m_mode_light_btn, "dlg_te_mode_l",
                            "theme_editor_dialog_mode_light_btn");
     m_mode_light_btn->set_tooltip_text(
         "Preview the theme's light-mode appearance");
     mode_row->append(*m_mode_light_btn);
 
-    m_mode_dark_btn = Gtk::make_managed<Gtk::ToggleButton>("Dark");
+    m_mode_dark_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+        "dlg_te_mode_d", "Dark");
     curvz::utils::set_name(m_mode_dark_btn, "dlg_te_mode_d",
                            "theme_editor_dialog_mode_dark_btn");
     m_mode_dark_btn->set_tooltip_text(
@@ -527,7 +555,8 @@ void ThemeEditDialog::build_button_row(Gtk::Box& root) {
     btn_row->set_margin_top(4);
     root.append(*btn_row);
 
-    m_btn_cancel = Gtk::make_managed<Gtk::Button>("Cancel");
+    m_btn_cancel = Gtk::make_managed<curvz::widgets::Button>(
+        "dlg_te_cnc", "Cancel");
     curvz::utils::set_name(m_btn_cancel, "dlg_te_cnc",
                            "theme_editor_dialog_cancel_btn");
     btn_row->append(*m_btn_cancel);
@@ -538,7 +567,8 @@ void ThemeEditDialog::build_button_row(Gtk::Box& root) {
     spacer->set_hexpand(true);
     btn_row->append(*spacer);
 
-    m_btn_reset = Gtk::make_managed<Gtk::Button>("Reset");
+    m_btn_reset = Gtk::make_managed<curvz::widgets::Button>(
+        "dlg_te_rst", "Reset");
     curvz::utils::set_name(m_btn_reset, "dlg_te_rst",
                            "theme_editor_dialog_reset_btn");
     m_btn_reset->set_tooltip_text(
@@ -546,7 +576,8 @@ void ThemeEditDialog::build_button_row(Gtk::Box& root) {
     btn_row->append(*m_btn_reset);
 
     m_btn_ok = Gtk::make_managed<curvz::widgets::Button>("dlg_te_ok", "OK");
-    // s199 m1 pilot — first heap-allocated dialog substrate widget.
+    // s199 m1 — first dialog substrate widget. s200 m2 — Cancel and
+    // Reset migrated alongside; the button row is now fully substrate.
     // The set_name call is preserved (same pattern as Toolbar.cpp's
     // migrated buttons): substrate ctor registers the script abbrev;
     // set_name keeps the GTK widget-name for CSS and remains the
@@ -863,7 +894,10 @@ void ThemeEditDialog::build_tab_colors_snap(Gtk::Box& page) {
             });
         row->append(*m_swatch_guides);
 
-        m_guides_visible_chk = Gtk::make_managed<Gtk::CheckButton>("Visible");
+        m_guides_visible_chk = Gtk::make_managed<curvz::widgets::CheckButton>(
+            "dlg_te_gd_vis", "Visible");
+        curvz::utils::set_name(m_guides_visible_chk, "dlg_te_gd_vis",
+                               "theme_editor_dialog_guides_visible_chk");
         m_guides_visible_chk->set_active(m_working.guides.visible);
         m_guides_visible_chk->signal_toggled().connect([this]() {
             if (m_syncing) return;
@@ -887,7 +921,10 @@ void ThemeEditDialog::build_tab_colors_snap(Gtk::Box& page) {
 
         auto sl = Gtk::StringList::create({"Pixels", "Inches",
                                            "Millimeters", "Points"});
-        m_units_dd = Gtk::make_managed<Gtk::DropDown>(sl);
+        m_units_dd = Gtk::make_managed<curvz::widgets::DropDown>(
+            "dlg_te_un", sl);
+        curvz::utils::set_name(m_units_dd, "dlg_te_un",
+                               "theme_editor_dialog_units_dd");
         m_units_dd->set_hexpand(true);
         // Index matches enum order: Px=0, In=1, Mm=2, Pt=3.
         m_units_dd->set_selected(
@@ -927,7 +964,10 @@ void ThemeEditDialog::build_tab_colors_snap(Gtk::Box& page) {
     // ── Snap ──────────────────────────────────────────────────────
     page.append(*make_subhead("Snap"));
     {
-        m_snap_enabled_chk = Gtk::make_managed<Gtk::CheckButton>("Enable snapping");
+        m_snap_enabled_chk = Gtk::make_managed<curvz::widgets::CheckButton>(
+            "dlg_te_sn_en", "Enable snapping");
+        curvz::utils::set_name(m_snap_enabled_chk, "dlg_te_sn_en",
+                               "theme_editor_dialog_snap_enabled_chk");
         m_snap_enabled_chk->set_margin_start(8);
         m_snap_enabled_chk->set_active(m_working.snap.enabled);
         m_snap_enabled_chk->signal_toggled().connect([this]() {
@@ -945,10 +985,22 @@ void ThemeEditDialog::build_tab_colors_snap(Gtk::Box& page) {
         grid->set_margin_start(24);
         grid->set_margin_top(2);
 
-        auto add_chk = [&](Gtk::CheckButton*& slot, const char* label,
+        // s200 m2 — sixth canonical instance of helper-signature-as-
+        // force-multiplier (after make_pop_row, make_icon_btn / make_btn /
+        // add_op, box_add_spin). add_chk threads an abbrev parameter so
+        // each of the 6 target CheckButtons constructs as substrate
+        // under its own script-addressable name. Per s198 m3's box_add_spin
+        // pattern, the helper does NOT call set_name internally — that
+        // happens at each call site with literal-string args, keeping
+        // widget_names_sync's harvester regex able to pick up the
+        // long-name annotation.
+        auto add_chk = [&](curvz::widgets::CheckButton*& slot,
+                           std::string_view abbrev,
+                           const char* label,
                            bool initial, auto setter,
                            int col, int row) {
-            slot = Gtk::make_managed<Gtk::CheckButton>(label);
+            slot = Gtk::make_managed<curvz::widgets::CheckButton>(
+                abbrev, label);
             slot->set_active(initial);
             slot->signal_toggled().connect(
                 [this, slot, setter]() {
@@ -958,24 +1010,36 @@ void ThemeEditDialog::build_tab_colors_snap(Gtk::Box& page) {
             grid->attach(*slot, col, row, 1, 1);
         };
 
-        add_chk(m_snap_guides_chk,  "Guides",
+        add_chk(m_snap_guides_chk,  "dlg_te_sn_gd", "Guides",
                 m_working.snap.snap_guides,
                 [](auto& s, bool v) { s.snap_guides = v; },  0, 0);
-        add_chk(m_snap_grid_chk,    "Grid",
+        curvz::utils::set_name(m_snap_guides_chk, "dlg_te_sn_gd",
+                               "theme_editor_dialog_snap_guides_chk");
+        add_chk(m_snap_grid_chk,    "dlg_te_sn_gr", "Grid",
                 m_working.snap.snap_grid,
                 [](auto& s, bool v) { s.snap_grid = v; },    1, 0);
-        add_chk(m_snap_margins_chk, "Margins",
+        curvz::utils::set_name(m_snap_grid_chk, "dlg_te_sn_gr",
+                               "theme_editor_dialog_snap_grid_chk");
+        add_chk(m_snap_margins_chk, "dlg_te_sn_mg", "Margins",
                 m_working.snap.snap_margins,
                 [](auto& s, bool v) { s.snap_margins = v; }, 2, 0);
-        add_chk(m_snap_nodes_chk,   "Nodes",
+        curvz::utils::set_name(m_snap_margins_chk, "dlg_te_sn_mg",
+                               "theme_editor_dialog_snap_margins_chk");
+        add_chk(m_snap_nodes_chk,   "dlg_te_sn_nd", "Nodes",
                 m_working.snap.snap_nodes,
                 [](auto& s, bool v) { s.snap_nodes = v; },   0, 1);
-        add_chk(m_snap_edges_chk,   "Edges",
+        curvz::utils::set_name(m_snap_nodes_chk, "dlg_te_sn_nd",
+                               "theme_editor_dialog_snap_nodes_chk");
+        add_chk(m_snap_edges_chk,   "dlg_te_sn_eg", "Edges",
                 m_working.snap.snap_edges,
                 [](auto& s, bool v) { s.snap_edges = v; },   1, 1);
-        add_chk(m_snap_centers_chk, "Centers",
+        curvz::utils::set_name(m_snap_edges_chk, "dlg_te_sn_eg",
+                               "theme_editor_dialog_snap_edges_chk");
+        add_chk(m_snap_centers_chk, "dlg_te_sn_cn", "Centers",
                 m_working.snap.snap_centers,
                 [](auto& s, bool v) { s.snap_centers = v; }, 2, 1);
+        curvz::utils::set_name(m_snap_centers_chk, "dlg_te_sn_cn",
+                               "theme_editor_dialog_snap_centers_chk");
 
         page.append(*grid);
     }
@@ -986,7 +1050,10 @@ void ThemeEditDialog::build_tab_grid(Gtk::Box& page) {
     // Enable + visible row.
     {
         auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-        m_grid_enabled_chk = Gtk::make_managed<Gtk::CheckButton>("Enabled");
+        m_grid_enabled_chk = Gtk::make_managed<curvz::widgets::CheckButton>(
+            "dlg_te_gr_en", "Enabled");
+        curvz::utils::set_name(m_grid_enabled_chk, "dlg_te_gr_en",
+                               "theme_editor_dialog_grid_enabled_chk");
         m_grid_enabled_chk->set_active(m_working.grid.enabled);
         m_grid_enabled_chk->signal_toggled().connect([this]() {
             if (m_syncing) return;
@@ -995,7 +1062,10 @@ void ThemeEditDialog::build_tab_grid(Gtk::Box& page) {
         });
         row->append(*m_grid_enabled_chk);
 
-        m_grid_visible_chk = Gtk::make_managed<Gtk::CheckButton>("Visible");
+        m_grid_visible_chk = Gtk::make_managed<curvz::widgets::CheckButton>(
+            "dlg_te_gr_vis", "Visible");
+        curvz::utils::set_name(m_grid_visible_chk, "dlg_te_gr_vis",
+                               "theme_editor_dialog_grid_visible_chk");
         m_grid_visible_chk->set_active(m_working.grid.visible);
         m_grid_visible_chk->signal_toggled().connect([this]() {
             if (m_syncing) return;
@@ -1004,7 +1074,10 @@ void ThemeEditDialog::build_tab_grid(Gtk::Box& page) {
         });
         row->append(*m_grid_visible_chk);
 
-        m_grid_dots_chk = Gtk::make_managed<Gtk::CheckButton>("Dots (not lines)");
+        m_grid_dots_chk = Gtk::make_managed<curvz::widgets::CheckButton>(
+            "dlg_te_gr_dot", "Dots (not lines)");
+        curvz::utils::set_name(m_grid_dots_chk, "dlg_te_gr_dot",
+                               "theme_editor_dialog_grid_dots_chk");
         m_grid_dots_chk->set_active(m_working.grid.dots);
         m_grid_dots_chk->signal_toggled().connect([this]() {
             if (m_syncing) return;
@@ -1111,7 +1184,10 @@ void ThemeEditDialog::build_tab_grid(Gtk::Box& page) {
         row->append(*lbl_a);
         auto adj = Gtk::Adjustment::create(
             m_working.grid.color_a * 100.0, 0.0, 100.0, 1.0, 10.0);
-        m_grid_alpha_pct = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+        m_grid_alpha_pct = Gtk::make_managed<curvz::widgets::SpinButton>(
+            "dlg_te_gr_a", adj, 1.0, 0);
+        curvz::utils::set_name(m_grid_alpha_pct, "dlg_te_gr_a",
+                               "theme_editor_dialog_grid_alpha_pct");
         m_grid_alpha_pct->signal_value_changed().connect([this]() {
             if (m_syncing) return;
             m_working.grid.color_a = m_grid_alpha_pct->get_value() / 100.0;
@@ -1127,7 +1203,10 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box& page) {
     // Enable + visible row.
     {
         auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-        m_margin_enabled_chk = Gtk::make_managed<Gtk::CheckButton>("Enabled");
+        m_margin_enabled_chk = Gtk::make_managed<curvz::widgets::CheckButton>(
+            "dlg_te_mg_en", "Enabled");
+        curvz::utils::set_name(m_margin_enabled_chk, "dlg_te_mg_en",
+                               "theme_editor_dialog_margin_enabled_chk");
         m_margin_enabled_chk->set_active(m_working.margins.enabled);
         m_margin_enabled_chk->signal_toggled().connect([this]() {
             if (m_syncing) return;
@@ -1136,7 +1215,10 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box& page) {
         });
         row->append(*m_margin_enabled_chk);
 
-        m_margin_visible_chk = Gtk::make_managed<Gtk::CheckButton>("Visible");
+        m_margin_visible_chk = Gtk::make_managed<curvz::widgets::CheckButton>(
+            "dlg_te_mg_vis", "Visible");
+        curvz::utils::set_name(m_margin_visible_chk, "dlg_te_mg_vis",
+                               "theme_editor_dialog_margin_visible_chk");
         m_margin_visible_chk->set_active(m_working.margins.visible);
         m_margin_visible_chk->signal_toggled().connect([this]() {
             if (m_syncing) return;
@@ -1233,10 +1315,19 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box& page) {
         container.append(*row);
     };
 
-    // Integer count helper (plain Gtk::SpinButton; no unit).
-    auto add_count_row = [this](Gtk::Box& container, const char* label,
+    // Integer count helper (plain SpinButton; no unit).
+    //
+    // s200 m2 — second helper-threading edit in this file (after the
+    // snap-target add_chk lambda above). Threads an abbrev parameter
+    // to the substrate ctor; set_name calls at each call site stay
+    // literal so widget_names_sync's harvester picks up the long
+    // names. Same shape as box_add_spin in PropertiesPanel.
+    auto add_count_row = [this](Gtk::Box& container,
+                                std::string_view abbrev,
+                                const char* label,
                                 int initial,
-                                Gtk::SpinButton*& slot, auto setter) {
+                                curvz::widgets::SpinButton*& slot,
+                                auto setter) {
         auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
         row->set_margin_start(8);
         auto* lbl = Gtk::make_managed<Gtk::Label>(label);
@@ -1245,7 +1336,8 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box& page) {
         row->append(*lbl);
 
         auto adj = Gtk::Adjustment::create(initial, 1, 999, 1.0, 10.0);
-        slot = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+        slot = Gtk::make_managed<curvz::widgets::SpinButton>(
+            abbrev, adj, 1.0, 0);
         slot->set_hexpand(true);
         slot->signal_value_changed().connect([this, slot, setter]() {
             if (m_syncing) return;
@@ -1273,16 +1365,22 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box& page) {
 
     // Columns.
     page.append(*make_subhead("Columns"));
-    add_count_row(page, "Count", m_working.margins.columns, m_margin_cols,
+    add_count_row(page, "dlg_te_mg_col", "Count",
+                  m_working.margins.columns, m_margin_cols,
                   [](auto& m, int v) { m.columns = v; });
+    curvz::utils::set_name(m_margin_cols, "dlg_te_mg_col",
+                           "theme_editor_dialog_margin_cols_spn");
     add_dim_row(page, "Gap", SpinType::Width, m_working.margins.col_gap,
                 m_margin_col_gap,
                 [](auto& m, double v) { m.col_gap = v; });
 
     // Rows.
     page.append(*make_subhead("Rows"));
-    add_count_row(page, "Count", m_working.margins.rows, m_margin_rows,
+    add_count_row(page, "dlg_te_mg_row", "Count",
+                  m_working.margins.rows, m_margin_rows,
                   [](auto& m, int v) { m.rows = v; });
+    curvz::utils::set_name(m_margin_rows, "dlg_te_mg_row",
+                           "theme_editor_dialog_margin_rows_spn");
     add_dim_row(page, "Gap", SpinType::Width, m_working.margins.row_gap,
                 m_margin_row_gap,
                 [](auto& m, double v) { m.row_gap = v; });
@@ -1321,7 +1419,10 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box& page) {
         row->append(*lbl_a);
         auto adj = Gtk::Adjustment::create(
             m_working.margins.color_a * 100.0, 0.0, 100.0, 1.0, 10.0);
-        m_margin_alpha_pct = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+        m_margin_alpha_pct = Gtk::make_managed<curvz::widgets::SpinButton>(
+            "dlg_te_mg_a", adj, 1.0, 0);
+        curvz::utils::set_name(m_margin_alpha_pct, "dlg_te_mg_a",
+                               "theme_editor_dialog_margin_alpha_pct");
         m_margin_alpha_pct->signal_value_changed().connect([this]() {
             if (m_syncing) return;
             m_working.margins.color_a = m_margin_alpha_pct->get_value() / 100.0;
@@ -1330,6 +1431,153 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box& page) {
         row->append(*m_margin_alpha_pct);
         page.append(*row);
     }
+}
+
+// ── sync_from_working ─────────────────────────────────────────────────────
+//
+// s200 m1 — re-populate every widget value from the current m_working +
+// m_preview_mode. Runs on every show() after the first (build() handles
+// the first show's initial values during widget construction). Under
+// m_syncing=true so the signal handlers we connected in build() don't
+// write the freshly-set values back into m_working as if they were user
+// edits.
+//
+// Mirror of build()'s initial-value reads, kept in lockstep. If you add
+// a new control to build(), add its read here too; the test protocol's
+// second open is what catches a missing entry.
+void ThemeEditDialog::sync_from_working() {
+    m_syncing = true;
+
+    // ── Identity ───────────────────────────────────────────────────
+    if (m_name_entry) {
+        m_name_entry->set_text(m_working.header.name);
+    }
+
+    // ── Mode toggle (body) ─────────────────────────────────────────
+    // Setting one of the linked pair active forces the other false
+    // via the radio group. Highlight follows.
+    if (m_mode_light_btn && m_mode_dark_btn) {
+        if (m_preview_mode == Motif::Light) {
+            m_mode_light_btn->set_active(true);
+        } else {
+            m_mode_dark_btn->set_active(true);
+        }
+        refresh_mode_toggle_highlight();
+    }
+
+    // ── Units (tab 1) ──────────────────────────────────────────────
+    // Display unit changed: update the dialog-local CanvasModel so
+    // CurvzSpinButton reads the new unit, then refresh every
+    // dimensional spinner so its already-stored internal-px value
+    // re-displays in the new unit. (We then set_internal_value
+    // below to update those internal values themselves.)
+    m_unit_model.display_unit = m_working.units.display_unit;
+    if (m_units_dd) {
+        m_units_dd->set_selected(
+            static_cast<guint>(m_working.units.display_unit));
+    }
+
+    // ── Guides (tab 1) ─────────────────────────────────────────────
+    if (m_guides_visible_chk) {
+        m_guides_visible_chk->set_active(m_working.guides.visible);
+    }
+    if (m_swatch_guides) m_swatch_guides->queue_draw();
+
+    // ── Snap (tab 1) ───────────────────────────────────────────────
+    if (m_snap_enabled_chk) {
+        m_snap_enabled_chk->set_active(m_working.snap.enabled);
+    }
+    if (m_snap_guides_chk)
+        m_snap_guides_chk->set_active(m_working.snap.snap_guides);
+    if (m_snap_grid_chk)
+        m_snap_grid_chk->set_active(m_working.snap.snap_grid);
+    if (m_snap_margins_chk)
+        m_snap_margins_chk->set_active(m_working.snap.snap_margins);
+    if (m_snap_nodes_chk)
+        m_snap_nodes_chk->set_active(m_working.snap.snap_nodes);
+    if (m_snap_edges_chk)
+        m_snap_edges_chk->set_active(m_working.snap.snap_edges);
+    if (m_snap_centers_chk)
+        m_snap_centers_chk->set_active(m_working.snap.snap_centers);
+
+    // ── Grid (tab 2) ───────────────────────────────────────────────
+    if (m_grid_enabled_chk)
+        m_grid_enabled_chk->set_active(m_working.grid.enabled);
+    if (m_grid_visible_chk)
+        m_grid_visible_chk->set_active(m_working.grid.visible);
+    if (m_grid_dots_chk)
+        m_grid_dots_chk->set_active(m_working.grid.dots);
+    if (m_grid_spacing_x) {
+        m_grid_spacing_x->set_internal_value(m_working.grid.spacing_x);
+        m_grid_spacing_x->refresh_units();
+    }
+    if (m_grid_spacing_y) {
+        m_grid_spacing_y->set_internal_value(m_working.grid.spacing_y);
+        m_grid_spacing_y->refresh_units();
+    }
+    if (m_grid_offset_x) {
+        m_grid_offset_x->set_internal_value(m_working.grid.offset_x);
+        m_grid_offset_x->refresh_units();
+    }
+    if (m_grid_offset_y) {
+        m_grid_offset_y->set_internal_value(m_working.grid.offset_y);
+        m_grid_offset_y->refresh_units();
+    }
+    if (m_swatch_grid) m_swatch_grid->queue_draw();
+    if (m_grid_alpha_pct) {
+        m_grid_alpha_pct->set_value(m_working.grid.color_a * 100.0);
+    }
+
+    // ── Margins (tab 3) ────────────────────────────────────────────
+    if (m_margin_enabled_chk)
+        m_margin_enabled_chk->set_active(m_working.margins.enabled);
+    if (m_margin_visible_chk)
+        m_margin_visible_chk->set_active(m_working.margins.visible);
+    if (m_margin_top) {
+        m_margin_top->set_internal_value(m_working.margins.top);
+        m_margin_top->refresh_units();
+    }
+    if (m_margin_bottom) {
+        m_margin_bottom->set_internal_value(m_working.margins.bottom);
+        m_margin_bottom->refresh_units();
+    }
+    if (m_margin_left) {
+        m_margin_left->set_internal_value(m_working.margins.left);
+        m_margin_left->refresh_units();
+    }
+    if (m_margin_right) {
+        m_margin_right->set_internal_value(m_working.margins.right);
+        m_margin_right->refresh_units();
+    }
+    if (m_margin_cols) {
+        m_margin_cols->set_value(
+            static_cast<double>(m_working.margins.columns));
+    }
+    if (m_margin_col_gap) {
+        m_margin_col_gap->set_internal_value(m_working.margins.col_gap);
+        m_margin_col_gap->refresh_units();
+    }
+    if (m_margin_rows) {
+        m_margin_rows->set_value(
+            static_cast<double>(m_working.margins.rows));
+    }
+    if (m_margin_row_gap) {
+        m_margin_row_gap->set_internal_value(m_working.margins.row_gap);
+        m_margin_row_gap->refresh_units();
+    }
+    if (m_swatch_margin) m_swatch_margin->queue_draw();
+    if (m_margin_alpha_pct) {
+        m_margin_alpha_pct->set_value(m_working.margins.color_a * 100.0);
+    }
+
+    // ── Live previews (thumbnail + motif swatches) ─────────────────
+    // The motif swatches are mode-aware draw callbacks reading
+    // m_working.motif via m_preview_mode; refresh queues their
+    // redraws after the mode/colour state change.
+    refresh_motif_swatches();
+    queue_thumbnail_redraw();
+
+    m_syncing = false;
 }
 
 // ── on_ok ─────────────────────────────────────────────────────────────────
@@ -1353,7 +1601,10 @@ void ThemeEditDialog::on_ok() {
     if (m_on_committed) {
         m_on_committed(m_working);
     }
-    if (m_window) m_window->close();
+    // s200 m1 — close() now triggers hide-on-close. The signal_close_request
+    // handler clears m_on_committed; firing the callback above before
+    // close() preserves the commit path.
+    close();
 }
 
 // ── on_cancel ─────────────────────────────────────────────────────────────
@@ -1361,7 +1612,10 @@ void ThemeEditDialog::on_ok() {
 // Discard m_working entirely. The host never hears about it. Close.
 void ThemeEditDialog::on_cancel() {
     LOG_DEBUG("ThemeEditDialog: cancel — discarding working buffer");
-    if (m_window) m_window->close();
+    // s200 m1 — close() now triggers hide-on-close. The signal_close_request
+    // handler clears m_on_committed so a stale closure can't fire from
+    // any unexpected path. Working buffer overwrites on next show().
+    close();
 }
 
 // ── on_reset ──────────────────────────────────────────────────────────────

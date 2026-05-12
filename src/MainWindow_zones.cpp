@@ -1609,13 +1609,16 @@ void MainWindow::setup_layout() {
 
   // s183 m2 — Edit-theme dialog wiring. Mirrors the StyleEditorDialog
   // request handler above. The panel emits when its row Edit (✎)
-  // button is clicked; we heap-allocate a ThemeEditDialog whose
-  // signal_close_request handler self-deletes via signal_idle.
-  // on_committed pushes UpdateThemeCommand against m_history (the
-  // panel-side closure handles the push; we just open the dialog).
-  // notify_changed() inside the panel's commit closure runs the
-  // refresh + on_changed cascade (canvas redraw + inspector +
-  // schedule_save), so the visual result follows immediately.
+  // button is clicked.
+  //
+  // s200 m1 — ThemeEditDialog is now a MainWindow member (hide-on-
+  // close singleton). show() prepares the editing buffer + callback
+  // and presents; close() hides. on_committed pushes UpdateThemeCommand
+  // against m_history (the panel-side closure handles the push; we
+  // just open the dialog). notify_changed() inside the panel's commit
+  // closure runs the refresh + on_changed cascade (canvas redraw +
+  // inspector + schedule_save), so the visual result follows
+  // immediately.
   m_themes.signal_request_theme_editor().connect(
       [this](theme::Theme initial,
              std::function<void(theme::Theme)> on_committed) {
@@ -1625,8 +1628,8 @@ void MainWindow::setup_layout() {
         // thumbnail; never the chrome.
         Motif initial_mode =
             (m_project ? m_project->motif : Motif::Dark);
-        new ThemeEditDialog(*this, std::move(initial), initial_mode,
-                             std::move(on_committed));
+        m_theme_edit_dialog.show(*this, std::move(initial),
+                                  initial_mode, std::move(on_committed));
       });
 
   content.container->append(

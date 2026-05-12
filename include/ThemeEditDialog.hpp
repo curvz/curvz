@@ -42,9 +42,28 @@
 //                      complete; m5 fills in the actual semantic.
 //   * OK             — fire on_committed(working) and close.
 //
-// Lifetime: dialog is heap-allocated and self-deletes via
-// signal_close_request → signal_idle → delete this. Same idiom as
-// StyleEditorDialog and the s126-canon factory dialogs.
+// Lifetime (s200 m1): hide-on-close singleton owned by MainWindow.
+// One instance lives for the app's lifetime; the widget tree is
+// built once on first show() (m_built latch) and re-populated from
+// the working theme on every subsequent show() via sync_from_working().
+// signal_close_request hides the window (set_hide_on_close(true))
+// and discards the working buffer — cancel semantics on the X.
+// OK fires on_committed and hides; Cancel hides without firing.
+//
+// This replaces the s199 m1 heap-allocated form (managed-window inner
+// + heap-allocated outer + signal_idle → delete this) once the
+// elevation question landed: the four "heap-allocated dialogs" in
+// Curvz were inherited convention rather than design conviction, and
+// six of eight long-lived windows already use the hide-on-close
+// singleton shape (HelpWindow, ShortcutsDialog, MacroEditorWindow,
+// MacroManagerWindow, ManageTemplatesDialog, NewDocumentDialog).
+// ThemeEditDialog joins them. See CANON "Check the elevation before
+// fixing" and the s200 conversation for the framing. The
+// force_unregister_subtree close-handler hook from s199 m1 is no
+// longer needed for this dialog — substrate widgets construct once
+// at MainWindow init and live until the app dies. The utility itself
+// stays in curvz::utils for its original PropertiesPanel inspector-
+// rebuild use.
 //
 // Why no per-property reset glyphs: deferred. v1 ships one global
 // mode-scoped Reset. If that proves too coarse, per-property reset
@@ -63,6 +82,14 @@
 #include "UnitSystem.hpp"     // Unit
 #include "ColorPickerPopover.hpp"
 #include "CurvzSpinButton.hpp"   // s183 m4 fix2 — unit-aware spinners
+
+// s200 m2 — substrate widget includes. The dialog's button row migrated
+// m_btn_ok in s199 m1; m2 sweeps the remaining 16 raw widgets.
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/ToggleButton.hpp"
+#include "curvz/widgets/CheckButton.hpp"
+#include "curvz/widgets/SpinButton.hpp"
+#include "curvz/widgets/DropDown.hpp"
 
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
@@ -83,7 +110,7 @@ namespace Curvz {
 
 class CurvzEntry;
 
-class ThemeEditDialog {
+class ThemeEditDialog : public Gtk::Window {
 public:
     // Fires once on OK with the result Theme. Caller pushes
     // UpdateThemeCommand against m_history. The committed theme's
@@ -91,27 +118,38 @@ public:
     // new id (it doesn't do New).
     using CommittedFn = std::function<void(theme::Theme result)>;
 
-    // Construct + show. Self-deletes on close.
+    // s200 m1 — default-constructed; the dialog is a MainWindow
+    // member and lives for the app's lifetime. The widget tree
+    // builds lazily on first show() via the m_built latch.
+    ThemeEditDialog();
+
+    ~ThemeEditDialog() override = default;
+
+    // Non-copyable, non-movable (Gtk::Window already enforces this
+    // via deleted ops on its base, but be explicit).
+    ThemeEditDialog(const ThemeEditDialog&) = delete;
+    ThemeEditDialog& operator=(const ThemeEditDialog&) = delete;
+
+    // Show the dialog with a fresh editing session.
     //
-    // parent       — transient-for. Required.
-    // initial      — starting Theme. header.id must be set.
-    // initial_mode — m3: which motif slot the thumbnail reads first.
+    // parent       — transient-for. Required. Re-applied each show()
+    //                so the dialog tracks whichever MainWindow is
+    //                hosting it (in case of future multi-window).
+    // initial      — starting Theme. header.id must be set. Copied
+    //                into the working buffer; cancel discards.
+    // initial_mode — which motif slot the thumbnail reads first.
     //                Pass the host app's current motif so the user
     //                opens the dialog and sees their actual working
     //                mode previewed; the toggle lets them flip the
     //                thumbnail to inspect the other mode without
     //                changing app chrome.
-    // on_committed — fires once on OK with the working theme.
-    ThemeEditDialog(Gtk::Window& parent,
-                    theme::Theme initial,
-                    Motif initial_mode,
-                    CommittedFn on_committed);
-
-    ~ThemeEditDialog();
-
-    // Non-copyable.
-    ThemeEditDialog(const ThemeEditDialog&) = delete;
-    ThemeEditDialog& operator=(const ThemeEditDialog&) = delete;
+    // on_committed — fires once on OK with the working theme. Stored
+    //                until the next show() (or until close clears
+    //                it on Cancel/X paths).
+    void show(Gtk::Window& parent,
+              theme::Theme initial,
+              Motif initial_mode,
+              CommittedFn on_committed);
 
 private:
     void build();
@@ -144,8 +182,19 @@ private:
     void on_cancel();
     void on_reset();   // m5 fills in the semantic; m2 is placeholder
 
+    // s200 m1 — re-populate every widget from the current m_working +
+    // m_preview_mode. Called from show() after state is set. Runs
+    // under m_syncing=true so signal handlers don't write back into
+    // the working buffer while we set values. Counterpart to build()'s
+    // initial value-reads — build() creates structure once, this
+    // refreshes values on every show().
+    void sync_from_working();
+
     // ── State ──────────────────────────────────────────────────────
-    Gtk::Window* m_window = nullptr;       // owns the dialog UI
+    // s200 m1 — m_built guards build() so the widget tree constructs
+    // once on first show() and stays in the singleton's tree until
+    // the app dies. Subsequent show() calls only run sync_from_working().
+    bool         m_built = false;
     theme::Theme m_working;                // edit-buffer; mutates as
                                            // user types/picks; OK
                                            // commits this value
@@ -160,18 +209,24 @@ private:
     CurvzEntry*  m_name_entry = nullptr;
 
     // ── Preview thumbnail (m3) ─────────────────────────────────────
-    Motif            m_preview_mode = Motif::Dark;
-    Gtk::DrawingArea* m_thumbnail   = nullptr;
-    Gtk::ToggleButton* m_mode_dark_btn  = nullptr;
-    Gtk::ToggleButton* m_mode_light_btn = nullptr;
+    Motif                          m_preview_mode = Motif::Dark;
+    Gtk::DrawingArea*              m_thumbnail   = nullptr;
+    curvz::widgets::ToggleButton*  m_mode_dark_btn  = nullptr;
+    curvz::widgets::ToggleButton*  m_mode_light_btn = nullptr;
 
     // ── Property controls (m4) ─────────────────────────────────────
     //
-    // Color popovers attached to m_window. One per logical colour
-    // slot — keeping them separate gives each its own session state
-    // (recents, hex history) and avoids the "one open popover that
-    // forgets which swatch summoned it" trap. Detached in the
-    // signal_close_request handler before window finalisation.
+    // Color popovers attached to the dialog window at first build().
+    // One per logical colour slot — keeping them separate gives each
+    // its own session state (recents, hex history) and avoids the
+    // "one open popover that forgets which swatch summoned it" trap.
+    //
+    // s200 m1 — singleton lifetime means popovers stay attached for
+    // the app's lifetime. No detach() in the close handler; hide-on-
+    // close keeps the window (and its popover children) alive between
+    // opens. The s199 m1 detach-before-finalisation discipline applied
+    // to the heap-allocated form where the window was being destroyed
+    // on close; that no longer happens.
     ColorPickerPopover m_motif_artboard_popover;
     ColorPickerPopover m_motif_workspace_popover;
     ColorPickerPopover m_motif_creation_popover;
@@ -180,50 +235,50 @@ private:
     ColorPickerPopover m_margin_popover;
 
     // Tab 1 — Colors & Snap
-    Gtk::DrawingArea* m_swatch_motif_artboard  = nullptr;
-    Gtk::DrawingArea* m_swatch_motif_workspace = nullptr;
-    Gtk::DrawingArea* m_swatch_motif_creation  = nullptr;
-    Gtk::DrawingArea* m_swatch_guides          = nullptr;
-    Gtk::CheckButton* m_guides_visible_chk     = nullptr;
-    Gtk::DropDown*    m_units_dd               = nullptr;
-    Gtk::CheckButton* m_snap_enabled_chk       = nullptr;
-    Gtk::CheckButton* m_snap_guides_chk        = nullptr;
-    Gtk::CheckButton* m_snap_grid_chk          = nullptr;
-    Gtk::CheckButton* m_snap_margins_chk       = nullptr;
-    Gtk::CheckButton* m_snap_nodes_chk         = nullptr;
-    Gtk::CheckButton* m_snap_edges_chk         = nullptr;
-    Gtk::CheckButton* m_snap_centers_chk       = nullptr;
+    Gtk::DrawingArea*           m_swatch_motif_artboard  = nullptr;
+    Gtk::DrawingArea*           m_swatch_motif_workspace = nullptr;
+    Gtk::DrawingArea*           m_swatch_motif_creation  = nullptr;
+    Gtk::DrawingArea*           m_swatch_guides          = nullptr;
+    curvz::widgets::CheckButton* m_guides_visible_chk    = nullptr;
+    curvz::widgets::DropDown*   m_units_dd               = nullptr;
+    curvz::widgets::CheckButton* m_snap_enabled_chk      = nullptr;
+    curvz::widgets::CheckButton* m_snap_guides_chk       = nullptr;
+    curvz::widgets::CheckButton* m_snap_grid_chk         = nullptr;
+    curvz::widgets::CheckButton* m_snap_margins_chk      = nullptr;
+    curvz::widgets::CheckButton* m_snap_nodes_chk        = nullptr;
+    curvz::widgets::CheckButton* m_snap_edges_chk        = nullptr;
+    curvz::widgets::CheckButton* m_snap_centers_chk      = nullptr;
 
     // Tab 2 — Grid
     // s183 m4 fix2: dimensional fields (spacing, offset) use
     // CurvzSpinButton so the units dropdown can rebrand them via
     // refresh_units(). Alpha % stays plain — it's a percent, not a
     // distance.
-    Gtk::CheckButton* m_grid_enabled_chk = nullptr;
-    Gtk::CheckButton* m_grid_visible_chk = nullptr;
-    Gtk::CheckButton* m_grid_dots_chk    = nullptr;
-    CurvzSpinButton*  m_grid_spacing_x   = nullptr;
-    CurvzSpinButton*  m_grid_spacing_y   = nullptr;
-    CurvzSpinButton*  m_grid_offset_x    = nullptr;
-    CurvzSpinButton*  m_grid_offset_y    = nullptr;
-    Gtk::SpinButton*  m_grid_alpha_pct   = nullptr;
-    Gtk::DrawingArea* m_swatch_grid      = nullptr;
+    curvz::widgets::CheckButton* m_grid_enabled_chk = nullptr;
+    curvz::widgets::CheckButton* m_grid_visible_chk = nullptr;
+    curvz::widgets::CheckButton* m_grid_dots_chk    = nullptr;
+    CurvzSpinButton*            m_grid_spacing_x   = nullptr;
+    CurvzSpinButton*            m_grid_spacing_y   = nullptr;
+    CurvzSpinButton*            m_grid_offset_x    = nullptr;
+    CurvzSpinButton*            m_grid_offset_y    = nullptr;
+    curvz::widgets::SpinButton* m_grid_alpha_pct   = nullptr;
+    Gtk::DrawingArea*           m_swatch_grid      = nullptr;
 
     // Tab 3 — Margins
     // s183 m4 fix2: dimensional fields (top/bottom/left/right, gaps)
     // use CurvzSpinButton. Counts (cols, rows) and alpha % stay plain.
-    Gtk::CheckButton* m_margin_enabled_chk = nullptr;
-    Gtk::CheckButton* m_margin_visible_chk = nullptr;
-    CurvzSpinButton*  m_margin_top    = nullptr;
-    CurvzSpinButton*  m_margin_bottom = nullptr;
-    CurvzSpinButton*  m_margin_left   = nullptr;
-    CurvzSpinButton*  m_margin_right  = nullptr;
-    Gtk::SpinButton*  m_margin_cols   = nullptr;
-    CurvzSpinButton*  m_margin_col_gap = nullptr;
-    Gtk::SpinButton*  m_margin_rows   = nullptr;
-    CurvzSpinButton*  m_margin_row_gap = nullptr;
-    Gtk::SpinButton*  m_margin_alpha_pct = nullptr;
-    Gtk::DrawingArea* m_swatch_margin = nullptr;
+    curvz::widgets::CheckButton* m_margin_enabled_chk = nullptr;
+    curvz::widgets::CheckButton* m_margin_visible_chk = nullptr;
+    CurvzSpinButton*            m_margin_top     = nullptr;
+    CurvzSpinButton*            m_margin_bottom  = nullptr;
+    CurvzSpinButton*            m_margin_left    = nullptr;
+    CurvzSpinButton*            m_margin_right   = nullptr;
+    curvz::widgets::SpinButton* m_margin_cols    = nullptr;
+    CurvzSpinButton*            m_margin_col_gap = nullptr;
+    curvz::widgets::SpinButton* m_margin_rows    = nullptr;
+    CurvzSpinButton*            m_margin_row_gap = nullptr;
+    curvz::widgets::SpinButton* m_margin_alpha_pct = nullptr;
+    Gtk::DrawingArea*           m_swatch_margin  = nullptr;
 
     // s183 m4 fix2 — Dialog-local CanvasModel that owns the
     // dialog's display_unit. CurvzSpinButton reads the unit from
@@ -240,9 +295,10 @@ private:
     Gtk::ScrolledWindow* m_props_scroll = nullptr;
 
     // ── Button row widgets ─────────────────────────────────────────
-    Gtk::Button* m_btn_cancel = nullptr;
-    Gtk::Button* m_btn_reset  = nullptr;
-    Gtk::Button* m_btn_ok     = nullptr;
+    // s199 m1 — m_btn_ok pilot; s200 m2 — Cancel and Reset migrated.
+    curvz::widgets::Button* m_btn_cancel = nullptr;
+    curvz::widgets::Button* m_btn_reset  = nullptr;
+    curvz::widgets::Button* m_btn_ok     = nullptr;
 
     // m_syncing: true while build() is populating widgets so the
     // signal handlers we connect don't read stale-buffer values
