@@ -11,6 +11,7 @@
 #include "CurvzEntry.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"
+#include "curvz/widgets/Button.hpp"  // s199 m1 pilot — OK button as substrate
 
 #include <giomm/liststore.h>
 #include <gtkmm/adjustment.h>
@@ -77,7 +78,13 @@ ThemeEditDialog::ThemeEditDialog(Gtk::Window& parent,
     , m_preview_mode(initial_mode) {
     m_window = Gtk::make_managed<Gtk::Window>();
     m_window->set_title("Edit Theme");
-    m_window->set_modal(true);
+    // s199 m1 — non-modal so the Scripter window stays accessible
+    // while the dialog is open (script-driven testing of the
+    // dialog's substrate widgets needs sibling-window focus). OK
+    // still closes via on_ok → m_window->close(); Cancel via
+    // on_cancel → m_window->close(); user-facing behaviour is
+    // otherwise identical to the prior modal version.
+    m_window->set_modal(false);
     // s183 m4 fix2: allow resize so user can drag to a usable size
     // on small screens. The notebook is the section that grows; the
     // ScrolledWindow inside build() bounds it on the shrink side.
@@ -110,6 +117,16 @@ ThemeEditDialog::ThemeEditDialog(Gtk::Window& parent,
     // lambda and we hook signal_close_request to delete `this` on the
     // next idle tick. Deferring via signal_idle avoids re-entering
     // GTK's own dispatch from inside the close-request handler.
+    //
+    // s199 m1 pilot — force_unregister_subtree call before the idle-
+    // delete schedule. GTK4 destroys widgets at idle priority, so the
+    // substrate widgets' dtor-driven registry unregister wouldn't run
+    // until *after* a same-tick re-open's substrate ctors had tried
+    // to register under the same abbrev. The walk runs the unregister
+    // synchronously now; the eventual dtor's unregister is idempotent
+    // so double-call is safe. Direct generalisation of s191 m7's
+    // PropertiesPanel::do_clear walk, lifted into curvz::utils for
+    // reuse across heap-allocated dialogs.
     m_window->signal_close_request().connect(
         [this]() -> bool {
             // Detach popovers BEFORE window finalisation. See
@@ -120,6 +137,9 @@ ThemeEditDialog::ThemeEditDialog(Gtk::Window& parent,
             m_guides_popover.detach();
             m_grid_popover.detach();
             m_margin_popover.detach();
+            // s199 m1 — synchronous registry cleanup before deferred
+            // widget destruction. See block-comment above.
+            curvz::utils::force_unregister_subtree(m_window);
             Glib::signal_idle().connect_once([this]() { delete this; });
             return false;  // allow default close to proceed
         }, /*after=*/false);
@@ -525,7 +545,12 @@ void ThemeEditDialog::build_button_row(Gtk::Box& root) {
         "Reset the currently-displayed mode's properties to defaults");
     btn_row->append(*m_btn_reset);
 
-    m_btn_ok = Gtk::make_managed<Gtk::Button>("OK");
+    m_btn_ok = Gtk::make_managed<curvz::widgets::Button>("dlg_te_ok", "OK");
+    // s199 m1 pilot — first heap-allocated dialog substrate widget.
+    // The set_name call is preserved (same pattern as Toolbar.cpp's
+    // migrated buttons): substrate ctor registers the script abbrev;
+    // set_name keeps the GTK widget-name for CSS and remains the
+    // long-name source the widget_names_sync harvester reads.
     curvz::utils::set_name(m_btn_ok, "dlg_te_ok",
                            "theme_editor_dialog_ok_btn");
     m_btn_ok->add_css_class("suggested-action");

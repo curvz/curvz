@@ -457,33 +457,23 @@ void PropertiesPanel::do_clear() {
   m_margin_sp_cgap = nullptr;
   m_margin_sp_rgap = nullptr;
 
-  // s191 m7 — force-unregister every Scriptable widget in the subtree
-  // BEFORE GTK's remove/destroy work runs. GTK4 destroys widgets at
-  // idle priority; under a self-rebuild click handler (lock toggle,
-  // delete buttons) the rebuild constructs new substrate widgets and
-  // tries to register them while the old ones are still alive in the
-  // about-to-be-destroyed subtree. Registry refuses the duplicate
-  // name, throws, app crashes. Replaces the s191 m6 signal_timeout(1ms)
-  // workaround, which was a timing patch on a lifecycle problem.
+  // s191 m7 / s199 m1 — force-unregister every Scriptable widget in
+  // the subtree BEFORE GTK's remove/destroy work runs. GTK4 destroys
+  // widgets at idle priority; under a self-rebuild click handler
+  // (lock toggle, delete buttons) the rebuild constructs new substrate
+  // widgets and tries to register them while the old ones are still
+  // alive in the about-to-be-destroyed subtree. Registry refuses the
+  // duplicate name, throws, app crashes. Replaces the s191 m6
+  // signal_timeout(1ms) workaround, which was a timing patch on a
+  // lifecycle problem.
   //
-  // The walk is recursive: Scriptable widgets can contain non-Scriptable
-  // children which can contain more Scriptable widgets. Each Scriptable
-  // we encounter gets unregister'd synchronously here; its dtor's
-  // unregister is idempotent so the eventual GTK-driven destruction
-  // is safe.
-  std::function<void(Gtk::Widget*)> walk = [&walk](Gtk::Widget* w) {
-    if (!w) return;
-    if (auto* s = dynamic_cast<curvz::scripting::Scriptable*>(w)) {
-      s->force_unregister();
-    }
-    for (Gtk::Widget* c = w->get_first_child(); c;
-         c = c->get_next_sibling()) {
-      walk(c);
-    }
-  };
+  // s199 m1 lifted the recursive walk into curvz::utils::
+  // force_unregister_subtree so other transient-widget owners
+  // (heap-allocated self-deleting dialogs) can use the same pump.
+  // Behaviour identical to the prior inline lambda.
   for (Gtk::Widget* c = m_inner.get_first_child(); c;
        c = c->get_next_sibling()) {
-    walk(c);
+    curvz::utils::force_unregister_subtree(c);
   }
 
   // Remove all children

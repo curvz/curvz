@@ -6,6 +6,7 @@
 #include "CurvzDocument.hpp"    // s132 m2 — doc.layers for counting pumps
 #include "CurvzProject.hpp"     // s167 m1 — find_by_iid walks project docs
 #include "CurvzLog.hpp"    // s126: diagnostics for confirm callback path
+#include "scripting/Scriptable.hpp"  // s199 m1 — force_unregister_subtree pump
 
 #include <algorithm>
 #include <cctype>
@@ -323,6 +324,34 @@ std::string iid_breadcrumb(const Curvz::CurvzProject& proj,
     // happen in practice (every node lives under some layer), but
     // degrade to just the node name rather than crashing or lying.
     return node->name;
+}
+
+// ── force_unregister_subtree (s199 m1) ──────────────────────────────
+// Lifted from PropertiesPanel::do_clear's inline lambda (s191 m7);
+// generalised so dialogs and other transient-widget owners can run
+// the same synchronous registry cleanup before their subtree gets
+// destroyed at GTK4 idle priority.
+//
+// Recursive walk over GTK4's get_first_child / get_next_sibling
+// linked list. Each Scriptable encountered is force_unregister()ed
+// synchronously; its dtor's unregister is idempotent so the
+// eventual deferred destruction is safe to double-call.
+//
+// Null-tolerant by design — callers in close-request handlers may
+// be passing in m_window before any guards.
+void force_unregister_subtree(Gtk::Widget* root) {
+    if (!root) return;
+    std::function<void(Gtk::Widget*)> walk = [&walk](Gtk::Widget* w) {
+        if (!w) return;
+        if (auto* s = dynamic_cast<curvz::scripting::Scriptable*>(w)) {
+            s->force_unregister();
+        }
+        for (Gtk::Widget* c = w->get_first_child(); c;
+             c = c->get_next_sibling()) {
+            walk(c);
+        }
+    };
+    walk(root);
 }
 
 // ── box_blur_argb32 ─────────────────────────────────────────────────

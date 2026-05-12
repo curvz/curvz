@@ -14,9 +14,11 @@
 //   count_anchors          recursive BezierNode count under a SceneNode
 //   doc_anchor_count       sum of count_anchors across non-guide layers
 //   doc_object_count       count of top-level visible objects in a doc
-//   find_by_iid            project-level SceneNode lookup by internal_id
-//                          (s167 m1 — id-based command captures pump)
-//   box_blur_argb32        in-place 3-pass box blur on ARGB32 pixels
+//   find_by_iid              project-level SceneNode lookup by internal_id
+//                            (s167 m1 — id-based command captures pump)
+//   force_unregister_subtree synchronous registry cleanup for a widget
+//                            subtree about to be destroyed (s199 m1)
+//   box_blur_argb32          in-place 3-pass box blur on ARGB32 pixels
 //                          (Cairo premultiplied, ≈ Gaussian)
 //   build_gradient_pattern FillStyle + bbox → Cairo::Pattern (linear/radial)
 //   render_drop_shadow_under blur+composite a host_pat shadow under cr
@@ -295,6 +297,42 @@ Curvz::CurvzDocument* find_doc_by_iid(const Curvz::CurvzProject& proj,
 // they should use the iid string directly, not this label.
 std::string iid_breadcrumb(const Curvz::CurvzProject& proj,
                            const std::string& iid);
+
+// ── force_unregister_subtree (s199 m1) ───────────────────────────────
+// Walk a widget subtree and synchronously force-unregister every
+// curvz::scripting::Scriptable in it. Lifted from PropertiesPanel::
+// do_clear's inline lambda (s191 m7); generalised here so any caller
+// that's about to destroy a subtree containing substrate widgets can
+// do the registry cleanup synchronously, before GTK4's deferred
+// idle-priority widget destruction runs.
+//
+// Use cases:
+//   1. Inspector self-rebuild (PropertiesPanel::do_clear) — the
+//      original s191 m7 site, now delegating to this pump.
+//   2. Heap-allocated dialogs that self-delete on close
+//      (ThemeEditDialog, StyleEditorDialog, ManageTemplatesDialog,
+//      NewDocumentDialog). The dialog's signal_close_request handler
+//      calls this on the dialog's top-level window BEFORE scheduling
+//      idle-delete; on the next open, the registry is clean and the
+//      new substrate ctors don't collide with the soon-to-be-destroyed
+//      old widgets.
+//
+// The walk is recursive: Scriptable widgets can contain non-Scriptable
+// children which can contain more Scriptable widgets. Each Scriptable
+// encountered gets unregister'd synchronously; its dtor's unregister
+// is idempotent (registry::erase on missing name is a no-op) so the
+// eventual GTK-driven destruction is safe.
+//
+// Null-tolerant: passing nullptr is a no-op. Safe to call after a
+// widget has already been removed from its parent (no children → no
+// walk).
+//
+// This is the structural fix for the "two simultaneously-live
+// Scriptables under the same name" hazard that the registry's
+// throw-on-duplicate enforces — same shape every time:
+// deferred-destruction of the old leaves the registry entry alive
+// past when the new tries to register.
+void force_unregister_subtree(Gtk::Widget* root);
 
 // ── box_blur_argb32 ──────────────────────────────────────────────────
 // In-place blur of an ARGB32 (Cairo premultiplied, BGRA byte order on

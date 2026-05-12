@@ -1,0 +1,94 @@
+# 22_dialog_rebuild_pilot — substrate-layer pilot for the dialog-
+# rebuild pattern (s199 m1).
+#
+# Pilot scope: prove that a heap-allocated, self-deleting dialog can
+# hold substrate widgets across multiple open/close cycles without
+# the registry's duplicate-name throw firing on the second open.
+#
+# Why this test exists:
+#
+# Heap-allocated dialogs (ThemeEditDialog, StyleEditorDialog,
+# ManageTemplatesDialog, NewDocumentDialog) are constructed on the
+# fly with `new ThemeEditDialog(...)` and self-delete via
+# signal_close_request → signal_idle delete this. GTK4 destroys
+# widgets at idle priority, so the substrate widgets inside the
+# dialog don't actually fire their dtor (and the registry
+# unregister) until *after* the deferred deletion completes. A
+# second open of the dialog reconstructs the substrate widgets —
+# and if the previous open's widgets are still in the registry when
+# the new ones try to register, ScriptableRegistry::register_object
+# throws on the duplicate name and the app crashes.
+#
+# s191 m7 solved the same problem for the inspector self-rebuild
+# case via a recursive walk that called force_unregister
+# synchronously on every Scriptable in the subtree, before GTK's
+# deferred destruction ran. s199 m1 lifts that walk into
+# curvz::utils::force_unregister_subtree and adds it to
+# ThemeEditDialog's close handler.
+#
+# Pilot scope deliberately narrow: only `m_btn_ok` is migrated to
+# substrate. Every other widget in ThemeEditDialog stays raw
+# Gtk::Button / Gtk::CheckButton / etc. If the pilot works, the
+# pattern scales mechanically to the rest of the dialog (next
+# session) and to the other heap-allocated dialogs.
+#
+# The one widget migrated:
+#
+#   dlg_te_ok    OK button (commits the working buffer and closes)
+#
+# Modality note: the dialog was modal pre-s199-m1 and is now
+# non-modal. The change lets the Scripter window keep focus while
+# the dialog is open so this script can run. User-facing behaviour
+# otherwise unchanged — OK still commits and closes, Cancel still
+# discards and closes, the close-X still discards and closes.
+#
+# Test protocol — REQUIRES TWO MANUAL DIALOG OPENS:
+#
+# This script can't open the dialog itself. The Edit-theme button
+# on ThemesPanel is the only path to ThemeEditDialog, and
+# ThemesPanel isn't substrate-migrated yet (blocked on the
+# dynamic-widget naming question — see LEDGER "Open questions").
+# Manual opens are bracketed by script runs that drive the
+# substrate-side behaviour.
+#
+#   1. Open Curvz with a fresh / default document and project.
+#   2. Open the Scripter window.
+#   3. Load this script.
+#   4. **Manually**: in the Themes panel (inspector sidebar), click
+#      the Edit icon on any theme row. ThemeEditDialog opens. The
+#      Scripter stays accessible (non-modal).
+#   5. Switch back to the Scripter and run the script. The script:
+#        - asserts dlg_te_ok label == "OK"
+#        - dlg_te_ok click → on_ok fires, commits, closes window.
+#      Close handler runs force_unregister_subtree(m_window),
+#      synchronously removing dlg_te_ok from the registry. Idle
+#      delete runs after the script line returns.
+#   6. **Manually**: click the Edit icon again to reopen the Theme
+#      Editor. **This is where the bug would manifest pre-fix** —
+#      without force_unregister_subtree, the second open's
+#      substrate ctor would throw "duplicate Scriptable name
+#      'dlg_te_ok'" and crash Curvz.
+#   7. Run the script a second time. Should produce identical PASS
+#      results — proves the registry was cleaned and the second
+#      open registered fresh.
+#
+# If both runs PASS and Curvz doesn't crash between steps 5 and 6,
+# the pilot is green and the pattern is proven.
+#
+# DSL note: Button substrate exposes `click` (invoke) and `label`
+# (query). The label is a String — quote literals.
+
+#[sub] Dialog OK button — resolves and has the expected label.
+
+assert dlg_te_ok label == "OK"
+
+#[sub] Dialog OK button — click commits and closes.
+#[sub] After this line the dialog is closing; force_unregister_subtree
+#[sub] runs synchronously inside the close handler, so dlg_te_ok is
+#[sub] gone from the registry by the time control returns.
+
+dlg_te_ok click
+
+#[sub] Done. Run this script once per Theme Editor open. If both
+#[sub] runs PASS and Curvz didn't crash between manual opens, the
+#[sub] force_unregister_subtree pump is doing its job.
