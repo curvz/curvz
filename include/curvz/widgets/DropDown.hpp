@@ -53,7 +53,13 @@ protected:
     void bind_canonical() override;
 
 private:
-    Glib::RefPtr<Gtk::StringList> m_model;
+    // s197 m2: the model is read on demand from Gtk::DropDown::get_model()
+    // and cast to Gtk::StringList. Previously this was stored as an
+    // m_model member, which went stale when call sites swapped the model
+    // at runtime via set_model() (palette picker in Toolbar.cpp is the
+    // canonical case). Reading via get_model() means the base widget is
+    // the single source of truth; runtime swaps just work.
+    const Gtk::StringList* current_model() const;
 };
 
 } // namespace curvz::widgets

@@ -1,0 +1,78 @@
+# 17_toolbar_oneoffs_buttons — substrate-layer suite for the top-level
+# toolbar one-off buttons (s197 m1).
+#
+# Substrate-style test (per TESTING.md grandfather clause). Each
+# sub-test proves the substrate contract holds — abbrev resolves,
+# the label query reads back. All buttons in this slice are icon-only
+# (set_icon_name, no set_label), so the label query returns "" — that
+# round-trip is the substrate-contract assertion.
+#
+# Scope (s197 m1): the four top-level toolbar one-off button sets
+# expanded to 18 substrate widgets via helper-signature threading
+# (same shape as s196 m1's make_pop_row migration):
+#
+#   macro button     tb_mb           (1 widget — top-level toolbar)
+#
+#   stroke popover   pop_tb_strk_cb / cr / cs   (Cap: Butt / Round / Square)
+#                    pop_tb_strk_jm / jr / jb   (Join: Miter / Round / Bevel)
+#
+#   align popover    pop_tb_align_l / ch / r / t / cv / b   (6 align)
+#                    pop_tb_align_dh / dv                   (2 distribute)
+#
+#   bool popover     tb_bop_un / sb / in        (Union / Subtract / Intersect)
+#
+# All 18 buttons are icon-only. The substrate contract verified here
+# is: abbrev → ScriptableRegistry resolution → query_leaf dispatch →
+# get_label() returning empty string.
+#
+# Side effects: none. The Button substrate's `click` verb is not
+# exercised — these buttons emit signals (sig_align, sig_bool_op,
+# sig_macro_run) that depend on canvas selection state, and firing
+# them with no selection would either no-op (align gates on
+# align_enabled, bool gates on bool_enabled) or change application
+# state in ways the test can't restore. Substrate-addressability +
+# verb dispatch are already proven across the corpus; this test
+# focuses on the new abbrevs landing in the registry cleanly.
+#
+# Test protocol:
+#   1. Open the Scripter window.
+#   2. Load this script.
+#   3. Run. Every line should PASS.
+
+#[sub] Macro button — icon-only, label is empty.
+
+assert tb_mb label == ""
+
+#[sub] Stroke popover cap buttons — three icon-only buttons.
+
+assert pop_tb_strk_cb label == ""
+assert pop_tb_strk_cr label == ""
+assert pop_tb_strk_cs label == ""
+
+#[sub] Stroke popover join buttons — three icon-only buttons.
+
+assert pop_tb_strk_jm label == ""
+assert pop_tb_strk_jr label == ""
+assert pop_tb_strk_jb label == ""
+
+#[sub] Align popover align row — six icon-only buttons (L / CH / R / T / CV / B).
+
+assert pop_tb_align_l  label == ""
+assert pop_tb_align_ch label == ""
+assert pop_tb_align_r  label == ""
+assert pop_tb_align_t  label == ""
+assert pop_tb_align_cv label == ""
+assert pop_tb_align_b  label == ""
+
+#[sub] Align popover distribute row — two icon-only buttons (DH / DV).
+
+assert pop_tb_align_dh label == ""
+assert pop_tb_align_dv label == ""
+
+#[sub] Bool popover — three icon-only buttons (Union / Subtract / Intersect).
+
+assert tb_bop_un label == ""
+assert tb_bop_sb label == ""
+assert tb_bop_in label == ""
+
+#[sub] Done. 18 new substrate widgets, all addressable.

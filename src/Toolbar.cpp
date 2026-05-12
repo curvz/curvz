@@ -313,12 +313,12 @@ struct Toolbar::Impl {
     Gtk::Label                    width_label;  // "Width (in):" — unit-aware
 
     // Cap/Join buttons — icon buttons, active state via CSS
-    Gtk::Button*                  cap_butt_btn   = nullptr;
-    Gtk::Button*                  cap_round_btn  = nullptr;
-    Gtk::Button*                  cap_square_btn = nullptr;
-    Gtk::Button*                  join_miter_btn = nullptr;
-    Gtk::Button*                  join_round_btn = nullptr;
-    Gtk::Button*                  join_bevel_btn = nullptr;
+    curvz::widgets::Button*       cap_butt_btn   = nullptr;
+    curvz::widgets::Button*       cap_round_btn  = nullptr;
+    curvz::widgets::Button*       cap_square_btn = nullptr;
+    curvz::widgets::Button*       join_miter_btn = nullptr;
+    curvz::widgets::Button*       join_round_btn = nullptr;
+    curvz::widgets::Button*       join_bevel_btn = nullptr;
 
     // Defaults state — what the next placed object inherits. m_def_*
     // ↔ def_* under the s153 sub-ship 3 rename.
@@ -341,10 +341,10 @@ struct Toolbar::Impl {
     // Per-popover picker widgets (managed by host Box; we keep refs
     // for refresh_*_popover and the rebuild path).
     Gtk::Box*                     fill_picker_section   = nullptr;
-    Gtk::DropDown*                fill_palette_dd       = nullptr;
+    curvz::widgets::DropDown*     fill_palette_dd       = nullptr;
     Gtk::FlowBox*                 fill_chip_flow        = nullptr;
     Gtk::Box*                     stroke_picker_section = nullptr;
-    Gtk::DropDown*                stroke_palette_dd     = nullptr;
+    curvz::widgets::DropDown*     stroke_palette_dd     = nullptr;
     Gtk::FlowBox*                 stroke_chip_flow      = nullptr;
 
     // S87 m1 v2: pointers to the colour rows so refresh_*_popover can
@@ -953,7 +953,7 @@ void Toolbar::Impl::build() {
         macro_sep->set_margin_bottom(4);
         self->append(*macro_sep);
 
-        auto* macro_btn = Gtk::make_managed<Gtk::Button>();
+        auto* macro_btn = Gtk::make_managed<curvz::widgets::Button>("tb_mb");
         curvz::utils::set_name(macro_btn, "tb_mb", "main_toolbar_macro_btn");
         macro_btn->set_icon_name("media-record-symbolic");
         macro_btn->set_tooltip_text(
@@ -2183,9 +2183,16 @@ void Toolbar::Impl::build_stroke_popover() {
     return hbox;
   };
 
-  // Helper: create an icon button for cap/join
-  auto make_icon_btn = [](const char* icon, const char* tip) -> Gtk::Button* {
-    auto *btn = Gtk::make_managed<Gtk::Button>();
+  // Helper: create an icon button for cap/join.
+  // abbrev is threaded through to the substrate ctor so the button is
+  // scriptable on construction. Long-name annotation stays at the call
+  // site as a curvz::utils::set_name() line — harvester needs literal
+  // strings to populate widget_names.db. Same shape as s196 m1's
+  // make_pop_row migration: substrate ctor invisible to harvester, so
+  // threading abbrev through doesn't break the harvest.
+  auto make_icon_btn = [](std::string_view abbrev, const char* icon,
+                          const char* tip) -> curvz::widgets::Button* {
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>(abbrev);
     btn->set_icon_name(icon);
     btn->set_has_frame(false);
     btn->add_css_class("tb-icon-btn");
@@ -2194,11 +2201,11 @@ void Toolbar::Impl::build_stroke_popover() {
   };
 
   auto *cap_row = make_section("Cap");
-  cap_butt_btn   = make_icon_btn("curvz-cap-butt-symbolic",   "Butt");
+  cap_butt_btn   = make_icon_btn("pop_tb_strk_cb", "curvz-cap-butt-symbolic",   "Butt");
   curvz::utils::set_name(cap_butt_btn, "pop_tb_strk_cb", "popover_toolbar_stroke_cap_butt_btn");
-  cap_round_btn  = make_icon_btn("curvz-cap-round-symbolic",  "Round");
+  cap_round_btn  = make_icon_btn("pop_tb_strk_cr", "curvz-cap-round-symbolic",  "Round");
   curvz::utils::set_name(cap_round_btn, "pop_tb_strk_cr", "popover_toolbar_stroke_cap_round_btn");
-  cap_square_btn = make_icon_btn("curvz-cap-square-symbolic", "Square");
+  cap_square_btn = make_icon_btn("pop_tb_strk_cs", "curvz-cap-square-symbolic", "Square");
   curvz::utils::set_name(cap_square_btn, "pop_tb_strk_cs", "popover_toolbar_stroke_cap_square_btn");
   cap_butt_btn->signal_clicked().connect([this]() {
     def_stroke.cap = LineCap::Butt;
@@ -2220,11 +2227,11 @@ void Toolbar::Impl::build_stroke_popover() {
   cap_row->append(*cap_square_btn);
 
   auto *join_row = make_section("Join");
-  join_miter_btn = make_icon_btn("curvz-join-miter-symbolic", "Miter");
+  join_miter_btn = make_icon_btn("pop_tb_strk_jm", "curvz-join-miter-symbolic", "Miter");
   curvz::utils::set_name(join_miter_btn, "pop_tb_strk_jm", "popover_toolbar_stroke_join_miter_btn");
-  join_round_btn = make_icon_btn("curvz-join-round-symbolic", "Round");
+  join_round_btn = make_icon_btn("pop_tb_strk_jr", "curvz-join-round-symbolic", "Round");
   curvz::utils::set_name(join_round_btn, "pop_tb_strk_jr", "popover_toolbar_stroke_join_round_btn");
-  join_bevel_btn = make_icon_btn("curvz-join-bevel-symbolic", "Bevel");
+  join_bevel_btn = make_icon_btn("pop_tb_strk_jb", "curvz-join-bevel-symbolic", "Bevel");
   curvz::utils::set_name(join_bevel_btn, "pop_tb_strk_jb", "popover_toolbar_stroke_join_bevel_btn");
   join_miter_btn->signal_clicked().connect([this]() {
     def_stroke.join = LineJoin::Miter;
@@ -2984,12 +2991,16 @@ void Toolbar::Impl::build_align_popover() {
   // automatic — disabled state flows through CSS opacity on the
   // popover or button, so no per-button motif handling is needed.
   // s184 m2: replaced the cairo-drawn DrawingArea+draw_align_icon path.
-  auto make_btn = [&](const char* icon_name, AlignOp op,
-                      const std::string &tip) -> Gtk::Button * {
+  // s197 m1: abbrev threaded through to the substrate ctor — same shape
+  // as the stroke-popover make_icon_btn and s196 m1's make_pop_row.
+  // Long-name annotation stays at each call site as a curvz::utils::set_name()
+  // line for harvester compatibility.
+  auto make_btn = [&](std::string_view abbrev, const char* icon_name,
+                      AlignOp op, const std::string &tip) -> curvz::widgets::Button* {
     auto *img = Gtk::make_managed<Gtk::Image>();
     img->set_from_icon_name(icon_name);
     img->set_pixel_size(22);
-    auto *btn = Gtk::make_managed<Gtk::Button>();
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>(abbrev);
     btn->set_child(*img);
     btn->set_has_frame(false);
     btn->add_css_class("tb-icon-btn");
@@ -3004,32 +3015,32 @@ void Toolbar::Impl::build_align_popover() {
   // ── Align row (6 buttons: L CH R / T CV B) ────────────────────────────
   // We lay them out as two sub-rows for clarity
   auto *align_h_row = make_section("Align");
-  Gtk::Button *al_btn;
-  al_btn = make_btn("curvz-align-left-symbolic", AlignOp::AlignLeft, "Align left edges");
+  curvz::widgets::Button *al_btn;
+  al_btn = make_btn("pop_tb_align_l",  "curvz-align-left-symbolic",     AlignOp::AlignLeft,    "Align left edges");
   curvz::utils::set_name(al_btn, "pop_tb_align_l", "popover_toolbar_align_left_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn("curvz-align-center-h-symbolic", AlignOp::AlignCenterH, "Center on vertical axis");
+  al_btn = make_btn("pop_tb_align_ch", "curvz-align-center-h-symbolic", AlignOp::AlignCenterH, "Center on vertical axis");
   curvz::utils::set_name(al_btn, "pop_tb_align_ch", "popover_toolbar_align_center_h_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn("curvz-align-right-symbolic", AlignOp::AlignRight, "Align right edges");
+  al_btn = make_btn("pop_tb_align_r",  "curvz-align-right-symbolic",    AlignOp::AlignRight,   "Align right edges");
   curvz::utils::set_name(al_btn, "pop_tb_align_r", "popover_toolbar_align_right_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn("curvz-align-top-symbolic", AlignOp::AlignTop, "Align top edges");
+  al_btn = make_btn("pop_tb_align_t",  "curvz-align-top-symbolic",      AlignOp::AlignTop,     "Align top edges");
   curvz::utils::set_name(al_btn, "pop_tb_align_t", "popover_toolbar_align_top_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn("curvz-align-center-v-symbolic", AlignOp::AlignCenterV, "Center on horizontal axis");
+  al_btn = make_btn("pop_tb_align_cv", "curvz-align-center-v-symbolic", AlignOp::AlignCenterV, "Center on horizontal axis");
   curvz::utils::set_name(al_btn, "pop_tb_align_cv", "popover_toolbar_align_center_v_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn("curvz-align-bottom-symbolic", AlignOp::AlignBottom, "Align bottom edges");
+  al_btn = make_btn("pop_tb_align_b",  "curvz-align-bottom-symbolic",   AlignOp::AlignBottom,  "Align bottom edges");
   curvz::utils::set_name(al_btn, "pop_tb_align_b", "popover_toolbar_align_bottom_btn");
   align_h_row->append(*al_btn);
 
   // ── Distribute row ─────────────────────────────────────────────────────
   auto *dist_row = make_section("Distribute");
-  al_btn = make_btn("curvz-distribute-h-symbolic", AlignOp::DistributeH, "Distribute horizontally (equal gaps)");
+  al_btn = make_btn("pop_tb_align_dh", "curvz-distribute-h-symbolic", AlignOp::DistributeH, "Distribute horizontally (equal gaps)");
   curvz::utils::set_name(al_btn, "pop_tb_align_dh", "popover_toolbar_distribute_h_btn");
   dist_row->append(*al_btn);
-  al_btn = make_btn("curvz-distribute-v-symbolic", AlignOp::DistributeV, "Distribute vertically (equal gaps)");
+  al_btn = make_btn("pop_tb_align_dv", "curvz-distribute-v-symbolic", AlignOp::DistributeV, "Distribute vertically (equal gaps)");
   curvz::utils::set_name(al_btn, "pop_tb_align_dv", "popover_toolbar_distribute_v_btn");
   dist_row->append(*al_btn);
 
@@ -3286,15 +3297,18 @@ void Toolbar::Impl::build_bool_popover() {
   auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   row->set_spacing(4);
 
-  auto add_op = [&](const char* icon_name, const char* tip,
-                    BoolOp op, const char* name_short,
-                    const char* name_long) {
-    auto* b = Gtk::make_managed<Gtk::Button>();
+  // s197 m1: abbrev threaded through to the substrate ctor; the old
+  // set_name(b, name_short, name_long) call inside this lambda was
+  // invisible to the harvester anyway (no literal strings), so the
+  // long-name annotations are lifted to the call sites where they ARE
+  // literal — same shape as stroke and align popovers in this session.
+  auto add_op = [&](std::string_view abbrev, const char* icon_name,
+                    const char* tip, BoolOp op) -> curvz::widgets::Button* {
+    auto* b = Gtk::make_managed<curvz::widgets::Button>(abbrev);
     b->set_icon_name(icon_name);
     b->set_has_frame(false);
     b->add_css_class("tool-btn");
     b->set_tooltip_text(tip);
-    curvz::utils::set_name(b, name_short, name_long);
     b->signal_clicked().connect([this, op, icon_name]() {
       bool_pop.popdown();
       bool_btn.set_icon_name(icon_name);
@@ -3306,14 +3320,15 @@ void Toolbar::Impl::build_bool_popover() {
       if (!pre_set) sig_bool_op.emit(op);
     });
     row->append(*b);
+    return b;
   };
 
-  add_op("curvz-union-symbolic",     "Union",     BoolOp::Union,
-         "tb_bop_un", "popover_bool_union_btn");
-  add_op("curvz-subtract-symbolic",  "Subtract",  BoolOp::Subtract,
-         "tb_bop_sb", "popover_bool_subtract_btn");
-  add_op("curvz-intersect-symbolic", "Intersect", BoolOp::Intersect,
-         "tb_bop_in", "popover_bool_intersect_btn");
+  auto* op_un = add_op("tb_bop_un", "curvz-union-symbolic",     "Union",     BoolOp::Union);
+  curvz::utils::set_name(op_un, "tb_bop_un", "popover_bool_union_btn");
+  auto* op_sb = add_op("tb_bop_sb", "curvz-subtract-symbolic",  "Subtract",  BoolOp::Subtract);
+  curvz::utils::set_name(op_sb, "tb_bop_sb", "popover_bool_subtract_btn");
+  auto* op_in = add_op("tb_bop_in", "curvz-intersect-symbolic", "Intersect", BoolOp::Intersect);
+  curvz::utils::set_name(op_in, "tb_bop_in", "popover_bool_intersect_btn");
 
   outer->append(*row);
   bool_pop.set_child(*outer);
@@ -4744,11 +4759,19 @@ void Toolbar::Impl::build_swatch_picker_section(Gtk::Box& outer, bool is_stroke)
     title->set_hexpand(true);
     header->append(*title);
 
-    auto* dd = Gtk::make_managed<Gtk::DropDown>();
+    // s197 m2: palette DropDown migrated to curvz::widgets::DropDown.
+    // The abbrev is picked by the is_stroke branch (pop_tb_fill_pdd vs
+    // pop_tb_strk_pdd) since the picker section is built once per slot.
+    // The initial model is an empty StringList; rebuild_palette_dropdown
+    // swaps it for the real palette list once swatch_library is wired —
+    // that runtime swap is the discriminator the substrate's structural
+    // m_model removal (this session) was designed to support: queries
+    // walk get_model() on demand rather than a stored copy that would
+    // go stale.
+    auto* dd = Gtk::make_managed<curvz::widgets::DropDown>(
+        is_stroke ? "pop_tb_strk_pdd" : "pop_tb_fill_pdd",
+        Gtk::StringList::create({}));
     dd->add_css_class("tb-palette-dd");
-    // Initial empty model — rebuild_palette_dropdown swaps real entries
-    // in once a library is wired.
-    dd->set_model(Gtk::StringList::create({}));
     header->append(*dd);
     section->append(*header);
 

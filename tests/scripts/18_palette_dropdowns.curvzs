@@ -1,0 +1,71 @@
+# 18_palette_dropdowns — substrate-layer suite for the fill/stroke
+# palette DropDowns in the toolbar swatch-picker section (s197 m2).
+#
+# Substrate-style test (per TESTING.md grandfather clause). Each
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back.
+#
+# Scope (s197 m2): the two palette DropDowns inside
+# build_swatch_picker_section, one per slot:
+#
+#   pop_tb_fill_pdd   Fill swatch-picker palette dropdown
+#   pop_tb_strk_pdd   Stroke swatch-picker palette dropdown
+#
+# Architectural note (the discriminator): these dropdowns are
+# constructed with an EMPTY StringList model, then have their model
+# swapped at runtime via dd->set_model(sl) inside
+# rebuild_palette_dropdown() once the swatch library is wired. The
+# pre-s197-m2 substrate stored Glib::RefPtr<Gtk::StringList> m_model
+# at construction and walked THAT member for script queries — so
+# after a runtime swap, m_model was stale and queries would return
+# data from the empty initial model. The s197 m2 structural fix
+# drops m_model storage entirely; current_model() reads the live
+# model back from Gtk::DropDown::get_model() on every query. This
+# test proves the live read works: the "All" sentinel is the row
+# rebuild_palette_dropdown unconditionally seeds at index 0, so a
+# `text == "All"` assertion only passes if the substrate is seeing
+# the post-swap model.
+#
+# Side effects: the dropdowns are walked through their entries and
+# restored to selected == 0 (the launch default — "All" sentinel,
+# set by rebuild_palette_dropdown's set_selected(0) call). No
+# palette is selected mid-test for an extended period.
+#
+# Test protocol:
+#   1. Open the Scripter window with a project that has at least one
+#      swatch library wired (the default new-document template ships
+#      one — should be true at any time the Scripter is reachable).
+#   2. Load this script.
+#   3. Run. Every line should PASS.
+
+#[sub] Fill palette dropdown — "All" sentinel wins at index 0 (post-swap model live).
+
+assert pop_tb_fill_pdd selected == 0
+assert pop_tb_fill_pdd text == "All"
+
+#[sub] Stroke palette dropdown — same default state, independent slot.
+
+assert pop_tb_strk_pdd selected == 0
+assert pop_tb_strk_pdd text == "All"
+
+#[sub] Fill palette dropdown — pick "All" by name (no-op restoration, but exercises the pick verb).
+
+pop_tb_fill_pdd pick "All"
+assert pop_tb_fill_pdd selected == 0
+assert pop_tb_fill_pdd text == "All"
+
+#[sub] Stroke palette dropdown — pick "All" by name.
+
+pop_tb_strk_pdd pick "All"
+assert pop_tb_strk_pdd selected == 0
+assert pop_tb_strk_pdd text == "All"
+
+#[sub] Fill palette dropdown — display the count (palette-library-dependent, just `get`).
+
+get pop_tb_fill_pdd count
+
+#[sub] Stroke palette dropdown — display the count.
+
+get pop_tb_strk_pdd count
+
+#[sub] Done. 2 new substrate widgets, both addressable; structural model-read verified.
