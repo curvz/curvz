@@ -8,6 +8,8 @@
 // only in s186/s187 when only the Node tool used the wrapper).
 #include "curvz/widgets/Button.hpp"
 #include "curvz/widgets/CheckButton.hpp"
+#include "curvz/widgets/DropDown.hpp"
+#include "curvz/widgets/SpinButton.hpp"
 #include "curvz/widgets/ToggleButton.hpp"
 #include <algorithm>
 #include <cairomm/context.h>
@@ -164,15 +166,19 @@ struct Toolbar::Impl {
     // ── s153 sub-ship 2d: text popover ────────────────────────────────────
     // Text placement popover. More state than the other 2b/2c popovers:
     // x/y/size adjustments + font family DropDown + bold/italic
-    // CheckButtons (held by value as in the original design) + anchor
-    // DropDown. All emit signal_place_text on Place click.
+    // s196 m3: text_bold_btn / text_italic_btn flipped from
+    // value-held Gtk::CheckButton to pointer-held substrate
+    // curvz::widgets::CheckButton — the substrate's constructor takes
+    // the abbrev, which has to happen at build_text_popover() time, not
+    // at Impl default-construction. Family / anchor dropdowns
+    // similarly upgraded to substrate.
     Gtk::Popover                  text_pop;
     Glib::RefPtr<Gtk::Adjustment> text_adj_x, text_adj_y, text_adj_size;
     Gtk::Label*                   text_unit_lbl     = nullptr;
-    Gtk::DropDown*                text_family_drop  = nullptr;
-    Gtk::CheckButton              text_bold_btn;
-    Gtk::CheckButton              text_italic_btn;
-    Gtk::DropDown*                text_anchor_drop  = nullptr;
+    curvz::widgets::DropDown*     text_family_drop  = nullptr;
+    curvz::widgets::CheckButton*  text_bold_btn     = nullptr;
+    curvz::widgets::CheckButton*  text_italic_btn   = nullptr;
+    curvz::widgets::DropDown*     text_anchor_drop  = nullptr;
 
     // ── s153 sub-ship 2e: polygon + spiral popovers ──────────────────────
     // The two heaviest placement popovers — each owns a 160×160 Cairo
@@ -3653,7 +3659,8 @@ void Toolbar::Impl::build_ref_popover(Gtk::ToggleButton *ref_btn) {
   x_lbl->set_width_chars(3);
 
   ref_adj_x = Gtk::Adjustment::create(0.0, -1e6, 1e6, 0.000001, 10.0);
-  auto *x_spin = Gtk::make_managed<Gtk::SpinButton>(ref_adj_x, 0.000001, 6);
+  auto *x_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "pop_tb_ref_x", ref_adj_x, 0.000001, 6);
   curvz::utils::set_name(x_spin, "pop_tb_ref_x", "popover_toolbar_ref_x_spn");
   x_spin->set_hexpand(true);
   x_spin->set_width_chars(12);
@@ -3672,7 +3679,8 @@ void Toolbar::Impl::build_ref_popover(Gtk::ToggleButton *ref_btn) {
   y_lbl->set_width_chars(3);
 
   ref_adj_y = Gtk::Adjustment::create(0.0, -1e6, 1e6, 0.000001, 10.0);
-  auto *y_spin = Gtk::make_managed<Gtk::SpinButton>(ref_adj_y, 0.000001, 6);
+  auto *y_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "pop_tb_ref_y", ref_adj_y, 0.000001, 6);
   curvz::utils::set_name(y_spin, "pop_tb_ref_y", "popover_toolbar_ref_y_spn");
   y_spin->set_hexpand(true);
   y_spin->set_width_chars(12);
@@ -3692,7 +3700,8 @@ void Toolbar::Impl::build_ref_popover(Gtk::ToggleButton *ref_btn) {
   btn_row->set_spacing(6);
   btn_row->set_halign(Gtk::Align::END);
 
-  auto *place_btn = Gtk::make_managed<Gtk::Button>("Place");
+  auto *place_btn = Gtk::make_managed<curvz::widgets::Button>(
+      "pop_tb_ref_pl", "Place");
   curvz::utils::set_name(place_btn, "pop_tb_ref_pl", "popover_toolbar_ref_place_btn");
   place_btn->add_css_class("suggested-action");
   place_btn->signal_clicked().connect([this]() {
@@ -3762,8 +3771,18 @@ static Gtk::Box *make_pop_outer(const char *title) {
 // helper and called set_name inside, but that hides the literals from
 // the harvester — the set_name body sees only variable names, not the
 // caller's strings.
+//
+// s196 m1: helper now constructs a curvz::widgets::SpinButton (not raw
+// Gtk::SpinButton) so the spin registers itself in the script registry.
+// The abbrev is threaded through the helper as a substrate-ctor arg —
+// that's safe for the harvester because widget_names_sync only ever
+// looks at literal strings inside curvz::utils::set_name(...) and the
+// named-funnel calls, not at substrate constructors. Callers still pass
+// abbrev to set_name(...) at the call site for the long_name harvest;
+// the two abbrevs are required to match.
 static Glib::RefPtr<Gtk::Adjustment> make_pop_row(Gtk::Box *outer,
                                                   const char *label,
+                                                  std::string_view abbrev,
                                                   Gtk::SpinButton **out_spin = nullptr) {
   auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   row->set_spacing(8);
@@ -3773,7 +3792,8 @@ static Glib::RefPtr<Gtk::Adjustment> make_pop_row(Gtk::Box *outer,
   lbl->set_width_chars(4);
   row->append(*lbl);
   auto adj = Gtk::Adjustment::create(0.0, -1e6, 1e6, 0.000001, 10.0);
-  auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, 0.000001, 6);
+  auto *spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+      abbrev, adj, 0.000001, 6);
   spin->set_hexpand(true);
   spin->set_width_chars(10);
   spin->set_numeric(true);
@@ -3807,13 +3827,13 @@ void Toolbar::Impl::build_rect_popover(Gtk::ToggleButton *btn) {
   auto *outer = make_pop_outer("Place Rectangle");
   Gtk::SpinButton *rec_x_spin = nullptr, *rec_y_spin = nullptr,
                   *rec_w_spin = nullptr, *rec_h_spin = nullptr;
-  rect_adj_x = make_pop_row(outer, "X:", &rec_x_spin);
+  rect_adj_x = make_pop_row(outer, "X:", "pop_tb_rec_x", &rec_x_spin);
   curvz::utils::set_name(rec_x_spin, "pop_tb_rec_x", "popover_toolbar_rect_x_spn");
-  rect_adj_y = make_pop_row(outer, "Y:", &rec_y_spin);
+  rect_adj_y = make_pop_row(outer, "Y:", "pop_tb_rec_y", &rec_y_spin);
   curvz::utils::set_name(rec_y_spin, "pop_tb_rec_y", "popover_toolbar_rect_y_spn");
-  rect_adj_w = make_pop_row(outer, "W:", &rec_w_spin);
+  rect_adj_w = make_pop_row(outer, "W:", "pop_tb_rec_w", &rec_w_spin);
   curvz::utils::set_name(rec_w_spin, "pop_tb_rec_w", "popover_toolbar_rect_w_spn");
-  rect_adj_h = make_pop_row(outer, "H:", &rec_h_spin);
+  rect_adj_h = make_pop_row(outer, "H:", "pop_tb_rec_h", &rec_h_spin);
   curvz::utils::set_name(rec_h_spin, "pop_tb_rec_h", "popover_toolbar_rect_h_spn");
   rect_adj_w->set_lower(0.000001);
   rect_adj_h->set_lower(0.000001);
@@ -3827,7 +3847,8 @@ void Toolbar::Impl::build_rect_popover(Gtk::ToggleButton *btn) {
 
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<Gtk::Button>("Place");
+  auto *place = Gtk::make_managed<curvz::widgets::Button>(
+      "pop_tb_rec_pl", "Place");
   curvz::utils::set_name(place, "pop_tb_rec_pl", "popover_toolbar_rect_place_btn");
   place->add_css_class("suggested-action");
   place->signal_clicked().connect([this]() {
@@ -3865,13 +3886,13 @@ void Toolbar::Impl::build_ellipse_popover(Gtk::ToggleButton *btn) {
   auto *outer = make_pop_outer("Place Ellipse");
   Gtk::SpinButton *ova_x_spin = nullptr, *ova_y_spin = nullptr,
                   *ova_w_spin = nullptr, *ova_h_spin = nullptr;
-  ellipse_adj_x = make_pop_row(outer, "X:", &ova_x_spin);
+  ellipse_adj_x = make_pop_row(outer, "X:", "pop_tb_ova_x", &ova_x_spin);
   curvz::utils::set_name(ova_x_spin, "pop_tb_ova_x", "popover_toolbar_ellipse_x_spn");
-  ellipse_adj_y = make_pop_row(outer, "Y:", &ova_y_spin);
+  ellipse_adj_y = make_pop_row(outer, "Y:", "pop_tb_ova_y", &ova_y_spin);
   curvz::utils::set_name(ova_y_spin, "pop_tb_ova_y", "popover_toolbar_ellipse_y_spn");
-  ellipse_adj_w = make_pop_row(outer, "W:", &ova_w_spin);
+  ellipse_adj_w = make_pop_row(outer, "W:", "pop_tb_ova_w", &ova_w_spin);
   curvz::utils::set_name(ova_w_spin, "pop_tb_ova_w", "popover_toolbar_ellipse_w_spn");
-  ellipse_adj_h = make_pop_row(outer, "H:", &ova_h_spin);
+  ellipse_adj_h = make_pop_row(outer, "H:", "pop_tb_ova_h", &ova_h_spin);
   curvz::utils::set_name(ova_h_spin, "pop_tb_ova_h", "popover_toolbar_ellipse_h_spn");
   ellipse_adj_w->set_lower(0.000001);
   ellipse_adj_h->set_lower(0.000001);
@@ -3885,7 +3906,8 @@ void Toolbar::Impl::build_ellipse_popover(Gtk::ToggleButton *btn) {
 
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<Gtk::Button>("Place");
+  auto *place = Gtk::make_managed<curvz::widgets::Button>(
+      "pop_tb_ova_pl", "Place");
   curvz::utils::set_name(place, "pop_tb_ova_pl", "popover_toolbar_ellipse_place_btn");
   place->add_css_class("suggested-action");
   place->signal_clicked().connect([this]() {
@@ -3928,13 +3950,13 @@ void Toolbar::Impl::build_line_popover(Gtk::ToggleButton *btn) {
   auto *outer = make_pop_outer("Place Line");
   Gtk::SpinButton *lin_x1_spin = nullptr, *lin_y1_spin = nullptr,
                   *lin_x2_spin = nullptr, *lin_y2_spin = nullptr;
-  line_adj_x1 = make_pop_row(outer, "X1:", &lin_x1_spin);
+  line_adj_x1 = make_pop_row(outer, "X1:", "pop_tb_lin_x1", &lin_x1_spin);
   curvz::utils::set_name(lin_x1_spin, "pop_tb_lin_x1", "popover_toolbar_line_x1_spn");
-  line_adj_y1 = make_pop_row(outer, "Y1:", &lin_y1_spin);
+  line_adj_y1 = make_pop_row(outer, "Y1:", "pop_tb_lin_y1", &lin_y1_spin);
   curvz::utils::set_name(lin_y1_spin, "pop_tb_lin_y1", "popover_toolbar_line_y1_spn");
-  line_adj_x2 = make_pop_row(outer, "X2:", &lin_x2_spin);
+  line_adj_x2 = make_pop_row(outer, "X2:", "pop_tb_lin_x2", &lin_x2_spin);
   curvz::utils::set_name(lin_x2_spin, "pop_tb_lin_x2", "popover_toolbar_line_x2_spn");
-  line_adj_y2 = make_pop_row(outer, "Y2:", &lin_y2_spin);
+  line_adj_y2 = make_pop_row(outer, "Y2:", "pop_tb_lin_y2", &lin_y2_spin);
   curvz::utils::set_name(lin_y2_spin, "pop_tb_lin_y2", "popover_toolbar_line_y2_spn");
   line_adj_x1->set_value(100);
   line_adj_y1->set_value(500);
@@ -3948,7 +3970,8 @@ void Toolbar::Impl::build_line_popover(Gtk::ToggleButton *btn) {
 
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<Gtk::Button>("Place");
+  auto *place = Gtk::make_managed<curvz::widgets::Button>(
+      "pop_tb_lin_pl", "Place");
   curvz::utils::set_name(place, "pop_tb_lin_pl", "popover_toolbar_line_place_btn");
   place->add_css_class("suggested-action");
   place->signal_clicked().connect([this]() {
@@ -3981,8 +4004,10 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
       text_adj_y->set_value(ch * 0.75);
     if (text_adj_size)
       text_adj_size->set_value(72.0);  // always points
-    text_bold_btn.set_active(false);
-    text_italic_btn.set_active(false);
+    if (text_bold_btn)
+      text_bold_btn->set_active(false);
+    if (text_italic_btn)
+      text_italic_btn->set_active(false);
     if (text_anchor_drop)
       text_anchor_drop->set_selected(0);
   });
@@ -3992,15 +4017,15 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
   // X / Y position
   Gtk::SpinButton *txt_x_spin = nullptr, *txt_y_spin = nullptr,
                   *txt_sz_spin = nullptr;
-  text_adj_x = make_pop_row(outer, "X:", &txt_x_spin);
+  text_adj_x = make_pop_row(outer, "X:", "pop_tb_txt_x", &txt_x_spin);
   curvz::utils::set_name(txt_x_spin, "pop_tb_txt_x", "popover_toolbar_text_x_spn");
-  text_adj_y = make_pop_row(outer, "Y:", &txt_y_spin);
+  text_adj_y = make_pop_row(outer, "Y:", "pop_tb_txt_y", &txt_y_spin);
   curvz::utils::set_name(txt_y_spin, "pop_tb_txt_y", "popover_toolbar_text_y_spn");
   text_adj_x->set_value(100);
   text_adj_y->set_value(500);
 
   // Font size — always in points
-  text_adj_size = make_pop_row(outer, "Size (pt):", &txt_sz_spin);
+  text_adj_size = make_pop_row(outer, "Size (pt):", "pop_tb_txt_sz", &txt_sz_spin);
   curvz::utils::set_name(txt_sz_spin, "pop_tb_txt_sz", "popover_toolbar_text_size_spn");
   text_adj_size->set_lower(1.0);
   text_adj_size->set_upper(2000.0);
@@ -4038,7 +4063,8 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
         sans_idx = i;
     }
 
-    text_family_drop = Gtk::make_managed<Gtk::DropDown>(slist);
+    text_family_drop = Gtk::make_managed<curvz::widgets::DropDown>(
+        "pop_tb_txt_fam", slist);
     curvz::utils::set_name(text_family_drop, "pop_tb_txt_fam", "popover_toolbar_text_font_family_dd");
     text_family_drop->set_enable_search(true);
     text_family_drop->set_selected(sans_idx);
@@ -4051,12 +4077,14 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
   {
     auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     row->set_spacing(12);
-    text_bold_btn.set_label("Bold");
+    text_bold_btn = Gtk::make_managed<curvz::widgets::CheckButton>(
+        "pop_tb_txt_b", "Bold");
     curvz::utils::set_name(text_bold_btn, "pop_tb_txt_b", "popover_toolbar_text_bold_check");
-    text_italic_btn.set_label("Italic");
+    text_italic_btn = Gtk::make_managed<curvz::widgets::CheckButton>(
+        "pop_tb_txt_i", "Italic");
     curvz::utils::set_name(text_italic_btn, "pop_tb_txt_i", "popover_toolbar_text_italic_check");
-    row->append(text_bold_btn);
-    row->append(text_italic_btn);
+    row->append(*text_bold_btn);
+    row->append(*text_italic_btn);
     outer->append(*row);
   }
 
@@ -4071,7 +4099,8 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
     row->append(*lbl);
     auto anchor_items =
         Gtk::StringList::create({"Left", "Centre", "Right", "Justify"});
-    text_anchor_drop = Gtk::make_managed<Gtk::DropDown>(anchor_items);
+    text_anchor_drop = Gtk::make_managed<curvz::widgets::DropDown>(
+        "pop_tb_txt_an", anchor_items);
     curvz::utils::set_name(text_anchor_drop, "pop_tb_txt_an", "popover_toolbar_text_anchor_dd");
     text_anchor_drop->set_selected(0);
     text_anchor_drop->set_hexpand(true);
@@ -4082,7 +4111,8 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
   // Place button
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<Gtk::Button>("Place");
+  auto *place = Gtk::make_managed<curvz::widgets::Button>(
+      "pop_tb_txt_pl", "Place");
   curvz::utils::set_name(place, "pop_tb_txt_pl", "popover_toolbar_text_place_btn");
   place->add_css_class("suggested-action");
   place->signal_clicked().connect([this]() {
@@ -4100,8 +4130,8 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
       if (sl && sel != GTK_INVALID_LIST_POSITION)
         family = sl->get_string(sel);
     }
-    bool bold = text_bold_btn.get_active();
-    bool italic = text_italic_btn.get_active();
+    bool bold = text_bold_btn && text_bold_btn->get_active();
+    bool italic = text_italic_btn && text_italic_btn->get_active();
     std::string anchor = "start";
     std::string align = "left";
     if (text_anchor_drop) {
@@ -4353,7 +4383,8 @@ void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
   sides_lbl->set_width_chars(8);
   sides_row->append(*sides_lbl);
   poly_adj_sides = Gtk::Adjustment::create(poly_sides, 3, 64, 1, 5);
-  auto *sides_spin = Gtk::make_managed<Gtk::SpinButton>(poly_adj_sides, 1, 0);
+  auto *sides_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "pop_tb_pol_sd", poly_adj_sides, 1, 0);
   curvz::utils::set_name(sides_spin, "pop_tb_pol_sd", "popover_toolbar_polygon_sides_spn");
   sides_spin->set_hexpand(true);
   sides_row->append(*sides_spin);
@@ -4370,7 +4401,8 @@ void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
   poly_adj_inflect =
       Gtk::Adjustment::create(poly_inflection * 100.0, 1.0, 100.0, 0.5, 5.0);
   auto *inf_spin =
-      Gtk::make_managed<Gtk::SpinButton>(poly_adj_inflect, 0.5, 1);
+      Gtk::make_managed<curvz::widgets::SpinButton>(
+          "pop_tb_pol_in", poly_adj_inflect, 0.5, 1);
   curvz::utils::set_name(inf_spin, "pop_tb_pol_in", "popover_toolbar_polygon_inflect_spn");
   inf_spin->set_hexpand(true);
   inf_row->append(*inf_spin);
@@ -4385,11 +4417,11 @@ void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
   // ── Placement fields ──────────────────────────────────────────────────
   Gtk::SpinButton *pol_cx_spin = nullptr, *pol_cy_spin = nullptr,
                   *pol_r_spin  = nullptr;
-  poly_adj_cx = make_pop_row(outer, "CX:", &pol_cx_spin);
+  poly_adj_cx = make_pop_row(outer, "CX:", "pop_tb_pol_cx", &pol_cx_spin);
   curvz::utils::set_name(pol_cx_spin, "pop_tb_pol_cx", "popover_toolbar_polygon_cx_spn");
-  poly_adj_cy = make_pop_row(outer, "CY:", &pol_cy_spin);
+  poly_adj_cy = make_pop_row(outer, "CY:", "pop_tb_pol_cy", &pol_cy_spin);
   curvz::utils::set_name(pol_cy_spin, "pop_tb_pol_cy", "popover_toolbar_polygon_cy_spn");
-  poly_adj_r = make_pop_row(outer, "R:", &pol_r_spin);
+  poly_adj_r = make_pop_row(outer, "R:", "pop_tb_pol_r", &pol_r_spin);
   curvz::utils::set_name(pol_r_spin, "pop_tb_pol_r", "popover_toolbar_polygon_r_spn");
   poly_adj_cx->set_value(500);
   poly_adj_cy->set_value(500);
@@ -4403,7 +4435,8 @@ void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
 
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<Gtk::Button>("Place");
+  auto *place = Gtk::make_managed<curvz::widgets::Button>(
+      "pop_tb_pol_pl", "Place");
   curvz::utils::set_name(place, "pop_tb_pol_pl", "popover_toolbar_polygon_place_btn");
   place->add_css_class("suggested-action");
   place->signal_clicked().connect([this]() {
@@ -4605,7 +4638,8 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
   spiral_adj_turns =
       Gtk::Adjustment::create(spiral_turns, 0.25, 20.0, 0.25, 1.0);
   auto *turns_spin =
-      Gtk::make_managed<Gtk::SpinButton>(spiral_adj_turns, 0.25, 2);
+      Gtk::make_managed<curvz::widgets::SpinButton>(
+          "pop_tb_spi_tn", spiral_adj_turns, 0.25, 2);
   curvz::utils::set_name(turns_spin, "pop_tb_spi_tn", "popover_toolbar_spiral_turns_spn");
   turns_spin->set_hexpand(true);
   turns_row->append(*turns_spin);
@@ -4622,7 +4656,8 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
   spiral_adj_inner =
       Gtk::Adjustment::create(spiral_inner, 0.0, 95.0, 1.0, 5.0);
   auto *inner_spin =
-      Gtk::make_managed<Gtk::SpinButton>(spiral_adj_inner, 1.0, 1);
+      Gtk::make_managed<curvz::widgets::SpinButton>(
+          "pop_tb_spi_ir", spiral_adj_inner, 1.0, 1);
   curvz::utils::set_name(inner_spin, "pop_tb_spi_ir", "popover_toolbar_spiral_inner_r_spn");
   inner_spin->set_hexpand(true);
   inner_row->append(*inner_spin);
@@ -4637,11 +4672,11 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
   // ── Placement fields ──────────────────────────────────────────────────
   Gtk::SpinButton *spi_cx_spin = nullptr, *spi_cy_spin = nullptr,
                   *spi_r_spin  = nullptr;
-  spiral_adj_cx = make_pop_row(outer, "CX:", &spi_cx_spin);
+  spiral_adj_cx = make_pop_row(outer, "CX:", "pop_tb_spi_cx", &spi_cx_spin);
   curvz::utils::set_name(spi_cx_spin, "pop_tb_spi_cx", "popover_toolbar_spiral_cx_spn");
-  spiral_adj_cy = make_pop_row(outer, "CY:", &spi_cy_spin);
+  spiral_adj_cy = make_pop_row(outer, "CY:", "pop_tb_spi_cy", &spi_cy_spin);
   curvz::utils::set_name(spi_cy_spin, "pop_tb_spi_cy", "popover_toolbar_spiral_cy_spn");
-  spiral_adj_r = make_pop_row(outer, "R:", &spi_r_spin);
+  spiral_adj_r = make_pop_row(outer, "R:", "pop_tb_spi_r", &spi_r_spin);
   curvz::utils::set_name(spi_r_spin, "pop_tb_spi_r", "popover_toolbar_spiral_r_spn");
   spiral_adj_cx->set_value(500);
   spiral_adj_cy->set_value(500);
@@ -4655,7 +4690,8 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
 
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<Gtk::Button>("Place");
+  auto *place = Gtk::make_managed<curvz::widgets::Button>(
+      "pop_tb_spi_pl", "Place");
   curvz::utils::set_name(place, "pop_tb_spi_pl", "popover_toolbar_spiral_place_btn");
   place->add_css_class("suggested-action");
   place->signal_clicked().connect([this]() {

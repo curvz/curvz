@@ -1,0 +1,84 @@
+# 15_polygon_spiral_popovers — substrate-layer suite for the
+# Polygon and Spiral placement popovers' standalone widgets (s196 m2).
+#
+# Substrate-style test (per TESTING.md grandfather clause). Each
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back. SpinButtons exercise the
+# set/value round-trip; Place buttons read their label.
+#
+# Scope (s196 m2): the standalone widgets in the Polygon and
+# Spiral popovers — sides/inflect for polygon, turns/inner for
+# spiral, plus both Place buttons. The position SpinButtons in
+# these popovers (cx / cy / r) were migrated in s196 m1 as a side
+# effect of the make_pop_row helper signature change; they're
+# already covered by test 14.
+#
+# DSL note (from m1, repeated here for self-containment): the DSL
+# lexer is kind-strict and assert uses no int/double coercion.
+# SpinButton `value` queries return Double regardless of the
+# `digits` constructor argument. Round-number literals must be
+# written `5.0`, not `5`, or the assert fails with the misleading
+# message `FAIL expected 5, got 5`.
+#
+# The tested abbrevs:
+#
+#   Polygon popover  pop_tb_pol_sd  (Sides — int range 3-64, digits 0)
+#                    pop_tb_pol_in  (Inflect % — 1.0-100.0, digits 1)
+#                    pop_tb_pol_pl  (Place Button)
+#
+#   Spiral popover   pop_tb_spi_tn  (Turns — 0.25-20.0, digits 2)
+#                    pop_tb_spi_ir  (Inner r % — 0.0-95.0, digits 1)
+#                    pop_tb_spi_pl  (Place Button)
+#
+# Test protocol:
+#   1. Open the Scripter window.
+#   2. Load this script.
+#   3. Run. Every line should PASS.
+#
+# Side effects: SpinButton values are written to test set/value
+# round-trip. Right-clicking the relevant tool re-seeds them from
+# stored defaults on popup-open (poly_sides / poly_inflection /
+# spiral_turns / spiral_inner are pulled into the spinners), so
+# the residual values are harmless — they'll be overwritten the
+# next time the user opens the popover. Place buttons are NOT
+# clicked (would actually emit place signals and add nodes to the
+# document). Label read-back is enough substrate-contract coverage
+# for a Button.
+
+#[sub] Polygon popover — Place button label.
+
+assert pop_tb_pol_pl label == "Place"
+
+#[sub] Polygon popover — sides SpinButton round-trip.
+
+pop_tb_pol_sd set 5.0
+assert pop_tb_pol_sd value == 5.0
+pop_tb_pol_sd set 8.0
+assert pop_tb_pol_sd value == 8.0
+
+#[sub] Polygon popover — inflect SpinButton round-trip.
+
+pop_tb_pol_in set 50.0
+assert pop_tb_pol_in value == 50.0
+pop_tb_pol_in set 75.5
+assert pop_tb_pol_in value == 75.5
+
+#[sub] Spiral popover — Place button label.
+
+assert pop_tb_spi_pl label == "Place"
+
+#[sub] Spiral popover — turns SpinButton round-trip.
+
+pop_tb_spi_tn set 3.5
+assert pop_tb_spi_tn value == 3.5
+pop_tb_spi_tn set 7.25
+assert pop_tb_spi_tn value == 7.25
+
+#[sub] Spiral popover — inner r % SpinButton round-trip.
+
+pop_tb_spi_ir set 25.0
+assert pop_tb_spi_ir value == 25.0
+pop_tb_spi_ir set 60.5
+assert pop_tb_spi_ir value == 60.5
+
+#[sub] Done. 6 new substrate widgets, all addressable.

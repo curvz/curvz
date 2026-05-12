@@ -1,0 +1,165 @@
+# 14_shape_placement_popovers_basic — substrate-layer suite for the
+# Reference / Rect / Ellipse / Line placement popovers (s196 m1).
+#
+# Substrate-style test (per TESTING.md grandfather clause): each
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back. SpinButtons exercise the
+# set/value round-trip; Place buttons read their label.
+#
+# This is the first test to exercise SpinButton substrate addressing
+# in Toolbar.cpp. The shape-placement popovers all build their
+# widgets eagerly at Toolbar::Impl::build(), so the abbrevs are
+# registered at app launch — no popover open required.
+#
+# Scope: the four "basic" shape-placement popovers (Reference, Rect,
+# Ellipse, Line) are migrated fully — every SpinButton AND the
+# Place button. Polygon, Spiral, and Text popovers had their
+# helper-driven position SpinButtons migrated as a side effect of
+# the make_pop_row helper signature change; the rest of those
+# popovers (standalone sides/inflect/turns/inner spinners, Place
+# buttons, font DropDowns, Bold/Italic CheckButtons) stay as raw
+# Gtk widgets until s196 m2/m3.
+#
+# DSL note: SpinButton `value` queries return a Double. The DSL
+# lexer is kind-strict (3 → Int, 3.0 → Double), and assert uses
+# strict equality with no int/double coercion. So round-number
+# literals in assert expressions must be written with an explicit
+# `.0` suffix (`assert ... value == 0.0`, not `== 0`) — otherwise
+# the lexer produces an Int that won't compare equal to the
+# SpinButton's Double return value, even though both print the
+# same. This was discovered the first time a substrate test wrote
+# numeric round-trips; banked as a TESTING.md candidate.
+#
+# The tested abbrevs:
+#
+#   Reference popover  pop_tb_ref_x / y          (SpinButtons)
+#                      pop_tb_ref_pl             (Place Button)
+#
+#   Rect popover       pop_tb_rec_x / y / w / h  (SpinButtons)
+#                      pop_tb_rec_pl             (Place Button)
+#
+#   Ellipse popover    pop_tb_ova_x / y / w / h  (SpinButtons)
+#                      pop_tb_ova_pl             (Place Button)
+#
+#   Line popover       pop_tb_lin_x1 / y1 / x2 / y2  (SpinButtons)
+#                      pop_tb_lin_pl                 (Place Button)
+#
+#   Text popover       pop_tb_txt_x / y / sz     (SpinButtons — helper-pulled-forward)
+#
+#   Polygon popover    pop_tb_pol_cx / cy / r    (SpinButtons — helper-pulled-forward)
+#
+#   Spiral popover     pop_tb_spi_cx / cy / r    (SpinButtons — helper-pulled-forward)
+#
+# Test protocol:
+#   1. Open the Scripter window.
+#   2. Load this script.
+#   3. Run. Every line should PASS.
+#
+# Side effects: SpinButton values are written to test set/value
+# round-trip. Right-clicking the relevant tool re-seeds them from
+# canvas dimensions on popup-open, so the residual values are
+# harmless — they'll be overwritten the next time the user opens
+# the popover. Place buttons are NOT clicked (would actually emit
+# place signals and add nodes to the document). Label read-back is
+# enough substrate-contract coverage for a Button.
+
+#[sub] Reference popover — Place button label.
+
+assert pop_tb_ref_pl label == "Place"
+
+#[sub] Reference popover — X SpinButton set/value round-trip.
+
+pop_tb_ref_x set 123.5
+assert pop_tb_ref_x value == 123.5
+pop_tb_ref_x set 0.0
+assert pop_tb_ref_x value == 0.0
+
+#[sub] Reference popover — Y SpinButton set/value round-trip.
+
+pop_tb_ref_y set 456.25
+assert pop_tb_ref_y value == 456.25
+pop_tb_ref_y set 0.0
+assert pop_tb_ref_y value == 0.0
+
+#[sub] Rect popover — Place button label.
+
+assert pop_tb_rec_pl label == "Place"
+
+#[sub] Rect popover — X / Y SpinButton round-trip.
+
+pop_tb_rec_x set 10.5
+assert pop_tb_rec_x value == 10.5
+pop_tb_rec_y set 20.5
+assert pop_tb_rec_y value == 20.5
+
+#[sub] Rect popover — W / H SpinButton round-trip.
+
+pop_tb_rec_w set 100.5
+assert pop_tb_rec_w value == 100.5
+pop_tb_rec_h set 200.5
+assert pop_tb_rec_h value == 200.5
+
+#[sub] Ellipse popover — Place button label.
+
+assert pop_tb_ova_pl label == "Place"
+
+#[sub] Ellipse popover — X / Y SpinButton round-trip.
+
+pop_tb_ova_x set 11.5
+assert pop_tb_ova_x value == 11.5
+pop_tb_ova_y set 21.5
+assert pop_tb_ova_y value == 21.5
+
+#[sub] Ellipse popover — W / H SpinButton round-trip.
+
+pop_tb_ova_w set 101.5
+assert pop_tb_ova_w value == 101.5
+pop_tb_ova_h set 201.5
+assert pop_tb_ova_h value == 201.5
+
+#[sub] Line popover — Place button label.
+
+assert pop_tb_lin_pl label == "Place"
+
+#[sub] Line popover — endpoint 1 (X1 / Y1) round-trip.
+
+pop_tb_lin_x1 set 50.25
+assert pop_tb_lin_x1 value == 50.25
+pop_tb_lin_y1 set 60.25
+assert pop_tb_lin_y1 value == 60.25
+
+#[sub] Line popover — endpoint 2 (X2 / Y2) round-trip.
+
+pop_tb_lin_x2 set 70.25
+assert pop_tb_lin_x2 value == 70.25
+pop_tb_lin_y2 set 80.25
+assert pop_tb_lin_y2 value == 80.25
+
+#[sub] Text popover — X / Y / size SpinButton round-trip (helper-pulled-forward).
+
+pop_tb_txt_x set 30.0
+assert pop_tb_txt_x value == 30.0
+pop_tb_txt_y set 40.0
+assert pop_tb_txt_y value == 40.0
+pop_tb_txt_sz set 14.0
+assert pop_tb_txt_sz value == 14.0
+
+#[sub] Polygon popover — CX / CY / R SpinButton round-trip (helper-pulled-forward).
+
+pop_tb_pol_cx set 100.0
+assert pop_tb_pol_cx value == 100.0
+pop_tb_pol_cy set 200.0
+assert pop_tb_pol_cy value == 200.0
+pop_tb_pol_r set 50.0
+assert pop_tb_pol_r value == 50.0
+
+#[sub] Spiral popover — CX / CY / R SpinButton round-trip (helper-pulled-forward).
+
+pop_tb_spi_cx set 150.0
+assert pop_tb_spi_cx value == 150.0
+pop_tb_spi_cy set 250.0
+assert pop_tb_spi_cy value == 250.0
+pop_tb_spi_r set 75.0
+assert pop_tb_spi_r value == 75.0
+
+#[sub] Done. 27 new substrate widgets, all addressable.

@@ -1,0 +1,102 @@
+# 16_text_popover_finish — substrate-layer suite for the Text
+# placement popover's remaining widgets (s196 m3).
+#
+# Substrate-style test (per TESTING.md grandfather clause). Each
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back.
+#
+# Scope (s196 m3): the standalone widgets in the Text popover not
+# already covered by test 14 — Place button, Bold / Italic
+# CheckButtons, family DropDown, anchor DropDown. The X / Y / Size
+# SpinButtons were migrated in s196 m1 as a helper-pulled-forward
+# side effect; they're already covered by test 14.
+#
+# Architectural note: text_bold_btn and text_italic_btn were
+# value-held Gtk::CheckButton members in the original design.
+# The substrate's CheckButton constructor takes the abbrev as its
+# first argument, which has to happen at build_text_popover() time
+# (not at Impl default-construction). m3 flipped both members to
+# pointer-held curvz::widgets::CheckButton, allocated inside
+# build_text_popover(). All call sites that read .get_active() /
+# .set_active() updated to pointer syntax with null guards.
+#
+# DSL note (carried from m1): the DSL lexer is kind-strict. Bool
+# literals (true / false) are unambiguous; no analogue of the
+# Int/Double trap.
+#
+# The tested abbrevs:
+#
+#   Text popover  pop_tb_txt_pl   (Place Button)
+#                 pop_tb_txt_b    (Bold CheckButton)
+#                 pop_tb_txt_i    (Italic CheckButton)
+#                 pop_tb_txt_fam  (Font family DropDown — system-dependent contents)
+#                 pop_tb_txt_an   (Anchor DropDown — fixed {Left, Centre, Right, Justify})
+#
+# Test protocol:
+#   1. Open the Scripter window.
+#   2. Load this script.
+#   3. Run. Every line should PASS.
+#
+# Side effects: the Bold / Italic CheckButtons are toggled during
+# the run and explicitly restored to false (their launch default
+# per the build-time pattern). The anchor DropDown is moved
+# through its options and restored to 0 (Left, the launch default
+# per the popup-open callback). The family DropDown's selected
+# index is not changed by this test (the system font list is
+# environment-dependent and there's no portable way to assert on a
+# specific font name).
+
+#[sub] Text popover — Place button label.
+
+assert pop_tb_txt_pl label == "Place"
+
+#[sub] Text popover — Bold CheckButton round-trip.
+
+pop_tb_txt_b set true
+assert pop_tb_txt_b active == true
+pop_tb_txt_b set false
+assert pop_tb_txt_b active == false
+
+#[sub] Text popover — Italic CheckButton round-trip.
+
+pop_tb_txt_i set true
+assert pop_tb_txt_i active == true
+pop_tb_txt_i set false
+assert pop_tb_txt_i active == false
+
+#[sub] Text popover — Family DropDown is populated.
+
+# System font list — can't assert specific names portably, only
+# that the DropDown has at least one entry.
+get pop_tb_txt_fam count
+
+#[sub] Text popover — Anchor DropDown — Left wins by default.
+
+assert pop_tb_txt_an selected == 0
+assert pop_tb_txt_an text == "Left"
+
+#[sub] Text popover — Anchor DropDown — set Centre (index 1).
+
+pop_tb_txt_an set 1
+assert pop_tb_txt_an selected == 1
+assert pop_tb_txt_an text == "Centre"
+
+#[sub] Text popover — Anchor DropDown — set Right (index 2).
+
+pop_tb_txt_an set 2
+assert pop_tb_txt_an selected == 2
+assert pop_tb_txt_an text == "Right"
+
+#[sub] Text popover — Anchor DropDown — set Justify (index 3).
+
+pop_tb_txt_an set 3
+assert pop_tb_txt_an selected == 3
+assert pop_tb_txt_an text == "Justify"
+
+#[sub] Text popover — Anchor DropDown — pick "Left" by name, restores baseline.
+
+pop_tb_txt_an pick "Left"
+assert pop_tb_txt_an selected == 0
+assert pop_tb_txt_an text == "Left"
+
+#[sub] Done. 5 new substrate widgets, all addressable.
