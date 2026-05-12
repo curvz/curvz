@@ -1791,6 +1791,7 @@ void MainWindow::build_corner_panel() {
           if (m_corner_btn_inverse.get_active())
             type = CornerType::InverseRound;
           m_canvas.apply_corner_treatment_op(type, get_radius());
+          m_corner_panel.popdown();  // s194_m1 — match Apply button behaviour
           return true;
         }
         return false;
@@ -1830,6 +1831,15 @@ void MainWindow::build_corner_panel() {
     }
   });
 
+  // s194_m1: keep m_corner_panel_visible honest when the popover is
+  // dismissed via GTK's own mechanisms (Escape, click-outside, etc.).  The
+  // sticky-visibility listener in MainWindow_bindings.cpp checks this flag
+  // to decide whether to re-show on the next non-empty selection.
+  m_corner_panel.signal_closed().connect([this]() {
+    LOG_INFO("corner_panel: signal_closed fired, tracker -> false");
+    m_corner_panel_visible = false;
+  });
+
   m_corner_type_row.set_spacing(6);
   m_corner_type_row.set_homogeneous(true);
   m_corner_btn_round.set_hexpand(true);
@@ -1855,6 +1865,11 @@ void MainWindow::build_corner_panel() {
     if (m_corner_btn_inverse.get_active())
       type = CornerType::InverseRound;
     m_canvas.apply_corner_treatment_op(type, get_radius());
+    // s194_m1: dismiss the panel on Apply — the op is complete; leaving
+    // the panel up over the now-changed canvas is more clutter than
+    // useful.  signal_closed flips m_corner_panel_visible to false so
+    // the next non-empty selection re-shows the panel.
+    m_corner_panel.popdown();
   });
 
   m_corner_unit_label.set_text("Units: —");
@@ -1873,10 +1888,18 @@ void MainWindow::build_corner_panel() {
   m_corner_panel_vbox.append(m_corner_unit_label);
   m_corner_panel_vbox.append(m_corner_apply_btn);
 
-  // Anchor popover to the corner tool button in the toolbar
+  // Anchor popover to the corner tool button in the toolbar.
+  // s194_m1: disable autohide.  Without this, every click outside the
+  // popover (i.e. every click on the canvas — *every node selection*)
+  // dismisses the popover via GTK's autohide mechanism.  The user has to
+  // re-open it by clicking the toolbar button between each selection,
+  // which is unusable.  Sticky-visibility is owned by the
+  // signal_corner_sel_changed listener in MainWindow_bindings.cpp;
+  // Escape and explicit popdown() still close the panel.
   m_corner_panel.set_child(m_corner_panel_vbox);
   m_corner_panel.set_position(Gtk::PositionType::RIGHT);
   m_corner_panel.set_has_arrow(true);
+  m_corner_panel.set_autohide(false);
   if (auto *btn = m_toolbar.get_corner_btn())
     m_corner_panel.set_parent(*btn);
 }

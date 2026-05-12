@@ -403,6 +403,7 @@ private:
 
     // ── Corner Treatment panel (Popover on corner tool button) ────────────────
     Gtk::Popover        m_corner_panel;
+    bool                m_corner_panel_visible = false;  // s194_m1: edge-guard tracker
     Gtk::Box            m_corner_panel_vbox{Gtk::Orientation::VERTICAL};
     Gtk::Box            m_corner_type_row{Gtk::Orientation::HORIZONTAL};
     Gtk::ToggleButton   m_corner_btn_round;

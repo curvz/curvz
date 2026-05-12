@@ -5750,23 +5750,39 @@ void Canvas::set_selected_nodes_type(BezierNode::Type type) {
 }
 
 void Canvas::apply_corner_treatment_op(CornerType type, double radius) {
-  if (m_corner_selection.empty() || !m_doc || !m_history)
+  LOG_INFO("corner_op: ENTER type={} radius={:.6f} selection_size={}",
+           type == CornerType::Round ? "Round"
+             : type == CornerType::Chamfer ? "Chamfer" : "InverseRound",
+           radius, m_corner_selection.size());
+  if (m_corner_selection.empty() || !m_doc || !m_history) {
+    LOG_INFO("corner_op: EARLY_EXIT empty_sel={} no_doc={} no_history={}",
+             m_corner_selection.empty(), !m_doc, !m_history);
     return;
+  }
 
   // Group selected nodes by path object
   std::unordered_map<SceneNode *, std::unordered_set<int>> by_obj;
   for (auto &cs : m_corner_selection)
     by_obj[cs.obj].insert(cs.node_idx);
 
+  LOG_INFO("corner_op: grouped into {} object(s)", by_obj.size());
+
   auto cmd = std::make_unique<CornerTreatmentCommand>(project());
   bool any = false;
 
   for (auto &[obj, indices] : by_obj) {
-    if (!obj->path)
+    if (!obj->path) {
+      LOG_INFO("corner_op: skipping obj (no path)");
       continue;
+    }
+    LOG_INFO("corner_op: obj has {} requested indices, path closed={} nodes={}",
+             indices.size(), obj->path->closed, obj->path->nodes.size());
     PathData before = *obj->path;
     PathData after =
         Curvz::apply_corner_treatment(*obj->path, indices, type, radius);
+    LOG_INFO("corner_op: before.size={} after.size={} -> {}",
+             before.nodes.size(), after.nodes.size(),
+             after.nodes.size() != before.nodes.size() ? "CHANGED" : "NO_CHANGE");
     // Only record if geometry actually changed
     if (after.nodes.size() != before.nodes.size()) {
       cmd->add(obj, std::move(before), after);
@@ -5774,6 +5790,8 @@ void Canvas::apply_corner_treatment_op(CornerType type, double radius) {
       any = true;
     }
   }
+
+  LOG_INFO("corner_op: any={} (pushing cmd={})", any, any);
 
   if (any) {
     m_history->push(std::move(cmd));

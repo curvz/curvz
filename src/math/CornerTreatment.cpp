@@ -1,11 +1,42 @@
 #include "math/CornerTreatment.hpp"
 #include "math/Vec2.hpp"
+#include "CurvzLog.hpp"
 #include <cmath>
 #include <algorithm>
 #include <cassert>
 #include <unordered_map>
 
 namespace Curvz {
+
+// ── s194_m1 diagnostic helpers ────────────────────────────────────────────────
+static const char* corner_skip_name(CornerSkipReason r) {
+    switch (r) {
+        case CornerSkipReason::Ok:                return "Ok";
+        case CornerSkipReason::AngleTooSharp:     return "AngleTooSharp";
+        case CornerSkipReason::AngleTooFlat:      return "AngleTooFlat";
+        case CornerSkipReason::CurvedIncoming:    return "CurvedIncoming";
+        case CornerSkipReason::CurvedOutgoing:    return "CurvedOutgoing";
+        case CornerSkipReason::TooFewNeighbours:  return "TooFewNeighbours";
+    }
+    return "?";
+}
+static const char* corner_type_name(CornerType t) {
+    switch (t) {
+        case CornerType::Round:        return "Round";
+        case CornerType::Chamfer:      return "Chamfer";
+        case CornerType::InverseRound: return "InverseRound";
+    }
+    return "?";
+}
+static const char* bezier_type_name(BezierNode::Type t) {
+    switch (t) {
+        case BezierNode::Type::Corner:    return "Corner";
+        case BezierNode::Type::Cusp:      return "Cusp";
+        case BezierNode::Type::Smooth:    return "Smooth";
+        case BezierNode::Type::Symmetric: return "Symmetric";
+    }
+    return "?";
+}
 
 // Kappa: handle distance factor for a circular arc approximation via cubic Bézier.
 // For a 90° arc this is the classic 0.5523 value.
@@ -66,14 +97,58 @@ double corner_angle_deg(const PathData& path, int idx) {
 
 // ── apply_corner_treatment ────────────────────────────────────────────────────
 PathData apply_corner_treatment(
-    const PathData&                path,
+    const PathData&                path_in,
     const std::unordered_set<int>& node_indices,
     CornerType                     type,
     double                         radius,
     std::vector<CornerResult>*     out_results)
 {
+    // s194_m1: type-based snap (replaces an earlier epsilon-based attempt).
+    //
+    // The validity gate below requires four handles around the candidate
+    // corner to be degenerate (within 1e-4 of their anchors): prev.cx2,
+    // node.cx1, node.cx2, next.cx1.  In practice, paths that the user has
+    // edited or that came in via SVG round-trips often have Corner-typed
+    // nodes whose handle fields have drifted to non-zero values — observed
+    // ~5 doc units off anchor in the s194_m1 log on what the user
+    // remembered as retracted corners.  The round-corner op then silently
+    // skipped them.
+    //
+    // The fix is structural: a BezierNode::Type::Corner declares the user's
+    // intent as "sharp corner, no handles."  The type is the canonical
+    // truth; the numeric handle fields are residue from prior operations.
+    // We force handles to match the type at the start of every op, for the
+    // whole path (cheap — single pass over nodes).
+    //
+    // Cusp is left alone: cusps explicitly have handles that need to be
+    // preserved, and the validity check below rejects curved cusps with
+    // CurvedIncoming/Outgoing — which is the right behaviour for that case.
+
+    // Work on a mutable copy.  The const& parameter signals our intent to
+    // the caller; the snap is an internal implementation detail.
+    PathData path = path_in;
+
     const int n = (int)path.nodes.size();
     const bool closed = path.closed;
+
+    LOG_INFO("corner_treat: ENTER type={} radius={:.6f} path_n={} closed={} req_indices={}",
+             corner_type_name(type), radius, n, closed, node_indices.size());
+
+    for (auto& nm : path.nodes) {
+        if (nm.type != BezierNode::Type::Corner) continue;
+        nm.cx1 = nm.x; nm.cy1 = nm.y;
+        nm.cx2 = nm.x; nm.cy2 = nm.y;
+    }
+
+    for (int idx : node_indices) {
+        if (idx >= 0 && idx < n) {
+            const auto& nd = path.nodes[idx];
+            LOG_INFO("corner_treat:   req idx={} type={} xy=({:.4f},{:.4f}) h1=({:.4f},{:.4f}) h2=({:.4f},{:.4f}) (post-snap)",
+                     idx, bezier_type_name(nd.type), nd.x, nd.y, nd.cx1, nd.cy1, nd.cx2, nd.cy2);
+        } else {
+            LOG_INFO("corner_treat:   req idx={} OUT_OF_RANGE", idx);
+        }
+    }
 
     // We'll build an output node list by processing input nodes in order.
     // For each node:
@@ -116,6 +191,8 @@ PathData apply_corner_treatment(
         if (node.type != BezierNode::Type::Corner &&
             node.type != BezierNode::Type::Cusp) {
             // Silently skip — not recorded in out_results
+            LOG_INFO("corner_treat:   idx={} SILENT_SKIP not-Corner/Cusp (type={})",
+                     idx, bezier_type_name(node.type));
             continue;
         }
 
@@ -131,24 +208,42 @@ PathData apply_corner_treatment(
         const BezierNode& prev = path.nodes[prev_idx];
         const BezierNode& next = path.nodes[next_idx];
 
+        // Per-handle distances for diagnostic clarity
+        auto dist = [](double ax, double ay, double bx, double by) {
+            double dx = bx - ax, dy = by - ay;
+            return std::sqrt(dx*dx + dy*dy);
+        };
+        double d_prev_out  = dist(prev.x, prev.y, prev.cx2, prev.cy2);
+        double d_node_in   = dist(node.x, node.y, node.cx1, node.cy1);
+        double d_node_out  = dist(node.x, node.y, node.cx2, node.cy2);
+        double d_next_in   = dist(next.x, next.y, next.cx1, next.cy1);
+        LOG_INFO("corner_treat:   idx={} handle_dist: prev.out={:.6f} node.in={:.6f} node.out={:.6f} next.in={:.6f}",
+                 idx, d_prev_out, d_node_in, d_node_out, d_next_in);
+
         // Check handles for straightness
         if (!handle_is_degenerate(prev.x, prev.y, prev.cx2, prev.cy2)) {
             c.skip = CornerSkipReason::CurvedIncoming;
+            LOG_INFO("corner_treat:   idx={} SKIP CurvedIncoming (prev[{}].out non-deg)",
+                     idx, prev_idx);
             candidates.push_back(c);
             continue;
         }
         if (!handle_is_degenerate(node.x, node.y, node.cx1, node.cy1)) {
             c.skip = CornerSkipReason::CurvedIncoming;
+            LOG_INFO("corner_treat:   idx={} SKIP CurvedIncoming (node.in non-deg)", idx);
             candidates.push_back(c);
             continue;
         }
         if (!handle_is_degenerate(node.x, node.y, node.cx2, node.cy2)) {
             c.skip = CornerSkipReason::CurvedOutgoing;
+            LOG_INFO("corner_treat:   idx={} SKIP CurvedOutgoing (node.out non-deg)", idx);
             candidates.push_back(c);
             continue;
         }
         if (!handle_is_degenerate(next.x, next.y, next.cx1, next.cy1)) {
             c.skip = CornerSkipReason::CurvedOutgoing;
+            LOG_INFO("corner_treat:   idx={} SKIP CurvedOutgoing (next[{}].in non-deg)",
+                     idx, next_idx);
             candidates.push_back(c);
             continue;
         }
@@ -161,6 +256,8 @@ PathData apply_corner_treatment(
 
         if (in_len < 1e-9 || out_len < 1e-9) {
             c.skip = CornerSkipReason::TooFewNeighbours;
+            LOG_INFO("corner_treat:   idx={} SKIP degenerate-segment in_len={:.6e} out_len={:.6e}",
+                     idx, in_len, out_len);
             candidates.push_back(c);
             continue;
         }
@@ -173,13 +270,18 @@ PathData apply_corner_treatment(
         double angle = (180.0 - std::acos(dot) * 180.0 / M_PI);
         c.angle_deg = angle;
 
+        LOG_INFO("corner_treat:   idx={} in_len={:.4f} out_len={:.4f} angle_deg={:.4f}",
+                 idx, in_len, out_len, angle);
+
         if (angle < 15.0) {
             c.skip = CornerSkipReason::AngleTooSharp;
+            LOG_INFO("corner_treat:   idx={} SKIP AngleTooSharp (angle={:.4f})", idx, angle);
             candidates.push_back(c);
             continue;
         }
         if (angle > 170.0) {
             c.skip = CornerSkipReason::AngleTooFlat;
+            LOG_INFO("corner_treat:   idx={} SKIP AngleTooFlat (angle={:.4f})", idx, angle);
             candidates.push_back(c);
             continue;
         }
@@ -193,6 +295,9 @@ PathData apply_corner_treatment(
         // a neighbouring treatment or overshoot the previous node).
         double max_r = std::min(in_len, out_len) * 0.5;
         c.clamped_r  = std::min(radius, max_r);
+
+        LOG_INFO("corner_treat:   idx={} OK clamped_r={:.6f} (max_r={:.6f}, req={:.6f})",
+                 idx, c.clamped_r, max_r, radius);
 
         candidates.push_back(c);
     }
@@ -216,6 +321,14 @@ PathData apply_corner_treatment(
     std::unordered_set<int> replace_set;
     for (auto& c : candidates)
         if (c.skip == CornerSkipReason::Ok) replace_set.insert(c.orig_idx);
+
+    LOG_INFO("corner_treat: candidates_total={} replace_set_size={}",
+             candidates.size(), replace_set.size());
+    for (auto& c : candidates) {
+        LOG_INFO("corner_treat:   final: idx={} skip={} clamped_r={:.6f}",
+                 c.orig_idx, corner_skip_name(c.skip),
+                 c.skip == CornerSkipReason::Ok ? c.clamped_r : 0.0);
+    }
 
     // Build output nodes
     PathData result;
@@ -329,6 +442,9 @@ PathData apply_corner_treatment(
 
         } // switch
     }
+
+    LOG_INFO("corner_treat: EXIT input_n={} output_n={} delta={}",
+             n, result.nodes.size(), (int)result.nodes.size() - n);
 
     return result;
 }

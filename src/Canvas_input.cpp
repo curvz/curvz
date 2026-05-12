@@ -4959,14 +4959,52 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
     if (m_history && !composite->steps.empty())
       m_history->push(std::move(composite));
 
-    // Selection state cleanup. Clear node selection wholesale; survivors
-    // can re-select if they want to continue editing. m_selected also
-    // clears if its object got erased.
+    // s194 m4: Pick the "next node along the path" for the primary path,
+    // so the user can continue editing without re-clicking.  Inkscape /
+    // Affinity convention: after deleting node N, node N (which is now
+    // the node that came after N before the delete) gets selected; if N
+    // was the last node, fall back to the new last node.
+    //
+    // Multi-node delete on the primary path: use the smallest deleted
+    // index (in descending-sorted order, that's groups[primary].back()),
+    // same logic — the next surviving node is the next-along-the-path
+    // semantically.  Other paths in the groups (cross-path multi-delete)
+    // don't get auto-pick — ambiguous and rare.
+    //
+    // Diagnosis path (s194 m4 diag run): pre-fix m_selected_node landed
+    // at -1 after delete for both top-level and nested paths.  The
+    // working-feeling behaviour on top-level the user remembered was
+    // either a Tab keypress they'd internalised, or a stale visual that
+    // looked like a selection.  This fix makes the behaviour explicit
+    // and uniform across container shapes.
+    SceneNode *primary_pick_obj = nullptr;
+    int primary_pick_idx = -1;
+    if (!primary_erased && m_selected && m_selected->path) {
+      for (const auto &g : groups) {
+        if (g.first != m_selected) continue;
+        if (g.second.empty()) break;
+        // groups' indices are sorted descending; .back() is the smallest.
+        int min_deleted = g.second.back();
+        int new_n = (int)m_selected->path->nodes.size();
+        if (new_n > 0) {
+          primary_pick_obj = m_selected;
+          primary_pick_idx = (min_deleted < new_n) ? min_deleted : (new_n - 1);
+        }
+        break;
+      }
+    }
+
+    // Selection state cleanup. Clear node selection wholesale; m_selected
+    // also clears if its object got erased.  Then re-seed the auto-pick
+    // if we computed one above.
     m_node_selection.clear();
     m_selected_node = -1;
     if (primary_erased) {
       m_selected = nullptr;
       m_selection.clear();
+    } else if (primary_pick_obj && primary_pick_idx >= 0) {
+      m_node_selection.push_back({primary_pick_obj, primary_pick_idx});
+      m_selected_node = primary_pick_idx;
     }
     notify_object_selection_changed();
     notify_node_selection_changed();
@@ -4981,6 +5019,13 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
   // Ctrl-gated: Ctrl+Tab / Ctrl+Shift+Tab are reserved for document
   // navigation at the window level (s108 m7). Bare Tab / Shift+Tab
   // remains the node-cycle binding when the Node tool is active.
+  //
+  // s194 m5: collapse multi-selection on Tab/Shift+Tab.  Previously only
+  // the primary slot (m_selected_node) advanced; the multi-selection list
+  // kept its prior nodes, leaving stale highlights on the canvas as the
+  // user tabbed.  Cycling is a single-node operation by intent — the user
+  // is asking "which one node is next?" — so reset the multi-selection
+  // to the new primary.
   if ((keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab) && !ctrl) {
     if (m_selected_node < 0) {
       m_selected_node = 0;
@@ -4989,6 +5034,9 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
     } else {
       m_selected_node = (m_selected_node + 1) % n;
     }
+    m_node_selection.clear();
+    m_node_selection.push_back({m_selected, m_selected_node});
+    notify_node_selection_changed();  // s194 m5 — sync SelectionContext
     queue_draw();
     LOG_DEBUG("NodeTool: selected node {}/{}", m_selected_node, n);
     m_sig_node_changed.emit(m_selected, m_selected_node);
@@ -6327,32 +6375,43 @@ void Canvas::on_node_end() {
       m_selected = nullptr;
       m_selected_node = -1;
 
+      // s194 m3: the previous walk only considered top-level Paths in each
+      // layer's children, silently filtering out Paths nested inside
+      // Compound / Group / ClipGroup / Blend.  Mirror the recursive descent
+      // that on_node_begin's Shift+click path does (and the
+      // Selection-tool marquee at s125 m1b which fixed the parallel bug
+      // on the object side).  collect_paths handles all the container
+      // types and returns every leaf Path; we filter for per-object
+      // visibility afterward.
+      std::vector<SceneNode *> leaf_paths;
       for (auto &layer : m_doc->layers) {
         if (!layer->visible || layer->locked || layer->is_special_layer())
           continue;
-        for (auto &obj_uptr : layer->children) {
-          SceneNode &obj = *obj_uptr;
-          if (obj.type != SceneNode::Type::Path || !obj.path)
-            continue;
+        for (auto &obj_uptr : layer->children)
+          collect_paths(obj_uptr.get(), leaf_paths);
+      }
 
-          auto bb = object_bbox(obj);
-          if (!bb)
-            continue;
-          bool path_hit = (bb->x < x2 && bb->x + bb->w > x1 && bb->y < y2 &&
-                           bb->y + bb->h > y1);
-          if (!path_hit)
-            continue;
+      for (SceneNode *path_obj : leaf_paths) {
+        if (!path_obj->path || !path_obj->visible)
+          continue;
 
-          if (!m_selected)
-            m_selected = &obj;
+        auto bb = object_bbox(*path_obj);
+        if (!bb)
+          continue;
+        bool path_hit = (bb->x < x2 && bb->x + bb->w > x1 && bb->y < y2 &&
+                         bb->y + bb->h > y1);
+        if (!path_hit)
+          continue;
 
-          for (int i = 0; i < (int)obj.path->nodes.size(); ++i) {
-            const BezierNode &nd = obj.path->nodes[i];
-            if (nd.x >= x1 && nd.x <= x2 && nd.y >= y1 && nd.y <= y2) {
-              m_node_selection.push_back({&obj, i});
-              if (m_selected_node < 0 && &obj == m_selected)
-                m_selected_node = i;
-            }
+        if (!m_selected)
+          m_selected = path_obj;
+
+        for (int i = 0; i < (int)path_obj->path->nodes.size(); ++i) {
+          const BezierNode &nd = path_obj->path->nodes[i];
+          if (nd.x >= x1 && nd.x <= x2 && nd.y >= y1 && nd.y <= y2) {
+            m_node_selection.push_back({path_obj, i});
+            if (m_selected_node < 0 && path_obj == m_selected)
+              m_selected_node = i;
           }
         }
       }

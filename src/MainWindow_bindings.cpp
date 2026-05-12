@@ -1395,7 +1395,26 @@ void MainWindow::connect_signals() {
       });
 
   m_canvas.signal_corner_sel_changed().connect(
-      [this](int count) { show_corner_panel(count > 0); });
+      [this](int count) {
+        // s194_m1: corner panel visibility is *sticky* once shown.  Earlier
+        // versions called popup()/popdown() on every selection-count change,
+        // which produced flicker (re-popping an already-popped popover) and
+        // worse — hid the panel as soon as the user deselected the last
+        // node, even if they were mid-workflow about to select a different
+        // one.  The right semantic is: show the panel the first time the
+        // user creates a non-empty corner selection; after that, leave it
+        // alone.  GTK's normal popover-dismiss machinery (Escape, click
+        // outside, tool-switch) handles hiding.  Count-zero is "you have
+        // nothing selected right now," not "hide the panel."
+        LOG_INFO("corner_panel: signal count={} tracker_was={} -> action={}",
+                 count, m_corner_panel_visible,
+                 (count > 0 && !m_corner_panel_visible) ? "SHOW"
+                   : (count == 0 ? "stay (zero count)" : "stay (already up)"));
+        if (count > 0 && !m_corner_panel_visible) {
+          m_corner_panel_visible = true;
+          show_corner_panel(true);
+        }
+      });
 
   // Keyboard shortcuts — attached to MainWindow so they work regardless of
   // which child widget has focus.
@@ -1602,6 +1621,18 @@ void MainWindow::connect_signals() {
 
         // ── M4c-2e: Escape clears Warp envelope pick set ─────────────────
         // Must run BEFORE the pen-cancel Escape handler below so the key
+        // s194_m1: Escape dismisses the corner panel.  Required because
+        // the panel has set_autohide(false) — GTK's automatic Escape
+        // routing is bypassed, so we wire it explicitly here.  Must run
+        // before any other Escape case so the panel takes priority while
+        // it's visible.
+        if (kv == GDK_KEY_Escape && !ctrl && !shift && !alt
+            && m_corner_panel_visible) {
+          m_corner_panel.popdown();
+          // signal_closed will flip m_corner_panel_visible to false.
+          return true;
+        }
+
         // isn't consumed. Only intercepts when primary is a Warp and
         // the pick set is non-empty; otherwise falls through to the
         // general Escape cascade.
