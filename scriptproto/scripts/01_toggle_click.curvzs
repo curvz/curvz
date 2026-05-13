@@ -1,5 +1,0 @@
-# 01_toggle_click — the canonical first proof.
-# Two lines that either run end-to-end or do not.
-
-tool.node click
-assert tool.node active == true

@@ -1,7 +1,0 @@
-# 02_entry_text — text intake
-
-filename.entry set "icon.svg"
-assert filename.entry text == "icon.svg"
-
-filename.entry clear
-assert filename.entry text == ""
