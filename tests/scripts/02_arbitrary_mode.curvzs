@@ -1,0 +1,29 @@
+# 02_arbitrary_mode.curvzs — switch into arbitrary mode and set coords
+#
+# Demonstrates the checkbox-driven mode flip and that arbitrary X/Y
+# stand independent of bbox state.
+
+# Reset state so coords are predictable
+refpoint_picker.main set_bbox 0.0 0.0 4.0 2.0
+refpoint_picker.main set_checkbox false
+refpoint_picker.main set_preset C
+
+# Flip to arbitrary
+refpoint_picker.main set_checkbox true
+assert refpoint_picker.main mode == "arbitrary"
+
+# Set arbitrary coords
+refpoint_picker.main set_arbitrary 1.5 2.875
+assert refpoint_picker.main x == 1.5
+assert refpoint_picker.main y == 2.875
+
+# Change bbox — arbitrary point should not move
+refpoint_picker.main set_bbox 10.0 10.0 50.0 50.0
+assert refpoint_picker.main x == 1.5
+assert refpoint_picker.main y == 2.875
+
+# Flip back to preset — last preset C with new bbox
+refpoint_picker.main set_checkbox false
+assert refpoint_picker.main mode == "preset"
+assert refpoint_picker.main x == 35.0
+assert refpoint_picker.main y == 35.0

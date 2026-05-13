@@ -1,0 +1,21 @@
+# 04_bbox_tracking.curvzs — preset coords follow bbox changes live
+#
+# In preset mode, the X/Y the widget reports must recompute when the
+# bbox changes, because a preset is defined relative to bbox geometry,
+# not as a fixed point.
+
+refpoint_picker.main set_checkbox false
+refpoint_picker.main set_preset SE
+
+refpoint_picker.main set_bbox 0.0 0.0 4.0 2.0
+assert refpoint_picker.main x == 4.0
+assert refpoint_picker.main y == 2.0
+
+refpoint_picker.main set_bbox 0.0 0.0 8.0 4.0
+assert refpoint_picker.main x == 8.0
+assert refpoint_picker.main y == 4.0
+
+# Move the bbox origin too
+refpoint_picker.main set_bbox 10.0 20.0 8.0 4.0
+assert refpoint_picker.main x == 18.0
+assert refpoint_picker.main y == 24.0

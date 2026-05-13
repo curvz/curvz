@@ -1,0 +1,44 @@
+# 01_preset_cycle.curvzs — pick each of the 9 presets in turn
+#
+# Bbox is seeded by main.cpp at (0,0,4,2), so the expected coords are
+# easy to predict from the corners: x in {0, 2, 4}, y in {0, 1, 2}.
+
+assert refpoint_picker.main mode == "preset"
+assert refpoint_picker.main bbox_w == 4.0
+assert refpoint_picker.main bbox_h == 2.0
+
+refpoint_picker.main set_preset NW
+assert refpoint_picker.main x == 0.0
+assert refpoint_picker.main y == 0.0
+
+refpoint_picker.main set_preset N
+assert refpoint_picker.main x == 2.0
+assert refpoint_picker.main y == 0.0
+
+refpoint_picker.main set_preset NE
+assert refpoint_picker.main x == 4.0
+assert refpoint_picker.main y == 0.0
+
+refpoint_picker.main set_preset W
+assert refpoint_picker.main x == 0.0
+assert refpoint_picker.main y == 1.0
+
+refpoint_picker.main set_preset C
+assert refpoint_picker.main x == 2.0
+assert refpoint_picker.main y == 1.0
+
+refpoint_picker.main set_preset E
+assert refpoint_picker.main x == 4.0
+assert refpoint_picker.main y == 1.0
+
+refpoint_picker.main set_preset SW
+assert refpoint_picker.main x == 0.0
+assert refpoint_picker.main y == 2.0
+
+refpoint_picker.main set_preset S
+assert refpoint_picker.main x == 2.0
+assert refpoint_picker.main y == 2.0
+
+refpoint_picker.main set_preset SE
+assert refpoint_picker.main x == 4.0
+assert refpoint_picker.main y == 2.0

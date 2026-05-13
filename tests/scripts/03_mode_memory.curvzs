@@ -1,0 +1,26 @@
+# 03_mode_memory.curvzs — preset and arbitrary state persist across flips
+#
+# Pick a preset, flip to arbitrary, set coords, flip back. The previously
+# picked preset should be restored AND the arbitrary coords retained.
+
+refpoint_picker.main set_bbox 0.0 0.0 4.0 2.0
+refpoint_picker.main set_checkbox false
+
+# Pick NE
+refpoint_picker.main set_preset NE
+assert refpoint_picker.main preset == "NE"
+
+# Flip to arbitrary
+refpoint_picker.main set_checkbox true
+refpoint_picker.main set_arbitrary 9.9 8.8
+
+# Flip back to preset — should restore NE
+refpoint_picker.main set_checkbox false
+assert refpoint_picker.main preset == "NE"
+assert refpoint_picker.main x == 4.0
+assert refpoint_picker.main y == 0.0
+
+# Flip to arbitrary again — last arbitrary 9.9, 8.8 should come back
+refpoint_picker.main set_checkbox true
+assert refpoint_picker.main x == 9.9
+assert refpoint_picker.main y == 8.8

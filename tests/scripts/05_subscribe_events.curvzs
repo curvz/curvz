@@ -1,0 +1,14 @@
+# 05_subscribe_events.curvzs — subscribe to the picker's emit channel
+#
+# Verify the composite emits point_changed and mode_changed on each
+# state-changing verb. The trace lines appear in the Scripter output
+# pane prefixed with `event refpoint_picker.main ...`.
+
+subscribe
+
+refpoint_picker.main set_bbox 0.0 0.0 4.0 2.0
+refpoint_picker.main set_checkbox false
+refpoint_picker.main set_preset NW
+refpoint_picker.main set_preset SE
+refpoint_picker.main set_checkbox true
+refpoint_picker.main set_arbitrary 7.5 3.25
