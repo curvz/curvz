@@ -437,6 +437,15 @@ public:
   RequestToolSignal &signal_request_tool() { return m_sig_request_tool; }
   NodeChangedSignal &signal_node_changed() { return m_sig_node_changed; }
 
+  // s205 m1 — fired whenever the rotation-pivot state changes: enable,
+  // disable, position move (programmatic, R+drag, popover edit, inspector
+  // edit). Pivot is session-only state (no undo) and is independent of
+  // doc_changed — emitted from inside set_custom_pivot / clear_custom_pivot
+  // and from notify_r_pressed when it flips m_has_custom_pivot or seeds the
+  // bbox-centre default. Inspector subscribes to live-sync its pivot picker.
+  using PivotChangedSignal = sigc::signal<void()>;
+  PivotChangedSignal &signal_pivot_changed() { return m_sig_pivot_changed; }
+
   // s125 m1a: emitted when the user picks "Save to Library…" from the
   // canvas right-click context menu. MainWindow opens the folder picker
   // and routes to on_save_selection_to_library. No params — Canvas's
@@ -605,6 +614,24 @@ public:
   // R held over a selection → pivot placement mode (rotate from point).
   void notify_r_pressed();
   void notify_r_released();
+
+  // ── Custom-pivot public surface (s205 m1) ──────────────────────────────
+  // Pivot state mutations from outside Canvas — currently the inspector's
+  // pivot picker section under Selection. The popover in Canvas.cpp's
+  // right-click handler also writes the pivot, but does so via direct
+  // member access since it lives in Canvas's own translation unit. Both
+  // direct edits and these setters end with an m_sig_pivot_changed.emit()
+  // (the popover does this explicitly in its signal_point_changed lambda)
+  // so all pivot edits converge on the same notification path.
+  //
+  // Pivot is session-only — no undo, no doc_changed, no persistence.
+  // Cleared by selecting a different object (or none) and by the second
+  // R-toggle press (notify_r_pressed's clear branch).
+  bool   has_custom_pivot() const { return m_has_custom_pivot; }
+  double custom_pivot_x()   const { return m_custom_pivot_x; }
+  double custom_pivot_y()   const { return m_custom_pivot_y; }
+  void   set_custom_pivot(double x, double y);
+  void   clear_custom_pivot();
 
   // Called by MainWindow key handler to forward Space state — same reason.
   // Space held during left-drag → pan instead of tool action.
@@ -889,12 +916,46 @@ private:
   std::optional<BBox> object_bbox(const SceneNode &obj,
                                   bool include_stroke = true) const;
 
+  // s204 m2 — Edge-snap candidate gathering.
+  //
+  // Walks every visible, non-special-layer top-level object and collects
+  // bbox snap candidates: 3 X-values (left, midX, right) and 3 Y-values
+  // (top, midY, bottom) per bbox — these 6 numbers encode all 9 of the
+  // bbox's grid points (4 corners + 4 edge midpoints + center), because
+  // the snap engine is axis-independent. snap_x only ever asks "is doc_x
+  // close to one of these X-values?" — it doesn't care which Y it pairs
+  // with.
+  //
+  // Groups and compounds contribute their union bbox, not their children's
+  // bboxes, mirroring how the rest of the canvas treats a group as one
+  // object. Recursion into group children would multiply candidates by an
+  // arbitrary factor without matching user mental model.
+  //
+  // `exclude` is a list of object pointers to skip — typically the objects
+  // being moved during a drag, so a moving bbox doesn't snap to its own
+  // current position. Linear scan over `exclude` is fine here; the moving
+  // set is typically 1–10 pointers, and gather is called at drag-start
+  // (cached for the drag's lifetime), not per motion event.
+  //
+  // For the non-drag entry points (snap_x / snap_y called during a draw
+  // gesture), `exclude` is empty and the gather is a one-shot per click.
+  void gather_object_edge_snap_candidates(
+      const std::vector<const SceneNode*>& exclude,
+      std::vector<double>& out_x_candidates,
+      std::vector<double>& out_y_candidates) const;
+
   // ── Hit test ─────────────────────────────────────────────────────────
   SceneNode *hit_test(double doc_x, double doc_y);
   SceneNode *hit_test_next(double doc_x, double doc_y, SceneNode *skip);
 
-  // ── Snap ─────────────────────────────────────────────────────────────
-  double snap(double v) const;
+  // s204 m1: the no-op private snap(double) helper used to live here. It
+  // returned its argument unchanged and was a footgun — ~18 call sites
+  // across Canvas_input.cpp and Canvas_draw.cpp called it instead of the
+  // real snap_x / snap_y above, silently dropping all snap behaviour for
+  // pivot setters, the Line / Ref / shape tools, and the cursor readout.
+  // Deleted per the "pumps need to be the only path" rule (CANON s203 m3):
+  // forcing callers to pick an axis is a compile-time enforcement that
+  // can't be skipped.
 
   // ── Input controllers ─────────────────────────────────────────────────
   bool on_scroll(double dx, double dy);
@@ -1722,6 +1783,9 @@ private:
   // this to sync the action checkmark and statusbar mode label so all
   // outline-mode change paths converge on a single sync point.
   sigc::signal<void()> m_sig_outline_mode_changed;
+  // s205 m1: pivot state change notification — see signal_pivot_changed
+  // accessor banner. Inspector pivot picker listens.
+  PivotChangedSignal m_sig_pivot_changed;
 };
 
 } // namespace Curvz

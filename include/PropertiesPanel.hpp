@@ -27,6 +27,11 @@
 #include <string>
 #include <vector>
 
+// s205 m1 — forward decl for the Selection-section pivot picker pointer.
+// Full header (curvz/widgets/RefPointPicker.hpp) is included in
+// PropertiesPanel.cpp at the use site.
+namespace curvz::widgets { class RefPointPicker; }
+
 namespace Curvz {
 
 class Canvas; // forward — full include would be circular; only needed to read selection()
@@ -82,6 +87,9 @@ public:
     void refresh_node(CanvasModel* canvas, SceneNode* obj, int node_idx);
     void sync_selection(SceneNode* obj);  // lightweight position sync during move
     void sync_selected_guide();           // lightweight guide X/Y/A sync during guide drag
+    void sync_selected_pivot();           // s205 m1 — live-track Canvas pivot state in the
+                                          // inspector's Selection-section pivot picker.
+                                          // Cheap: bails unless picker built AND canvas wired.
 
     void show_document_props(CanvasModel* canvas);
     void show_object_props(SceneNode* obj);
@@ -325,6 +333,12 @@ private:
     Gtk::Label*       m_sel_lbl_yv = nullptr;
     Gtk::Label*       m_sel_lbl_wv = nullptr;
     Gtk::Label*       m_sel_lbl_hv = nullptr;
+    // s205 m1 — pivot picker embedded under the Rotate row in the
+    // Selection section. Bidirectional live sync with Canvas's pivot
+    // state via signal_pivot_changed + sync_selected_pivot. Cleared in
+    // do_clear() alongside m_sel_sp_*. Forward-declared above to avoid
+    // pulling the widget header into this file (only the .cpp uses it).
+    curvz::widgets::RefPointPicker* m_sel_pivot_picker = nullptr;
     // Ref-pt selection section uses its own X/Y spin buttons (no W/H —
     // refpts are points). Stored so sync_selection can live-update them
     // during refpt drag/nudge, mirroring the path-object path.

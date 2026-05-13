@@ -314,11 +314,27 @@ void Canvas::notify_r_pressed() {
     return;
 
   if (m_r_held) {
-    // Second R press — exit pivot mode
+    // Second R press — exit pivot mode.
+    //
+    // s204 m3: also clear m_has_custom_pivot here. Pre-s204 the second R
+    // press only flipped m_r_held back to false, but Canvas_draw.cpp
+    // draws the pivot crosshair when EITHER m_r_held OR m_has_custom_pivot
+    // is true. Once the user clicked the canvas to position the pivot
+    // (Canvas_input.cpp on_select_begin pivot branch), m_has_custom_pivot
+    // sticks at true — so toggling m_r_held off left the crosshair
+    // visible, and R looked broken as a toggle. Clearing both here makes
+    // the second R press a clean dismissal regardless of how the pivot
+    // got positioned. Selecting a new object / marquee-deselecting still
+    // resets m_has_custom_pivot independently (existing behavior).
     m_r_held = false;
+    m_has_custom_pivot = false;
     m_pivot_dragging = false;
     set_cursor("default");
     queue_draw();
+    // s205 m1: inspector pivot picker tracks visibility — second-press
+    // dismissal needs to flip the picker's preset back to its default-
+    // centre display.
+    m_sig_pivot_changed.emit();
     return;
   }
 
@@ -351,6 +367,12 @@ void Canvas::notify_r_pressed() {
   }
   set_cursor("crosshair");
   queue_draw();
+  // s205 m1: first-press also notifies — inspector picker may want to
+  // seed itself to the bbox-centre default. The pivot is technically not
+  // "custom" yet (m_has_custom_pivot still false), but the crosshair is
+  // now visible at the computed default and the inspector should reflect
+  // that.
+  m_sig_pivot_changed.emit();
 }
 
 void Canvas::notify_r_released() {
@@ -358,11 +380,37 @@ void Canvas::notify_r_released() {
   (void)0;
 }
 
-void Canvas::on_pivot_dialog(double doc_x, double doc_y) {
-  m_custom_pivot_x = snap(doc_x);
-  m_custom_pivot_y = snap(doc_y);
+// s205 m1 — public pivot setters. See banner in Canvas.hpp. All pivot
+// mutations from outside Canvas (inspector picker) come through here so
+// the m_sig_pivot_changed emit is centralised. The right-click popover
+// in Canvas.cpp writes m_custom_pivot_* directly and emits the signal
+// inline at the end of its signal_point_changed lambda (it has direct
+// access to the members — these wrappers exist for external code).
+void Canvas::set_custom_pivot(double x, double y) {
+  m_custom_pivot_x   = x;
+  m_custom_pivot_y   = y;
   m_has_custom_pivot = true;
   queue_draw();
+  m_sig_pivot_changed.emit();
+}
+
+void Canvas::clear_custom_pivot() {
+  if (!m_has_custom_pivot && !m_r_held)
+    return;
+  m_has_custom_pivot = false;
+  m_r_held           = false;
+  m_pivot_dragging   = false;
+  set_cursor("default");
+  queue_draw();
+  m_sig_pivot_changed.emit();
+}
+
+void Canvas::on_pivot_dialog(double doc_x, double doc_y) {
+  m_custom_pivot_x = snap_x(doc_x);
+  m_custom_pivot_y = snap_y(doc_y);
+  m_has_custom_pivot = true;
+  queue_draw();
+  m_sig_pivot_changed.emit();  // s205 m1 — inspector picker live-tracks
 
   auto *win = dynamic_cast<Gtk::Window *>(get_root());
   if (!win)
@@ -451,6 +499,7 @@ void Canvas::on_pivot_dialog(double doc_x, double doc_y) {
     m_custom_pivot_x = spin_x->get_internal_value();
     m_custom_pivot_y = spin_y->get_internal_value();
     m_has_custom_pivot = true;
+    m_sig_pivot_changed.emit();  // s205 m1 — inspector picker live-tracks
 
     double angle_deg = spin_a->get_internal_value();
     if (m_doc && std::abs(angle_deg) > 0.0001) {
@@ -1002,11 +1051,12 @@ void Canvas::on_draw_begin(double x, double y) {
       // No pivot set yet — click sets it
       double dx, dy;
       screen_to_doc(x, y, dx, dy);
-      m_custom_pivot_x = snap(dx);
-      m_custom_pivot_y = snap(dy);
+      m_custom_pivot_x = snap_x(dx);
+      m_custom_pivot_y = snap_y(dy);
       m_has_custom_pivot = true;
       m_pivot_dragging = true;
       queue_draw();
+      m_sig_pivot_changed.emit();  // s205 m1 — inspector picker live-tracks
       return;
     }
   }
@@ -1017,8 +1067,8 @@ void Canvas::on_draw_begin(double x, double y) {
   if (m_tool == ActiveTool::Rect || m_tool == ActiveTool::Ellipse ||
       m_tool == ActiveTool::Polygon || m_tool == ActiveTool::Spiral) {
     m_drawing = true;
-    m_draw_start_dx = snap(dx);
-    m_draw_start_dy = snap(dy);
+    m_draw_start_dx = snap_x(dx);
+    m_draw_start_dy = snap_y(dy);
     m_draw_cur_dx = m_draw_start_dx;
     m_draw_cur_dy = m_draw_start_dy;
     m_draw_start_effective_dx = m_draw_start_dx;
@@ -1027,7 +1077,7 @@ void Canvas::on_draw_begin(double x, double y) {
     LOG_DEBUG("Draw begin at ({:.2f},{:.2f})", m_draw_start_dx,
               m_draw_start_dy);
   } else if (m_tool == ActiveTool::Line) {
-    double px = snap(dx), py = snap(dy);
+    double px = snap_x(dx), py = snap_y(dy);
     // Apply 15° angle restriction when Shift held.
     // Compute fresh from the raw position so this works even if the motion
     // handler hasn't run between clicks (rapid clicking).
@@ -1065,7 +1115,14 @@ void Canvas::on_draw_begin(double x, double y) {
     queue_draw();
     return;
   } else if (m_tool == ActiveTool::Ref) {
-    double px = snap(dx), py = snap(dy);
+    // s204 m1: snap_x / snap_y route through the real snap engine (guides,
+    // refs, grid, margins per doc settings). Pre-s204 every site here
+    // called the no-op Canvas::snap(v) — a TODO stub that returned v
+    // unchanged — so refpt placement landed at raw cursor coords. The
+    // structural fix was to delete the no-op and force all callers to
+    // pick an axis explicitly; that closed the bug-class at compile time
+    // for ~16 other call sites across this file with the same trap.
+    double px = snap_x(dx), py = snap_y(dy);
     // Hit test existing ref points in the RefLayer
     double tol = 8.0 / m_zoom;
     m_ref_selected = nullptr;
@@ -1383,9 +1440,10 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
   if (m_pivot_dragging) {
     double dx, dy;
     screen_to_doc(m_mouse_x, m_mouse_y, dx, dy);
-    m_custom_pivot_x = snap(dx);
-    m_custom_pivot_y = snap(dy);
+    m_custom_pivot_x = snap_x(dx);
+    m_custom_pivot_y = snap_y(dy);
     queue_draw();
+    m_sig_pivot_changed.emit();  // s205 m1 — inspector picker live-tracks
     return;
   }
 
@@ -1409,8 +1467,8 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
   } else if (m_drawing) {
     double ex, ey;
     screen_to_doc(m_mouse_x, m_mouse_y, ex, ey);
-    m_draw_cur_dx = snap(ex);
-    m_draw_cur_dy = snap(ey);
+    m_draw_cur_dx = snap_x(ex);
+    m_draw_cur_dy = snap_y(ey);
     // Shift/Alt constrain for Rect and Ellipse:
     //   Shift      — square (equal W and H)
     //   Alt        — draw from center (start point is center)
@@ -1492,8 +1550,8 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
     if (m_tool == ActiveTool::Ref && m_ref_selected) {
       double ex, ey;
       screen_to_doc(m_mouse_x, m_mouse_y, ex, ey);
-      m_ref_selected->ref_x = snap(ex) - m_ref_drag_ox;
-      m_ref_selected->ref_y = snap(ey) - m_ref_drag_oy;
+      m_ref_selected->ref_x = snap_x(ex) - m_ref_drag_ox;
+      m_ref_selected->ref_y = snap_y(ey) - m_ref_drag_oy;
       // s177: drag changes position; the refpt's name is the
       // user's, untouched. Pre-s177 every drag stomped the name
       // with new "%.6f_%.6f" coords, throwing away any rename.
@@ -1515,8 +1573,8 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
   } else if (m_tool == ActiveTool::Line && m_line_tool.active()) {
     double ex, ey;
     screen_to_doc(m_mouse_x, m_mouse_y, ex, ey);
-    ex = snap(ex);
-    ey = snap(ey);
+    ex = snap_x(ex);
+    ey = snap_y(ey);
     // 15° angle snap when Shift held (24 increments around the circle)
     if (m_mod_shift) {
       auto [lx, ly] = m_line_tool.points.back();
@@ -1707,7 +1765,7 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
     m_drawing = false;
     double dx2, dy2;
     screen_to_doc(m_mouse_x, m_mouse_y, dx2, dy2);
-    double px = snap(dx2), py = snap(dy2);
+    double px = snap_x(dx2), py = snap_y(dy2);
 
     if (m_ref_selected) {
       // Finished dragging existing ref point
@@ -3817,7 +3875,7 @@ void Canvas::on_motion(double x, double y) {
     m_pen_tool.on_motion({pen_snap_x, pen_snap_y}, mods, m_zoom);
     queue_draw();
   } else if (m_tool == ActiveTool::Line && m_line_tool.active()) {
-    double ex = snap(doc_x), ey = snap(doc_y);
+    double ex = snap_x(doc_x), ey = snap_y(doc_y);
     // 15° angle snap when Shift held
     if (m_mod_shift && !m_line_tool.points.empty()) {
       auto [lx, ly] = m_line_tool.points.back();
@@ -3997,7 +4055,7 @@ void Canvas::place_ref_at_display(double ux, double uy) {
     return;
   double doc_x = ux + m_doc->ruler_origin_x;
   double doc_y = m_doc->canvas_height() - (uy + m_doc->ruler_origin_y);
-  double rx = snap(doc_x), ry = snap(doc_y);
+  double rx = snap_x(doc_x), ry = snap_y(doc_y);
 
   SceneNode *rl = m_doc->ensure_ref_layer();
 

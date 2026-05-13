@@ -1290,6 +1290,24 @@ void MainWindow::connect_signals() {
     // single-guide editor is currently built and a guide is selected.
     // Mirrors the sync_selection call above for path objects.
     m_properties.sync_selected_guide();
+    // s205 m1: live-refresh the Selection-section pivot picker's bbox
+    // after a canvas move/transform. Pivot xy itself didn't change, but
+    // the bbox the picker's presets resolve against did — without this
+    // call the preset coordinates would drift stale until the next
+    // section rebuild. sync_selected_pivot bails unless the picker is
+    // currently built, so this is essentially free for non-Selection
+    // section contexts.
+    m_properties.sync_selected_pivot();
+  });
+
+  // s205 m1: pivot state changes (R-toggle, R+drag, right-click popover,
+  // Ctrl+click dialog) all converge on Canvas::signal_pivot_changed.
+  // The inspector's Selection-section pivot picker listens here so its
+  // displayed point and mode track every pivot edit, regardless of which
+  // surface produced it. Pivot is session-only — no schedule_save, no
+  // doc_tab/layers refresh, no doc_changed cascade.
+  m_canvas.signal_pivot_changed().connect([this]() {
+    m_properties.sync_selected_pivot();
   });
 
   // ── Guide selection — three-way sync: canvas ↔ layers ↔ inspector ──────────

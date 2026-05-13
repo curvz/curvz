@@ -6,6 +6,7 @@
 #include "CurvzSpinButton.hpp"
 #include "MacroSystem.hpp"
 #include "SvgParser.hpp"
+#include "curvz/widgets/RefPointPicker.hpp"  // s204 m4 — pivot right-click picker
 #include "curvz_utils.hpp"  // S97 m2 — box_blur_argb32 for drop-shadow render
 #include "color/SwatchLibrary.hpp"  // set_swatch_library + apply_swatch_to_selection
 #include "color/FillStyleInterop.hpp"  // to_fillstyle — live-recolour walk (s70 M3)
@@ -204,6 +205,20 @@ build_object_context_menu(const ObjectActions &oa) {
       sec->append_submenu("Arrange", sub);
       menu->append_section("", sec);
     }
+  }
+
+  // ── 4.5. Translate hub (s205 m4) ─────────────────────────────────────────
+  // Always-present entry that opens the Translate hub dialog — one place
+  // for Move / Scale / Rotate / Skew sharing the same refpt picker. Not
+  // gated on ObjectAction bits; the dialog no-ops on empty / non-path
+  // selection, mirroring Save to Library's "always-show, handler does the
+  // pre-flight" idiom. Lives between Arrange and Effects because it sits
+  // semantically between layer ops and effect ops — it's a do-this-to-
+  // the-selection verb.
+  {
+    auto sec = Gio::Menu::create();
+    add(sec, "Translate…", "win.translate-dialog");
+    menu->append_section("", sec);
   }
 
   // ── 5. Effects (submenu) ─────────────────────────────────────────────────
@@ -724,6 +739,126 @@ Canvas::Canvas() {
 
     double dx, dy;
     screen_to_doc(x, y, dx, dy);
+
+    // ── s204 m4: pivot right-click ────────────────────────────────────────
+    //
+    // If the pivot crosshair is currently visible (R held, or a custom
+    // pivot was placed by clicking the canvas while R was held) AND the
+    // right-click hit near it, open the RefPointPicker popover instead of
+    // falling through to the SceneNode hit_test path. The crosshair is
+    // not a SceneNode, so hit_test never finds it — without this branch,
+    // right-clicking the pivot was indistinguishable from right-clicking
+    // empty canvas (just dismissed nothing). Now it opens the picker
+    // bound to the current selection's union bbox; the user can pick a
+    // preset or arbitrary X/Y, and the pivot live-updates as they pick.
+    //
+    // Pixel tolerance: matches the visible arm length of the crosshair
+    // (~10px screen). Computed in screen space so the catch radius
+    // doesn't shrink with zoom.
+    if ((m_r_held || m_has_custom_pivot) && m_tool == ActiveTool::Selection
+        && !m_selection.empty()) {
+      double piv_sx, piv_sy;
+      doc_to_screen(m_custom_pivot_x, m_custom_pivot_y, piv_sx, piv_sy);
+      const double catch_px = 12.0;
+      if (std::hypot(x - piv_sx, y - piv_sy) <= catch_px) {
+        // Compute selection union bbox — same math as notify_r_pressed's
+        // default-pivot path. The picker's preset coords are relative to
+        // this rectangle.
+        bool found = false;
+        double bx1 = 0, by1 = 0, bx2 = 0, by2 = 0;
+        for (SceneNode *obj : m_selection) {
+          auto bb = object_bbox(*obj);
+          if (!bb) continue;
+          if (!found) {
+            bx1 = bb->x; by1 = bb->y;
+            bx2 = bb->x + bb->w; by2 = bb->y + bb->h;
+            found = true;
+          } else {
+            bx1 = std::min(bx1, bb->x);
+            by1 = std::min(by1, bb->y);
+            bx2 = std::max(bx2, bb->x + bb->w);
+            by2 = std::max(by2, bb->y + bb->h);
+          }
+        }
+        if (found) {
+          const CanvasModel* mdl = m_doc ? &m_doc->canvas : nullptr;
+          const double rox = m_doc ? m_doc->ruler_origin_x : 0.0;
+          const double roy = m_doc ? m_doc->ruler_origin_y : 0.0;
+
+          // Use a stable scriptable name. The registry refuses duplicate
+          // live names; popovers are constructed and destroyed around
+          // the user's pick, so "refpoint_picker.pivot" works fine in
+          // practice (only one popover open at a time, the previous
+          // instance is destroyed before the next opens).
+          auto *picker = Gtk::make_managed<curvz::widgets::RefPointPicker>(
+              "refpoint_picker.pivot", mdl, rox, roy);
+          picker->set_bbox(bx1, by1, bx2 - bx1, by2 - by1);
+
+          // Seed arbitrary-mode coords from the current pivot so
+          // flipping to "Other" mid-edit doesn't reset to 0,0.
+          picker->set_arbitrary_xy(m_custom_pivot_x, m_custom_pivot_y);
+          // Then put it back in preset mode (default). If the current
+          // pivot exactly matches one of the 9 preset points we could
+          // pre-select it, but the live-preview design makes that
+          // cosmetic; defaults to last preset (C on first open).
+          picker->set_mode(curvz::widgets::RefPointPicker::Mode::Preset);
+
+          // Live preview: every point change updates the pivot and
+          // redraws. Subscriber lives only as long as the picker / its
+          // popover.
+          picker->signal_point_changed().connect(
+              [this](double px, double py) {
+                m_custom_pivot_x = px;
+                m_custom_pivot_y = py;
+                m_has_custom_pivot = true;
+                queue_draw();
+              });
+
+          auto *popover = Gtk::make_managed<Gtk::Popover>();
+          popover->set_parent(*this);
+          popover->set_has_arrow(true);
+          popover->set_autohide(true);  // click-outside dismisses
+
+          // s204 m4 tweak: wrap picker + Apply button in a vertical Box.
+          // Apply is purely a dismiss action — live preview already wired
+          // the pivot before the user clicks Apply, so there's nothing
+          // to commit. Apply just gives an explicit "I'm done" gesture
+          // alongside the other dismiss paths (Escape, click-outside).
+          // Pivot is session-only state (no undo, no persistence,
+          // m3's R-toggle clears it), so no need for cancel-revert
+          // semantics — Escape and Apply both keep the picked value.
+          auto *vbox = Gtk::make_managed<Gtk::Box>(
+              Gtk::Orientation::VERTICAL, 6);
+          vbox->set_margin(8);
+          vbox->append(*picker);
+          auto *apply_row = Gtk::make_managed<Gtk::Box>(
+              Gtk::Orientation::HORIZONTAL, 0);
+          apply_row->set_halign(Gtk::Align::END);
+          auto *apply_btn = Gtk::make_managed<Gtk::Button>("Apply");
+          apply_btn->signal_clicked().connect(
+              [popover]() { popover->popdown(); });
+          apply_row->append(*apply_btn);
+          vbox->append(*apply_row);
+          popover->set_child(*vbox);
+
+          Gdk::Rectangle rect((int)x, (int)y, 1, 1);
+          popover->set_pointing_to(rect);
+
+          // Lifetime: same pattern as build_object_context_menu's
+          // popover. set_parent() attaches without normal child cleanup;
+          // signal_closed + idle-unparent breaks the popdown→destroy
+          // race that otherwise leaks each popover against the canvas.
+          popover->signal_closed().connect([popover]() {
+            Glib::signal_idle().connect_once(
+                [popover]() { popover->unparent(); });
+          });
+
+          popover->popup();
+          return;
+        }
+      }
+    }
+
     SceneNode *hit = hit_test(dx, dy);
     // Blend right-click: show a small popover with "Rebuild steps".
     // Owns the Blend whose A or B was hit, or the Blend itself when
@@ -1333,10 +1468,74 @@ void Canvas::doc_to_screen(double dx, double dy, double &sx, double &sy) const {
   sy = dy * m_zoom + doc_origin_y();
 }
 
-double Canvas::snap(double v) const {
-  // TODO: snap to document grid when grid snap system is built.
-  (void)v;
-  return v;
+// s204 m1: the no-op Canvas::snap(double v) used to live here as a TODO
+// stub that returned v unchanged. Every caller — pivot setters, shape-tool
+// draw start/motion, Line-tool, Ref-tool down/drag/up, ruler-corner refpt
+// placement, cursor readout — silently fell back to raw coords because of
+// it, ignoring the real snap engine in snap_x / snap_y below. Per the s203
+// m3 CANON entry "pumps need to be the only path," the no-op was deleted
+// outright (rather than implemented) so a caller can't pick the wrong
+// pump by mistake: x-coords go through snap_x, y-coords through snap_y,
+// and the compiler refuses anything else. ~18 call sites across
+// Canvas_input.cpp and Canvas_draw.cpp were swept in the same change.
+
+// s204 m2 — Walk visible artwork layers and emit bbox snap candidates.
+//
+// For each visible non-special-layer top-level child object, compute its
+// bbox and contribute {left, midX, right} to out_x_candidates and
+// {top, midY, bottom} to out_y_candidates. Group / Compound objects
+// contribute their union bbox only, not their child bboxes — a group
+// acts as one object for snap purposes, matching how object_bbox already
+// handles the recursion internally.
+//
+// `exclude` is a list of object pointers to skip. Linear scan over
+// `exclude` is fine: the typical exclude set is the multi-select being
+// dragged (1–10 objects), and the dominant cost is the bbox computation
+// loop, not exclusion testing.
+//
+// Per-object visibility (obj->visible) is honored on top of layer
+// visibility — a hidden child of a visible layer is not a snap target.
+// This mirrors hit_test and the render path.
+void Canvas::gather_object_edge_snap_candidates(
+    const std::vector<const SceneNode*>& exclude,
+    std::vector<double>& out_x_candidates,
+    std::vector<double>& out_y_candidates) const {
+  if (!m_doc)
+    return;
+  for (const auto &layer : m_doc->layers) {
+    if (!layer->visible || layer->is_special_layer())
+      continue;
+    for (const auto &obj_ptr : layer->children) {
+      const SceneNode *obj = obj_ptr.get();
+      if (!obj || !obj->visible)
+        continue;
+      // Skip any object in the exclude set — typically the moving set
+      // during a drag, so a bbox doesn't snap to its own pre-move edges.
+      bool skipped = false;
+      for (const SceneNode *ex : exclude) {
+        if (ex == obj) { skipped = true; break; }
+      }
+      if (skipped)
+        continue;
+      // include_stroke=false: snap to the geometric edge of the shape,
+      // not the half-stroke-width inflated edge. A user dragging a
+      // rect's left edge to touch another rect's right edge expects
+      // the geometry to align, not the stroke envelopes.
+      auto bb = object_bbox(*obj, /*include_stroke=*/false);
+      if (!bb)
+        continue;
+      const double left  = bb->x;
+      const double right = bb->x + bb->w;
+      const double top   = bb->y;
+      const double bot   = bb->y + bb->h;
+      out_x_candidates.push_back(left);
+      out_x_candidates.push_back((left + right) * 0.5);
+      out_x_candidates.push_back(right);
+      out_y_candidates.push_back(top);
+      out_y_candidates.push_back((top + bot) * 0.5);
+      out_y_candidates.push_back(bot);
+    }
+  }
 }
 
 double Canvas::snap_x(double doc_x, double tolerance_px) const {
@@ -1441,6 +1640,30 @@ double Canvas::snap_x(double doc_x, double tolerance_px) const {
     }
   }
 
+  // ── Edges X (s204 m2) ───────────────────────────────────────────────────
+  // Object bbox edges: for every visible non-special-layer object, snap to
+  // its left edge, horizontal center, and right edge. Gated on snap_edges.
+  // The exclude list is empty in the snap_x entry path: this is called
+  // from draw-start gestures (Rect / Ellipse / Line / Ref tools placing a
+  // new shape) where no objects are moving. The drag path uses snap_move,
+  // which passes its own exclude set so a moving bbox doesn't snap to its
+  // own pre-drag position.
+  if (m_doc->snap.snap_edges) {
+    std::vector<double> edge_xs, edge_ys_unused;
+    gather_object_edge_snap_candidates(/*exclude=*/{}, edge_xs, edge_ys_unused);
+    for (double cand : edge_xs) {
+      double scx, scy_dummy;
+      doc_to_screen(cand, 0, scx, scy_dummy);
+      double sx_cur, sy_dummy2;
+      doc_to_screen(doc_x, 0, sx_cur, sy_dummy2);
+      double d = std::abs(sx_cur - scx);
+      if (d < best_d) {
+        best_d = d;
+        best = cand;
+      }
+    }
+  }
+
   return best;
 }
 
@@ -1538,6 +1761,25 @@ double Canvas::snap_y(double doc_y, double tolerance_px) const {
     }
   }
 
+  // ── Edges Y (s204 m2) ───────────────────────────────────────────────────
+  // Same shape as Edges X in snap_x above — snap to bbox top, vertical
+  // center, and bottom for every visible non-special-layer object.
+  if (m_doc->snap.snap_edges) {
+    std::vector<double> edge_xs_unused, edge_ys;
+    gather_object_edge_snap_candidates(/*exclude=*/{}, edge_xs_unused, edge_ys);
+    for (double cand : edge_ys) {
+      double sx_dummy, scy;
+      doc_to_screen(0, cand, sx_dummy, scy);
+      double sx_dummy2, sy_cur;
+      doc_to_screen(0, doc_y, sx_dummy2, sy_cur);
+      double d = std::abs(sy_cur - scy);
+      if (d < best_d) {
+        best_d = d;
+        best = cand;
+      }
+    }
+  }
+
   return best;
 }
 
@@ -1547,10 +1789,11 @@ double Canvas::snap_y(double doc_y, double tolerance_px) const {
 std::pair<double, double> Canvas::snap_move(double raw_dx, double raw_dy) {
   if (!m_doc || !m_doc->snap.enabled)
     return {raw_dx, raw_dy};
-  // Any of the four snap classes (guides/refs/grid/margins) can drive a snap.
-  // Short-circuit only if they're all inactive.
+  // s204 m2: include snap_edges in the "any class active?" guard. Without
+  // this, turning off guides/grid/margins but leaving edges on would
+  // short-circuit here and never reach the edge-snap blocks added below.
   if (!m_doc->snap.snap_guides && !m_doc->snap.snap_grid &&
-      !m_doc->snap.snap_margins)
+      !m_doc->snap.snap_margins && !m_doc->snap.snap_edges)
     return {raw_dx, raw_dy};
 
   const SceneNode *gl = m_doc->guide_layer();
@@ -1567,7 +1810,11 @@ std::pair<double, double> Canvas::snap_move(double raw_dx, double raw_dy) {
   const SceneNode *ml = m_doc->margin_layer();
   bool margins_active = m_doc->snap.snap_margins &&
                         (ml && ml->visible);
-  if (!guides_active && !refs_active && !grid_active && !margins_active)
+  // s204 m2 — edges snap is a property of all visible artwork objects,
+  // not a dedicated layer; gate is the doc flag alone.
+  bool edges_active = m_doc->snap.snap_edges;
+  if (!guides_active && !refs_active && !grid_active && !margins_active &&
+      !edges_active)
     return {raw_dx, raw_dy};
 
   static constexpr double ENGAGE_PX = 12.0;
@@ -1667,6 +1914,30 @@ std::pair<double, double> Canvas::snap_move(double raw_dx, double raw_dy) {
   double cx = (bx1 + bx2) * 0.5, cy = (by1 + by2) * 0.5;
 
   double adj_dx = raw_dx, adj_dy = raw_dy;
+
+  // s204 m2 — Build exclude list of moving objects once for the whole
+  // snap_move call. Used by edge-snap blocks below (X-acquire and
+  // Y-acquire) so a moving bbox doesn't snap its own edges to its own
+  // pre-drag position.
+  //
+  // CRITICAL: build from m_selection, NOT from m_move_snaps. The selection-
+  // tool's drag-begin walks each selected object via collect_paths to push
+  // leaf paths into m_move_snaps — so for a selected Group, m_move_snaps
+  // contains the group's child leaves, while m_selection contains the
+  // Group itself. The gather walks top-level layer children (where the
+  // Group lives), so excluding by leaf pointer wouldn't match and the
+  // Group's own bbox would snap to itself → snap engages at distance 0.
+  // Building from m_selection matches the gather's level of recursion.
+  //
+  // Refpts in m_selection are filtered out by gather itself (refpts live
+  // on a special layer, never enumerated as candidates). Including them
+  // here is harmless but unnecessary; we leave them in for code simplicity.
+  std::vector<const SceneNode*> edge_exclude;
+  if (edges_active) {
+    edge_exclude.reserve(m_selection.size());
+    for (const SceneNode *obj : m_selection)
+      edge_exclude.push_back(obj);
+  }
 
   // ── X snap (vertical guides + ref X) ─────────────────────────────────
   if (m_snap_x_locked) {
@@ -1787,6 +2058,30 @@ std::pair<double, double> Canvas::snap_move(double raw_dx, double raw_dy) {
         }
       }
     }
+    // Edges X (s204 m2) — bbox candidates from other visible objects.
+    // For each candidate X (left/centre/right of every static object),
+    // try snapping each of the moving union's {bx1, cx, bx2} to it.
+    // The exclude list (built once above) prevents a moving bbox from
+    // snapping to its own pre-drag left/centre/right.
+    if (edges_active) {
+      std::vector<double> edge_xs, edge_ys_unused;
+      gather_object_edge_snap_candidates(edge_exclude, edge_xs, edge_ys_unused);
+      for (double cand : edge_xs) {
+        double gsx, gsy;
+        doc_to_screen(cand, 0, gsx, gsy);
+        for (double c : {bx1, cx, bx2}) {
+          double sx, sy;
+          doc_to_screen(c, 0, sx, sy);
+          double d = std::abs(sx - gsx);
+          if (d < best_d) {
+            best_d = d;
+            m_snap_x_locked = true;
+            m_snap_locked_x = cand;
+            adj_dx = raw_dx + (cand - c);
+          }
+        }
+      }
+    }
   }
 
   // ── Y snap (horizontal guides + ref Y) ───────────────────────────────
@@ -1892,6 +2187,26 @@ std::pair<double, double> Canvas::snap_move(double raw_dx, double raw_dy) {
         }
       }
       for (double cand : mcands) {
+        double gsx, gsy;
+        doc_to_screen(0, cand, gsx, gsy);
+        for (double c : {by1, cy, by2}) {
+          double sx, sy;
+          doc_to_screen(0, c, sx, sy);
+          double d = std::abs(sy - gsy);
+          if (d < best_d) {
+            best_d = d;
+            m_snap_y_locked = true;
+            m_snap_locked_y = cand;
+            adj_dy = raw_dy + (cand - c);
+          }
+        }
+      }
+    }
+    // Edges Y (s204 m2) — same shape as Edges X above, on the Y axis.
+    if (edges_active) {
+      std::vector<double> edge_xs_unused, edge_ys;
+      gather_object_edge_snap_candidates(edge_exclude, edge_xs_unused, edge_ys);
+      for (double cand : edge_ys) {
         double gsx, gsy;
         doc_to_screen(0, cand, gsx, gsy);
         for (double c : {by1, cy, by2}) {

@@ -16,6 +16,7 @@
 #include "curvz/widgets/CheckButton.hpp"
 #include "curvz/widgets/DropDown.hpp"
 #include "curvz/widgets/Entry.hpp"
+#include "curvz/widgets/RefPointPicker.hpp"  // s205 m1 — Selection-section pivot picker
 #include "curvz/widgets/Scale.hpp"
 #include "curvz/widgets/SpinButton.hpp"
 #include "curvz/widgets/ToggleButton.hpp"
@@ -4568,14 +4569,69 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
 
     auto adj_r = Gtk::Adjustment::create(0.0, -360.0, 360.0, 0.1, 10.0);
 
-    auto do_rotate = [this, adj_r, apply_xf]() mutable {
-      double rad = -adj_r->get_value() * M_PI / 180.0;
-      double c = std::cos(rad), s = std::sin(rad);
-      apply_xf(
-          [c, s](double dx, double dy) {
-            return std::make_pair(dx * c - dy * s, dx * s + dy * c);
-          },
-          "Rotate object");
+    // s205 m3 — pivot-aware rotation. The shared apply_xf captures the
+    // build-time bbox centre by value, which has two problems for Rotate:
+    //   (1) it ignores the custom pivot the user picked via the new
+    //       Selection-section RefPointPicker (or via R-toggle, the
+    //       right-click popover, the Ctrl+click dialog). Pre-m3 Rotate
+    //       always pivoted at bbox centre regardless of where the user
+    //       had placed the pivot crosshair.
+    //   (2) cx_doc/cy_doc are stale if the user dragged the object
+    //       after the section was built — the inspector rebuilds on
+    //       selection-change, not doc-change. Pre-existing, but worth
+    //       fixing while we're here.
+    //
+    // Resolution: a local apply_rotate that recomputes the bbox-from-
+    // current-leaves at click-time and picks the pivot freshly. Scale
+    // and Skew keep using the original apply_xf — pivot semantics are
+    // specifically a rotation concept on canvas (R-toggle, "Rotate from
+    // Point" dialog), so widening pivot to those transforms would be a
+    // separate design call. Scott can lift this pattern to Scale/Skew
+    // if he wants it.
+    auto apply_rotate =
+        [this, leaves, push_leaves](double angle_deg) {
+          if (std::abs(angle_deg) < 1e-9) return;
+
+          // Pivot: custom if set, else fresh bbox centre.
+          double px = 0.0, py = 0.0;
+          if (m_canvas_widget && m_canvas_widget->has_custom_pivot()) {
+            px = m_canvas_widget->custom_pivot_x();
+            py = m_canvas_widget->custom_pivot_y();
+          } else {
+            double bx1 = 1e18, bx2 = -1e18, by1 = 1e18, by2 = -1e18;
+            for (auto *l : leaves) {
+              if (l->path)
+                expand_bbox_for_path(*l->path, bx1, bx2, by1, by2);
+            }
+            if (bx1 > 1e17) return; // no geometry
+            px = (bx1 + bx2) * 0.5;
+            py = (by1 + by2) * 0.5;
+          }
+
+          double rad = -angle_deg * M_PI / 180.0;
+          double c = std::cos(rad), s = std::sin(rad);
+          std::vector<PathData> before;
+          for (auto *l : leaves)
+            before.push_back(*l->path);
+          for (auto *l : leaves)
+            for (auto &n : l->path->nodes) {
+              double dx, dy;
+              dx = n.x - px;   dy = n.y - py;
+              n.x   = px + dx * c - dy * s;
+              n.y   = py + dx * s + dy * c;
+              dx = n.cx1 - px; dy = n.cy1 - py;
+              n.cx1 = px + dx * c - dy * s;
+              n.cy1 = py + dx * s + dy * c;
+              dx = n.cx2 - px; dy = n.cy2 - py;
+              n.cx2 = px + dx * c - dy * s;
+              n.cy2 = py + dx * s + dy * c;
+            }
+          push_leaves(leaves, before, "Rotate object");
+          emit_prop_changed();
+        };
+
+    auto do_rotate = [this, adj_r, apply_rotate]() mutable {
+      apply_rotate(adj_r->get_value());
       m_loading = true;
       adj_r->set_value(0.0);
       Glib::signal_idle().connect_once([this] { m_loading = false; });
@@ -4603,18 +4659,13 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     rl->set_width_chars(6);
     apply_lbl->set_child(*rl);
     apply_lbl->set_tooltip_text("Click to apply rotation");
-    apply_lbl->signal_clicked().connect([this, adj_r, apply_xf]() mutable {
-      double rad = -adj_r->get_value() * M_PI / 180.0;
-      double c = std::cos(rad), s = std::sin(rad);
-      apply_xf(
-          [c, s](double dx, double dy) {
-            return std::make_pair(dx * c - dy * s, dx * s + dy * c);
-          },
-          "Rotate object");
-      m_loading = true;
-      adj_r->set_value(0.0);
-      Glib::signal_idle().connect_once([this] { m_loading = false; });
-    });
+    apply_lbl->signal_clicked().connect(
+        [this, adj_r, apply_rotate]() mutable {
+          apply_rotate(adj_r->get_value());
+          m_loading = true;
+          adj_r->set_value(0.0);
+          Glib::signal_idle().connect_once([this] { m_loading = false; });
+        });
 
     row->append(*apply_lbl);
     row->append(*spin_r);
@@ -4622,6 +4673,73 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     r_filler->set_hexpand(true);
     row->append(*r_filler);
     body->append(*row);
+  }
+
+  // ── Pivot picker (s205 m1) ────────────────────────────────────────────────
+  // Embedded RefPointPicker bound to the selection's union bbox. The
+  // picker IS the inspector's view of Canvas's rotation pivot
+  // (m_custom_pivot_x/y + m_has_custom_pivot). Edits here flow through
+  // Canvas::set_custom_pivot which emits signal_pivot_changed; that
+  // signal in turn drives sync_selected_pivot to refresh the picker
+  // from canvas state — closing the loop with R-toggle, R+drag, and
+  // the right-click popover. All four paths read/write the same pivot.
+  //
+  // Live-tracking guard: the listener below checks m_loading so the
+  // picker's own emit (from set_arbitrary_xy / set_bbox during sync)
+  // doesn't re-enter set_custom_pivot and emit another signal_pivot_changed
+  // — that would self-feed until something breaks the loop.
+  //
+  // Seeding:
+  //  - canvas has_custom_pivot → arbitrary mode at the current pivot xy
+  //  - else → preset C (centre of bbox)
+  // R-press without a prior custom pivot positions the crosshair at
+  // bbox-centre by default; the picker matches that visually with C.
+  //
+  // No undo. Pivot is session state per s204 design (popover, R+drag,
+  // and R-toggle clear are all undo-less).
+  if (m_canvas_widget && bw_doc > 0 && bh_doc > 0) {
+    auto *pivot_row = Gtk::make_managed<Gtk::Box>(
+        Gtk::Orientation::HORIZONTAL);
+    pivot_row->set_margin_start(8);
+    pivot_row->set_margin_end(6);
+    pivot_row->set_margin_top(2);
+    pivot_row->set_margin_bottom(4);
+
+    auto *picker = Gtk::make_managed<curvz::widgets::RefPointPicker>(
+        "refpoint_picker.sel_pivot", m_canvas, m_ruler_ox, m_ruler_oy);
+    picker->set_bbox(bx_doc, by_doc, bw_doc, bh_doc);
+
+    // Seed from current Canvas pivot state. has_custom_pivot includes
+    // both R+click placements and the right-click popover's edits, and
+    // the bbox-centre default Canvas seeds inside notify_r_pressed when
+    // R is first pressed against a selection.
+    if (m_canvas_widget->has_custom_pivot()) {
+      picker->set_arbitrary_xy(m_canvas_widget->custom_pivot_x(),
+                               m_canvas_widget->custom_pivot_y());
+    } else {
+      // No active pivot — leave the picker on its default (preset C =
+      // bbox centre). User can flip to arbitrary or pick a preset to
+      // engage the pivot, which will emit signal_point_changed and
+      // route through set_custom_pivot to set m_has_custom_pivot true.
+      picker->set_mode(curvz::widgets::RefPointPicker::Mode::Preset);
+      picker->set_preset(curvz::widgets::RefPointPicker::Preset::C);
+    }
+
+    // Edits propagate to Canvas. m_loading guard is the loop-breaker
+    // for the sync direction (sync_selected_pivot writes the picker
+    // under m_loading=true; that write triggers an internal picker
+    // emit, but this listener bails and the cycle ends).
+    picker->signal_point_changed().connect(
+        [this](double px, double py) {
+          if (m_loading) return;
+          if (!m_canvas_widget) return;
+          m_canvas_widget->set_custom_pivot(px, py);
+        });
+
+    pivot_row->append(*picker);
+    picker->set_hexpand(true);
+    body->append(*pivot_row);
+    m_sel_pivot_picker = picker;
   }
 
   // ── Skew ──────────────────────────────────────────────────────────────────
@@ -4986,6 +5104,11 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
   m_sel_lbl_hv = nullptr;
   m_ref_sp_x = nullptr;
   m_ref_sp_y = nullptr;
+  // s205 m1 — pivot picker pointer cleared here alongside other Selection-
+  // section pointers. sync_selected_pivot guards on this being non-null, so
+  // signal_pivot_changed deliveries between rebuilds (e.g. R-toggle while
+  // selection is changing) safely no-op.
+  m_sel_pivot_picker = nullptr;
   // Guide section pointers — same rationale as ref pointers above.
   // sync_selected_guide guards on these being non-null AND m_selected_guide
   // matching, so this nullptr reset is the safety net between rebuilds.
@@ -8527,6 +8650,120 @@ void PropertiesPanel::sync_selected_guide() {
   m_guide_sp_x->set_internal_value(g->guide_x);
   m_guide_sp_y->set_internal_value(g->guide_y);
   m_guide_sp_a->set_internal_value(g->guide_angle);
+  m_loading = false;
+}
+
+// ── sync_selected_pivot (s205 m1; m2 mode-respecting rewrite) ────────────────
+// Live-track Canvas's rotation-pivot state in the inspector's Selection-
+// section RefPointPicker. Called from MainWindow on two signal sources:
+//
+//   • Canvas::signal_pivot_changed — fires for R-toggle entry/exit,
+//     R+drag steps, right-click popover edits, Ctrl+click pivot dialog
+//     apply, initial R+click placement.
+//
+//   • Canvas::signal_document_changed — also drives this, because a
+//     bbox-changing canvas drag (object move, transform handle) doesn't
+//     change the pivot but DOES change the selection bbox the picker's
+//     presets evaluate against. Without this path the presets would
+//     stay wired to the bbox at section-build time and drift stale.
+//
+// Cheap & gated: bails unless the picker is currently built (i.e. the
+// inspector is presenting a path-object Selection section) AND canvas
+// is wired. Both gates are independent — between selection-change and
+// refresh the picker pointer is nulled by do_clear, so signal deliveries
+// during that window safely no-op.
+//
+// ── m2 mode-respecting policy ───────────────────────────────────────────
+// In m1 this function called picker->set_arbitrary_xy() whenever canvas
+// had a pivot — which silently flipped the picker into Arbitrary mode.
+// Combined with the listener writing back to canvas on every picker
+// emit, ANY preset click (which sets canvas pivot) immediately fed back
+// into the sync, demoting the picker to Arbitrary. Unchecking the
+// arbitrary checkbox re-fired the cycle: set_mode(Preset) → emit →
+// listener → set_custom_pivot → pivot_changed → sync → set_arbitrary_xy
+// → Arbitrary. Checkbox appeared frozen.
+//
+// Fix: the picker's MODE is now the source of truth for how the user
+// wants to interact, not a derived view of canvas state. Sync only
+// refreshes the underlying xy display values, never the mode. Cleanup
+// rules:
+//   • bbox always refreshes (so preset presets re-evaluate on geom
+//     change). set_bbox in Preset mode emits — m_loading guards the
+//     listener cycle.
+//   • Canvas has pivot + picker in Arbitrary mode → push canvas xy
+//     into m_arb_x/y via update_arbitrary_xy_silent (NO mode flip,
+//     NO emit). Picker's spinners show the live pivot xy.
+//   • Canvas has pivot + picker in Preset mode → do nothing extra.
+//     The preset IS the pivot's source; we don't overwrite ourselves.
+//   • Canvas pivot cleared → reset picker to Preset C as before. This
+//     is the only path that touches mode, and it's the correct one:
+//     "no pivot active" should always present as the neutral default.
+void PropertiesPanel::sync_selected_pivot() {
+  if (!m_sel_pivot_picker || !m_canvas_widget)
+    return;
+  if (!m_current)
+    return;
+
+  // Refresh bbox first — selection geometry may have changed since the
+  // section was built. Same shape as build_selection_section's leaf
+  // collection: anything with a path geometry contributes to the union.
+  std::vector<SceneNode *> leaves;
+  std::function<void(SceneNode *)> collect = [&](SceneNode *n) {
+    if (!n) return;
+    if (n->type == SceneNode::Type::Path && n->path &&
+        !n->path->nodes.empty()) {
+      leaves.push_back(n);
+      return;
+    }
+    for (auto &c : n->children) collect(c.get());
+    if (n->type == SceneNode::Type::ClipGroup && n->clip_shape)
+      collect(n->clip_shape.get());
+    if (n->type == SceneNode::Type::Blend) {
+      collect(n->blend_source_a.get());
+      collect(n->blend_source_b.get());
+      for (auto &step : n->blend_cache) collect(step.get());
+    }
+    if (n->type == SceneNode::Type::Warp) {
+      collect(n->warp_source.get());
+      collect(n->warp_glyph_cache.get());
+      collect(n->warp_cache.get());
+    }
+  };
+  collect(m_current);
+  if (leaves.empty())
+    return; // not a path-object selection — nothing to sync
+
+  double minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+  for (SceneNode *leaf : leaves) {
+    if (leaf->path)
+      expand_bbox_for_path(*leaf->path, minx, maxx, miny, maxy);
+  }
+  if (minx > 1e8) return; // safety — no geometry contributed
+
+  m_loading = true;
+  m_sel_pivot_picker->set_bbox(minx, miny, maxx - minx, maxy - miny);
+
+  if (m_canvas_widget->has_custom_pivot()) {
+    // Picker mode is sticky — only refresh the arbitrary xy display
+    // (relevant when picker IS in Arbitrary mode; harmless when in
+    // Preset mode — m_arb_x/y just gets a fresh value the user will
+    // see if they later flip to Arbitrary). update_arbitrary_xy_silent
+    // does NOT emit signal_point_changed, breaking the m1 feedback
+    // loop without relying on m_loading alone.
+    m_sel_pivot_picker->update_arbitrary_xy_silent(
+        m_canvas_widget->custom_pivot_x(),
+        m_canvas_widget->custom_pivot_y());
+  } else {
+    // Canvas cleared the pivot (R-toggled off, or selection-change
+    // side-effect). Reset picker to its default neutral state:
+    // preset C against the (refreshed) bbox. This IS a mode change —
+    // safe because there's nothing the user could be doing with the
+    // picker while canvas reports "no pivot active".
+    m_sel_pivot_picker->set_mode(
+        curvz::widgets::RefPointPicker::Mode::Preset);
+    m_sel_pivot_picker->set_preset(
+        curvz::widgets::RefPointPicker::Preset::C);
+  }
   m_loading = false;
 }
 
