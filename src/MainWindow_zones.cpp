@@ -988,6 +988,22 @@ void MainWindow::setup_menu() {
   });
   add_action(act_offset_path);
 
+  // s205 m4 — Translate hub dialog. Right-click menu's "Translate…" entry
+  // (Canvas.cpp::build_object_context_menu) and any future menu/hotkey
+  // exposure both activate this action. Selection-aware via the dialog's
+  // internal apply-time re-collect — no enable/disable gating needed at
+  // the action level (the dialog no-ops on empty selection).
+  auto act_translate = Gio::SimpleAction::create("translate-dialog");
+  act_translate->signal_activate().connect([this](const Glib::VariantBase &) {
+    auto *doc = m_project ? m_project->active_doc() : nullptr;
+    const CanvasModel *cm = doc ? &doc->canvas : nullptr;
+    const double rox = doc ? doc->ruler_origin_x : 0.0;
+    const double roy = doc ? doc->ruler_origin_y : 0.0;
+    m_translate_dialog.present(*this, &m_canvas, &m_history,
+                               m_project.get(), cm, rox, roy);
+  });
+  add_action(act_translate);
+
   auto act_expand_stroke = Gio::SimpleAction::create("expand-stroke");
   act_expand_stroke->signal_activate().connect(
       [this](const Glib::VariantBase &) { m_canvas.expand_stroke_op(); });

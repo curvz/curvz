@@ -266,6 +266,7 @@ set(SOURCES
     src/MainWindow_helpers.cpp
     src/NewDocumentDialog.cpp
     src/OffsetPathDialog.cpp
+    src/TranslateDialog.cpp  # s205 m4 — pivot-aware transform hub
     src/GradientDialog.cpp
     src/SaveAsTemplateDialog.cpp
     src/ManageTemplatesDialog.cpp
@@ -461,6 +462,7 @@ set(SOURCES
     src/curvz/widgets/Entry.cpp
     src/curvz/widgets/Scale.cpp
     src/curvz/widgets/SpinButton.cpp
+    src/curvz/widgets/RefPointPicker.cpp  # s204 m4 — compound bbox-point picker
 
     # Custom widgets
     src/CurvzSwitch.cpp

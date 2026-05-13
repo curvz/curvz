@@ -103,6 +103,7 @@
 #include "ManageTemplatesDialog.hpp"
 #include "ThemeEditDialog.hpp"  // s200 m1 — hide-on-close singleton
 #include "StyleEditorDialog.hpp"  // s201 m1 — hide-on-close singleton
+#include "TranslateDialog.hpp"  // s205 m4 — pivot-aware transform hub
 #include "ClipboardViewWindow.hpp"  // s203 m1 — hide-on-close singleton
 #include "Ruler.hpp"
 #include <gtkmm/applicationwindow.h>
@@ -393,6 +394,7 @@ private:
     MacroEditorWindow             m_macro_editor;
     PrintManager                  m_print_manager;
     OffsetPathDialog              m_offset_path_dialog;
+    TranslateDialog               m_translate_dialog;  // s205 m4
     GradientDialog                m_gradient_dialog;
     SaveAsTemplateDialog          m_save_as_template_dialog;
     ManageTemplatesDialog         m_manage_templates_dialog;
