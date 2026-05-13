@@ -23,6 +23,13 @@
 #include "curvz_utils.hpp" // s117 m18 v2: apply_motif_class_from_parent
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector-driven appearance edits
 #include <algorithm>
+// s202 m6 — quick-jump float construction
+#include <gtkmm/box.h>
+#include <gtkmm/button.h>
+#include <gtkmm/eventcontrollerkey.h>
+#include <gtkmm/label.h>
+#include <gtkmm/scrolledwindow.h>
+#include <gtkmm/window.h>
 #include <cctype> // s136 m4: std::isspace for library item name trim
 #include <filesystem>
 #include <fstream>
@@ -1566,6 +1573,340 @@ bool MainWindow::write_library_item(const std::string &dest_dir,
   // Refresh panel so new item appears immediately
   m_library.refresh();
   return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ━━━ s202 m6 ━━━ Inspector focus + quick-jump.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Two affordances: Alt+Space collapses every inspector section
+// (collapse_all_inspector_sections); Ctrl+Space pops a small floating
+// chooser (show_quick_jump_popover) listing the currently relevant
+// sections. Picking a section invokes focus_inspector_on which
+// collapses everything and then opens just that section's chain.
+//
+// The state machinery spans two collapse stores: m_sec_apply (Content
+// group and its inner make_section children, registered at
+// setup_layout) AND PropertiesPanel::m_section_open (Document and
+// Object groups plus every section inside them, rebuilt per
+// PropertiesPanel::refresh). Both stores are written through; the
+// PropertiesPanel side then re-renders via refresh_inspector so the
+// arrow glyphs and body visibilities catch up.
+
+// Walk PropertiesPanel's m_section_open map setting every entry to
+// `on`, then call refresh_inspector so the panel rebuilds with the
+// new flags in place. This is the cheapest path: PropertiesPanel
+// reads m_section_open[title] at build time to decide each section's
+// initial-visible state (see add_collapsible's `open_now = it != end
+// ? it->second : expanded` line), so writing the map then refreshing
+// is equivalent to clicking every header.
+static void set_all_properties_sections(PropertiesPanel& panel, bool on) {
+  auto state = panel.section_open_state();  // copy
+  for (auto& kv : state) kv.second = on;
+  panel.set_section_open_state(state);
+}
+
+void MainWindow::collapse_all_inspector_sections() {
+  // Phase 1: collapse every section in MainWindow's m_sec_apply registry
+  // (Content group, Layers, Library, Swatches, Styles, Themes,
+  // Documents). Each closure handles the cascade — body visibility,
+  // arrow glyph, project field, schedule_save.
+  for (auto& kv : m_sec_apply) {
+    kv.second(false);
+  }
+
+  // Phase 2: collapse every section PropertiesPanel knows about
+  // (Document + Object groups and their inner sections, rebuilt per
+  // selection). Write the open-state map, then refresh so the panel
+  // re-renders with the new flags in place.
+  set_all_properties_sections(m_properties, false);
+  refresh_inspector();
+}
+
+void MainWindow::focus_inspector_on(const std::string& section_title) {
+  // Compose: collapse everything, then open just what's needed to
+  // view the picked section. "Just what's needed" means the section
+  // itself and its single parent group — no siblings, no other
+  // groups, no extras.
+  //
+  // Parent group is determined by which registry the section lives
+  // in and (for PropertiesPanel sections) by a static title→group
+  // mapping. PropertiesPanel stores section flags keyed by title
+  // alone — no parent context in the key — so the mapping table
+  // is the single source of truth for "which group owns which title."
+
+  // First: collapse everything.
+  collapse_all_inspector_sections();
+
+  // Case 1: m_sec_apply — Content group + its leaves.
+  auto open_main_section = [this](const std::string& title) {
+    auto it = m_sec_apply.find(title);
+    if (it != m_sec_apply.end()) it->second(true);
+  };
+  if (section_title == "Content") {
+    open_main_section("Content");
+    refresh_inspector();
+    return;
+  }
+  if (m_sec_apply.find(section_title) != m_sec_apply.end()) {
+    open_main_section("Content");
+    open_main_section(section_title);
+    refresh_inspector();
+    return;
+  }
+
+  // Case 2: PropertiesPanel sections — Document / Object / Application.
+  // Static title→group mapping. Ambiguous titles (Guides appears under
+  // both Object and Application as of the current refresh structure)
+  // resolve to their most common home for the user-driven case;
+  // future per-mode disambiguation can land here when needed.
+  auto parent_group_for = [](const std::string& title) -> const char* {
+    // Document group
+    if (title == "Metadata" || title == "Theme" || title == "Canvas" ||
+        title == "Dimensions")
+      return "Document";
+    // Object group — selection-dependent sections, Guides under
+    // Object (s179 m3v2), Styling under Object as the apply-style
+    // surface.
+    if (title == "Selection" || title == "Text" || title == "Blend" ||
+        title == "Warp" || title == "Node" || title == "Appearance" ||
+        title == "Shadow" || title == "Styling" || title == "Guides")
+      return "Object";
+    // Application group — boot-time + editing prefs.
+    if (title == "Startup" || title == "Editing" || title == "Paths" ||
+        title == "Boolean cleanup" || title == "Grid" ||
+        title == "Margins")
+      return "Application";
+    return nullptr;
+  };
+
+  auto state = m_properties.section_open_state();
+  if (state.find(section_title) != state.end()) {
+    state[section_title] = true;
+    if (auto* group = parent_group_for(section_title)) {
+      state[std::string("__group__") + group] = true;
+    }
+    m_properties.set_section_open_state(state);
+    refresh_inspector();
+    return;
+  }
+
+  // Group-header pick: "Document", "Object", "Application" themselves.
+  std::string group_key = "__group__" + section_title;
+  if (state.find(group_key) != state.end()) {
+    state[group_key] = true;
+    m_properties.set_section_open_state(state);
+    refresh_inspector();
+    return;
+  }
+
+  // No match — pick was stale. Refresh anyway so the collapse-all
+  // from phase 1 is visible.
+  refresh_inspector();
+}
+
+// s202 m6_v2 — phase detection. Three buckets, computed from app
+// state at quick-jump invocation time. The phase keys the counter
+// store so different workflow modes learn independently — what you
+// jump to during Execution is tracked separately from what you jump
+// to during Setup.
+//
+//   Setup     — no active doc, OR active doc has no objects. The
+//               canvas hasn't been populated yet; the user is most
+//               likely configuring the document itself.
+//   Execution — selection is non-empty. The user is actively
+//               modifying something.
+//   Polish    — content exists but no selection. Between-tasks
+//               state — looking around, adjusting global settings,
+//               browsing the library.
+//
+// Phase detection is intentionally coarse for m6_v2. A more
+// sophisticated reading might consider active tool, doc maturity,
+// etc., but the three-bucket split is enough granularity for the
+// counter system to learn useful weights without diluting them
+// across a long tail of micro-phases.
+//
+// Implemented inline as a lambda since it needs private access to
+// m_canvas + m_project.
+
+void MainWindow::show_quick_jump_popover() {
+  // ── Phase detection (see comment block above) ──────────────────────
+  auto detect_phase = [this]() -> int {
+    if (!m_canvas.selection().empty()) return 1;  // Execution
+    if (!m_project) return 0;                     // Setup — no project
+    auto* doc = m_project->active_doc();
+    if (!doc) return 0;                           // Setup — no doc
+    for (const auto& layer : doc->layers) {
+      if (layer && !layer->children.empty()) return 2;  // Polish
+    }
+    return 0;                                     // Setup — empty doc
+  };
+
+  // ── Phase 1: gather candidates from both registries ────────────────
+  //
+  // PropertiesPanel only builds sections that apply to the current
+  // selection / inspector tool state — so keys in section_open_state
+  // ARE the context-filter for Document-group and Object-group
+  // sections. Content panels (Layers, Library, Swatches, Styles,
+  // Themes, Documents) are always present in m_sec_apply.
+  std::vector<std::string> candidates;
+  candidates.reserve(16);
+  for (const auto& kv : m_properties.section_open_state()) {
+    if (kv.first.rfind("__group__", 0) == 0) continue;
+    candidates.push_back(kv.first);
+  }
+  for (const auto& kv : m_sec_apply) {
+    if (kv.first == "Content") continue;
+    candidates.push_back(kv.first);
+  }
+
+  // ── Phase 2: detect phase and sort by counter ──────────────────────
+  //
+  // detect_quick_jump_phase reads canvas selection + active doc.
+  // Counter store lives on AppPreferences — per-user, persists across
+  // runs. Counts grow on each pick (see click handler below); the
+  // sort is descending so most-picked rises to the top.
+  //
+  // Tiebreaker: insertion order from the gather above (PropertiesPanel
+  // sections first, then m_sec_apply leaves). Stable enough — when
+  // counts are equal (notably zero on cold-start), the order matches
+  // the inspector's own top-down layout, which is a reasonable
+  // default scan order.
+  const int phase = detect_phase();
+  auto& prefs = AppPreferences::instance();
+  std::stable_sort(candidates.begin(), candidates.end(),
+      [&prefs, phase](const std::string& a, const std::string& b) {
+        return prefs.quick_jump_count(phase, a) >
+               prefs.quick_jump_count(phase, b);
+      });
+
+  // ── Phase 3: lazy window construction ──────────────────────────────
+  //
+  // The window itself lives across pops; only its contents are
+  // rebuilt per show. Esc dismisses; clicking a button dismisses;
+  // the modal+transient_for setup means clicking outside the float
+  // doesn't dismiss (modal grabs the focus), so the user always
+  // either picks or Escapes.
+  if (!m_quick_jump_win) {
+    m_quick_jump_win = std::make_unique<Gtk::Window>();
+    m_quick_jump_win->set_title("Jump to…");
+    m_quick_jump_win->set_modal(true);
+    m_quick_jump_win->set_transient_for(*this);
+    m_quick_jump_win->set_hide_on_close(true);
+    m_quick_jump_win->set_resizable(false);
+    m_quick_jump_win->set_decorated(false);  // m6_v2: chromeless mini float
+
+    auto kc = Gtk::EventControllerKey::create();
+    kc->signal_key_pressed().connect(
+        [this](guint kv, guint, Gdk::ModifierType) -> bool {
+          if (kv == GDK_KEY_Escape) {
+            m_quick_jump_win->set_visible(false);
+            return true;
+          }
+          return false;
+        },
+        /*after=*/false);
+    m_quick_jump_win->add_controller(kc);
+  }
+
+  // ── Phase 4: mini UI — compact list, top-5 visible + More expander ─
+  //
+  // Visual targets:
+  //   - 1px row spacing
+  //   - no button frame (set_has_frame(false))
+  //   - tight 2px vertical padding via CSS class .qj-row
+  //   - smaller font via .dim-label-strength is NOT used because
+  //     dim-label fades to near-invisible; instead we let the row
+  //     button's natural font stand and rely on the compact padding
+  //     to communicate "mini"
+  //
+  // "More…" affordance: top 5 visible by default; clicking More
+  // reveals the rest in the same list. The reveal happens in-place
+  // (no second window, no scroll change) — we just remove the More
+  // button and append the tail. State doesn't persist across pops;
+  // each Ctrl+Space starts collapsed.
+
+  auto* outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
+  outer->set_margin_top(3);
+  outer->set_margin_bottom(3);
+  outer->set_margin_start(3);
+  outer->set_margin_end(3);
+  outer->set_spacing(1);
+
+  if (candidates.empty()) {
+    auto* none = Gtk::make_managed<Gtk::Label>("Nothing relevant right now");
+    none->add_css_class("dim-label");
+    none->set_margin_top(4);
+    none->set_margin_bottom(4);
+    none->set_margin_start(8);
+    none->set_margin_end(8);
+    outer->append(*none);
+    m_quick_jump_win->set_child(*outer);
+    m_quick_jump_win->present();
+    return;
+  }
+
+  // Helper that builds one row button. The signature returns the
+  // raw pointer so the caller can append it in either the always-
+  // visible block or the More-revealed block.
+  auto make_row = [this, phase, &prefs](const std::string& title) -> Gtk::Button* {
+    auto* btn = Gtk::make_managed<Gtk::Button>(title);
+    btn->set_has_frame(false);
+    btn->add_css_class("qj-row");
+    btn->set_margin_top(0);
+    btn->set_margin_bottom(0);
+    // Left-align the label inside the button. Gtk::Button wraps the
+    // text in a Label child; grab it and pin xalign to 0.
+    if (auto* lbl = dynamic_cast<Gtk::Label*>(btn->get_child())) {
+      lbl->set_xalign(0.0f);
+      lbl->set_hexpand(true);
+    }
+    btn->signal_clicked().connect([this, title, phase, &prefs]() {
+      // Bump BEFORE invoking focus, so the counter update is part of
+      // the user's gesture commitment (not contingent on the focus
+      // call succeeding).
+      prefs.bump_quick_jump_count(phase, title);
+      m_quick_jump_win->set_visible(false);
+      focus_inspector_on(title);
+    });
+    return btn;
+  };
+
+  // Always show top 5.
+  const size_t TOP_N = 5;
+  size_t visible = std::min(TOP_N, candidates.size());
+  for (size_t i = 0; i < visible; ++i) {
+    outer->append(*make_row(candidates[i]));
+  }
+
+  // If there's a tail, append a "More…" row that swaps itself out
+  // for the tail on click. Self-removing pattern: capture outer +
+  // tail vector; on click, remove self and append each tail row.
+  if (candidates.size() > TOP_N) {
+    auto* more = Gtk::make_managed<Gtk::Button>("More…");
+    more->set_has_frame(false);
+    more->add_css_class("qj-row");
+    more->add_css_class("dim-label");
+    if (auto* lbl = dynamic_cast<Gtk::Label*>(more->get_child())) {
+      lbl->set_xalign(0.0f);
+      lbl->set_hexpand(true);
+    }
+    // Capture tail by copy; the candidates vector is local and will
+    // go out of scope as soon as show_quick_jump_popover returns.
+    std::vector<std::string> tail(candidates.begin() + TOP_N,
+                                  candidates.end());
+    more->signal_clicked().connect(
+        [this, outer, more, tail, make_row]() {
+          outer->remove(*more);
+          for (const auto& title : tail) {
+            outer->append(*make_row(title));
+          }
+        });
+    outer->append(*more);
+  }
+
+  m_quick_jump_win->set_child(*outer);
+  m_quick_jump_win->present();
 }
 
 } // namespace Curvz

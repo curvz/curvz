@@ -102,6 +102,7 @@
 #include "HelpWindow.hpp"
 #include "ManageTemplatesDialog.hpp"
 #include "ThemeEditDialog.hpp"  // s200 m1 — hide-on-close singleton
+#include "StyleEditorDialog.hpp"  // s201 m1 — hide-on-close singleton
 #include "Ruler.hpp"
 #include <gtkmm/applicationwindow.h>
 #include <gtkmm/headerbar.h>
@@ -154,7 +155,57 @@ public:
     // callback after both MainWindow and ScripterWindow exist. The
     // diagnostic gate keeps production builds free of the surface.
     void set_subtitle(const std::string& text);  // category: zone: caption-bar
+
+    // s201 m3 — panel accessors for the script-driven action-dispatch
+    // verb. The Scripter's `do <prefix.action>` verb routes to whichever
+    // panel owns the action group with that prefix (StylesPanel inserts
+    // "styles", ThemesPanel inserts "themes-io", etc.). Application
+    // installs the callback that performs the routing and needs widget
+    // handles on each panel to call activate_action() through them —
+    // GTK's action-group resolution walks up from the originating
+    // widget, so the call must originate on the widget that holds the
+    // group. These accessors are the route; they exist only in the
+    // diagnostic build because nothing in production needs them.
+    StylesPanel& styles_panel() { return m_styles; }
+    ThemesPanel& themes_panel() { return m_themes; }
 #endif
+
+    // ── s202 m6 — inspector focus / quick-jump ─────────────────────────
+    //
+    // Two user-facing affordances that share the m5 focus-move shape:
+    //
+    //   Ctrl+Shift+Space → collapse every inspector section, top-level
+    //                      groups included. Zero state. (Alt+Space was
+    //                      the original chord but GNOME captures it
+    //                      for the compositor window menu.)
+    //   Ctrl+Space       → pop the quick-jump float listing currently
+    //                      relevant sections (Document or Object
+    //                      sections per selection, plus the always-
+    //                      present Content panels). Pick one and the
+    //                      inspector focus-moves to it.
+    //
+    // Both hotkeys fire regardless of text focus per the existing
+    // modifier-bypass rule in the keys controller (Ctrl chords always
+    // get through; bare Space still routes to text widgets when one
+    // has focus).
+    //
+    // The implementation reaches both collapse mechanisms: MainWindow's
+    // m_sec_apply registry (Content group + Layers/Library/Swatches/
+    // Styles/Themes/Documents) AND PropertiesPanel's m_section_open
+    // map (Document/Object groups + every section inside them, since
+    // PropertiesPanel rebuilds its widget tree per selection). Both
+    // are treated as one logical state for the purposes of "collapse
+    // all" and "focus on this section."
+    //
+    // Public because the keyboard controller in MainWindow_bindings.cpp
+    // and the quick-jump float's button handlers both call these;
+    // keeping them at the MainWindow public surface (not hidden behind
+    // diagnostic gates) because these are user-facing features, not
+    // script-driven ones.
+    void collapse_all_inspector_sections();
+    void focus_inspector_on(const std::string& section_title);
+    void show_quick_jump_popover();
+    // ── end s202 m6 ────────────────────────────────────────────────────
 
 private:
     void setup_headerbar();  // category: zone: headerbar
@@ -337,6 +388,7 @@ private:
     SaveAsTemplateDialog          m_save_as_template_dialog;
     ManageTemplatesDialog         m_manage_templates_dialog;
     ThemeEditDialog               m_theme_edit_dialog;  // s200 m1
+    StyleEditorDialog             m_style_editor_dialog;  // s201 m1
     ShortcutsDialog               m_shortcuts_dialog;
     HelpWindow                    m_help_window;
 
@@ -344,6 +396,12 @@ private:
     // window with Perpendicular checkbox + OK + Cancel.
     std::unique_ptr<Gtk::Window>  m_guide_review_win;
     Gtk::CheckButton*             m_guide_review_perp_chk = nullptr;
+
+    // s202 m6 — quick-jump float, created lazily on first Ctrl+Space.
+    // Held as unique_ptr<Gtk::Window> so the type doesn't bloat
+    // MainWindow.hpp; the impl lives in MainWindow_helpers.cpp
+    // alongside the focus_inspector_on cascade it triggers.
+    std::unique_ptr<Gtk::Window>  m_quick_jump_win;
     ActiveTool                    m_active_tool    = ActiveTool::Selection;
     ActiveTool                    m_inspector_tool = ActiveTool::Selection;
     // S58m: remember previous selection size so shift-click add/remove

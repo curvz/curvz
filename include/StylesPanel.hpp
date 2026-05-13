@@ -61,9 +61,18 @@
 #include <gtkmm/separator.h>
 #include <sigc++/sigc++.h>
 #include <functional>
+#include <memory>                // s202 m1: unique_ptr for panel-Scriptable
 #include <string>
 #include <utility>               // std::pair
 #include <vector>
+
+#ifdef CURVZ_DIAGNOSTIC
+// s202 m1 — fwd declared rather than full-include so production builds
+// don't pull scripting headers when CURVZ_DIAGNOSTIC is off. The
+// unique_ptr below is incomplete-type friendly only if the dtor is
+// out-of-line, which we provide in StylesPanel.cpp.
+namespace curvz::scripting { class StylesPanelScriptable; }
+#endif
 
 namespace Curvz {
 
@@ -76,6 +85,12 @@ class Canvas;  // fwd — selection-changed hookup only, no method calls in m4c-
 class StylesPanel : public Gtk::Box {
 public:
     StylesPanel();
+#ifdef CURVZ_DIAGNOSTIC
+    // s202 m1 — out-of-line dtor so unique_ptr<StylesPanelScriptable>
+    // can hold an incomplete type at the header level. Implementation
+    // lives in StylesPanel.cpp alongside the construction site.
+    ~StylesPanel();
+#endif
 
     // Non-owning. Caller guarantees the library outlives the panel or
     // calls set_library(nullptr) before destroying it. Hooks the
@@ -105,6 +120,75 @@ public:
     // still mutates state but no undo entry is recorded — silent
     // correctness regression. Wired from MainWindow at startup.
     void set_history(CommandHistory* history) { m_history = history; }
+
+#ifdef CURVZ_DIAGNOSTIC
+    // s202 m4 — diagnostic-only hookup that gives the panel-as-
+    // Scriptable a way to drive the parent inspector section's
+    // expand/collapse state. The panel itself doesn't know it's
+    // inside a section (the make_section wrapper is constructed by
+    // MainWindow); these two handles publish the section's state to
+    // the Scriptable without leaking section-internals into the
+    // panel's public API.
+    //
+    //   open_flag: shared_ptr<bool> that mirrors the section's
+    //     current open state. Updated by make_section's click handler
+    //     when the user toggles the section header; the Scriptable
+    //     reads it via the section_open query.
+    //
+    //   apply: closure that flips the section open/closed and
+    //     handles the cascade — body visibility, arrow glyph,
+    //     project field, schedule_save. Resolved through MainWindow's
+    //     m_sec_apply registry. The Scriptable invokes it from the
+    //     expand_section / collapse_section verbs.
+    //
+    // Both nullopt-safe at the panel side — the panel never invokes
+    // them itself, so if MainWindow forgets the wiring the panel
+    // still works and only the section-aware Scriptable verbs go
+    // no-op.
+    void set_section_state(std::shared_ptr<bool> open_flag,
+                           std::function<void(bool)> apply);
+
+    // s202 m5 — composite "focus on me" hookup. Distinct from
+    // set_section_state because the responsibilities are different:
+    // set_section_state is the narrow flip (just my section);
+    // set_section_chain is the focus move (collapse the inspector
+    // down to just my ancestor chain).
+    //
+    // The Styles panel lives two levels deep in the inspector: the
+    // "Content" group section contains the "Styles" section which
+    // contains the panel. For a narrated script to land the kebab
+    // popover correctly, BOTH ancestors must be open — the kebab
+    // button needs an on-screen allocation, and a closed group
+    // hides every child section's allocation regardless of the
+    // child's own open flag. Just expanding "Styles" without
+    // expanding "Content" leaves the kebab unrendered.
+    //
+    // The focus move also collapses every other section so the
+    // viewer's eye lands on the one section the narration is
+    // about. Side-effect by design: a narrated walkthrough should
+    // quiet the inspector before drawing attention to a specific
+    // panel, the same way a presenter clears the slide before
+    // pointing at the new figure.
+    //
+    //   chain: ancestor titles, outermost-first. For Styles today:
+    //     {"Content", "Styles"}. Each title must match a key
+    //     registered in MainWindow's m_sec_apply registry by
+    //     make_section / make_group_section.
+    //
+    //   focus_closure: the composite — collapses every section in
+    //     m_sec_apply, then walks the chain calling each in order
+    //     with open=true. The Scriptable invokes it from the
+    //     focus_section verb. Receives the chain as data so the
+    //     same closure shape works for every panel (the chain
+    //     varies; the algorithm doesn't).
+    //
+    // Nullopt-safe like set_section_state: empty closure → verb
+    // no-ops.
+    void set_section_chain(
+        std::vector<std::string> chain,
+        std::function<void(const std::vector<std::string>&)>
+            focus_closure);
+#endif
 
     // S87 — view state accessors for project-level persistence. The
     // category dropdown selection is per-project state; CurvzProject
@@ -172,6 +256,33 @@ public:
     }
 
 private:
+#ifdef CURVZ_DIAGNOSTIC
+    // s202 m1 — the companion Scriptable that publishes this panel's
+    // user-outcome verbs to the script under abbrev "pnl_styles".
+    // Friend reach lets it call action_create_empty() and read
+    // private state directly; per CANON's "The script has no fingers",
+    // this is the panel's deliberate publication of outcomes (an
+    // interior consumer), not an outside-the-panel scripting handle.
+    // Held by pointer because the header forward-declares the class.
+    friend class curvz::scripting::StylesPanelScriptable;
+    std::unique_ptr<curvz::scripting::StylesPanelScriptable>
+        m_panel_scriptable;
+
+    // s202 m4 — section-state handles passed in by MainWindow at
+    // setup_layout time (see make_section call site). Empty by
+    // default so the Scriptable's expand/collapse verbs read as
+    // safe-no-ops if MainWindow forgets the wiring or the panel
+    // ever runs outside an inspector section.
+    std::shared_ptr<bool>     m_section_open_flag;
+    std::function<void(bool)> m_section_apply;
+
+    // s202 m5 — composite focus-move handles. See set_section_chain
+    // header comment for full design notes.
+    std::vector<std::string>  m_section_chain;
+    std::function<void(const std::vector<std::string>&)>
+                              m_section_focus;
+#endif
+
     style::StyleLibrary* m_library = nullptr;
     color::SwatchLibrary* m_swatch_library = nullptr;  // S85 cont-3
     Canvas*              m_canvas  = nullptr;

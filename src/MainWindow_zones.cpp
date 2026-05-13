@@ -1548,13 +1548,11 @@ void MainWindow::setup_layout() {
   // on_committed closure carries the command-push logic so this
   // handler stays mechanical.
   //
-  // Lifetime: the dialog is heap-allocated and self-deletes via
-  // signal_close_request (see StyleEditorDialog ctor). One dialog
-  // can be live at a time but we don't enforce that here — opening
-  // a second while the first is still up is rare (modal-on-modal
-  // is platform-discouraged) and the panel actions are only
-  // reachable through the panel UI which is itself blocked by the
-  // first modal's set_modal(true).
+  // s201 m1 — StyleEditorDialog is now a MainWindow member (hide-on-
+  // close singleton). show() prepares the editing buffer + callback
+  // and presents; close() hides. on_committed pushes the appropriate
+  // Add/Update command against m_history (the panel-side closure
+  // handles the push; we just open the dialog).
   m_styles.signal_request_style_editor().connect(
       [this](StyleEditorDialog::Mode mode, style::Style initial,
              std::function<void(style::Style)> on_committed) {
@@ -1569,11 +1567,74 @@ void MainWindow::setup_layout() {
         CurvzDocument *doc = m_project->active_doc();
         CanvasModel *cm = doc ? &doc->canvas : nullptr;
         auto cats = m_project->styles.user_categories();
-        new StyleEditorDialog(*this, m_project->swatches, cm, cats, mode,
-                              std::move(initial), std::move(on_committed));
+        m_style_editor_dialog.show(*this, m_project->swatches, cm, cats,
+                                    mode, std::move(initial),
+                                    std::move(on_committed));
       });
   content.container->append(
       *make_section("Styles", m_styles, false, false, &m_sec_open_styles));
+
+#ifdef CURVZ_DIAGNOSTIC
+  // s202 m4 — give StylesPanel's panel-as-Scriptable a hookup to drive
+  // the parent inspector section's expand/collapse state. The kebab
+  // popover positions relative to its button's on-screen allocation;
+  // when the section is collapsed the kebab has no allocation, so
+  // popup() falls back to a default location (upper-right of the app).
+  // The Scriptable's expand_section verb pre-opens the section so
+  // narrated scripts can rely on the kebab appearing where a user
+  // would expect it.
+  //
+  // The apply closure resolves "Styles" through m_sec_apply (the
+  // registry make_section populated above). That preserves the full
+  // open/close cascade — body visibility, arrow glyph, project field
+  // update, schedule_save — without the Scriptable needing to know
+  // any of that machinery.
+  m_styles.set_section_state(m_sec_open_styles,
+      [this](bool on) {
+        auto it = m_sec_apply.find("Styles");
+        if (it != m_sec_apply.end()) it->second(on);
+      });
+
+  // s202 m5 — composite focus-move hookup. The narrow set_section_state
+  // above flips only the "Styles" section's flag; that's not enough on
+  // its own because Styles lives inside the "Content" group section,
+  // which is itself collapsed by default. A closed group hides every
+  // child section's on-screen allocation regardless of the child's own
+  // open flag, so expanding only "Styles" leaves the kebab unrendered
+  // and the popover fallback-positions to the app's upper-right.
+  //
+  // set_section_chain publishes (a) the ancestor chain — outermost-
+  // first — and (b) a closure that collapses every registered section
+  // before walking the chain open. The Scriptable's focus_section
+  // verb invokes it. The "collapse every section" pass is intentional:
+  // a narrated walkthrough should quiet the inspector before drawing
+  // attention to a specific panel, the same way a presenter clears
+  // the slide before pointing at the new figure.
+  //
+  // The chain is data, not part of the closure, so future panels
+  // (pnl_themes, pnl_swatches, etc.) reuse the same closure shape by
+  // varying just their chain vector.
+  m_styles.set_section_chain(
+      {"Content", "Styles"},
+      [this](const std::vector<std::string>& chain) {
+        // Phase 1: collapse every registered section. m_sec_apply
+        // holds entries for every title make_section and
+        // make_group_section registered, so this hits the inspector
+        // top-to-bottom without us enumerating them.
+        for (auto& kv : m_sec_apply) {
+          kv.second(false);
+        }
+        // Phase 2: walk the chain open, outermost first. Order
+        // matters here: opening "Styles" before "Content" works
+        // (both flags flip and the project state updates), but the
+        // visual cascade reads more naturally when ancestors open
+        // first.
+        for (const auto& title : chain) {
+          auto it = m_sec_apply.find(title);
+          if (it != m_sec_apply.end()) it->second(true);
+        }
+      });
+#endif
 
   // Themes panel — s147 m3 replacement for ThemesDialog. Project-scoped
   // library + apply-to-targets flow, always-visible. on_changed routes

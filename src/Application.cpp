@@ -416,6 +416,47 @@ void Application::on_activate() {
     lst->set_subtitle_callback([win](const std::string& text) {
       win->set_subtitle(text);
     });
+
+    // s201 m3 — `do <action.name>` dispatch. The script's user-driven
+    // verbs reach substrate widgets directly (toolbar buttons,
+    // inspector toggles, dialog OK), but menu items and inline action-
+    // driven buttons aren't substrate-addressable — they fire Gio
+    // actions instead. The action-dispatch callback bridges that gap
+    // so a test like 24_style_editor_dialog_full can open the dialog
+    // itself via `do styles.create-empty` rather than asking the
+    // tester to click "+ New style" by hand.
+    //
+    // Routing by prefix because GTK's activate_action walks UP from
+    // the originating widget looking for the action group: we have
+    // to call activate_action() on the widget that owns the group
+    // (the panel that inserted it), not on MainWindow above it.
+    // Returning false lets the listener emit a uniform "not
+    // recognised" error so a typo / missing prefix surfaces as a
+    // script-level error rather than a silent no-op.
+    //
+    // The prefix list grows as new action-driven UI surfaces want
+    // to be script-addressable. Today's roster:
+    //   styles.*    — StylesPanel kebab + context menu actions
+    //                 (create-empty, ctx-edit, ctx-edit-copy, etc.)
+    lst->set_action_callback([win](const std::string& action_name) -> bool {
+      const auto dot = action_name.find('.');
+      if (dot == std::string::npos) return false;
+      const std::string prefix = action_name.substr(0, dot);
+
+      if (prefix == "styles") {
+        // Gtk::Widget::activate_action returns true if it found and
+        // activated an action, false if the action wasn't found in
+        // any group on the widget chain. Surface that so a typo in
+        // the action name (e.g. "styles.create-emptyy") returns
+        // false to the listener, which prints a uniform error.
+        return win->styles_panel().activate_action(action_name);
+      }
+      // Future prefixes ("themes-io", "swatches", "tabctx", etc.)
+      // land here as the dynamic-widget unblock arc unfolds. Each
+      // panel that owns an action group can be reached by adding
+      // an accessor in MainWindow.hpp and one route line here.
+      return false;
+    });
   }
 
   // s186 m2 close-out: warm the GLib main-loop dispatch mechanism.

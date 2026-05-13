@@ -433,6 +433,41 @@ void ScriptListener::run_line(const std::string& raw) {
         out("ok\n");
         return;
     }
+    // s201 m3 — `do <action.name>` dispatches a Gio action through
+    // the host's installed callback. Used to drive menu items and
+    // action-driven buttons that aren't substrate-addressable (the
+    // kebab "+ New style" menu, etc.). The host knows which widget
+    // owns which action group; the listener just routes the name.
+    //
+    // Errors land in one of three buckets:
+    //   1. No callback installed (host forgot to wire it). Treated
+    //      as a script-level error so a test author sees the gap
+    //      rather than a silent skip.
+    //   2. Callback returned false (name didn't resolve). Same
+    //      treatment — the test made a typo or the action lives
+    //      somewhere the host doesn't know about yet.
+    //   3. Callback threw. The script's pump catches at a higher
+    //      level; this branch doesn't try-catch.
+    if (!toks[0].quoted && head == "do") {
+        if (toks.size() < 2) {
+            out("error do needs an action name (e.g. 'do styles.create-empty')\n");
+            ++m_stats.errors;
+            return;
+        }
+        if (!m_action) {
+            out("error do has no action callback installed by the host\n");
+            ++m_stats.errors;
+            return;
+        }
+        const std::string& action_name = toks[1].text;
+        if (m_action(action_name)) {
+            out("ok\n");
+        } else {
+            out("error do action '" + action_name + "' not recognised by the host\n");
+            ++m_stats.errors;
+        }
+        return;
+    }
     if (!toks[0].quoted && head == "get") {
         if (toks.size() < 3) {
             out("error get needs <object> <property>\n");

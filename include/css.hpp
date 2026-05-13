@@ -1915,4 +1915,18 @@ viewport { background-color: transparent; }
     background-color: var(--bg-raised);
 }
 
+/* s202 m6_v2 — Quick-jump float rows. Mini-density buttons in a
+   chromeless transient window: no frame on the button itself, tight
+   vertical padding, smaller font than default. The float is a system-
+   menu-shape affordance, not a dialog, so density matches a menu. */
+button.qj-row {
+    padding: 1px 6px;
+    min-height: 18px;
+    font-size: 12px;
+    border-radius: 3px;
+}
+button.qj-row:hover {
+    background-color: var(--accent-bg);
+}
+
 )css";

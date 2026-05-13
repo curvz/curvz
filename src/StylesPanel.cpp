@@ -10,6 +10,10 @@
 #include "CurvzLog.hpp"                // S102 m1: LOG_WARN / LOG_INFO in handlers
 #include "curvz_utils.hpp"             // s117 m18 v2: apply_motif_class_from_parent
 
+#ifdef CURVZ_DIAGNOSTIC
+#include "scripting/StylesPanelScriptable.hpp"  // s202 m1: panel-as-Scriptable
+#endif
+
 #include <giomm/file.h>                // S102 m1: set_initial_folder for export
 #include <giomm/menu.h>
 #include <giomm/simpleaction.h>
@@ -191,7 +195,65 @@ StylesPanel::StylesPanel()
     m_ctx_button.set_focus_on_click(false);
     m_ctx_button.set_has_frame(false);
     append(m_ctx_button);
+
+#ifdef CURVZ_DIAGNOSTIC
+    // s202 m1 — panel-as-Scriptable foundation. The companion object
+    // registers under "pnl_styles" in its ctor (via the Scriptable
+    // base) and unregisters in its dtor — which runs when this
+    // unique_ptr destroys, i.e. when the panel destroys. No explicit
+    // teardown wiring needed.
+    //
+    // Construction is last in the ctor so every panel member the
+    // Scriptable might reach is already constructed. set_library /
+    // set_canvas / set_history haven't been called yet — the
+    // Scriptable's invoke() guards against null pointers when it can,
+    // and the verbs that don't need an attached library (highlight_self,
+    // expand_category, collapse_all) work standalone. new_style routes
+    // through action_create_empty, which is itself library-safe (it
+    // emits the request-style-editor signal that MainWindow handles).
+    m_panel_scriptable =
+        std::make_unique<curvz::scripting::StylesPanelScriptable>(this);
+#endif
 }
+
+#ifdef CURVZ_DIAGNOSTIC
+// s202 m1 — out-of-line dtor. Required because the header forward-
+// declares StylesPanelScriptable; without an out-of-line dtor, every
+// translation unit that destroys a StylesPanel would need the full
+// type to instantiate unique_ptr's deleter. With the dtor here, the
+// header stays slim and only StylesPanel.cpp needs the include.
+//
+// Destruction order: C++ destroys members in reverse declaration
+// order, so m_panel_scriptable (declared first in the private block)
+// destroys LAST. That's the right order: the Scriptable's dtor only
+// unregisters from the global registry, it never dereferences the
+// panel back-pointer, so it's safe for the rest of the panel to
+// already be gone. The reverse arrangement would also work — the
+// back-pointer isn't touched in dtor — but "construct first, destroy
+// last" is the canonical sequence for an object whose lifetime
+// brackets the rest.
+StylesPanel::~StylesPanel() = default;
+
+// s202 m4 — diagnostic-only section-state hookup. See header.
+// Trivial setter: store both handles, no signal wiring needed
+// (MainWindow updates the open_flag through its own click handler
+// path, the Scriptable reads it on each section_open query).
+void StylesPanel::set_section_state(std::shared_ptr<bool> open_flag,
+                                    std::function<void(bool)> apply) {
+    m_section_open_flag = std::move(open_flag);
+    m_section_apply     = std::move(apply);
+}
+
+// s202 m5 — composite focus-move hookup. See header for design.
+// Two handles stored; the Scriptable composes them at focus_section
+// invocation time.
+void StylesPanel::set_section_chain(
+    std::vector<std::string> chain,
+    std::function<void(const std::vector<std::string>&)> focus_closure) {
+    m_section_chain = std::move(chain);
+    m_section_focus = std::move(focus_closure);
+}
+#endif
 
 // ── set_library ───────────────────────────────────────────────────────────
 void StylesPanel::set_library(style::StyleLibrary* lib) {

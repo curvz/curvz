@@ -1472,6 +1472,30 @@ void MainWindow::connect_signals() {
         // ── Space press — forward to canvas for Space+drag pan ──────────────
         // In Ruler tool, space clears the current measurement for a fresh pick.
         if (kv == GDK_KEY_space) {
+          // s202 m6 — modifier-Space hotkeys for inspector focus, checked
+          // BEFORE the canvas-pan handoff. Two chords:
+          //
+          //   Ctrl+Shift+Space  → collapse every inspector section
+          //                       (zero state). Alt+Space was the
+          //                       original choice but GNOME captures it
+          //                       for the window-menu shortcut, so it
+          //                       never reaches us.
+          //   Ctrl+Space        → quick-jump float listing currently
+          //                       relevant sections.
+          //
+          // Both fire regardless of text focus because the existing
+          // modifier-bypass rule (lines ~1467-1470 above) lets Ctrl
+          // chords through unconditionally. The bare Space below
+          // still routes to canvas pan when no modifier is held.
+          if (ctrl && shift && !alt) {
+            collapse_all_inspector_sections();
+            return true;
+          }
+          if (ctrl && !shift && !alt) {
+            show_quick_jump_popover();
+            return true;
+          }
+
           if (m_canvas.active_tool() == ActiveTool::Measure) {
             m_canvas.ruler_clear();
             return true;

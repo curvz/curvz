@@ -17,7 +17,6 @@
 #include <gtkmm/scale.h>
 #include <gtkmm/separator.h>
 #include <gtkmm/stringlist.h>
-#include <glibmm/main.h>
 
 #include <algorithm>
 #include <cctype>
@@ -154,22 +153,86 @@ std::string trim(const std::string& s) {
 }  // anonymous namespace
 
 // ── ctor ──────────────────────────────────────────────────────────────────
-StyleEditorDialog::StyleEditorDialog(Gtk::Window& parent,
-                                     const color::SwatchLibrary& sw_lib,
-                                     CanvasModel* canvas_model,
-                                     const std::vector<std::string>& user_categories,
-                                     Mode mode,
-                                     style::Style initial,
-                                     CommittedFn on_committed)
-    : m_sw_lib(sw_lib)
-    , m_canvas_model(canvas_model)
-    , m_mode(mode)
-    , m_working(std::move(initial))
-    , m_on_committed(std::move(on_committed)) {
+//
+// s201 m1 — singleton form. Default-constructed once as a MainWindow
+// member; show() is what callers invoke per editing session. The
+// widget tree builds lazily on the first show() via the m_built
+// latch and stays in the tree for the app's lifetime; subsequent
+// show()s only refresh values via sync_from_working().
+//
+// Mirror of ThemeEditDialog's s200 m1 ctor. Title is set per-show()
+// because Mode (Edit / New / Duplicate) drives the title-bar text.
+StyleEditorDialog::StyleEditorDialog() {
+    // Title is set per-show() (mode-dependent); leave default here
+    // and the first show() overwrites it before present().
+    // Non-modal so the Scripter window stays accessible while the
+    // dialog is open (script-driven testing of the dialog's substrate
+    // widgets needs sibling-window focus). OK closes via on_ok →
+    // close(); Cancel via on_cancel → close(); X close-request hides
+    // without firing on_committed.
+    set_modal(false);
+    set_resizable(false);
+    set_default_size(420, -1);
+    // s201 m1 — the singleton shape Curvz uses for long-lived dialogs.
+    // close() now hides the window; the next show() re-presents it.
+    set_hide_on_close(true);
+    curvz::utils::set_name(*this, "dlg_se", "style_editor_dialog_window");
+
+    // s201 m1 — close-request handler. Discards the pending commit
+    // callback (cancel semantics on X). Returning false lets the
+    // default close-action proceed, which for a hide-on-close window
+    // means "hide, don't destroy."
+    //
+    // We do NOT call force_unregister_subtree here — substrate
+    // widgets in this dialog construct exactly once at MainWindow
+    // init time (when this dialog is constructed) and live until app
+    // shutdown. The s199 m1 force_unregister_subtree discipline was
+    // for the heap-allocated lifetime where the widget subtree died
+    // on every close; that no longer happens.
+    //
+    // We do NOT detach the color popovers here — they stay attached
+    // for the app's lifetime, same as every other inner widget.
+    signal_close_request().connect(
+        [this]() -> bool {
+            LOG_DEBUG("StyleEditorDialog: close-request — discarding "
+                      "pending commit callback");
+            // Clear the commit callback so a stale closure can't fire
+            // from any subsequent code path. on_committed is re-supplied
+            // per show().
+            m_on_committed = nullptr;
+            return false;  // let hide-on-close proceed
+        }, /*after=*/false);
+}
+
+// ── show ──────────────────────────────────────────────────────────────────
+//
+// s201 m1 — replaces the previous parameterised ctor. Sets the editing
+// state, builds the widget tree on first call, syncs all widgets from
+// the new working style, and presents.
+//
+// Cancel semantics: if the user closes via X (signal_close_request) or
+// via the Cancel button, the pending commit callback is cleared. The
+// dialog's next show() starts fresh with whatever style + callback the
+// caller passes.
+void StyleEditorDialog::show(Gtk::Window& parent,
+                             const color::SwatchLibrary& sw_lib,
+                             CanvasModel* canvas_model,
+                             const std::vector<std::string>& user_categories,
+                             Mode mode,
+                             style::Style initial,
+                             CommittedFn on_committed) {
+    m_sw_lib       = &sw_lib;
+    m_canvas_model = canvas_model;
+    m_mode         = mode;
+    m_working      = std::move(initial);
+    m_on_committed = std::move(on_committed);
 
     // Pre-seed binding ids from the incoming Paint variants. The
     // dialog tracks these separately so a SwatchRef survives an OK
-    // that didn't touch the paint slot.
+    // that didn't touch the paint slot. Reset both first (a previous
+    // show() may have left stale ids on a different style).
+    m_fill_binding_id.clear();
+    m_stroke_binding_id.clear();
     if (auto* r = std::get_if<color::SwatchRef>(&m_working.fill)) {
         m_fill_binding_id = r->id;
     }
@@ -177,81 +240,57 @@ StyleEditorDialog::StyleEditorDialog(Gtk::Window& parent,
         m_stroke_binding_id = r->id;
     }
 
-    // ── Window ────────────────────────────────────────────────────────────
-    //
-    // Self-managed: GTK keeps it alive until close. The dialog deletes
-    // itself in its close handler (see end of build()).
-    m_window = Gtk::make_managed<Gtk::Window>();
-    curvz::utils::set_name(m_window, "dlg_se", "style_editor_dialog_root");
-    const char* title =
-        (mode == Mode::Edit)      ? "Edit style"      :
-        (mode == Mode::Duplicate) ? "Edit a copy"     :
-                                    "New style";
-    m_window->set_title(title);
-    m_window->set_modal(true);
-    m_window->set_resizable(false);
-    m_window->set_default_size(420, -1);
-    m_window->set_transient_for(parent);
-    curvz::utils::apply_motif_class_from_parent(*m_window, parent);  // s117 m18 v2
-
-    // Pre-populate category-order from the supplied user_categories,
-    // with "(uncategorised)" first and the "New category…" sentinel
-    // last. Same order will be applied to the dropdown StringList.
+    // Rebuild the category-order list from this show()'s user_categories.
+    // The dropdown's StringList is rebuilt in sync_from_working() to
+    // match. "(uncategorised)" first, sentinel last; same shape the
+    // heap-allocated ctor used.
     m_category_order.clear();
     m_category_order.push_back(std::string());  // "" = uncategorised
     for (const auto& c : user_categories) {
         if (c.empty()) continue;  // skip — "" is already first
         m_category_order.push_back(c);
     }
-    // Sentinel last; resolved by the dropdown handler, never written
-    // back into m_working.header.category as a real value.
     m_category_order.push_back(std::string(kCategorySentinelNew));
 
-    build();
+    // Title is mode-dependent.
+    const char* title =
+        (m_mode == Mode::Edit)      ? "Edit style"      :
+        (m_mode == Mode::Duplicate) ? "Edit a copy"     :
+                                      "New style";
+    set_title(title);
 
-    // Self-delete on window close. The Gtk::Window itself is managed
-    // (lives until close); the outer StyleEditorDialog object is a
-    // plain heap allocation that the wiring lambda did `new` on
-    // (see MainWindow::signal_request_style_editor wiring). We hook
-    // signal_close_request to delete `this` on the next idle tick.
-    // Deferring via signal_idle is the GTK4 widget-mutation deferral
-    // idiom — close_request fires from inside GTK's own dispatch,
-    // and tearing down the dialog (and its m_window child) inline
-    // can re-enter that dispatch. signal_idle is the established
-    // safe-harbour pattern in this codebase.
-    //
-    // Detach the two ColorPickerPopover members synchronously here,
-    // BEFORE the window starts finalising. ColorPickerPopover's
-    // popover widget is set_parent'd to m_window in build(); without
-    // an explicit unparent, GTK warns at window finalisation:
-    //   "Finalizing gtkmm__GtkWindow ..., but it still has children
-    //    left: gtkmm__GtkPopover"
-    // detach() handles the unparent + signal disconnect cleanly.
-    m_window->signal_close_request().connect(
-        [this]() -> bool {
-            m_fill_popover.detach();
-            m_stroke_popover.detach();
-            m_shadow_popover.detach();
-            Glib::signal_idle().connect_once([this]() { delete this; });
-            return false;  // allow default close to proceed
-        }, /*after=*/false);
+    set_transient_for(parent);
+    curvz::utils::apply_motif_class_from_parent(*this, parent);
 
-    m_window->present();
+    if (!m_built) {
+        m_built = true;
+        build();
+    } else {
+        // s201 m1 — widgets already exist from a prior open; refresh
+        // every value from the new working buffer. build()'s initial
+        // value-reads from m_working only fire on first open; this
+        // is the symmetric refresh for every subsequent open.
+        sync_from_working();
+    }
+
+    present();
 }
 
 // ── build ─────────────────────────────────────────────────────────────────
 void StyleEditorDialog::build() {
     m_syncing = true;
 
-    // Attach popovers to the window itself — they need a stable parent
-    // that lives for the full dialog lifetime.
-    m_fill_popover.attach(*m_window);
-    m_stroke_popover.attach(*m_window);
-    m_shadow_popover.attach(*m_window);  // S98
+    // Attach popovers to the dialog window itself — they need a stable
+    // parent that lives for the full dialog lifetime. s201 m1: the
+    // singleton form means "full lifetime" is the app's lifetime; no
+    // detach() in the close handler (popovers stay attached forever).
+    m_fill_popover.attach(*this);
+    m_stroke_popover.attach(*this);
+    m_shadow_popover.attach(*this);  // S98
 
     auto* root = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
     root->set_margin(12);
-    m_window->set_child(*root);
+    set_child(*root);
 
     build_identity_section(*root);
     root->append(*Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL));
@@ -313,7 +352,8 @@ void StyleEditorDialog::build_identity_section(Gtk::Box& root) {
             initial_idx = static_cast<int>(i);
         }
     }
-    m_category_dd = Gtk::make_managed<Gtk::DropDown>(string_list);
+    m_category_dd = Gtk::make_managed<curvz::widgets::DropDown>(
+        "dlg_se_cat", string_list);
     curvz::utils::set_name(m_category_dd, "dlg_se_cat", "style_editor_dialog_category_dd");
     m_category_dd->set_hexpand(true);
     m_category_dd->set_selected(initial_idx);
@@ -434,9 +474,9 @@ void StyleEditorDialog::build_stroke_section(Gtk::Box& root) {
         auto* cap_row = Gtk::make_managed<Gtk::Box>(
             Gtk::Orientation::HORIZONTAL, 4);
 
-        m_cap_butt_btn   = Gtk::make_managed<Gtk::ToggleButton>();
-        m_cap_round_btn  = Gtk::make_managed<Gtk::ToggleButton>();
-        m_cap_square_btn = Gtk::make_managed<Gtk::ToggleButton>();
+        m_cap_butt_btn   = Gtk::make_managed<curvz::widgets::ToggleButton>("dlg_se_cb");
+        m_cap_round_btn  = Gtk::make_managed<curvz::widgets::ToggleButton>("dlg_se_cr");
+        m_cap_square_btn = Gtk::make_managed<curvz::widgets::ToggleButton>("dlg_se_cs");
         curvz::utils::set_name(m_cap_butt_btn,   "dlg_se_cb", "style_editor_dialog_cap_butt_btn");
         curvz::utils::set_name(m_cap_round_btn,  "dlg_se_cr", "style_editor_dialog_cap_round_btn");
         curvz::utils::set_name(m_cap_square_btn, "dlg_se_cs", "style_editor_dialog_cap_square_btn");
@@ -483,9 +523,9 @@ void StyleEditorDialog::build_stroke_section(Gtk::Box& root) {
         auto* join_row = Gtk::make_managed<Gtk::Box>(
             Gtk::Orientation::HORIZONTAL, 4);
 
-        m_join_miter_btn = Gtk::make_managed<Gtk::ToggleButton>();
-        m_join_round_btn = Gtk::make_managed<Gtk::ToggleButton>();
-        m_join_bevel_btn = Gtk::make_managed<Gtk::ToggleButton>();
+        m_join_miter_btn = Gtk::make_managed<curvz::widgets::ToggleButton>("dlg_se_jm");
+        m_join_round_btn = Gtk::make_managed<curvz::widgets::ToggleButton>("dlg_se_jr");
+        m_join_bevel_btn = Gtk::make_managed<curvz::widgets::ToggleButton>("dlg_se_jb");
         curvz::utils::set_name(m_join_miter_btn, "dlg_se_jm", "style_editor_dialog_join_miter_btn");
         curvz::utils::set_name(m_join_round_btn, "dlg_se_jr", "style_editor_dialog_join_round_btn");
         curvz::utils::set_name(m_join_bevel_btn, "dlg_se_jb", "style_editor_dialog_join_bevel_btn");
@@ -563,7 +603,8 @@ void StyleEditorDialog::build_shadow_section(Gtk::Box& root) {
     // apply_enabled lambda below. Default-off styles (built-in Default
     // / Outline Only / Fill Only, plus freshly-created user styles)
     // open with the section greyed; toggling enables fields.
-    m_shadow_enable_chk = Gtk::make_managed<Gtk::CheckButton>("Enable shadow");
+    m_shadow_enable_chk = Gtk::make_managed<curvz::widgets::CheckButton>(
+        "dlg_se_sen", "Enable shadow");
     curvz::utils::set_name(m_shadow_enable_chk, "dlg_se_sen", "style_editor_dialog_shadow_enable_check");
     m_shadow_enable_chk->set_active(m_working.shadow.enabled);
     grid->attach(*m_shadow_enable_chk, 0, row, 3, 1);
@@ -707,7 +748,8 @@ void StyleEditorDialog::build_shadow_section(Gtk::Box& root) {
     // Colour alpha slider — 0..100 mapped to 0..1.
     m_shadow_color_a_adj = Gtk::Adjustment::create(
         m_working.shadow.color_a * 100.0, 0.0, 100.0, 1.0, 10.0);
-    m_shadow_color_a_sl = Gtk::make_managed<Gtk::Scale>(m_shadow_color_a_adj);
+    m_shadow_color_a_sl = Gtk::make_managed<curvz::widgets::Scale>(
+        "dlg_se_sca", m_shadow_color_a_adj);
     curvz::utils::set_name(m_shadow_color_a_sl, "dlg_se_sca", "style_editor_dialog_shadow_color_alpha_slider");
     m_shadow_color_a_sl->set_draw_value(true);
     m_shadow_color_a_sl->set_value_pos(Gtk::PositionType::RIGHT);
@@ -734,7 +776,8 @@ void StyleEditorDialog::build_shadow_section(Gtk::Box& root) {
 
     m_shadow_opacity_adj = Gtk::Adjustment::create(
         m_working.shadow.opacity * 100.0, 0.0, 100.0, 1.0, 10.0);
-    m_shadow_opacity_sl = Gtk::make_managed<Gtk::Scale>(m_shadow_opacity_adj);
+    m_shadow_opacity_sl = Gtk::make_managed<curvz::widgets::Scale>(
+        "dlg_se_sop", m_shadow_opacity_adj);
     curvz::utils::set_name(m_shadow_opacity_sl, "dlg_se_sop", "style_editor_dialog_shadow_opacity_slider");
     m_shadow_opacity_sl->set_draw_value(true);
     m_shadow_opacity_sl->set_value_pos(Gtk::PositionType::RIGHT);
@@ -780,18 +823,24 @@ void StyleEditorDialog::build_button_row(Gtk::Box& root) {
     btn_row->set_halign(Gtk::Align::END);
     btn_row->set_margin_top(4);
 
-    auto* btn_cancel = Gtk::make_managed<Gtk::Button>("Cancel");
-    curvz::utils::set_name(btn_cancel, "dlg_se_cnc", "style_editor_dialog_cancel_btn");
-    m_btn_ok        = Gtk::make_managed<Gtk::Button>("OK");
+    // s201 m2 — Cancel and OK migrated to substrate Button. Cancel
+    // promoted from a local to a member (m_btn_cancel) to give the
+    // substrate ctor a stable home; OK already had a member slot from
+    // the s199 m1 pilot, so just type-flip.
+    m_btn_cancel = Gtk::make_managed<curvz::widgets::Button>(
+        "dlg_se_cnc", "Cancel");
+    curvz::utils::set_name(m_btn_cancel, "dlg_se_cnc", "style_editor_dialog_cancel_btn");
+
+    m_btn_ok = Gtk::make_managed<curvz::widgets::Button>("dlg_se_ok", "OK");
     curvz::utils::set_name(m_btn_ok, "dlg_se_ok", "style_editor_dialog_ok_btn");
     m_btn_ok->add_css_class("suggested-action");
     m_btn_ok->set_receives_default(true);
 
-    btn_row->append(*btn_cancel);
+    btn_row->append(*m_btn_cancel);
     btn_row->append(*m_btn_ok);
     root.append(*btn_row);
 
-    btn_cancel->signal_clicked().connect(
+    m_btn_cancel->signal_clicked().connect(
         sigc::mem_fun(*this, &StyleEditorDialog::on_cancel));
     m_btn_ok->signal_clicked().connect(
         sigc::mem_fun(*this, &StyleEditorDialog::on_ok));
@@ -938,7 +987,7 @@ void StyleEditorDialog::wire_paint_editor(PaintEditor& editor,
             // Resolve the swatch for its colour (fallback). Skip non-
             // solid kinds — Phase 4 only ships SolidSwatch, but the
             // variant lookup is forward-compatible.
-            const color::Swatch* sw = m_sw_lib.find_swatch(id);
+            const color::Swatch* sw = m_sw_lib->find_swatch(id);
             if (!sw) return;  // dangling — silently ignore
             color::Color resolved{};
             if (const auto* solid = std::get_if<color::SolidSwatch>(sw)) {
@@ -965,15 +1014,13 @@ void StyleEditorDialog::wire_paint_editor(PaintEditor& editor,
     // gradient_edit, but kept local: the style dialog hosts its own
     // GradientDialog instance so the modal stack is MainWindow →
     // StyleEditorDialog → GradientDialog without bouncing through a
-    // signal up to MainWindow. m_window is the dialog's own window;
-    // dereferenced as transient parent. Always non-null after build()
-    // (which is called from the ctor before any signal can fire).
+    // signal up to MainWindow. s201 m1: the outer class is the window
+    // itself now; pass *this as the gradient dialog's transient parent.
     editor.signal_gradient_edit_requested().connect(
         [this, &editor, &target_paint, &binding_id]
         (FillStyle current) {
             if (m_syncing) return;
-            if (!m_window) return;  // defensive — should never fire pre-build
-            m_gradient_dialog.show(*m_window, current,
+            m_gradient_dialog.show(*this, current,
                 [this, &editor, &target_paint, &binding_id]
                 (FillStyle edited) {
                     // Break-on-override: a gradient edit drops any
@@ -1021,7 +1068,7 @@ StyleEditorDialog::compute_render_state(const color::Paint& p) const {
     if (!binding_id.empty()) {
         s.bound       = true;
         s.bound_mixed = false;
-        if (const auto* sw = m_sw_lib.find_swatch(binding_id)) {
+        if (const auto* sw = m_sw_lib->find_swatch(binding_id)) {
             const std::string& nm = color::swatch_header(*sw).name;
             s.bound_display_name = nm.empty()
                 ? color::region_name(s.paint.r, s.paint.g, s.paint.b)
@@ -1050,7 +1097,7 @@ StyleEditorDialog::compute_render_state(const color::Paint& p) const {
     // toggle. Toggling Swatch without picking is a transient widget-
     // local state that doesn't survive a re-render from compute_render_
     // state, which is fine — picking is the meaningful event.
-    s.library          = &m_sw_lib;
+    s.library          = m_sw_lib;
     s.binding_id       = binding_id;
     s.is_swatch_active = !binding_id.empty();
 
@@ -1126,6 +1173,134 @@ void StyleEditorDialog::harvest_into_working() {
             m_shadow_opacity_adj->get_value() / 100.0, 0.0, 1.0);
 }
 
+// ── sync_from_working ─────────────────────────────────────────────────────
+//
+// s201 m1 — re-populate every widget value from the current m_working +
+// m_mode + m_category_order. Runs on every show() after the first
+// (build() handles the first show's initial values during widget
+// construction). Under m_syncing=true so the signal handlers we
+// connected in build() don't write the freshly-set values back into
+// m_working as if they were user edits.
+//
+// Mirror of build()'s initial-value reads, kept in lockstep. If you
+// add a new control to build(), add its read here too; reopening the
+// dialog on a different style is what catches a missing entry.
+void StyleEditorDialog::sync_from_working() {
+    m_syncing = true;
+
+    // ── Identity ───────────────────────────────────────────────────
+    if (m_name_entry) {
+        m_name_entry->set_text(m_working.header.name);
+    }
+
+    // Category dropdown: rebuild the StringList from the current
+    // m_category_order (which show() refreshed from this call's
+    // user_categories), then select the entry that matches
+    // m_working.header.category. Same shape as build_identity_section's
+    // initial population, just executed against the existing DropDown.
+    if (m_category_dd) {
+        auto string_list = Gtk::StringList::create({});
+        int initial_idx = 0;
+        for (std::size_t i = 0; i < m_category_order.size(); ++i) {
+            const std::string& c = m_category_order[i];
+            const std::string display =
+                (c == kCategorySentinelNew) ? c :
+                (c.empty())                 ? std::string(kCategoryUncategorised) :
+                                              c;
+            string_list->append(display);
+            if (c == m_working.header.category &&
+                c != kCategorySentinelNew) {
+                initial_idx = static_cast<int>(i);
+            }
+        }
+        m_category_dd->set_model(string_list);
+        m_category_dd->set_selected(static_cast<guint>(initial_idx));
+    }
+    if (m_category_new_entry) {
+        m_category_new_entry->set_text("");
+        m_category_new_entry->set_visible(false);
+    }
+
+    // ── Fill / Stroke editor render state ─────────────────────────
+    // compute_render_state reads m_working.fill / m_working.stroke.paint
+    // plus the per-slot binding ids; set_render_state repaints the
+    // editor's chip + annotation. PaintEditor itself is a long-lived
+    // child of the dialog, surviving close/reopen alongside its parent.
+    if (m_fill_editor) {
+        m_fill_editor->set_render_state(compute_render_state(m_working.fill));
+    }
+    if (m_stroke_editor) {
+        m_stroke_editor->set_render_state(
+            compute_render_state(m_working.stroke.paint));
+    }
+
+    // ── Stroke ────────────────────────────────────────────────────
+    if (m_stroke_width_sp) {
+        m_stroke_width_sp->set_internal_value(m_working.stroke.width);
+        m_stroke_width_sp->refresh_units();
+    }
+
+    // Cap row — set_group radio. Setting one active deactivates the
+    // others. Same as build_stroke_section's initial-state switch.
+    if (m_cap_butt_btn && m_cap_round_btn && m_cap_square_btn) {
+        switch (m_working.stroke.cap) {
+            case LineCap::Butt:   m_cap_butt_btn  ->set_active(true); break;
+            case LineCap::Round:  m_cap_round_btn ->set_active(true); break;
+            case LineCap::Square: m_cap_square_btn->set_active(true); break;
+        }
+    }
+
+    // Join row — same radio shape.
+    if (m_join_miter_btn && m_join_round_btn && m_join_bevel_btn) {
+        switch (m_working.stroke.join) {
+            case LineJoin::Miter: m_join_miter_btn->set_active(true); break;
+            case LineJoin::Round: m_join_round_btn->set_active(true); break;
+            case LineJoin::Bevel: m_join_bevel_btn->set_active(true); break;
+        }
+    }
+
+    // ── Shadow (S98) ──────────────────────────────────────────────
+    if (m_shadow_enable_chk) {
+        m_shadow_enable_chk->set_active(m_working.shadow.enabled);
+    }
+    if (m_shadow_dx_sp) {
+        m_shadow_dx_sp->set_internal_value(m_working.shadow.dx);
+        m_shadow_dx_sp->refresh_units();
+    }
+    if (m_shadow_dy_sp) {
+        m_shadow_dy_sp->set_internal_value(m_working.shadow.dy);
+        m_shadow_dy_sp->refresh_units();
+    }
+    if (m_shadow_blur_sp) {
+        m_shadow_blur_sp->set_internal_value(m_working.shadow.blur);
+        m_shadow_blur_sp->refresh_units();
+    }
+    if (m_shadow_color_a_adj) {
+        m_shadow_color_a_adj->set_value(m_working.shadow.color_a * 100.0);
+    }
+    if (m_shadow_opacity_adj) {
+        m_shadow_opacity_adj->set_value(m_working.shadow.opacity * 100.0);
+    }
+    if (m_shadow_swatch) m_shadow_swatch->queue_draw();
+
+    // Sensitivity-slave: build_shadow_section captures `apply_enabled`
+    // by-value into the enable-checkbutton's toggled handler; that
+    // handler only fires on actual state changes, so re-syncing the
+    // enable check via set_active above may or may not trigger it.
+    // Re-apply directly here so the section's sensitivity always
+    // reflects the freshly-loaded m_working.shadow.enabled regardless
+    // of whether the previous open left the chk at the same value.
+    const bool shadow_on = m_working.shadow.enabled;
+    if (m_shadow_dx_sp)      m_shadow_dx_sp->set_sensitive(shadow_on);
+    if (m_shadow_dy_sp)      m_shadow_dy_sp->set_sensitive(shadow_on);
+    if (m_shadow_blur_sp)    m_shadow_blur_sp->set_sensitive(shadow_on);
+    if (m_shadow_swatch)     m_shadow_swatch->set_sensitive(shadow_on);
+    if (m_shadow_color_a_sl) m_shadow_color_a_sl->set_sensitive(shadow_on);
+    if (m_shadow_opacity_sl) m_shadow_opacity_sl->set_sensitive(shadow_on);
+
+    m_syncing = false;
+}
+
 // ── on_ok ─────────────────────────────────────────────────────────────────
 void StyleEditorDialog::on_ok() {
     harvest_into_working();
@@ -1154,23 +1329,27 @@ void StyleEditorDialog::on_ok() {
 
     // Hand off, then close. Fire the callback first so the result
     // value-copy reads from m_working while the dialog is still
-    // intact; close() schedules our self-deletion via the
-    // signal_close_request handler in build(). Calling close before
-    // the callback would race the deletion against the callback's
-    // captures of any dialog-side state — the callback only captures
-    // its own closure values today, but ordering this way is the
-    // future-proof shape.
+    // intact; close() triggers hide-on-close (s201 m1) which clears
+    // m_on_committed via signal_close_request. Calling close before
+    // the callback would lose the commit path entirely. The cached
+    // local cb pointer is what fires, isolating the call from the
+    // member clear that the close handler does next.
     auto cb = m_on_committed;
     style::Style result = m_working;
 
     if (cb) cb(std::move(result));
 
-    if (m_window) m_window->close();
+    close();
 }
 
 // ── on_cancel ─────────────────────────────────────────────────────────────
 void StyleEditorDialog::on_cancel() {
-    if (m_window) m_window->close();
+    LOG_DEBUG("StyleEditorDialog: cancel — discarding working buffer");
+    // s201 m1 — close() now triggers hide-on-close. The signal_close_
+    // request handler clears m_on_committed so a stale closure can't
+    // fire from any unexpected path. Working buffer overwrites on next
+    // show().
+    close();
 }
 
 }  // namespace Curvz

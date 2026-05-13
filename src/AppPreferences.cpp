@@ -173,6 +173,33 @@ void AppPreferences::load() {
             m_toolbar_density = n;
         }
 
+        // s202 m6 — quick-jump pick counters. JSON shape is a flat
+        // object: { "0:Canvas": 7, "1:Selection": 23, ... } where
+        // the key is "<phase_int>:<section_title>". Tolerate missing
+        // / non-object / non-integer-value entries — defaults to
+        // empty map, fresh counters.
+        if (j.contains("quick_jump_counts") &&
+            j["quick_jump_counts"].is_object()) {
+            m_quick_jump_counts.clear();
+            for (auto it = j["quick_jump_counts"].begin();
+                 it != j["quick_jump_counts"].end(); ++it) {
+                const std::string& key = it.key();
+                if (!it.value().is_number_integer()) continue;
+                int count = it.value().get<int>();
+                if (count < 0) continue;
+                // Parse "<phase>:<title>".
+                auto colon = key.find(':');
+                if (colon == std::string::npos) continue;
+                int phase = 0;
+                try { phase = std::stoi(key.substr(0, colon)); }
+                catch (...) { continue; }
+                if (phase < 0 || phase > 9) continue;  // tighter than necessary
+                std::string title = key.substr(colon + 1);
+                if (title.empty()) continue;
+                m_quick_jump_counts[{phase, title}] = count;
+            }
+        }
+
         LOG_INFO("AppPreferences: loaded from {} — "
                  "boolean_cleanup_quality={}, reopen_last_project={}, "
                  "recent_projects_max_count={}, show_rulers_by_default={}, "
@@ -224,6 +251,19 @@ void AppPreferences::save() const {
     j["custom_css_path_override"]   = m_custom_css_path_override;
     j["library_defaults_seeded"]    = m_library_defaults_seeded;
     j["toolbar_density"]            = m_toolbar_density;
+
+    // s202 m6 — quick-jump pick counters. Flat object keyed
+    // "<phase>:<title>". Omitting when empty would save the file
+    // smaller but the always-present key documents the feature
+    // at a glance for anyone reading the JSON.
+    nlohmann::json qjc = nlohmann::json::object();
+    for (const auto& kv : m_quick_jump_counts) {
+        if (kv.second <= 0) continue;  // never persist zeros
+        std::string key = std::to_string(kv.first.first) + ":" +
+                          kv.first.second;
+        qjc[key] = kv.second;
+    }
+    j["quick_jump_counts"] = qjc;
 
     std::ofstream f(path);
     if (f) {
@@ -389,6 +429,32 @@ void AppPreferences::set_toolbar_density(int v) {
     if (v > 3) v = 3;
     if (m_toolbar_density == v) return;
     m_toolbar_density = v;
+    save();
+    m_sig_changed.emit();
+}
+
+// s202 m6 — quick-jump pick counters. See header for design.
+//
+// Returns 0 for any never-picked (phase, section) pair. The caller
+// (quick-jump's sort) handles the zero-count case as the cold-start
+// default ordering.
+int AppPreferences::quick_jump_count(int phase,
+                                      const std::string& section) const {
+    auto it = m_quick_jump_counts.find({phase, section});
+    if (it == m_quick_jump_counts.end()) return 0;
+    return it->second;
+}
+
+// Increment the (phase, section) counter by one and persist. Called
+// from the quick-jump's click handler before invoking focus_inspector_on.
+// We persist on every bump because the map is tiny and the file is
+// rewritten as a whole anyway; the cost is one disk write per Ctrl+Space
+// pick, which is well under user-perceivable.
+void AppPreferences::bump_quick_jump_count(int phase,
+                                            const std::string& section) {
+    if (section.empty()) return;
+    auto& slot = m_quick_jump_counts[{phase, section}];
+    if (slot < 1'000'000) ++slot;  // guard against pathological overflow
     save();
     m_sig_changed.emit();
 }

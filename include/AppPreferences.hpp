@@ -1,4 +1,5 @@
 #pragma once
+#include <map>      // s202 m6: quick-jump counters
 #include <sigc++/signal.h>
 #include <string>
 
@@ -227,6 +228,28 @@ public:
     int  toolbar_density() const { return m_toolbar_density; }
     void set_toolbar_density(int v);
 
+    // s202 m6 — Quick-jump counter store. Tracks how often the user
+    // picks each (phase, section) pair from the Ctrl+Space quick-jump.
+    // The float orders candidates by descending count, so the user's
+    // actual habits surface to the top over time. Zero-count entries
+    // sink; new sections start at zero and float up as they're used.
+    //
+    // Phase is a small enum:
+    //   0 = Setup     — no active doc OR doc has no content.
+    //   1 = Execution — selection is non-empty.
+    //   2 = Polish    — content exists but no selection.
+    //
+    // Phase detection is the caller's job (MainWindow computes it at
+    // quick-jump invocation time); this surface only stores +
+    // serializes. JSON key form: "<phase_int>:<section_title>".
+    //
+    // The map is small (typically 3 phases × ~14 sections = ~42
+    // entries). No decay, no MRU — raw counts. If a section falls out
+    // of use the user simply stops picking it; if their habits change
+    // the counts catch up.
+    int  quick_jump_count(int phase, const std::string& section) const;
+    void bump_quick_jump_count(int phase, const std::string& section);
+
     // Emitted when any preference changes. Subscribers re-read the relevant
     // getter; the signal is intentionally parameterless to keep the ABI
     // stable as new prefs land.
@@ -275,6 +298,13 @@ private:
     // s152 — Toolbar density. 0=Comfortable, 1=Standard (default),
     // 2=Compact, 3=Tight. Maps to Toolbar::Density enum.
     int  m_toolbar_density = 1;
+
+    // s202 m6 — quick-jump (phase, section) → pick count. Persisted
+    // as a flat object in preferences.json under "quick_jump_counts"
+    // with keys of the form "<phase>:<title>". Empty by default;
+    // counts grow as the user picks sections from the quick-jump.
+    std::map<std::pair<int, std::string>, int> m_quick_jump_counts;
+
     sigc::signal<void()> m_sig_changed;
 };
 

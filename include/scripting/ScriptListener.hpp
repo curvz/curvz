@@ -22,6 +22,11 @@
 //   sleep <ms>                                 yield to main loop
 //   list                                       print registered names
 //   subscribe                                  start logging emit events
+//   do <action.name>                           (s201 m3) dispatch a Gio
+//                                              action by its fully-
+//                                              qualified name — opens
+//                                              menus the substrate
+//                                              can't address as widgets
 //   quit                                       end the script early
 //
 // Tag markers (s191) — the `#[tag]` shape is a small extensible DSL
@@ -142,6 +147,27 @@ public:
     // raise the step delay.
     int take_delay_multiplier();
 
+    // s201 m3 — action-dispatch callback. The script's `do <name>`
+    // verb fires this with the action's fully-qualified name (e.g.
+    // "styles.create-empty"). The host (Application) installs a
+    // callback that routes the name to whichever panel or window
+    // owns the action group with that prefix and calls
+    // activate_action() on it. Returns true on success, false if
+    // the name didn't resolve to any known action. The listener
+    // formats the error message uniformly when the callback returns
+    // false; the host doesn't need to.
+    //
+    // This was added because the substrate DSL today only speaks to
+    // objects registered in the live ScriptableRegistry — buttons,
+    // toggles, checks. Menu items and inline action-driven buttons
+    // (kebab "+ New style", etc.) aren't substrate-addressable, but
+    // they ARE action-driven, so dispatching the underlying Gio
+    // action by name is the smallest surface that unblocks script-
+    // driven UI tests. See s201 conversation for the framing
+    // ("the script is just a virtual user").
+    using ActionCallback = std::function<bool(const std::string& action_name)>;
+    void set_action_callback(ActionCallback cb) { m_action = std::move(cb); }
+
 private:
     void run_line(const std::string& raw);
     void emit_trace(const std::string& name,
@@ -158,6 +184,7 @@ private:
     OutputCallback           m_out;
     SubtitleCallback         m_sub;
     DoneCallback             m_on_done;
+    ActionCallback           m_action;  // s201 m3
     int                      m_next_delay_mult = 1;
 };
 

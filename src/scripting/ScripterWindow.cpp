@@ -1283,6 +1283,50 @@ void ScripterWindow::start_single_script(const std::string& body,
             m_step_advance = nullptr;
             return;
         }
+
+        // s202 m3 — fast-forward past non-runnable lines in timed
+        // mode. Mirrors the step-mode fast-forward above (line ~1256).
+        //
+        // Pre-m3: every line, including plain `#` comments, blank
+        // lines, and unknown `#[tag]` markers, ate one full step
+        // delay before the next pump_next. That was cheap when scripts
+        // were short and comment-light, but the s202 visual-narration
+        // foundation lands `#[sub]` lines that come bundled with
+        // explanatory `#` headers — a typical narrated script now
+        // doubles or triples in line count, with most of the new
+        // lines being comments that emit nothing. Test 24 went from
+        // ~12s to ~57s post-m2 prologue for exactly this reason;
+        // every comment line was paying delay_ms even though
+        // pump_next did nothing visible with it.
+        //
+        // Fix: after dispatching the current line, fast-forward the
+        // cursor past any non-runnable lines that follow before
+        // scheduling the next timeout. The dispatched-line wait
+        // (which is what `delay_ms` actually exists for — letting
+        // GTK's signal queue drain after a verb fires) still happens
+        // once per runnable line; comments fly through silently.
+        //
+        // `#[sub]` lines are runnable per is_runnable_line, so they
+        // still get the delay-multiplier treatment (their caption
+        // bumps the next runnable line's wait so the subtitle sits
+        // readable). The bump is sampled AFTER the fast-forward so
+        // the last skipped line's effect — if it was a `#[sub]` —
+        // wouldn't actually be possible: `#[sub]` lines aren't
+        // skipped because they ARE runnable. The fast-forward only
+        // chews silent lines.
+        size_t runnable = lst->next_runnable_index_from(
+            lst->next_line_index());
+        while (lst->next_line_index() < runnable) {
+            if (!lst->pump_next()) {
+                // End-of-script during fast-forward (a trailing
+                // comment block). Same cleanup as the pump_next
+                // returning false above.
+                highlight_step_line(-1);
+                m_step_advance = nullptr;
+                return;
+            }
+        }
+
         // s191 m3 — `#[sub]` lines bump the next delay by their
         // multiplier so captions sit visible long enough to read.
         int mult = lst->take_delay_multiplier();

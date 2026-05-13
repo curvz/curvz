@@ -1,0 +1,235 @@
+# 24_style_editor_dialog_full — substrate-layer suite for StyleEditorDialog
+# (s201 m2).
+#
+# Substrate-style test per TESTING.md grandfather clause: every
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back. Round-trips on the value-bearing
+# widgets, label read on the buttons.
+#
+# m2 migrated 12 raw widget sites in StyleEditorDialog to substrate,
+# atop the s201 m1 lifetime conversion (the dialog is now a hide-on-
+# close singleton owned by MainWindow, mirroring ThemeEditDialog's
+# s200 m1 conversion). With the singleton lifetime, the substrate
+# abbrevs register on first show() and stay registered for the app's
+# lifetime — multiple opens of the Style Editor don't reconstruct
+# anything, so this test runs identically on every reopen.
+#
+# No helper-threading instances this milestone — all 12 sites are
+# single-instance migrations. The cap/join ToggleButton arrays are
+# inline rather than factory-built; six explicit makes, six explicit
+# migrations.
+#
+# DSL note: SpinButton-like queries on Scale return Double. Round-
+# number literals in asserts need an explicit `.0` suffix.
+#
+# The tested abbrevs:
+#
+#   Identity section
+#     Category dropdown    dlg_se_cat                  (DropDown)
+#
+#   Stroke section
+#     Cap row              dlg_se_cb / cr / cs         (ToggleButtons)
+#     Join row             dlg_se_jm / jr / jb         (ToggleButtons)
+#
+#   Shadow section (S98)
+#     Enable check         dlg_se_sen                  (CheckButton)
+#     Colour-alpha slider  dlg_se_sca                  (Scale)
+#     Opacity slider       dlg_se_sop                  (Scale)
+#
+#   Button row
+#     Cancel               dlg_se_cnc                  (Button — s201 m2)
+#     OK                   dlg_se_ok                   (Button — s201 m2;
+#                                                       set_name only in
+#                                                       s199 m1 wave)
+#
+# Test protocol — FULLY SELF-DRIVING (s201 m3, narrated in s202 m2):
+#
+# Earlier draft (s201 m2 first cut) required the tester to manually
+# open the Style Editor before running this script — the kebab menu's
+# "+ New style" item isn't substrate-addressable. s201 m3 added the
+# `do <action.name>` DSL verb that dispatches a Gio action by name,
+# which IS what the menu item fires. The script could drive the whole
+# flow, but the dialog opening was "magic" from a viewer's perspective
+# — the kebab and menu item never appeared.
+#
+# s202 m2 lands the visual-narration foundation: `pnl_styles` is a
+# registered Scriptable that publishes the panel's user outcomes by
+# name. The prologue below shows the kebab opening, highlights the
+# "New style" item, dismisses the kebab, then opens the dialog — the
+# same sequence a real user performs. The assertion coverage doesn't
+# change; only the prologue gains visible beats.
+#
+#   1. Open Curvz with a fresh / default document and project.
+#   2. Open the Scripter window.
+#   3. Load this script.
+#   4. Run. The script narrates the kebab dance, opens the dialog via
+#      `pnl_styles new_style`, runs every substrate assertion, then
+#      closes the dialog via `dlg_se_cnc click` (which fires
+#      StyleEditorDialog::on_cancel and discards the working buffer).
+#
+# Reopening across runs: with the s201 m1 singleton lifetime the
+# dialog's widget tree survives close/hide, so a second run of this
+# script reuses the same registered substrate objects and produces
+# identical PASS results.
+
+#[sub] Focus the Styles section. focus_section (s202 m5) is the
+#[sub] composite move: collapse every inspector section, then open
+#[sub] the ancestor chain. For Styles that's "Content" → "Styles" —
+#[sub] both the group section and the leaf section open in one verb.
+#[sub] Required pre-condition for show_kebab: the kebab button has
+#[sub] an on-screen allocation only when both ancestors are visible.
+#[sub] A collapsed Content group would hide the Styles section's
+#[sub] allocation regardless of its own open flag, leaving the
+#[sub] kebab unrendered and the popover fallback-positioned to the
+#[sub] app's upper-right.
+
+pnl_styles focus_section
+sleep 400
+
+#[sub] Open the kebab popover programmatically. The viewer sees the
+#[sub] same menu a real user would see when clicking the kebab.
+
+pnl_styles show_kebab
+sleep 400
+
+#[sub] Highlight the "+ New style" menu item. The Scriptable walks
+#[sub] the popover's child tree to find the model button whose
+#[sub] action-name matches "styles.create-empty", adds the
+#[sub] .demo-highlight class for 600ms.
+
+pnl_styles highlight_menuitem "create-empty"
+sleep 600
+
+#[sub] Close the popover. The kebab disappears like the user just
+#[sub] clicked away — the actual menu-item click that opens the
+#[sub] dialog happens via the Scriptable's new_style verb below,
+#[sub] mirroring "user closed the kebab without picking, then the
+#[sub] action fired anyway" — which IS what happens in the real
+#[sub] activate-action path (Gtk auto-dismisses the popover when a
+#[sub] menu item is activated).
+
+pnl_styles hide_kebab
+
+#[sub] Now open the dialog. Same outcome as a real menu-item click —
+#[sub] action_create_empty runs, signal_request_style_editor fires,
+#[sub] MainWindow constructs the dialog with StyleEditorDialog's
+#[sub] show() path. The dialog appears non-modal so the Scripter
+#[sub] retains focus and the rest of the script can drive the
+#[sub] dialog's substrate widgets.
+
+pnl_styles new_style
+
+#[sub] Button row — Cancel / OK labels.
+#[sub] OK is not clicked from this script (would commit a stub style
+#[sub] to the project). Cancel is clicked at the very end to close
+#[sub] the dialog cleanly. Label readbacks are enough substrate-
+#[sub] contract coverage here.
+
+assert dlg_se_cnc label == "Cancel"
+assert dlg_se_ok  label == "OK"
+
+#[sub] Category DropDown — count + selected + text round-trip.
+#[sub] The dropdown's model is rebuilt per show() from m_category_order
+#[sub] which has at minimum "(uncategorised)" first and the
+#[sub] "+ New category…" sentinel last. On a fresh project with no
+#[sub] user-defined style categories, count is exactly 2; if the
+#[sub] tester runs this script against a project that has accumulated
+#[sub] user categories, the count assert will fail and can be skipped
+#[sub] — the selected/text assertions below still prove the substrate
+#[sub] contract.
+
+assert dlg_se_cat count == 2
+dlg_se_cat set 0
+assert dlg_se_cat selected == 0
+assert dlg_se_cat text == "(uncategorised)"
+
+#[sub] Cap row — ToggleButton labels are empty (icon-only) but
+#[sub] active/set round-trips work the same as labelled toggles.
+#[sub] Cap row is a set_group radio: setting one true forces the
+#[sub] others false. We exercise all three to prove the substrate
+#[sub] path fires signal_toggled on each.
+
+dlg_se_cb set true
+assert dlg_se_cb active == true
+assert dlg_se_cr active == false
+assert dlg_se_cs active == false
+
+dlg_se_cr set true
+assert dlg_se_cr active == true
+assert dlg_se_cb active == false
+assert dlg_se_cs active == false
+
+dlg_se_cs set true
+assert dlg_se_cs active == true
+assert dlg_se_cb active == false
+assert dlg_se_cr active == false
+
+# Restore butt (the LineCap::Butt default) for tidiness.
+dlg_se_cb set true
+
+#[sub] Join row — same set_group radio shape as Cap.
+
+dlg_se_jm set true
+assert dlg_se_jm active == true
+assert dlg_se_jr active == false
+assert dlg_se_jb active == false
+
+dlg_se_jr set true
+assert dlg_se_jr active == true
+assert dlg_se_jm active == false
+assert dlg_se_jb active == false
+
+dlg_se_jb set true
+assert dlg_se_jb active == true
+assert dlg_se_jm active == false
+assert dlg_se_jr active == false
+
+# Restore miter (the LineJoin::Miter default) for tidiness.
+dlg_se_jm set true
+
+#[sub] Shadow enable CheckButton round-trip.
+#[sub] Toggling the enable check triggers the sensitivity-slave
+#[sub] lambda which greys / un-greys every other shadow widget.
+#[sub] The substrate set verb fires signal_toggled, so the slave
+#[sub] runs even from a script-driven flip.
+
+dlg_se_sen set true
+assert dlg_se_sen active == true
+dlg_se_sen set false
+assert dlg_se_sen active == false
+
+#[sub] Shadow Colour-alpha Scale — range + round-trip.
+#[sub] Adjustment is 0..100 mapped to 0..1 internally; the slider's
+#[sub] value is the displayed integer percentage.
+
+assert dlg_se_sca min == 0.0
+assert dlg_se_sca max == 100.0
+dlg_se_sca set 75.0
+assert dlg_se_sca value == 75.0
+dlg_se_sca set 50.0
+assert dlg_se_sca value == 50.0
+
+#[sub] Shadow Opacity Scale — range + round-trip.
+#[sub] Same 0..100 percentage shape as the colour-alpha slider.
+
+assert dlg_se_sop min == 0.0
+assert dlg_se_sop max == 100.0
+dlg_se_sop set 80.0
+assert dlg_se_sop value == 80.0
+dlg_se_sop set 100.0
+assert dlg_se_sop value == 100.0
+
+#[sub] Close the dialog. Clicking Cancel discards the working buffer
+#[sub] and fires StyleEditorDialog::on_cancel → close() → hide-on-
+#[sub] close. The dialog's substrate widgets stay alive (singleton
+#[sub] lifetime); a subsequent `do styles.create-empty` reopens with
+#[sub] a fresh seed and sync_from_working repopulates every widget.
+
+dlg_se_cnc click
+
+#[sub] Done. If every line PASSed, every m2-migrated abbrev resolves
+#[sub] in the registry, dispatches its verbs correctly, and queries
+#[sub] read back the live state. 12 new substrate widgets across one
+#[sub] dialog — and StyleEditorDialog now joins ThemeEditDialog with
+#[sub] zero raw substrate-class widgets remaining. The dialog tail
+#[sub] is closed; zero heap-allocated dialogs remain in Curvz.

@@ -541,6 +541,12 @@ if(CURVZ_DIAGNOSTIC)
     target_sources(curvz PRIVATE
         src/scripting/ScriptListener.cpp
         src/scripting/ScripterWindow.cpp
+        # s202 m1 — panel-as-Scriptable foundation. First concrete
+        # PanelScriptable subclass; wraps StylesPanel under abbrev
+        # "pnl_styles". Diagnostic-only because the Scriptable surface
+        # exists to serve scripted narration and tests; production
+        # builds get the panel without the script-side companion.
+        src/scripting/StylesPanelScriptable.cpp
     )
     target_compile_definitions(curvz PRIVATE CURVZ_DIAGNOSTIC)
     message(STATUS "CURVZ_DIAGNOSTIC: enabled — Scripter window will open at startup")

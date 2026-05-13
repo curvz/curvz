@@ -92,6 +92,24 @@
 // entry's commit handler compares parsed value against the dialog's
 // own "last known" cache before mutating.
 //
+// Lifetime (s201 m1): hide-on-close singleton owned by MainWindow.
+// One instance lives for the app's lifetime; the widget tree is
+// built once on first show() (m_built latch) and re-populated from
+// the working style on every subsequent show() via sync_from_working().
+// signal_close_request hides the window (set_hide_on_close(true))
+// and discards the pending commit callback — cancel semantics on the
+// X. OK fires on_committed and hides; Cancel hides without firing.
+// Same shape as ThemeEditDialog's s200 m1 conversion; this dialog is
+// the second (and final) instance of the heap-allocated-dialog
+// pattern in Curvz to migrate. After this lands, zero heap-allocated
+// dialogs remain.
+//
+// Modality (s201 m1): set_modal(false) — the dialog is non-modal so
+// the Scripter window stays accessible alongside it for script-driven
+// testing of the dialog's substrate widgets. The earlier modal posture
+// was a default-conservative choice; nothing in the editing flow
+// actually needs to block the parent.
+//
 
 #include "CurvzEntry.hpp"
 #include "CurvzSpinButton.hpp"
@@ -99,6 +117,17 @@
 #include "GradientDialog.hpp"
 #include "PaintEditor.hpp"
 #include "style/Style.hpp"
+
+// s201 m2 — substrate widget includes. The dialog's 12 raw widgets
+// migrate this milestone; the substrate roster covers every type
+// this dialog uses (no shadow swatch / no DrawingArea substrate yet,
+// those stay raw because there's no substrate wrapper to migrate
+// them to).
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/ToggleButton.hpp"
+#include "curvz/widgets/CheckButton.hpp"
+#include "curvz/widgets/DropDown.hpp"
+#include "curvz/widgets/Scale.hpp"
 
 #include <gtkmm/adjustment.h>
 #include <gtkmm/box.h>
@@ -122,7 +151,7 @@ namespace Curvz {
 struct CanvasModel;
 namespace color { class SwatchLibrary; }
 
-class StyleEditorDialog {
+class StyleEditorDialog : public Gtk::Window {
 public:
     enum class Mode {
         // Edit an existing user-tier style. OK returns the modified
@@ -147,55 +176,56 @@ public:
 
     using CommittedFn = std::function<void(style::Style result)>;
 
-    // Construct + show.
-    //
-    // The dialog owns itself: present() is called at the end of the
-    // ctor, and the dialog destroys itself on close (Cancel button,
-    // window close, or after on_committed fires from OK).
-    //
-    // Parameters:
-    //   parent        — transient-for. Required; the dialog refuses to
-    //                   present without it.
-    //   sw_lib        — for resolving SwatchRef bindings into display
-    //                   names on the PaintEditor binding annotation.
-    //                   Borrowed; must outlive the dialog.
-    //   canvas_model  — for the stroke-width / dash-offset spinbuttons'
-    //                   unit conversion. Optional (nullptr = px-only,
-    //                   no unit conversion); defensive against being
-    //                   called before a document is open. Borrowed.
-    //   user_categories — pre-computed list of existing user-tier
-    //                   category strings (StyleLibrary::user_categories).
-    //                   Empty string for "(uncategorised)" is added by
-    //                   the dialog itself; callers don't need to pass
-    //                   it. Borrowed for the lifetime of the ctor only.
-    //   mode          — see enum.
-    //   initial       — the starting Style. For Edit, the existing
-    //                   style; for New, a default-constructed Style
-    //                   with the caller's preferred initial category
-    //                   (typically the panel's m_active_category) and
-    //                   an auto-name; for Duplicate, the source style
-    //                   with " copy" already appended to the name.
-    //   on_committed  — fires once on OK with the result Style.
-    //                   Caller pushes the appropriate Add/Update
-    //                   command and emits library-changed.
-    //
-    // No on_cancelled callback — Cancel just closes the dialog. Hosts
-    // that need to know about cancel can bind on the window's
-    // signal_close_request or rely on "no commit fired".
-    StyleEditorDialog(Gtk::Window& parent,
-                      const color::SwatchLibrary& sw_lib,
-                      CanvasModel* canvas_model,
-                      const std::vector<std::string>& user_categories,
-                      Mode mode,
-                      style::Style initial,
-                      CommittedFn on_committed);
+    // s201 m1 — default-constructed; the dialog is a MainWindow
+    // member and lives for the app's lifetime. The widget tree
+    // builds lazily on the first show() via the m_built latch.
+    // Mirrors ThemeEditDialog's s200 m1 shape.
+    StyleEditorDialog();
 
-    // The dialog manages its own lifetime (self-deleting on close
-    // via the standard Gtk::Window managed pattern). Public API is
-    // construct-and-forget; no further interaction needed.
+    ~StyleEditorDialog() override = default;
+
+    // Non-copyable, non-movable (Gtk::Window already enforces this
+    // via deleted ops on its base, but be explicit).
+    StyleEditorDialog(const StyleEditorDialog&) = delete;
+    StyleEditorDialog& operator=(const StyleEditorDialog&) = delete;
+
+    // Show the dialog with a fresh editing session.
+    //
+    // parent           — transient-for. Required. Re-applied each
+    //                    show() so the dialog tracks whichever
+    //                    MainWindow is hosting it.
+    // sw_lib           — for resolving SwatchRef bindings into display
+    //                    names on the PaintEditor binding annotation.
+    //                    Borrowed; the caller (typically MainWindow_zones
+    //                    via m_project->swatches) must outlive the
+    //                    dialog's open session. Stored as a pointer
+    //                    rebound on every show().
+    // canvas_model     — for the stroke-width / dash-offset spinbuttons'
+    //                    unit conversion. Optional (nullptr = px-only,
+    //                    no unit conversion); defensive against being
+    //                    called before a document is open. Borrowed.
+    // user_categories  — pre-computed list of existing user-tier
+    //                    category strings (StyleLibrary::user_categories).
+    //                    Empty string for "(uncategorised)" is added by
+    //                    the dialog itself; callers don't need to pass
+    //                    it. Used to rebuild m_category_order per open.
+    // mode             — see enum. Drives title-bar text and the
+    //                    Mode::New/Duplicate clear-id branch in on_ok.
+    // initial          — starting Style. Copied into the working buffer;
+    //                    cancel discards.
+    // on_committed     — fires once on OK with the working Style.
+    //                    Stored until the next show() (or until close
+    //                    clears it on Cancel/X paths).
+    void show(Gtk::Window& parent,
+              const color::SwatchLibrary& sw_lib,
+              CanvasModel* canvas_model,
+              const std::vector<std::string>& user_categories,
+              Mode mode,
+              style::Style initial,
+              CommittedFn on_committed);
 
 private:
-    // ── Build helpers (called once from ctor) ─────────────────────────
+    // ── Build helpers (called once from first show() via m_built) ─────
     void build();
     void build_identity_section(Gtk::Box& root);
     void build_fill_section(Gtk::Box& root);
@@ -224,11 +254,32 @@ private:
     // entry might not have committed yet.
     void harvest_into_working();
 
+    // s201 m1 — re-populate every widget from the current m_working +
+    // m_mode + m_category_order. Called from show() after state is set
+    // (and after build() on the first show). Runs under m_syncing=true
+    // so signal handlers don't write back into the working buffer while
+    // we set values. Counterpart to build()'s initial value-reads —
+    // build() creates structure once, this refreshes values on every
+    // show().
+    void sync_from_working();
+
     // ── State ─────────────────────────────────────────────────────────
-    Gtk::Window*                     m_window      = nullptr;  // self-managed
-    const color::SwatchLibrary&      m_sw_lib;
+    // s201 m1 — singleton form. The dialog is a MainWindow member and
+    // lives for the app's lifetime; build() runs once on the first
+    // show() via the m_built latch and the widget tree stays in the
+    // tree until app shutdown. sync_from_working() handles re-population
+    // on every subsequent show().
+    bool                             m_built = false;
+    // s201 m1 — sw_lib was a reference in the heap-allocated form
+    // (set via member-initializer in the parameterised ctor). The
+    // singleton form needs to be default-constructible, so the
+    // reference becomes a pointer rebound on every show(). compute_
+    // render_state, wire_paint_editor, and the swatch-pick handler
+    // all dereference; m_sw_lib is guaranteed non-null after show()
+    // and the widget tree only exists after a show().
+    const color::SwatchLibrary*      m_sw_lib       = nullptr;
     CanvasModel*                     m_canvas_model = nullptr;
-    Mode                             m_mode;
+    Mode                             m_mode         = Mode::Edit;
     style::Style                     m_working;
     CommittedFn                      m_on_committed;
 
@@ -242,13 +293,13 @@ private:
     std::string m_stroke_binding_id;
 
     // ── Widgets (persistent for re-render) ────────────────────────────
-    CurvzEntry*       m_name_entry        = nullptr;
-    Gtk::DropDown*    m_category_dd       = nullptr;
-    CurvzEntry*       m_category_new_entry = nullptr;  // visible iff
-                                                       // dropdown sits on the
-                                                       // "New category…"
-                                                       // sentinel
-    std::vector<std::string> m_category_order;        // parallel to dd
+    CurvzEntry*               m_name_entry         = nullptr;
+    curvz::widgets::DropDown* m_category_dd        = nullptr;
+    CurvzEntry*               m_category_new_entry = nullptr;  // visible iff
+                                                               // dropdown sits on the
+                                                               // "New category…"
+                                                               // sentinel
+    std::vector<std::string>  m_category_order;               // parallel to dd
 
     PaintEditor*      m_fill_editor       = nullptr;
     PaintEditor*      m_stroke_editor     = nullptr;
@@ -260,14 +311,20 @@ private:
     // Mirrors the toolbar's Stroke popover idiom (`m_cap_butt_btn` etc.)
     // and the Properties Panel inspector. Symbolic icons (curvz-cap-*-
     // symbolic, curvz-join-*-symbolic) provided by the GResource bundle.
-    Gtk::ToggleButton* m_cap_butt_btn     = nullptr;
-    Gtk::ToggleButton* m_cap_round_btn    = nullptr;
-    Gtk::ToggleButton* m_cap_square_btn   = nullptr;
-    Gtk::ToggleButton* m_join_miter_btn   = nullptr;
-    Gtk::ToggleButton* m_join_round_btn   = nullptr;
-    Gtk::ToggleButton* m_join_bevel_btn   = nullptr;
+    // s201 m2 — migrated to substrate ToggleButton; set_group still
+    // works (substrate derives from Gtk::ToggleButton).
+    curvz::widgets::ToggleButton* m_cap_butt_btn   = nullptr;
+    curvz::widgets::ToggleButton* m_cap_round_btn  = nullptr;
+    curvz::widgets::ToggleButton* m_cap_square_btn = nullptr;
+    curvz::widgets::ToggleButton* m_join_miter_btn = nullptr;
+    curvz::widgets::ToggleButton* m_join_round_btn = nullptr;
+    curvz::widgets::ToggleButton* m_join_bevel_btn = nullptr;
 
-    Gtk::Button*      m_btn_ok            = nullptr;
+    // s201 m2 — cancel button promoted from a local to a member to
+    // match the s200 m2 ThemeEditDialog pattern; needed for the
+    // substrate ToggleButton-shaped Button ctor that takes a name.
+    curvz::widgets::Button*       m_btn_cancel     = nullptr;
+    curvz::widgets::Button*       m_btn_ok         = nullptr;
 
     // ── Shadow widgets (S98) ──────────────────────────────────────────
     // build_shadow_section caches the widgets it needs to address from
@@ -276,13 +333,17 @@ private:
     // (rgb) is written back to m_working.shadow.color_* directly inside
     // the popover's apply callback; only the slider widgets and the
     // swatch DrawingArea are tracked here.
-    Gtk::CheckButton* m_shadow_enable_chk  = nullptr;
-    CurvzSpinButton*  m_shadow_dx_sp       = nullptr;
-    CurvzSpinButton*  m_shadow_dy_sp       = nullptr;
-    CurvzSpinButton*  m_shadow_blur_sp     = nullptr;
-    Gtk::DrawingArea* m_shadow_swatch      = nullptr;
-    Gtk::Scale*       m_shadow_color_a_sl  = nullptr;
-    Gtk::Scale*       m_shadow_opacity_sl  = nullptr;
+    // s201 m2 — enable check + two sliders migrated to substrate; the
+    // shadow swatch DrawingArea stays raw (no substrate wrapper) and
+    // the three CurvzSpinButtons stay on CurvzSpinButton (parallel-
+    // wrapper question; see ARC.md).
+    curvz::widgets::CheckButton* m_shadow_enable_chk  = nullptr;
+    CurvzSpinButton*             m_shadow_dx_sp       = nullptr;
+    CurvzSpinButton*             m_shadow_dy_sp       = nullptr;
+    CurvzSpinButton*             m_shadow_blur_sp     = nullptr;
+    Gtk::DrawingArea*            m_shadow_swatch      = nullptr;
+    curvz::widgets::Scale*       m_shadow_color_a_sl  = nullptr;
+    curvz::widgets::Scale*       m_shadow_opacity_sl  = nullptr;
     Glib::RefPtr<Gtk::Adjustment> m_shadow_color_a_adj;
     Glib::RefPtr<Gtk::Adjustment> m_shadow_opacity_adj;
 
@@ -298,8 +359,9 @@ private:
     // m_gradient_dialog pattern. Hosted locally (rather than reusing
     // MainWindow's) so the dialog stays self-contained — no signal has
     // to bubble up through StylesPanel to reach the MainWindow instance.
-    // Transient-for is set to *m_window on each open, so the modal stack
-    // becomes MainWindow → StyleEditorDialog → GradientDialog.
+    // s201 m1: transient-for is set to *this on each open (the outer
+    // class IS the window now), so the modal stack becomes
+    // MainWindow → StyleEditorDialog → GradientDialog.
     GradientDialog m_gradient_dialog;
 
     // Re-entry guard for programmatic widget updates. Mirrors PaintEditor's
