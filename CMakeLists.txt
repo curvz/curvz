@@ -310,6 +310,11 @@ set(SOURCES
     # opened from the Themes panel's row Edit (✎) button. Self-
     # deletes via signal_close_request → signal_idle.
     src/ThemeEditDialog.cpp
+    # s203 m1 — View Clipboard mini float. Edit ▸ View Clipboard…
+    # opens a small chromeless window showing the current system
+    # clipboard contents so the user can select a piece and Ctrl+C
+    # it. Motivated by the Measure tool's structured-block copy.
+    src/ClipboardViewWindow.cpp
     src/PreviewPanel.cpp
     src/ContextBar.cpp
     src/DocTabBar.cpp

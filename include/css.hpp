@@ -1929,4 +1929,26 @@ button.qj-row:hover {
     background-color: var(--accent-bg);
 }
 
+/* s203 m1 — View Clipboard mini float. Same mini-density tone as the
+   quick-jump: chromeless transient, small font, tight padding. The
+   header strip is dim-label small for "this is metadata"; the body is
+   monospace so multi-line structured blocks (Measure-tool output:
+   x₁ = ..., y₁ = ..., distance = ...) line up neatly for scanning. */
+.clip-view-win {
+    /* Subtle outline so the chromeless window is visible against the
+       desktop wallpaper. Matches the quick-jump's implicit GTK frame. */
+}
+.clip-view-header {
+    font-size: 11px;
+}
+textview.clip-view-body, textview.clip-view-body text {
+    font-size: 12px;
+    background-color: var(--bg-raised);
+}
+button.clip-view-btn {
+    padding: 2px 8px;
+    min-height: 20px;
+    font-size: 12px;
+}
+
 )css";

@@ -518,6 +518,15 @@ void MainWindow::setup_menu() {
   // it now sits with them in Path. Action name (win.step-repeat) and
   // hotkey (Ctrl+Alt+D) are unchanged; only the menu position moved.
   edit_menu->append_section("", edit_sep);
+  // s203 m1: View Clipboard — small floating window that shows the
+  // current system clipboard contents (Type + URL header, body for any
+  // text representation). Lets the user select a sub-piece of a copied
+  // block and recopy with Ctrl+C, avoiding the TextEdit round-trip.
+  // Motivated by the Measure tool's structured-block copy, but works on
+  // anything textual on the clipboard.
+  auto edit_clip_view = Gio::Menu::create();
+  edit_clip_view->append("View Clipboard…", "win.view-clipboard");
+  edit_menu->append_section("", edit_clip_view);
   auto edit_section = Gio::Menu::create();
   edit_section->append_submenu("Edit", edit_menu);
   menu->append_section("", edit_section);
@@ -818,6 +827,17 @@ void MainWindow::setup_menu() {
   act_deselect_all->signal_activate().connect(
       [this](const Glib::VariantBase &) { m_canvas.clear_selection(); });
   add_action(act_deselect_all);
+
+  // s203 m1: View Clipboard… — Edit menu entry. Opens a mini floating
+  // window that shows the current system clipboard contents so the user
+  // can select a piece and Ctrl+C it (use case: pull one value out of a
+  // multi-line Measure-tool copy block without the TextEdit round-trip).
+  // The window lives on MainWindow as a lazy-built unique_ptr; this
+  // action just triggers refresh + present.
+  auto act_view_clipboard = Gio::SimpleAction::create("view-clipboard");
+  act_view_clipboard->signal_activate().connect(
+      [this](const Glib::VariantBase &) { show_clipboard_view(); });
+  add_action(act_view_clipboard);
 
   auto act_step_repeat = Gio::SimpleAction::create("step-repeat");
   act_step_repeat->signal_activate().connect(

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <cstdio>   // s203 m4 — fprintf(stderr, ...) in catastrophic catch
 
 // Minimal hand-written XML parser for our own SVG subset.
 // No external library — matches the HANDOFF constraint.
@@ -1194,6 +1195,16 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
 
     auto tags = split_tags(svg);
     for (const auto& tag : tags) {
+        // s203 m4 — Per-element exception guard. Wraps a single tag's
+        // handler dispatch. If a malformed element causes an std-exception
+        // (numeric parse, allocation failure, out-of-range etc.), log a
+        // WARN with the tag prefix and move on rather than aborting the
+        // whole parse. This does NOT protect against null-deref segfaults
+        // or other signals — those are not catchable by try/catch in C++.
+        // For those, the only defense is upstream null-checks (m3 did the
+        // first sweep; the structural pump push_into_parent is the right
+        // long-term answer).
+        try {
         if (tag.empty() || tag[0] == '?' || tag[0] == '!') continue;
 
         // Closing tags — pop the stack
@@ -1992,7 +2003,15 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             apply_style_attrs(obj, tag);
             { auto xfm = parse_transform(attr(tag, "transform"));
               if (obj.path) apply_transform_to_path(*obj.path, xfm); }
-            current_parent()->children.push_back(std::make_unique<SceneNode>(std::move(obj)));
+            // s203 m3: route through push_into_parent so a <rect> inside
+            // <clipPath id="X"> stashes into clip_defs[X] instead of trying
+            // to dereference current_parent() (which is null at top-level
+            // <defs> scope before any <g> has opened). Yelp.svg hits this
+            // exact path. push_into_parent also no-ops gracefully if
+            // current_parent() is null AND we're not in clipPath def mode
+            // — silent drop, but it's better than the segfault that was
+            // there before.
+            push_into_parent(std::make_unique<SceneNode>(std::move(obj)));
             continue;
         }
 
@@ -2008,7 +2027,9 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             apply_style_attrs(obj, tag);
             { auto xfm = parse_transform(attr(tag, "transform"));
               if (obj.path) apply_transform_to_path(*obj.path, xfm); }
-            current_parent()->children.push_back(std::make_unique<SceneNode>(std::move(obj)));
+            // s203 m3: route through push_into_parent — same rationale as
+            // the <rect> handler above.
+            push_into_parent(std::make_unique<SceneNode>(std::move(obj)));
             continue;
         }
 
@@ -2057,7 +2078,9 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 if (!op.empty()) img->opacity = dbl(op, 1.0);
                 LOG_DEBUG("SvgParser: image '{}' {}x{}", img->image_path,
                           img->image_w, img->image_h);
-                current_parent()->children.push_back(std::move(img));
+                // s203 m3: route through push_into_parent — same rationale
+                // as the <rect> handler above.
+                push_into_parent(std::move(img));
                 continue;
             }
         }
@@ -2097,7 +2120,11 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 // the ruler origin is the canonical export origin and
                 // a per-refpt promotion concept no longer applies.
                 LOG_DEBUG("SvgParser: ref point at ({:.4f},{:.4f})", ref->ref_x, ref->ref_y);
-                current_parent()->children.push_back(std::move(ref));
+                // s203 m3: route through push_into_parent — same rationale
+                // as the <rect> handler above. (A ref-point inside a
+                // clipPath is meaningless SVG-wise, but the helper still
+                // routes safely.)
+                push_into_parent(std::move(ref));
                 continue;
             }
             // ── Regular circle ────────────────────────────────────────────
@@ -2111,7 +2138,9 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             apply_style_attrs(obj, tag);
             { auto xfm = parse_transform(attr(tag, "transform"));
               if (obj.path) apply_transform_to_path(*obj.path, xfm); }
-            current_parent()->children.push_back(std::make_unique<SceneNode>(std::move(obj)));
+            // s203 m3: route through push_into_parent — same rationale as
+            // the <rect> handler above.
+            push_into_parent(std::make_unique<SceneNode>(std::move(obj)));
             continue;
         }
 
@@ -2172,12 +2201,16 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 obj->stroke_swatch_id = tmp.stroke_swatch_id;
             }
 
-            if (!current_parent()) {
+            if (!current_parent() && in_clip_def_id.empty()) {
                 LOG_WARN("SvgParser: <text> found with no parent, skipping");
                 continue;
             }
             LOG_DEBUG("SvgParser: text \"{}\" at ({:.1f},{:.1f})", obj->text_content, obj->text_x, obj->text_y);
-            current_parent()->children.push_back(std::move(obj));
+            // s203 m3: route through push_into_parent — same rationale as
+            // the <rect> handler above. Text inside <clipPath> is unusual
+            // but no longer crashes; the existing null-check above only
+            // skips when we're ALSO not in clipPath def mode.
+            push_into_parent(std::move(obj));
             continue;
         }
 
@@ -2422,6 +2455,17 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             }
             continue;
         }
+        // s203 m4 — close of per-element try. WARN-and-continue is the
+        // right posture: a single bad element shouldn't take out the rest
+        // of an otherwise-valid SVG. The tag prefix in the log gives Scott
+        // a starting point if a file consistently misparses an element.
+        } catch (const std::exception& e) {
+            LOG_WARN("SvgParser: element threw std::exception what='{}' tag-prefix='{}'",
+                     e.what(), tag.substr(0, std::min((size_t)60, tag.size())));
+        } catch (...) {
+            LOG_WARN("SvgParser: element threw unknown exception tag-prefix='{}'",
+                     tag.substr(0, std::min((size_t)60, tag.size())));
+        }
     }
 
     // Ensure at least one layer
@@ -2648,7 +2692,38 @@ std::unique_ptr<CurvzDocument> parse_svg_file(const std::string& path) {
     }
     std::ostringstream ss;
     ss << f.rdbuf();
-    auto doc = parse_svg(ss.str());
+    // s203 m4 — Outer catastrophic guard. The per-element try/catch inside
+    // parse_svg() catches anything thrown from a single tag's handler. This
+    // outer block is the last line of defense: if something escapes the
+    // inner guard (a top-of-function allocation throws, a std::bad_alloc
+    // on a huge SVG, an iterator invalidation we didn't anticipate), we
+    // bail with both a log line and a stderr line. The stderr line is
+    // there because LOG_ERROR goes to the log file only; if curvz is
+    // launched from a terminal and crashes-but-doesn't-die-quietly on a
+    // file the user just opened, they want to see SOMETHING in the
+    // terminal. Caller (typically Open / drag-drop / icon-scan) sees a
+    // null doc and handles gracefully.
+    //
+    // Does NOT catch signals (SIGSEGV from null-deref etc.) — see the
+    // per-element try block comment in parse_svg() for why.
+    std::unique_ptr<CurvzDocument> doc;
+    try {
+        doc = parse_svg(ss.str());
+    } catch (const std::exception& e) {
+        LOG_ERROR("SvgParser: catastrophic parse failure on '{}' — std::exception "
+                  "what='{}'", path, e.what());
+        std::fprintf(stderr,
+                     "SvgParser: catastrophic parse failure on '%s' — %s\n",
+                     path.c_str(), e.what());
+        return nullptr;
+    } catch (...) {
+        LOG_ERROR("SvgParser: catastrophic parse failure on '{}' — unknown "
+                  "exception", path);
+        std::fprintf(stderr,
+                     "SvgParser: catastrophic parse failure on '%s' — unknown "
+                     "exception type\n", path.c_str());
+        return nullptr;
+    }
     if (doc) doc->filename = path;
     return doc;
 }

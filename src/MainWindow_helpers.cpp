@@ -1660,10 +1660,19 @@ void MainWindow::focus_inspector_on(const std::string& section_title) {
   // both Object and Application as of the current refresh structure)
   // resolve to their most common home for the user-driven case;
   // future per-mode disambiguation can land here when needed.
+  //
+  // s203 m5 fix1 — Canvas, Margins, Grid only exist as sections inside
+  // the Theme disclosure under Document (see build_theme_disclosure in
+  // PropertiesPanel.cpp around line 1353). The original s202 mapping
+  // also listed Margins/Grid under "Application", which was dead — no
+  // such sections are built under Application. Removed from the
+  // Application branch so the routing is honest about where they live.
   auto parent_group_for = [](const std::string& title) -> const char* {
-    // Document group
+    // Document group — Metadata + Dimensions directly; Theme is its
+    // own collapsible that contains Canvas / Margins / Grid as nested
+    // children (handled below via intermediate_parent_for).
     if (title == "Metadata" || title == "Theme" || title == "Canvas" ||
-        title == "Dimensions")
+        title == "Dimensions" || title == "Margins" || title == "Grid")
       return "Document";
     // Object group — selection-dependent sections, Guides under
     // Object (s179 m3v2), Styling under Object as the apply-style
@@ -1674,10 +1683,25 @@ void MainWindow::focus_inspector_on(const std::string& section_title) {
       return "Object";
     // Application group — boot-time + editing prefs.
     if (title == "Startup" || title == "Editing" || title == "Paths" ||
-        title == "Boolean cleanup" || title == "Grid" ||
-        title == "Margins")
+        title == "Boolean cleanup")
       return "Application";
     return nullptr;
+  };
+
+  // s203 m5 fix1 — Theme-nested children. Canvas / Margins / Grid live
+  // inside the Theme disclosure (build_theme_disclosure), not directly
+  // under Document. The m_section_open keys are flat — "Canvas",
+  // "Margins", "Grid" all sit at the same level in the map as "Theme"
+  // itself — but the visual disclosure tree is Document → Theme →
+  // {Canvas, Margins, Grid}. So opening one of those three requires
+  // opening Theme too, otherwise the leaf's flag is true but the user
+  // sees a collapsed Theme disclosure with nothing visible.
+  // Returns the intermediate section title to also flip open, or
+  // empty string if the title is not nested inside an intermediate.
+  auto intermediate_parent_for = [](const std::string& title) -> std::string {
+    if (title == "Canvas" || title == "Margins" || title == "Grid")
+      return "Theme";
+    return {};
   };
 
   auto state = m_properties.section_open_state();
@@ -1685,6 +1709,12 @@ void MainWindow::focus_inspector_on(const std::string& section_title) {
     state[section_title] = true;
     if (auto* group = parent_group_for(section_title)) {
       state[std::string("__group__") + group] = true;
+    }
+    // s203 m5 fix1 — also flip the intermediate parent (e.g. Theme) so
+    // the leaf is actually visible inside an opened disclosure.
+    auto intermediate = intermediate_parent_for(section_title);
+    if (!intermediate.empty() && state.find(intermediate) != state.end()) {
+      state[intermediate] = true;
     }
     m_properties.set_section_open_state(state);
     refresh_inspector();
@@ -1782,19 +1812,19 @@ void MainWindow::show_quick_jump_popover() {
 
   // ── Phase 3: lazy window construction ──────────────────────────────
   //
-  // The window itself lives across pops; only its contents are
-  // rebuilt per show. Esc dismisses; clicking a button dismisses;
-  // the modal+transient_for setup means clicking outside the float
-  // doesn't dismiss (modal grabs the focus), so the user always
-  // either picks or Escapes.
+  // s203 m5 fix2 — Was modal + decorated(false) — that meant the user
+  // could only dismiss via Escape; no titlebar drag, no native × close,
+  // and modal blocked click-outside-to-dismiss too. Now decorated +
+  // non-modal: native titlebar (drag handle + ×), Escape still works,
+  // and clicking outside the window naturally dismisses since nothing
+  // is grabbing focus. Matches the chrome decision for s203 m1's
+  // ClipboardViewWindow — working tool surfaces earn their titlebar.
   if (!m_quick_jump_win) {
     m_quick_jump_win = std::make_unique<Gtk::Window>();
     m_quick_jump_win->set_title("Jump to…");
-    m_quick_jump_win->set_modal(true);
     m_quick_jump_win->set_transient_for(*this);
     m_quick_jump_win->set_hide_on_close(true);
     m_quick_jump_win->set_resizable(false);
-    m_quick_jump_win->set_decorated(false);  // m6_v2: chromeless mini float
 
     auto kc = Gtk::EventControllerKey::create();
     kc->signal_key_pressed().connect(
@@ -1808,6 +1838,17 @@ void MainWindow::show_quick_jump_popover() {
         /*after=*/false);
     m_quick_jump_win->add_controller(kc);
   }
+
+  // s203 m5 fix3 — Reset size on each invocation. set_resizable(false)
+  // sizes the window to its content's natural request, but once More…
+  // has been clicked and the window has grown to fit the tail, GTK
+  // (or the compositor) caches that larger size and reuses it on the
+  // next present even when the new content is smaller. Calling
+  // set_default_size(-1, -1) before populating tells GTK to drop the
+  // cached size and recompute from natural request on next layout.
+  // Cheap, no architectural change, fixes the "permanent long empty
+  // window after More…" bug.
+  m_quick_jump_win->set_default_size(-1, -1);
 
   // ── Phase 4: mini UI — compact list, top-5 visible + More expander ─
   //
@@ -1907,6 +1948,23 @@ void MainWindow::show_quick_jump_popover() {
 
   m_quick_jump_win->set_child(*outer);
   m_quick_jump_win->present();
+}
+
+// ── show_clipboard_view ─────────────────────────────────────────────────────
+//
+// s203 m1 — Edit ▸ View Clipboard… handler. Lazy-build the mini float on
+// first call, then refresh and present on every call. The window owns its
+// own lifecycle (hide_on_close, Escape closes, titlebar × closes);
+// MainWindow just holds the unique_ptr and triggers a refresh on each
+// invocation so the user always sees the current clipboard, not whatever
+// was there last time they opened it.
+void MainWindow::show_clipboard_view() {
+  if (!m_clipboard_view_win) {
+    m_clipboard_view_win = std::make_unique<ClipboardViewWindow>();
+    m_clipboard_view_win->set_transient_for(*this);
+  }
+  m_clipboard_view_win->refresh();
+  m_clipboard_view_win->present();
 }
 
 } // namespace Curvz

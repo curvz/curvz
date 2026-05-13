@@ -22,6 +22,76 @@ std::string SystemIconScanner::read_theme_name(const std::string& theme_dir) {
     return fs::path(theme_dir).filename().string();
 }
 
+// s203 m5 — Filter out SVGs that use features Curvz doesn't model.
+//
+// The System icons grid renders each entry as a thumbnail via
+// parse_svg_file + render_thumb. After m3/m4 hardening, foreign SVGs
+// that use <mask>, <filter>, <use>, or foreign (non-Curvz-marked)
+// <image> elements load without crashing — but they render with wrong
+// colours because we ignore the offending elements. A grid of half-
+// correct thumbnails reads worse than a slightly shorter grid of
+// correct ones, so we filter at scan time and pretend the funky files
+// were never there.
+//
+// Detection strategy: read a small head of the file and string-scan
+// for the four problem tag names. They all live in <defs> near the
+// top of the document, so an 8KB head is enough to catch all cases
+// we've seen on real icon themes. If the file is smaller than 8KB we
+// read it all. Tag-name match is loose ("<mask " or "<mask>") so we
+// don't false-positive on substrings inside attributes or comments.
+//
+// Curvz-authored files (which carry data-curvz-* markers somewhere)
+// are NEVER flagged as funky — Curvz's own writer emits <filter> for
+// drop-shadow, and the parser handles its own output. The rule is
+// "foreign AND uses a feature we don't render." In practice, no
+// system icon is Curvz-authored, so this matters mainly as future-
+// proofing if Curvz output ever lands in an icon search path.
+//
+// Note: this is the SYSTEM ICONS thumbnail filter only. File ▸ Open
+// on a funky SVG still loads it (with the visible paths showing and
+// the funky parts missing) — that's a useful "extract paths from a
+// foreign icon" workflow.  parse_svg_file itself is unfiltered.
+static bool is_funky_svg(const std::string& path) {
+    std::ifstream f(path);
+    if (!f.is_open()) return false;  // can't read → not funky, let it try
+    char buf[8192];
+    f.read(buf, sizeof(buf));
+    std::streamsize n = f.gcount();
+    if (n <= 0) return false;
+    std::string head(buf, (size_t)n);
+
+    // Curvz-authored escape hatch: any data-curvz-* marker means we
+    // trust the writer's element choices. Cheapest possible check.
+    if (head.find("data-curvz-") != std::string::npos) return false;
+
+    // Substring match on the tag open. The trailing char filters out
+    // accidental matches inside id attributes ("mask0" etc.) since a
+    // real tag is followed by space, '>', or '/'.
+    auto has_tag = [&head](const char* open) -> bool {
+        std::string needle = open;
+        size_t pos = 0;
+        while ((pos = head.find(needle, pos)) != std::string::npos) {
+            size_t after = pos + needle.size();
+            if (after < head.size()) {
+                char c = head[after];
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+                    c == '>' || c == '/') {
+                    return true;
+                }
+            }
+            pos = after;
+        }
+        return false;
+    };
+    if (has_tag("<mask"))   return true;
+    if (has_tag("<filter")) return true;
+    if (has_tag("<use"))    return true;
+    if (has_tag("<image"))  return true;  // foreign image; Curvz-marked
+                                          // images were excluded above
+                                          // by the data-curvz- early-out.
+    return false;
+}
+
 void SystemIconScanner::scan_dir(const std::string& base) {
     if (!fs::is_directory(base)) return;
 
@@ -37,6 +107,13 @@ void SystemIconScanner::scan_dir(const std::string& base) {
                 fs::directory_options::skip_permission_denied, ec)) {
             if (!e.is_regular_file()) continue;
             if (e.path().extension() != ".svg") continue;
+
+            // s203 m5 — Filter foreign-SVG-feature files BEFORE adding to
+            // m_icons. See is_funky_svg above for the rationale. Skipped
+            // files don't count toward found_svg either, so a theme that
+            // consists entirely of funky icons (rare but possible) won't
+            // appear in the Theme dropdown at all.
+            if (is_funky_svg(e.path().string())) continue;
 
             // Category = the directory immediately under the theme root
             // e.g. /usr/share/icons/Adwaita/symbolic/actions/foo.svg → "actions"

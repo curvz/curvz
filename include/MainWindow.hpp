@@ -103,6 +103,7 @@
 #include "ManageTemplatesDialog.hpp"
 #include "ThemeEditDialog.hpp"  // s200 m1 — hide-on-close singleton
 #include "StyleEditorDialog.hpp"  // s201 m1 — hide-on-close singleton
+#include "ClipboardViewWindow.hpp"  // s203 m1 — hide-on-close singleton
 #include "Ruler.hpp"
 #include <gtkmm/applicationwindow.h>
 #include <gtkmm/headerbar.h>
@@ -206,6 +207,14 @@ public:
     void focus_inspector_on(const std::string& section_title);
     void show_quick_jump_popover();
     // ── end s202 m6 ────────────────────────────────────────────────────
+
+    // s203 m1 — View Clipboard mini float (Edit ▸ View Clipboard…).
+    // Lazy-builds m_clipboard_view_win on first invocation, then refresh-
+    // and-show on subsequent ones. See ClipboardViewWindow.hpp for the
+    // design rationale; the user-visible motivation is the Measure tool's
+    // structured copy, which the user wants to dissect without a round-
+    // trip through an external text editor.
+    void show_clipboard_view();
 
 private:
     void setup_headerbar();  // category: zone: headerbar
@@ -402,6 +411,13 @@ private:
     // MainWindow.hpp; the impl lives in MainWindow_helpers.cpp
     // alongside the focus_inspector_on cascade it triggers.
     std::unique_ptr<Gtk::Window>  m_quick_jump_win;
+
+    // s203 m1 — View Clipboard mini float. Owned here so the action
+    // handler can lazily build, refresh, and re-show. ClipboardViewWindow
+    // is a real subclass (not a bare Gtk::Window) because it has its own
+    // refresh() method and async-read state; the type is small enough
+    // that including the header in MainWindow.hpp is fine.
+    std::unique_ptr<ClipboardViewWindow>  m_clipboard_view_win;
     ActiveTool                    m_active_tool    = ActiveTool::Selection;
     ActiveTool                    m_inspector_tool = ActiveTool::Selection;
     // S58m: remember previous selection size so shift-click add/remove
