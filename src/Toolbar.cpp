@@ -389,9 +389,10 @@ struct Toolbar::Impl {
     std::string                   fill_chips_palette_id;
     std::string                   stroke_chips_palette_id;
 
-    // Shared colour-picker popover for fill + stroke wells. Attached
-    // to *self in the ctor (deferred to signal_realize).
-    ColorPickerPopover            color_popover;
+    // s207 m1: ColorPickerPopover collapsed to an app-wide singleton.
+    // Hosts access it via ColorPickerPopover::shared(). No instance
+    // member here; the previous `ColorPickerPopover color_popover;`
+    // (one of 13 instances across the app) is gone.
 
     // ── Paint editor methods ─────────────────────────────────────────
     void build_defaults_well();
@@ -597,22 +598,19 @@ Toolbar::Toolbar()
     // without rebuilding the toolbar.
     add_css_class("toolbar-panel");
 
-    // Shared colour-picker popover for fill + stroke wells.
+    // s207 m1: ensure the shared ColorPickerPopover is attached to the
+    // toplevel window. Idempotent — if another host got here first, this
+    // is a no-op. Deferred to signal_realize because get_root() isn't
+    // valid during construction. Attaches to the window, not to *this:
+    // the Toolbar is a 48px-wide vertical strip and a popover parented
+    // to it would be geometrically squashed; the window gives the
+    // popover the whole frame to position within, while individual
+    // wells remain the visual anchor via the rect passed to open().
     //
-    // IMPORTANT: we attach to the root Gtk::Window, not to `*this`.
-    // The Toolbar is a 48px-wide vertical strip on the left edge; GTK
-    // constrains popover geometry to its stable-parent's bounds, so
-    // parenting to `*this` produced a popover that got squashed or
-    // pushed vertically. Attaching to the window gives the popover the
-    // whole window as geometry space, while the well remains the visual
-    // anchor (via the anchor rect computed in open()).
-    //
-    // Deferred to signal_realize because get_root() isn't valid during
-    // construction.
+    // The earlier per-instance member (`ColorPickerPopover
+    // color_popover;` in Impl) is gone — collapsed to the singleton.
     signal_realize().connect([this]() {
-        if (auto* w = dynamic_cast<Gtk::Window*>(get_root())) {
-            m_impl->color_popover.attach(*w);
-        }
+        ColorPickerPopover::shared().ensure_attached(*this);
     });
 
     m_impl->build();
@@ -1431,7 +1429,7 @@ void Toolbar::Impl::build_fill_popover() {
     const int tb_w  = self->get_width();
     Gdk::Rectangle anchor(tb_w, std::max(0, win_h - 8), 1, 1);
 
-    color_popover.open(
+    ColorPickerPopover::shared().open(
         anchor, initial, /*with_alpha=*/false,
         // on_changed: live updates as user drags inside the picker.
         // Per the design rule we DON'T broadcast here — broadcast is
@@ -1617,7 +1615,7 @@ void Toolbar::Impl::build_fill_popover() {
     const int tb_w  = self->get_width();
     Gdk::Rectangle anchor(tb_w, std::max(0, win_h - 8), 1, 1);
 
-    color_popover.open(
+    ColorPickerPopover::shared().open(
         anchor, initial, /*with_alpha=*/false,
         [this](const color::Color& c) {
           def_fill.type = FillStyle::Type::Solid;
@@ -1929,7 +1927,7 @@ void Toolbar::Impl::build_stroke_popover() {
     const int tb_w  = self->get_width();
     Gdk::Rectangle anchor(tb_w, std::max(0, win_h - 8), 1, 1);
 
-    color_popover.open(
+    ColorPickerPopover::shared().open(
         anchor, initial, /*with_alpha=*/false,
         [this](const color::Color& c) {
           def_stroke.paint.type = FillStyle::Type::Solid;
@@ -2016,7 +2014,7 @@ void Toolbar::Impl::build_stroke_popover() {
     const int tb_w  = self->get_width();
     Gdk::Rectangle anchor(tb_w, std::max(0, win_h - 8), 1, 1);
 
-    color_popover.open(
+    ColorPickerPopover::shared().open(
         anchor, initial, /*with_alpha=*/false,
         [this](const color::Color& c) {
           def_stroke.paint.type = FillStyle::Type::Solid;

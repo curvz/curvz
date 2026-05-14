@@ -3,6 +3,7 @@
 #include "SvgParser.hpp"
 #include "SvgWriter.hpp"
 #include "curvz_utils.hpp"   // s135 m2 — cairo_set_source_pixbuf pump
+#include "curvz/widgets/DropDown.hpp"  // s208 m5 — substrate system-tab dropdowns
 #include "math/BezierPath.hpp"
 #include <algorithm>
 #include <cairomm/cairomm.h>
@@ -216,7 +217,12 @@ DocumentGallery::DocumentGallery() : Gtk::Box(Gtk::Orientation::VERTICAL) {
   m_sys_controls.append(*theme_label);
 
   auto theme_list = Gtk::StringList::create({"(scanning…)"});
-  m_sys_theme_drop = Gtk::make_managed<Gtk::DropDown>(theme_list);
+  // s208 m5: substrate. DocumentGallery is a MainWindow member (single
+  // instance, ctor runs once), so the substrate registration is unproblematic.
+  m_sys_theme_drop = Gtk::make_managed<curvz::widgets::DropDown>(
+      "gal_thm", theme_list);
+  curvz::utils::set_name(m_sys_theme_drop, "gal_thm",
+                         "document_gallery_system_theme_dd");
   m_sys_theme_drop->set_hexpand(true);
   m_sys_theme_drop->property_selected().signal_changed().connect([this]() {
     auto *sl =
@@ -247,7 +253,10 @@ DocumentGallery::DocumentGallery() : Gtk::Box(Gtk::Orientation::VERTICAL) {
   m_sys_controls.append(*cat_label);
 
   auto cat_list = Gtk::StringList::create({"All"});
-  m_sys_cat_drop = Gtk::make_managed<Gtk::DropDown>(cat_list);
+  m_sys_cat_drop = Gtk::make_managed<curvz::widgets::DropDown>(
+      "gal_cat", cat_list);
+  curvz::utils::set_name(m_sys_cat_drop, "gal_cat",
+                         "document_gallery_system_category_dd");
   m_sys_cat_drop->set_hexpand(true);
   m_sys_cat_drop->property_selected().signal_changed().connect([this]() {
     auto *sl =

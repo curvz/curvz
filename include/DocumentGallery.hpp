@@ -16,6 +16,11 @@
 #include <gtkmm/drawingarea.h>
 #include <cairomm/cairomm.h>
 
+// s208 m5 — forward-declare substrate DropDown so DocumentGallery can hold
+// pointers without pulling ScriptableWidget into every TU that includes
+// this header. Full include in DocumentGallery.cpp.
+namespace curvz::widgets { class DropDown; }
+
 namespace Curvz {
 
 class DocumentGallery : public Gtk::Box {
@@ -88,8 +93,10 @@ private:
     // System tab
     Gtk::Box            m_sys_box{Gtk::Orientation::VERTICAL};
     Gtk::Box            m_sys_controls{Gtk::Orientation::HORIZONTAL};
-    Gtk::DropDown*      m_sys_theme_drop   = nullptr;
-    Gtk::DropDown*      m_sys_cat_drop     = nullptr;
+    // s208 m5: substrate. Forward-declared above to keep this header light;
+    // full include lives in DocumentGallery.cpp.
+    curvz::widgets::DropDown*  m_sys_theme_drop   = nullptr;
+    curvz::widgets::DropDown*  m_sys_cat_drop     = nullptr;
     Gtk::ScrolledWindow m_sys_scroll;
     Gtk::FlowBox        m_sys_flow;
 

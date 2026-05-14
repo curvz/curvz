@@ -130,6 +130,11 @@
 #include <giomm/simpleaction.h>
 #include <memory>
 
+// s208 m5 — forward-declare substrate CheckButton for the guide-review
+// dialog's perp toggle (member-pointer here, constructed and dereferenced
+// in MainWindow_handlers.cpp).
+namespace curvz::widgets { class CheckButton; }
+
 namespace Curvz {
 
 class Application;
@@ -405,8 +410,10 @@ private:
 
     // Guide-construct review dialog (M3) — created lazily.  A tiny non-modal
     // window with Perpendicular checkbox + OK + Cancel.
-    std::unique_ptr<Gtk::Window>  m_guide_review_win;
-    Gtk::CheckButton*             m_guide_review_perp_chk = nullptr;
+    // s208 m5: substrate CheckButton. Forward-declared below; full include
+    // in MainWindow_handlers.cpp at the construction site.
+    std::unique_ptr<Gtk::Window>           m_guide_review_win;
+    curvz::widgets::CheckButton*           m_guide_review_perp_chk = nullptr;
 
     // s202 m6 — quick-jump float, created lazily on first Ctrl+Space.
     // Held as unique_ptr<Gtk::Window> so the type doesn't bloat

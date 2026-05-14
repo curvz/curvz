@@ -56,8 +56,8 @@
 //                      for Gaussian stddev in doc units.
 //   * colour         — Click-to-pick swatch DrawingArea + colour-alpha
 //                      Gtk::Scale slider on the same row. Mirrors the
-//                      inspector's idiom; uses m_shadow_popover for
-//                      the picker session (with_alpha=false — alpha is
+//                      inspector's idiom; uses ColorPickerPopover::shared()
+//                      for the picker session (with_alpha=false — alpha is
 //                      the slider's job).
 //   * opacity        — Gtk::Scale 0..100 mapped to 0..1. Final shadow
 //                      strength multiplier; multiplies with colour
@@ -347,12 +347,12 @@ private:
     Glib::RefPtr<Gtk::Adjustment> m_shadow_color_a_adj;
     Glib::RefPtr<Gtk::Adjustment> m_shadow_opacity_adj;
 
-    // The dialog owns its three popovers so each colour-picker caller has
-    // its own session. Held by value, attach()-ed in build(). S98: the
-    // shadow popover is the third — the inspector's pattern.
-    ColorPickerPopover m_fill_popover;
-    ColorPickerPopover m_stroke_popover;
-    ColorPickerPopover m_shadow_popover;
+    // s207 m2: ColorPickerPopover is the app-wide singleton — accessed
+    // via ColorPickerPopover::shared(). The earlier per-purpose
+    // `m_fill_popover` / `m_stroke_popover` / `m_shadow_popover` members
+    // are gone; all three routes use the shared instance. Multiple
+    // styles can be edited in sequence within one dialog session, but
+    // only one picker is up at a time, so a single popover is enough.
 
     // S93 m3: GradientDialog instance for in-dialog gradient editing.
     // Long-lived member; show() reseeds per click. Mirrors MainWindow's

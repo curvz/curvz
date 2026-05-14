@@ -6,6 +6,7 @@
 #include "MacroSystem.hpp"
 #include "SvgParser.hpp"
 #include "curvz_utils.hpp"  // S97 m2 — box_blur_argb32 for drop-shadow render
+#include "curvz/widgets/Entry.hpp"  // s208 m5 — substrate text-overlay entry
 #include "color/SwatchLibrary.hpp"  // set_swatch_library + apply_swatch_to_selection
 #include "color/FillStyleInterop.hpp"  // to_fillstyle — live-recolour walk (s70 M3)
 #include "style/StyleInterop.hpp"  // mutate_appearance funnel for user-driven fill/stroke writes
@@ -3492,7 +3493,11 @@ void Canvas::set_text_overlay(Gtk::Fixed *fixed) {
   m_text_fixed = fixed;
 
   // Create the floating entry once; hide it until a text edit begins.
-  auto *entry = Gtk::make_managed<Gtk::Entry>();
+  // s208 m5: substrate. Single-shot construction (MainWindow_zones.cpp
+  // calls set_text_overlay once at startup), so the substrate
+  // registration is unproblematic.
+  auto *entry = Gtk::make_managed<curvz::widgets::Entry>("cnv_txt_ent");
+  curvz::utils::set_name(entry, "cnv_txt_ent", "canvas_text_tool_overlay_entry");
   m_text_entry = entry;
   m_text_entry->set_visible(false);
   m_text_entry->add_css_class("text-tool-entry");

@@ -30,6 +30,13 @@ namespace style {
 class StyleLibrary;
 }
 }
+
+// s208 m5 — forward-declare substrate Entry so Canvas can hold a pointer
+// to it without pulling ScriptableWidget into every TU that includes
+// Canvas.hpp. Full include lives in Canvas_ops.cpp (construction) and
+// Canvas_input.cpp (deref-heavy text-editing flow).
+namespace curvz::widgets { class Entry; }
+
 #include <cairomm/cairomm.h>
 #include <algorithm>
 #include <chrono>
@@ -1712,8 +1719,13 @@ private:
   // ── Text tool state ──────────────────────────────────────────────────
   // The entry is parented to m_text_fixed which the parent Overlay places
   // over the canvas.  MainWindow calls set_text_overlay() at startup.
+  // s208 m5: m_text_entry flipped to curvz::widgets::Entry. Substrate
+  // IS-A Gtk::Entry so all existing call sites (set_visible, add_css_class,
+  // get_text, set_text, signal_changed, signal_activate, position_text_entry)
+  // work unchanged. Forward-declared above to keep this header light;
+  // Canvas_ops.cpp / Canvas_input.cpp include curvz/widgets/Entry.hpp.
   Gtk::Fixed *m_text_fixed = nullptr; // overlay container (owned by parent)
-  Gtk::Entry *m_text_entry =
+  curvz::widgets::Entry *m_text_entry =
       nullptr; // floating inline editor (owned by m_text_fixed)
   SceneNode *m_text_editing = nullptr; // node being edited (nullptr = none)
   bool m_text_is_new = false; // true = node was just created; cancel → delete

@@ -47,6 +47,10 @@
 #include <unordered_map>
 #include <vector>
 
+// s208 m5 — forward-declare substrate DropDown for the per-refresh
+// palette dropdown member. Full include in SwatchesPanel.cpp.
+namespace curvz::widgets { class DropDown; }
+
 namespace Curvz {
 
 class Canvas;  // fwd — the panel calls apply_fill/stroke_to_selection
@@ -153,13 +157,13 @@ private:
     // as we clear before reuse.
     std::unordered_map<Gtk::FlowBoxChild*, color::SwatchId> m_chip_swatch;
 
-    // --- Color picker popover ---------------------------------------------
-    //
-    // Used by two flows (M3): the `+` button (new swatch) and the upcoming
-    // double-click-to-edit in M5. Attached lazily the first time we need
-    // it, because attach() requires the panel to be in the widget tree.
-    ColorPickerPopover m_color_popover;
-    bool               m_color_popover_attached = false;
+    // s207 m1: ColorPickerPopover collapsed to an app-wide singleton.
+    // The `+` and double-click-to-edit flows reach it via
+    // ColorPickerPopover::shared(). No instance member here; the
+    // previous `ColorPickerPopover m_color_popover` and its
+    // `m_color_popover_attached` lazy-attach flag are gone — the
+    // singleton's ensure_attached() handles attach idempotently on
+    // first use.
 
     // Tracks the swatch id currently being edited. Empty string = the
     // popover session is adding a new swatch (first change creates it,
@@ -195,8 +199,12 @@ private:
     // the DropDown's model corresponds to palette_ids[i] stored alongside
     // so we can translate selection back to an id. StringList model is
     // rebuilt on every refresh().
-    Gtk::DropDown*         m_palette_dropdown = nullptr;  // owned by m_body hierarchy
-    std::vector<color::PaletteId> m_palette_order;         // shadow vector matching dropdown
+    // s208 m5: substrate. Forward-declared above; full include in .cpp.
+    // refresh() now calls force_unregister_subtree before unparenting the
+    // previous dropdown so the new registration under `sw_pal` doesn't
+    // collide with GTK4's deferred destruction.
+    curvz::widgets::DropDown*     m_palette_dropdown = nullptr;  // owned by m_body hierarchy
+    std::vector<color::PaletteId> m_palette_order;               // shadow vector matching dropdown
 
     // Signal connection for the DropDown's selection, disconnected before
     // the widget is destroyed in the next rebuild to avoid spurious fires

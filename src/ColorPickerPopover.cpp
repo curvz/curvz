@@ -7,6 +7,7 @@
 #include "CurvzColorPicker.hpp"
 #include "color/ColorRegion.hpp"
 #include "curvz_utils.hpp"  // s121 m14: curvz::utils::set_name
+#include "curvz/widgets/Entry.hpp"  // s208 m4: substrate name entry
 
 #include <gtkmm/popover.h>
 #include <gtkmm/window.h>
@@ -28,6 +29,45 @@ ColorPickerPopover::~ColorPickerPopover() {
         m_conn_picker_changed_for_name.disconnect();
 }
 
+// s207 m1 — singleton accessor. Heap-allocated, never freed. See
+// header for the lifetime rationale.
+ColorPickerPopover& ColorPickerPopover::shared() {
+    static ColorPickerPopover* instance = new ColorPickerPopover();
+    return *instance;
+}
+
+// s207 m1/v7 — idempotent self-attach helper for the shared singleton.
+// Walks the supplied widget's tree to the toplevel Gtk::Window and
+// attaches the popover there. If already attached to that toplevel,
+// no-op. If attached to a DIFFERENT toplevel (e.g. the user opened a
+// floating dialog and the picker needs to position relative to its
+// window), re-parents to the new toplevel. The popover's internal
+// child tree (wrapper, picker, name entry, signal wiring) survives
+// the re-parent unchanged.
+void ColorPickerPopover::ensure_attached(Gtk::Widget& anywhere) {
+    auto* root = dynamic_cast<Gtk::Window*>(anywhere.get_root());
+    if (!root) return;  // widget not yet in a window — caller should retry
+
+    if (!m_popover_widget) {
+        attach(*root);
+        return;
+    }
+
+    if (m_parent == root) return;  // already on the right toplevel
+
+    auto* pop = static_cast<Gtk::Popover*>(m_popover_widget);
+    pop->unparent();
+    pop->set_parent(*root);
+    m_parent = root;
+}
+
+// s207 m2 v7 — empirical visibility query. Reads through to GTK; no
+// shadow flag.
+bool ColorPickerPopover::is_open() const {
+    if (!m_popover_widget) return false;
+    return static_cast<Gtk::Popover*>(m_popover_widget)->get_visible();
+}
+
 void ColorPickerPopover::attach(Gtk::Widget& stable_parent) {
     // Idempotent: callers like Toolbar attach from signal_realize, which
     // can fire again if the widget gets re-realized (hot theme changes,
@@ -38,9 +78,19 @@ void ColorPickerPopover::attach(Gtk::Widget& stable_parent) {
     m_parent = &stable_parent;
 
     // Build the popover + picker once. Parent to the stable widget.
-    // Never unparent, never destroy — mirrors Canvas.cpp / LayersPanel.cpp
-    // ad-hoc popover pattern, with the one-instance-per-caller wrinkle.
+    // Mirrors Canvas.cpp / LayersPanel.cpp ad-hoc popover pattern,
+    // with the one-instance-per-caller wrinkle.
+    //
+    // s207 m2 v9 — own a strong ref so re-parenting across toplevels
+    // is safe. make_managed gives a floating ref that GTK sinks when
+    // set_parent runs; thereafter the popover is owned by its parent.
+    // unparent() releases that ownership and would finalize the
+    // popover (and our m_popover_widget would dangle) unless we hold
+    // our own ref. g_object_ref takes one and we never release it —
+    // the popover lives for the app's lifetime, surviving any number
+    // of unparent/set_parent cycles in ensure_attached.
     auto* pop = Gtk::make_managed<Gtk::Popover>();
+    g_object_ref(G_OBJECT(pop->gobj()));
     curvz::utils::set_name(pop, "pop_cp", "color_picker_popover_root");
     pop->set_has_arrow(true);
 
@@ -63,7 +113,20 @@ void ColorPickerPopover::attach(Gtk::Widget& stable_parent) {
     wrapper->set_spacing(6);
 
     // Name entry, lazy-visible. Always built, visibility per-open.
-    auto* entry = Gtk::make_managed<Gtk::Entry>();
+    //
+    // s208 m4: substrate-migrated. Pre-s207, this Entry was per-host (13
+    // ColorPickerPopover instances each tried to register `pop_cp_nm` →
+    // collision; substrate migration was deferred in s198 m4 for that
+    // reason). s207 m2 collapsed the 13 instances into one app-lifetime
+    // singleton; this build_once path runs exactly once, so the single
+    // substrate Entry registration is unproblematic. Reading C question
+    // (per-row / per-instance / shared-class addressability) remains
+    // open for the *other* dynamic-widget categories — this site is
+    // unblocked because the singleton resolves the per-instance multiplier.
+    //
+    // set_name kept (separately from the substrate ctor) for the GTK
+    // widget-name (CSS hook); ScriptableWidget doesn't set the GTK name.
+    auto* entry = Gtk::make_managed<curvz::widgets::Entry>("pop_cp_nm");
     curvz::utils::set_name(entry, "pop_cp_nm", "color_picker_popover_name_entry");
     entry->set_visible(false);
     entry->set_max_length(64);
@@ -217,6 +280,8 @@ void ColorPickerPopover::open(const Gdk::Rectangle& anchor_rect,
                               ColorPickerNameField name) {
     if (!m_popover_widget || !m_picker) return;   // attach() not called
 
+    if (is_open()) return;
+
     // Swap the live-apply callback. Disconnect the prior binding first
     // so the old caller (who may have owned a different layer index or
     // a dead document pointer) doesn't get re-fired.
@@ -322,6 +387,13 @@ void ColorPickerPopover::open(Gtk::Widget& anchor,
                               ChangedFn on_changed,
                               ClosedFn on_closed,
                               ColorPickerNameField name) {
+    if (is_open()) return;
+
+    // Auto-attach (or re-parent if a different toplevel) on first use
+    // from this anchor. Subsequent open()s on the same toplevel no-op
+    // in ensure_attached.
+    ensure_attached(anchor);
+
     if (!m_parent) return;
 
     Gdk::Rectangle rect(0, 0, 1, 1);

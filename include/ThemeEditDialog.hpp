@@ -221,18 +221,13 @@ private:
     // its own session state (recents, hex history) and avoids the
     // "one open popover that forgets which swatch summoned it" trap.
     //
-    // s200 m1 — singleton lifetime means popovers stay attached for
-    // the app's lifetime. No detach() in the close handler; hide-on-
-    // close keeps the window (and its popover children) alive between
-    // opens. The s199 m1 detach-before-finalisation discipline applied
-    // to the heap-allocated form where the window was being destroyed
-    // on close; that no longer happens.
-    ColorPickerPopover m_motif_artboard_popover;
-    ColorPickerPopover m_motif_workspace_popover;
-    ColorPickerPopover m_motif_creation_popover;
-    ColorPickerPopover m_guides_popover;
-    ColorPickerPopover m_grid_popover;
-    ColorPickerPopover m_margin_popover;
+    // s207 m2: ColorPickerPopover is the app-wide singleton — accessed
+    // via ColorPickerPopover::shared(). The earlier per-section
+    // popovers (motif artboard / workspace / creation, guides, grid,
+    // margin — six members in total) are gone; all six swatch rows
+    // route through the shared instance. The s200 m1 hide-on-close
+    // lifetime story still holds for the dialog window itself; the
+    // popover's lifetime is now decoupled from the dialog's.
 
     // Tab 1 — Colors & Snap
     Gtk::DrawingArea*           m_swatch_motif_artboard  = nullptr;

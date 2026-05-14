@@ -1,6 +1,7 @@
 #include "NewDocumentDialog.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
+#include "curvz/widgets/DropDown.hpp"  // s208 m5 — substrate theme dropdown
 #include <algorithm>
 #include <cairomm/cairomm.h>
 #include <cmath>
@@ -136,7 +137,8 @@ NewDocumentDialog::NewDocumentDialog()
   theme_lbl->set_xalign(1.0f);
   theme_lbl->set_width_chars(9);
   theme_lbl->add_css_class("section-label");
-  m_theme_drop = Gtk::make_managed<Gtk::DropDown>();
+  m_theme_drop = Gtk::make_managed<curvz::widgets::DropDown>(
+      "dlg_nd_thm", std::vector<Glib::ustring>{});
   curvz::utils::set_name(m_theme_drop, "dlg_nd_thm", "new_document_dialog_theme_dd");
   m_theme_drop->set_hexpand(true);
   // Remember selection on user change. Guard against the populate path

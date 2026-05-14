@@ -4,6 +4,9 @@
 #include "color/Swatch.hpp"
 #include "color/Color.hpp"
 
+#include "curvz_utils.hpp"               // s208 m5 — curvz::utils::set_name
+#include "curvz/widgets/DropDown.hpp"    // s208 m5 — substrate palette dropdown
+
 #include <cairomm/context.h>
 #include <glibmm/markup.h>
 #include <gtkmm/enums.h>
@@ -143,9 +146,8 @@ bool resolve_solid(const color::SwatchLibrary& lib,
 
 // ── ctor ─────────────────────────────────────────────────────────────────────
 
-PaintEditor::PaintEditor(ColorPickerPopover& popover)
-    : Gtk::Box(Gtk::Orientation::VERTICAL),
-      m_popover(popover) {
+PaintEditor::PaintEditor()
+    : Gtk::Box(Gtk::Orientation::VERTICAL) {
 
     // ── Type toggle row ─────────────────────────────────────────────────────
     m_type_row.set_spacing(4);
@@ -434,19 +436,23 @@ PaintEditor::PaintEditor(ColorPickerPopover& popover)
                              m_last.paint.b,
                              m_last.has_alpha ? m_last.paint.a : 1.0);
         bool with_alpha = m_last.has_alpha;
-        m_popover.open(
+        ColorPickerPopover::shared().open(
             m_swatch, initial, with_alpha,
             // on_changed — picker drag tick or hex commit inside picker.
-            [this](const color::Color& c) {
+            //
+            // s207 m2 v9: capture m_alive by value so if this editor is
+            // destroyed mid-session (inspector rebuilds during a drag),
+            // *alive becomes false and we bail before touching `this`.
+            [this, alive = m_alive](const color::Color& c) {
+                if (!alive || !*alive) return;
                 if (m_syncing) return;
                 m_sig_color_changed.emit(c.r, c.g, c.b);
             },
             // on_closed — committed flag forwarded to host. Most hosts
             // ignore this; SwatchesPanel uses it for create-on-Esc-
-            // remove. The widget itself doesn't need to do anything
-            // here — the picker has already self-reverted on Esc and
-            // emitted the on_changed callback at the original colour.
-            [this](bool committed) {
+            // remove. Same liveness guard as on_changed.
+            [this, alive = m_alive](bool committed) {
+                if (!alive || !*alive) return;
                 m_sig_picker_closed.emit(committed);
             });
     });
@@ -756,8 +762,20 @@ void PaintEditor::apply_picker_section(const RenderState& s) {
     if (!m_palette_dd) {
         // Use empty StringList; rebuild_palette_dropdown will swap a
         // populated one in below.
+        // s208 m5: substrate. The `if (!m_palette_dd)` latch ensures this
+        // runs once per PaintEditor lifetime. PaintEditor itself is a
+        // transient inspector child (built per inspector rebuild), but
+        // PropertiesPanel::do_clear's force_unregister_subtree walk
+        // synchronously unregisters substrate Scriptables before the
+        // subtree dies — so the substrate registration here is safe
+        // across rebuilds. The s197 m2 single-source-of-truth model
+        // accessor in curvz::widgets::DropDown handles the runtime
+        // set_model() swap done by rebuild_palette_dropdown.
         auto sl = Gtk::StringList::create({});
-        m_palette_dd = Gtk::make_managed<Gtk::DropDown>(sl);
+        m_palette_dd = Gtk::make_managed<curvz::widgets::DropDown>(
+            "pe_pal", sl);
+        curvz::utils::set_name(m_palette_dd, "pe_pal",
+                               "paint_editor_palette_dd");
         m_palette_dd->set_hexpand(true);
         m_palette_dd->add_css_class("flat");
         m_palette_dd->add_css_class("caption");
@@ -991,6 +1009,13 @@ std::string PaintEditor::format_hex(double r, double g, double b) {
                   (int)std::round(std::clamp(g, 0.0, 1.0) * 255),
                   (int)std::round(std::clamp(b, 0.0, 1.0) * 255));
     return buf;
+}
+
+// s207 m2 v9 — see header. Flip the liveness flag so popover callbacks
+// captured by-value with the shared_ptr<bool> bail before dereferencing
+// our dead this.
+PaintEditor::~PaintEditor() {
+    if (m_alive) *m_alive = false;
 }
 
 } // namespace Curvz

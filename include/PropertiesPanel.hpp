@@ -445,12 +445,10 @@ private:
     GuideConstructRequestedSignal    m_sig_guide_construct_requested;
     RequestGradientEditSignal        m_sig_request_gradient_edit;
 
-    // Reusable colour-picker popover. One instance, many opens. Attached
-    // to `*this` in the ctor. Guide/Grid/Margin section color swatches
-    // all route through this single popover; see the stable-parent notes
-    // in ColorPickerPopover.hpp for why it lives here rather than inside
-    // each swatch handler.
-    ColorPickerPopover m_color_popover;
+    // s207 m2: ColorPickerPopover is the app-wide singleton — accessed
+    // via ColorPickerPopover::shared(). The earlier `m_color_popover`
+    // member is gone; all Guide/Grid/Margin/object-fill swatches route
+    // through the shared instance.
 };
 
 } // namespace Curvz

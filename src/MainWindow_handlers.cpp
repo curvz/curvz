@@ -12,6 +12,8 @@
 #include "SvgParser.hpp"
 #include "SvgWriter.hpp"
 #include "TemplateLibrary.hpp"
+#include "curvz/widgets/Button.hpp"        // s208 m5 — guide-review dialog substrate
+#include "curvz/widgets/CheckButton.hpp"   // s208 m5 — guide-review dialog substrate
 #include <functional>
 #include <giomm/simpleactiongroup.h> // s144 m3 — recents action group
 #include <gtkmm/application.h>
@@ -1398,8 +1400,15 @@ void MainWindow::open_guide_review_dialog() {
     info->add_css_class("dim-label");
     body->append(*info);
 
+    // s208 m5: substrate. open_guide_review_dialog uses the lazy-once
+    // pattern `if (!m_guide_review_win) { ... build ... }`, so the
+    // construction below runs exactly once per MainWindow lifetime.
+    // Substrate registrations are unproblematic.
     m_guide_review_perp_chk =
-        Gtk::make_managed<Gtk::CheckButton>("Perpendicular (through midpoint)");
+        Gtk::make_managed<curvz::widgets::CheckButton>(
+            "dlg_gr_perp", "Perpendicular (through midpoint)");
+    curvz::utils::set_name(m_guide_review_perp_chk, "dlg_gr_perp",
+                           "guide_review_dialog_perpendicular_chk");
     m_guide_review_perp_chk->signal_toggled().connect([this]() {
       m_canvas.set_guide_construct_perpendicular(
           m_guide_review_perp_chk->get_active());
@@ -1416,14 +1425,20 @@ void MainWindow::open_guide_review_dialog() {
     btn_bar->set_margin(10);
     btn_bar->set_halign(Gtk::Align::END);
 
-    auto *cancel_btn = Gtk::make_managed<Gtk::Button>("Cancel");
+    auto *cancel_btn = Gtk::make_managed<curvz::widgets::Button>(
+        "dlg_gr_cnc", "Cancel");
+    curvz::utils::set_name(cancel_btn, "dlg_gr_cnc",
+                           "guide_review_dialog_cancel_btn");
     cancel_btn->signal_clicked().connect([this]() {
       m_canvas.cancel_guide_construct();
       close_guide_review_dialog();
     });
     btn_bar->append(*cancel_btn);
 
-    auto *ok_btn = Gtk::make_managed<Gtk::Button>("Create");
+    auto *ok_btn = Gtk::make_managed<curvz::widgets::Button>(
+        "dlg_gr_ok", "Create");
+    curvz::utils::set_name(ok_btn, "dlg_gr_ok",
+                           "guide_review_dialog_create_btn");
     ok_btn->add_css_class("suggested-action");
     ok_btn->signal_clicked().connect([this]() {
       m_canvas.commit_guide_construct();

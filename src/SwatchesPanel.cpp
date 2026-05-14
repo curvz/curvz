@@ -13,6 +13,7 @@
 #include "Canvas.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
+#include "curvz/widgets/DropDown.hpp"  // s208 m5 — substrate palette dropdown
 
 #include <cairomm/context.h>
 #include <cctype>
@@ -217,10 +218,9 @@ void SwatchesPanel::set_library(color::SwatchLibrary* lib) {
 
     m_library = lib;
 
-    if (m_library && !m_color_popover_attached) {
-        m_color_popover.attach(*this);
-        m_color_popover_attached = true;
-    }
+    // s207 m1: ColorPickerPopover is now a singleton — no per-panel
+    // attach. The earlier lazy-attach-on-set_library block is gone; the
+    // shared popover's ensure_attached() runs on first open() instead.
 
     // Phase 5 M3: hook the library's paint-changed signal. Every time
     // set_paint writes through the choke point, we refresh so the
@@ -380,18 +380,40 @@ void SwatchesPanel::refresh() {
     // The kebab (m_btn_add) lives in m_header for the panel's
     // lifetime — skip it. Anything else (the previous dropdown or
     // its placeholder) gets removed.
+    //
+    // s208 m5: prior to the unparent below, walk children and
+    // force-unregister any Scriptable substrate. This is the s199 m1
+    // discipline (lifted from PropertiesPanel::do_clear's s191 m7
+    // inline lambda) — necessary now that the palette dropdown is a
+    // curvz::widgets::DropDown registered under `sw_pal`. Without
+    // this, GTK4's deferred destruction would leave the old dropdown
+    // registered when the next refresh() tries to register the new
+    // one under the same name, throwing at the registry.
+    //
+    // m_btn_add is the long-lived kebab; we skip it for unparent but
+    // its substrate identity (if any) is not at risk of duplicate
+    // registration because it isn't being reconstructed.
     {
         auto* child = m_header.get_first_child();
         while (child) {
             auto* next = child->get_next_sibling();
             if (child != static_cast<Gtk::Widget*>(&m_btn_add)) {
+                curvz::utils::force_unregister_subtree(child);
                 m_header.remove(*child);
             }
             child = next;
         }
     }
 
-    // Tear down current body.
+    // Tear down current body. Force-unregister substrate Scriptables
+    // first (s208 m5; today the body has no substrate widgets, but the
+    // walk is null-safe and idempotent, and any future migration of
+    // chip-row / palette-entry widgets will be covered without further
+    // teardown changes).
+    for (Gtk::Widget* c = m_body.get_first_child(); c;
+         c = c->get_next_sibling()) {
+        curvz::utils::force_unregister_subtree(c);
+    }
     while (auto* child = m_body.get_first_child()) {
         m_body.remove(*child);
     }
@@ -501,7 +523,15 @@ void SwatchesPanel::refresh() {
             string_list->append(p ? p->name : pid);
         }
 
-        auto* drop = Gtk::make_managed<Gtk::DropDown>(string_list);
+        // s208 m5: substrate. The refresh path teardown above
+        // (`force_unregister_subtree` walk on m_header and m_body children)
+        // synchronously unregisters this dropdown's substrate identity
+        // before the unparent runs, so the next refresh()'s registration
+        // under `sw_pal` doesn't collide with the about-to-die predecessor.
+        // Same shape as PropertiesPanel::do_clear's s191 m7 discipline,
+        // lifted into curvz::utils::force_unregister_subtree in s199 m1.
+        auto* drop = Gtk::make_managed<curvz::widgets::DropDown>(
+            "sw_pal", string_list);
         curvz::utils::set_name(drop, "sw_pal", "swatches_panel_palette_dd");
         drop->set_hexpand(true);
         // S88: unified inspector dropdown styling. `flat` removes GTK4's
@@ -783,8 +813,8 @@ void SwatchesPanel::draw_chip(const Cairo::RefPtr<Cairo::Context>& cr,
 // ── Handlers ───────────────────────────────────────────────────────────────
 
 void SwatchesPanel::on_add_clicked() {
-    if (!m_library || !m_color_popover_attached) {
-        LOG_WARN("SwatchesPanel::on_add_clicked: library or popover unattached");
+    if (!m_library) {
+        LOG_WARN("SwatchesPanel::on_add_clicked: library unattached");
         return;
     }
 
@@ -795,7 +825,11 @@ void SwatchesPanel::on_add_clicked() {
     // Esc (committed=false in on_closed) removes it.
     m_session_created_id.clear();
 
-    m_color_popover.open(
+    // s207 m1: ColorPickerPopover is the app-wide singleton; route
+    // through shared(). The widget-anchor overload auto-attaches on
+    // first call. last_committed_name() reads from the same instance.
+    auto& popover = ColorPickerPopover::shared();
+    popover.open(
         m_btn_add,
         color::Color::black(),
         /*with_alpha=*/false,
@@ -875,7 +909,8 @@ void SwatchesPanel::on_add_clicked() {
                 refresh();
             } else if (committed && m_library &&
                        !m_session_created_id.empty()) {
-                const std::string& nm = m_color_popover.last_committed_name();
+                const std::string& nm =
+                    ColorPickerPopover::shared().last_committed_name();
                 if (!nm.empty()) {
                     m_library->rename_swatch(m_session_created_id, nm);
                     m_sig_library_changed.emit();
@@ -1488,7 +1523,7 @@ void SwatchesPanel::update_active_paint() {
 
 void SwatchesPanel::open_edit_popover_for(const color::SwatchId& id,
                                           Gtk::Widget& anchor) {
-    if (!m_library || !m_color_popover_attached) return;
+    if (!m_library) return;
 
     const color::Swatch* sw = m_library->find_swatch(id);
     if (!sw) return;
@@ -1507,7 +1542,8 @@ void SwatchesPanel::open_edit_popover_for(const color::SwatchId& id,
     // ClosedFn lambda's by-value capture below.
     m_session_created_id.clear();
 
-    m_color_popover.open(
+    // s207 m1: app-wide singleton — see on_add_clicked for the rationale.
+    ColorPickerPopover::shared().open(
         anchor,
         solid->color,
         /*with_alpha=*/false,
@@ -1563,7 +1599,8 @@ void SwatchesPanel::open_edit_popover_for(const color::SwatchId& id,
             // sees post-commit. Empty last_committed_name shouldn't
             // happen (the popover falls back to derived name on
             // commit), but defensively skip the rename if it does.
-            std::string final_name = m_color_popover.last_committed_name();
+            std::string final_name =
+                ColorPickerPopover::shared().last_committed_name();
             if (final_name.empty()) final_name = original_name;
             if (final_name != current_solid->header.name) {
                 color::SolidSwatch renamed = *current_solid;

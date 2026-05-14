@@ -1,0 +1,186 @@
+# 26_scripter_singletons — substrate-layer suite for the Scripter
+# window's singleton widgets (s206 m1).
+#
+# Substrate-style test (per TESTING.md grandfather clause). Each
+# sub-test proves the substrate contract holds — abbrev resolves,
+# verbs dispatch, queries read back.
+#
+# Self-referential. This script runs INSIDE the Scripter window
+# whose widgets it tests. Several abbrevs would disrupt the test in
+# flight if their click/set verbs fired mid-run:
+#
+#   - scr_clear / scr_copy : wipe or relabel the output buffer this
+#                            test is writing to.
+#   - scr_run              : reentrantly fires on_run_or_stop; the
+#                            label is also live-tracked, so the
+#                            script-read label IS "Stop" while the
+#                            test is running, not "Run".
+#   - scr_status           : opens a folder picker dialog.
+#   - scr_save / scr_save_as : write to disk / open a file dialog.
+#   - scr_step             : `set true` flips m_btn_step->get_active()
+#                            to true, and the per-line step gate
+#                            reads it on every subsequent line —
+#                            mid-script flip parks the engine on a
+#                            spacebar press (discovered in test
+#                            26 v1).
+#   - scr_lower            : safe to toggle (only read at Run start),
+#                            but kept query-only for consistency
+#                            with scr_step's posture.
+#
+# The test confines itself to substrate-addressability + state
+# queries on the disruptive widgets, and exercises `set` round-trips
+# only on scr_delay (which is read once at start_single_script time,
+# so changing it mid-run doesn't reach back into the running engine).
+# Click/set verbs on the disruptive widgets are deliberately not
+# exercised — verb dispatch is already proven across the corpus for
+# Button (tests 17, 19, 23) and CheckButton (tests 16, 23). The
+# Scripter becomes scriptable from this milestone forward; future
+# arcs that wire programmatic Run / Save / Save As coverage will
+# exercise the click side then, from a controlling script run from
+# outside the Scripter.
+#
+# Scope (s206 m1): nine singleton widgets value→pointer-flipped to
+# substrate, plus one make_managed singleton flipped from raw
+# Gtk::Button to substrate Button. Per-row sidebar widgets
+# (row->check / label / del) remain raw — blocked on Reading C /
+# model-object Scriptables (see LEDGER's Open Questions).
+#
+# The tested abbrevs:
+#
+#   Playback cluster (top toolbar)
+#     scr_run        Run/Stop button (Button)
+#     scr_step       Step-through CheckButton
+#     scr_lower      Auto-lower CheckButton
+#     scr_delay      Step-delay SpinButton (range 0..5000, digits 0)
+#
+#   Script tab content header
+#     scr_save       Save button (Button)
+#     scr_save_as    Save As… button (Button)
+#
+#   Output tab content header
+#     scr_clear      Clear button (Button)
+#     scr_copy       Copy button (Button)
+#
+#   Sidebar header
+#     scr_lib_reload Library reload button (Button, icon-only)
+#
+#   Statusbar
+#     scr_status     Change-folder button (Button, child Box w/ icon+label)
+#
+# DSL note (carried from s196 m1): the DSL lexer is kind-strict.
+# SpinButton `value` queries return Double. Round-number literals
+# in asserts against numeric queries must be written with explicit
+# `.0` suffix (`assert ... value == 0.0`, not `== 0`).
+#
+# Test protocol:
+#   1. Open the Scripter window (in a CURVZ_DIAGNOSTIC build it's the
+#      second top-level window, opened from the diagnostic menu).
+#   2. Load this script.
+#   3. Run. Every line should PASS.
+#
+# Side effects: scr_delay is moved to 100 then 250 then restored to
+# 5 (the launch default). scr_step and scr_lower are not touched.
+# Net effect at end-of-run: only scr_delay has moved transiently
+# and is restored.
+
+#[sub] scr_run — Button. Substrate is honest about live state: by the
+#[sub] time this assert runs, the Run handler has already fired (that's
+#[sub] what's running this script), m_running is true, and
+#[sub] update_run_button_label() has set the label to "Stop". The
+#[sub] script-read label IS "Stop", not "Run". Same shape of evidence as
+#[sub] s198 m1's zoom_spin baseline FAIL — substrate-is-honest-about-
+#[sub] live-state pattern, third instance in the corpus.
+
+assert scr_run label == "Stop"
+
+#[sub] scr_step — CheckButton. Launch state is off (unchecked).
+#[sub]
+#[sub] No `set` round-trip here. `scr_step set true` flips
+#[sub] m_btn_step->get_active() to true, and the per-line step gate at
+#[sub] ScripterWindow.cpp:1280 reads that on every subsequent line — so
+#[sub] a mid-script `set true` parks the running engine on a spacebar
+#[sub] press, hanging the test. Same self-referential trap as clicking
+#[sub] scr_run or scr_clear from inside the script. Addressability +
+#[sub] label + initial-state queries are the substrate contract here;
+#[sub] verb dispatch for CheckButton is proven elsewhere in the corpus
+#[sub] (test 16, test 23).
+
+assert scr_step active == false
+assert scr_step label == "Step"
+
+#[sub] scr_lower — CheckButton. Launch state is off (unchecked).
+#[sub]
+#[sub] No `set` round-trip. Auto-lower's read site (line 1130, "if
+#[sub] m_btn_lower->get_active() && !m_btn_step->get_active()") is
+#[sub] only consulted at Run start, so toggling mid-run wouldn't gate
+#[sub] anything — but the test stays consistent with scr_step's posture:
+#[sub] playback-control widgets get addressability + state queries
+#[sub] only; verb dispatch lives in tests run from outside the
+#[sub] Scripter.
+
+assert scr_lower active == false
+assert scr_lower label == "Auto-lower"
+
+#[sub] scr_delay — SpinButton. Range and launch value.
+
+assert scr_delay min == 0.0
+assert scr_delay max == 5000.0
+assert scr_delay value == 5.0
+
+#[sub] scr_delay — set/value round-trip. Move to 100, then to 250,
+#[sub] then restore to the launch default of 5.
+
+scr_delay set 100.0
+assert scr_delay value == 100.0
+scr_delay set 250.0
+assert scr_delay value == 250.0
+scr_delay set 5.0
+assert scr_delay value == 5.0
+
+#[sub] scr_save — Button. Label is "Save". (Visibility/sensitivity
+#[sub] are derived from the loaded-and-dirty state of the editor; not
+#[sub] asserted here because the test's load state isn't fixed.)
+
+assert scr_save label == "Save"
+
+#[sub] scr_save_as — Button. Label is "Save As…".
+
+assert scr_save_as label == "Save As…"
+
+#[sub] scr_clear — Button. Label is "Clear".
+
+assert scr_clear label == "Clear"
+
+#[sub] scr_copy — Button. Substrate-addressability proven via `get`
+#[sub] rather than `assert`, because the original code has a latent
+#[sub] label-drift quirk: build_ui sets the label to "Copy" at
+#[sub] construction, but on_copy_output's idle timer restores it to
+#[sub] "Copy output" after the first click. So the asserted value
+#[sub] would depend on whether Copy has been clicked in this Scripter
+#[sub] session (e.g. to grab the previous test run's output). `get`
+#[sub] reads and prints the live value without comparison — proves
+#[sub] resolution, surfaces the actual label to the run output, and
+#[sub] doesn't couple to session history. The pre-existing label drift
+#[sub] is noted in the s206 m1 handoff backlog as a small UI bug
+#[sub] (one-line fix in on_copy_output's idle timer) outside this
+#[sub] milestone's scope.
+
+get scr_copy label
+
+#[sub] scr_lib_reload — Button. Icon-only (set_icon_name without a
+#[sub] set_label), so label query returns "" — same shape as the
+#[sub] icon-only Buttons proved in test 17.
+
+assert scr_lib_reload label == ""
+
+#[sub] scr_status — Button. Icon-only at the button level too: the
+#[sub] visible row is the child Box (folder icon + path label), set
+#[sub] via set_child, not via the button's own label. Label query
+#[sub] returns "" — same shape as scr_lib_reload above.
+
+assert scr_status label == ""
+
+#[sub] Done. 10 new substrate widgets, all addressable. The Scripter
+#[sub] window now has zero raw widget sites on its singleton surface;
+#[sub] only the per-row sidebar widgets (row->check / label / del)
+#[sub] remain raw, blocked on the Reading C design call.

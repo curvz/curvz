@@ -12,6 +12,8 @@
 
 #include "scripting/ScripterWindow.hpp"
 
+#include "curvz_utils.hpp"        // s206 m1: curvz::utils::set_name for substrate harvester
+
 #include <giomm/application.h>        // s193 m2: Gio::Application::get_default()
 #include <giomm/file.h>               // s195 m1: Gio::File::create_for_path for save-as initial folder
 #include <gdkmm/clipboard.h>          // s186 close-out: copy-output button
@@ -115,45 +117,58 @@ void ScripterWindow::build_ui() {
 
     // Run: suggested-action when idle, destructive-action while running
     // (handled by update_run_button_label).
-    m_btn_run.add_css_class("suggested-action");
-    m_btn_run.set_tooltip_text(
+    // s206 m1 — substrate; label moves into the ctor.
+    m_btn_run = Gtk::make_managed<curvz::widgets::Button>("scr_run", "Run");
+    curvz::utils::set_name(m_btn_run, "scr_run", "scripter_run_btn");
+    m_btn_run->add_css_class("suggested-action");
+    m_btn_run->set_tooltip_text(
         "Run the checked scripts in order. If no scripts are checked, "
         "runs the editor's current contents.");
-    m_btn_run.signal_clicked().connect([this]() { on_run_or_stop(); });
-    bar->append(m_btn_run);
+    m_btn_run->signal_clicked().connect([this]() { on_run_or_stop(); });
+    bar->append(*m_btn_run);
 
     // Step: real CheckButton so on/off reads at a glance.
-    m_btn_step.set_tooltip_text(
+    // s206 m1 — substrate; label set after construction.
+    m_btn_step = Gtk::make_managed<curvz::widgets::CheckButton>("scr_step", "Step");
+    curvz::utils::set_name(m_btn_step, "scr_step", "scripter_step_chk");
+    m_btn_step->set_tooltip_text(
         "Step through the script one line at a time. Press SPACE in the "
         "Scripter window to advance. The step-delay knob is ignored "
         "while Step is checked.");
-    m_btn_step.set_margin_start(12);
-    bar->append(m_btn_step);
+    m_btn_step->set_margin_start(12);
+    bar->append(*m_btn_step);
 
     // s193 m2: Auto-lower. Drops the Scripter behind MainWindow at
     // Run start so the user can watch Curvz drive itself without
     // window-stacking management. Brings it back at end-of-run.
     // Ignored in step mode (where Scripter needs focus to receive
     // spacebar).
-    m_btn_lower.set_tooltip_text(
+    // s206 m1 — substrate.
+    m_btn_lower = Gtk::make_managed<curvz::widgets::CheckButton>("scr_lower", "Auto-lower");
+    curvz::utils::set_name(m_btn_lower, "scr_lower", "scripter_autolower_chk");
+    m_btn_lower->set_tooltip_text(
         "Lower the Scripter behind the main window during timed Runs "
         "so you can watch Curvz drive itself. The Scripter returns "
         "when the Run finishes. Ignored when Step is checked.");
-    m_btn_lower.set_margin_start(6);
-    bar->append(m_btn_lower);
+    m_btn_lower->set_margin_start(6);
+    bar->append(*m_btn_lower);
 
     // s187 m4 pacing knob.
-    m_spn_delay.set_range(0.0, 5000.0);
-    m_spn_delay.set_increments(1.0, 50.0);
-    m_spn_delay.set_value(5.0);
-    m_spn_delay.set_width_chars(6);
-    m_spn_delay.set_tooltip_text(
+    // s206 m1 — substrate; ctor takes min/max/step/digits up front
+    // (same shape as the existing set_range + set_increments calls).
+    m_spn_delay = Gtk::make_managed<curvz::widgets::SpinButton>(
+        "scr_delay", /*min*/ 0.0, /*max*/ 5000.0, /*step*/ 1.0, /*digits*/ 0);
+    curvz::utils::set_name(m_spn_delay, "scr_delay", "scripter_step_delay_spn");
+    m_spn_delay->set_increments(1.0, 50.0);  // page-step kept explicit
+    m_spn_delay->set_value(5.0);
+    m_spn_delay->set_width_chars(6);
+    m_spn_delay->set_tooltip_text(
         "Step delay between script lines (timed mode). 0 = run as fast "
         "as the scheduler allows; higher values pace the script so each "
         "dispatch is visible. Ignored when Step is checked.");
     m_lbl_delay.set_margin_start(16);
     bar->append(m_lbl_delay);
-    bar->append(m_spn_delay);
+    bar->append(*m_spn_delay);
 
     // Trailing spacer so the cluster hugs the left edge.
     auto* spacer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
@@ -178,7 +193,7 @@ void ScripterWindow::build_ui() {
                                        | Gdk::ModifierType::SHIFT_MASK);
             if (mods != Gdk::ModifierType{}) return false;
             if (!m_running) return false;
-            if (!m_btn_step.get_active()) return false;
+            if (!m_btn_step->get_active()) return false;
             if (!m_step_advance) return false;
             auto advance = m_step_advance;
             m_step_advance = nullptr;
@@ -198,7 +213,7 @@ void ScripterWindow::build_ui() {
                                        | Gdk::ModifierType::SHIFT_MASK);
             if (mods != Gdk::ModifierType{}) return false;
             if (!m_running) return false;
-            if (!m_btn_step.get_active()) return false;
+            if (!m_btn_step->get_active()) return false;
             if (!m_step_advance) return false;
             auto advance = m_step_advance;
             m_step_advance = nullptr;
@@ -210,8 +225,8 @@ void ScripterWindow::build_ui() {
 
     // s193 m1: unchecking Step mid-Run releases any parked step into
     // timed mode immediately.
-    m_btn_step.signal_toggled().connect([this]() {
-        if (m_btn_step.get_active()) return;
+    m_btn_step->signal_toggled().connect([this]() {
+        if (m_btn_step->get_active()) return;
         if (!m_step_advance) return;
         auto advance = m_step_advance;
         m_step_advance = nullptr;
@@ -241,7 +256,11 @@ void ScripterWindow::build_ui() {
     lib_label->add_css_class("dim-label");
     sidebar_header->append(*lib_label);
 
-    auto* reload_btn = Gtk::make_managed<Gtk::Button>();
+    // s206 m1 — reload button is the one make_managed singleton site
+    // in this file; substrate ctor takes the abbrev directly. No
+    // value→pointer flip needed (it's already a local pointer).
+    auto* reload_btn = Gtk::make_managed<curvz::widgets::Button>("scr_lib_reload");
+    curvz::utils::set_name(reload_btn, "scr_lib_reload", "scripter_library_reload_btn");
     reload_btn->set_icon_name("view-refresh-symbolic");
     reload_btn->add_css_class("flat");
     reload_btn->set_tooltip_text("Re-scan the workspace for *.curvzs files");
@@ -291,28 +310,32 @@ void ScripterWindow::build_ui() {
     m_lbl_script_state.set_ellipsize(Pango::EllipsizeMode::MIDDLE);
     script_header->append(m_lbl_script_state);
 
-    m_btn_save.set_label("Save");
-    m_btn_save.add_css_class("flat");
-    m_btn_save.set_tooltip_text(
+    // s206 m1 — substrate; label moves into the ctor's label arg.
+    m_btn_save = Gtk::make_managed<curvz::widgets::Button>("scr_save", "Save");
+    curvz::utils::set_name(m_btn_save, "scr_save", "scripter_save_btn");
+    m_btn_save->add_css_class("flat");
+    m_btn_save->set_tooltip_text(
         "Save the editor contents back to the loaded script file");
-    m_btn_save.set_sensitive(false);
-    m_btn_save.set_visible(false);  // hidden until dirty + loaded
-    m_btn_save.signal_clicked().connect(
+    m_btn_save->set_sensitive(false);
+    m_btn_save->set_visible(false);  // hidden until dirty + loaded
+    m_btn_save->signal_clicked().connect(
         [this]() { save_editor_to_loaded_file(); });
-    script_header->append(m_btn_save);
+    script_header->append(*m_btn_save);
 
     // s195 m1 — Save As… is always visible. It works on both the
     // scratchpad (where Save is hidden because there's no loaded path)
     // and on loaded files (where it branches off a copy under a new
     // name). After a successful Save As, m_loaded_path is adopted so
     // subsequent Save writes back to the new file.
-    m_btn_save_as.set_label("Save As…");
-    m_btn_save_as.add_css_class("flat");
-    m_btn_save_as.set_tooltip_text(
+    // s206 m1 — substrate.
+    m_btn_save_as = Gtk::make_managed<curvz::widgets::Button>("scr_save_as", "Save As…");
+    curvz::utils::set_name(m_btn_save_as, "scr_save_as", "scripter_save_as_btn");
+    m_btn_save_as->add_css_class("flat");
+    m_btn_save_as->set_tooltip_text(
         "Write the editor contents to a new file in the workspace");
-    m_btn_save_as.signal_clicked().connect(
+    m_btn_save_as->signal_clicked().connect(
         [this]() { on_save_as(); });
-    script_header->append(m_btn_save_as);
+    script_header->append(*m_btn_save_as);
 
     script_pane->append(*script_header);
     script_pane->append(*Gtk::make_managed<Gtk::Separator>(
@@ -348,17 +371,21 @@ void ScripterWindow::build_ui() {
     output_header_spacer->set_hexpand(true);
     output_header->append(*output_header_spacer);
 
-    m_btn_clear.set_label("Clear");
-    m_btn_clear.add_css_class("flat");
-    m_btn_clear.set_tooltip_text("Clear the output buffer");
-    m_btn_clear.signal_clicked().connect([this]() { on_clear_output(); });
-    output_header->append(m_btn_clear);
+    // s206 m1 — substrate.
+    m_btn_clear = Gtk::make_managed<curvz::widgets::Button>("scr_clear", "Clear");
+    curvz::utils::set_name(m_btn_clear, "scr_clear", "scripter_clear_btn");
+    m_btn_clear->add_css_class("flat");
+    m_btn_clear->set_tooltip_text("Clear the output buffer");
+    m_btn_clear->signal_clicked().connect([this]() { on_clear_output(); });
+    output_header->append(*m_btn_clear);
 
-    m_btn_copy.set_label("Copy");
-    m_btn_copy.add_css_class("flat");
-    m_btn_copy.set_tooltip_text("Copy the output buffer to the clipboard");
-    m_btn_copy.signal_clicked().connect([this]() { on_copy_output(); });
-    output_header->append(m_btn_copy);
+    // s206 m1 — substrate.
+    m_btn_copy = Gtk::make_managed<curvz::widgets::Button>("scr_copy", "Copy");
+    curvz::utils::set_name(m_btn_copy, "scr_copy", "scripter_copy_btn");
+    m_btn_copy->add_css_class("flat");
+    m_btn_copy->set_tooltip_text("Copy the output buffer to the clipboard");
+    m_btn_copy->signal_clicked().connect([this]() { on_copy_output(); });
+    output_header->append(*m_btn_copy);
 
     output_pane->append(*output_header);
     output_pane->append(*Gtk::make_managed<Gtk::Separator>(
@@ -407,11 +434,16 @@ void ScripterWindow::build_ui() {
     root->append(*Gtk::make_managed<Gtk::Separator>(
         Gtk::Orientation::HORIZONTAL));
 
-    m_btn_statusbar.add_css_class("flat");
-    m_btn_statusbar.set_tooltip_text(
+    // s206 m1 — substrate. Icon-only / wrap-a-box style (label is the
+    // child Box, not the button's text); ctor's label arg left default
+    // (empty) since set_child below sets a Box.
+    m_btn_statusbar = Gtk::make_managed<curvz::widgets::Button>("scr_status");
+    curvz::utils::set_name(m_btn_statusbar, "scr_status", "scripter_statusbar_btn");
+    m_btn_statusbar->add_css_class("flat");
+    m_btn_statusbar->set_tooltip_text(
         "Click to change the script workspace folder");
-    m_btn_statusbar.set_hexpand(true);
-    m_btn_statusbar.signal_clicked().connect([this]() { on_folder_pick(); });
+    m_btn_statusbar->set_hexpand(true);
+    m_btn_statusbar->signal_clicked().connect([this]() { on_folder_pick(); });
 
     auto* status_row =
         Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
@@ -432,8 +464,8 @@ void ScripterWindow::build_ui() {
     m_lbl_folder.set_tooltip_text(m_folder.string());
     status_row->append(m_lbl_folder);
 
-    m_btn_statusbar.set_child(*status_row);
-    root->append(m_btn_statusbar);
+    m_btn_statusbar->set_child(*status_row);
+    root->append(*m_btn_statusbar);
 
     // Initial Script-tab state label so it doesn't show empty at launch.
     update_editor_tab_title();
@@ -845,8 +877,8 @@ void ScripterWindow::mark_dirty(bool dirty) {
     // the Script tab's content-header row from shifting layout when
     // the file flips between clean and dirty.
     bool loaded = !m_loaded_path.empty();
-    m_btn_save.set_visible(loaded);
-    m_btn_save.set_sensitive(loaded && dirty);
+    m_btn_save->set_visible(loaded);
+    m_btn_save->set_sensitive(loaded && dirty);
     update_editor_tab_title();
 }
 
@@ -911,7 +943,7 @@ void ScripterWindow::highlight_step_line(int line_index) {
     // focus shift internally; a synchronous grab_focus here gets
     // overwritten by that. signal_idle runs after the focus shuffle
     // settles, so our grab is the last word.
-    if (m_btn_step.get_active()) {
+    if (m_btn_step->get_active()) {
         m_notebook.set_current_page(0);
         Glib::signal_idle().connect_once([this]() {
             m_editor.grab_focus();
@@ -942,9 +974,9 @@ void ScripterWindow::on_copy_output() {
             clip->set_content(Gdk::ContentProvider::create(val));
         }
     }
-    m_btn_copy.set_label("Copied");
+    m_btn_copy->set_label("Copied");
     Glib::signal_timeout().connect_once(
-        [this]() { m_btn_copy.set_label("Copy output"); },
+        [this]() { m_btn_copy->set_label("Copy output"); },
         800);
 }
 
@@ -993,18 +1025,18 @@ void ScripterWindow::on_run_or_stop() {
 
 void ScripterWindow::update_run_button_label() {
     if (m_running) {
-        m_btn_run.set_label("Stop");
+        m_btn_run->set_label("Stop");
         // Re-style as destructive while running so the user reads the
         // shift: green/blue suggested-action -> red destructive-action.
         // Standard GTK CSS classes.
-        m_btn_run.remove_css_class("suggested-action");
-        m_btn_run.add_css_class("destructive-action");
-        m_btn_run.set_tooltip_text("Stop the current Run");
+        m_btn_run->remove_css_class("suggested-action");
+        m_btn_run->add_css_class("destructive-action");
+        m_btn_run->set_tooltip_text("Stop the current Run");
     } else {
-        m_btn_run.set_label("Run");
-        m_btn_run.remove_css_class("destructive-action");
-        m_btn_run.add_css_class("suggested-action");
-        m_btn_run.set_tooltip_text(
+        m_btn_run->set_label("Run");
+        m_btn_run->remove_css_class("destructive-action");
+        m_btn_run->add_css_class("suggested-action");
+        m_btn_run->set_tooltip_text(
             "Run the checked scripts in order. If no scripts are checked, "
             "runs the editor's current contents.");
     }
@@ -1077,7 +1109,7 @@ void ScripterWindow::on_run() {
     // In timed mode the user watches Output stream, so auto-switch
     // to Output instead. The step lambda's highlight_step_line will
     // also call set_current_page(0) at each park as a safety net.
-    if (m_btn_step.get_active()) {
+    if (m_btn_step->get_active()) {
         m_notebook.set_current_page(0);
         Glib::signal_idle().connect_once([this]() {
             m_editor.grab_focus();
@@ -1095,7 +1127,7 @@ void ScripterWindow::on_run() {
     // focus for spacebar) and is silently the winner — the option
     // pairing is documented in the Auto-lower tooltip. Idle-
     // scheduled so the focus/tab shuffling above settles first.
-    if (m_btn_lower.get_active() && !m_btn_step.get_active()) {
+    if (m_btn_lower->get_active() && !m_btn_step->get_active()) {
         m_run_lowered = true;
         Glib::signal_idle().connect_once([this]() {
             // Find a non-Scripter application window and present it.
@@ -1214,7 +1246,7 @@ void ScripterWindow::start_single_script(const std::string& body,
     // shared_ptr that captures itself — the chain holds the only ref,
     // and the final pump_next returning false breaks the chain.
     auto* lst = m_listener.get();
-    int delay_ms = static_cast<int>(m_spn_delay.get_value());
+    int delay_ms = static_cast<int>(m_spn_delay->get_value());
 
     // s193 m1 — the step lambda has a different shape in step mode vs
     // timed mode:
@@ -1245,7 +1277,7 @@ void ScripterWindow::start_single_script(const std::string& body,
         // Step mode path: park BEFORE dispatching, on a runnable line.
         // The closure that spacebar fires actually does the dispatch +
         // re-park.
-        if (m_btn_step.get_active()) {
+        if (m_btn_step->get_active()) {
             // s193 m1 — fast-forward past comment-only lines so the
             // user only stops on lines that DO something (verbs,
             // get/assert/sleep/quit, #[sub] markers). The fast-forward

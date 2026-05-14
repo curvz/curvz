@@ -126,9 +126,9 @@ LayersPanel::LayersPanel() : Gtk::Box(Gtk::Orientation::VERTICAL) {
         Glib::signal_idle().connect_once([this]() { rebuild(); });
       });
 
-  // Layer-colour picker popover. One instance, reused across every
-  // layer-dot click. Lives until the LayersPanel itself is destroyed.
-  m_color_popover.attach(*this);
+  // s207 m2: ColorPickerPopover is the app-wide singleton; the earlier
+  // m_color_popover.attach(*this) is gone. ensure_attached() runs on
+  // first open() inside the singleton's widget-anchor overload.
 }
 
 // ── Public
@@ -875,7 +875,7 @@ void LayersPanel::add_layer_row(int i, Gtk::Box *parent) {
     // outlives this row's rebuild. The dot is only the visual anchor;
     // when rebuild() tears down `color_dot`, the popover stays up
     // pointing at the rect we captured at open time.
-    m_color_popover.open(
+    ColorPickerPopover::shared().open(
         *color_dot, initial, /*with_alpha=*/false,
         [this, i](const color::Color& c) {
           if (i >= (int)m_doc->layers.size()) return;
@@ -1973,7 +1973,7 @@ void LayersPanel::add_ref_layer_row(int i, Gtk::Box *parent) {
         parse_ref_color(col, r, g, b);
         color::Color initial(r, g, b, 1.0);
 
-        m_color_popover.open(
+        ColorPickerPopover::shared().open(
             *color_dot, initial, /*with_alpha=*/false,
             [this, i](const color::Color& c) {
               if (i >= (int)m_doc->layers.size()) return;
@@ -2508,7 +2508,7 @@ void LayersPanel::add_grid_layer_row(int i, Gtk::Box *parent) {
     color::Color initial(g->grid_color_r, g->grid_color_g,
                          g->grid_color_b, g->grid_color_a);
 
-    m_color_popover.open(
+    ColorPickerPopover::shared().open(
         *dot, initial, /*with_alpha=*/true,
         [this, i, dot](const color::Color& c) {
           if (i >= (int)m_doc->layers.size()) return;
@@ -2626,7 +2626,7 @@ void LayersPanel::add_margin_layer_row(int i, Gtk::Box *parent) {
     color::Color initial(m->margin_color_r, m->margin_color_g,
                          m->margin_color_b, m->margin_color_a);
 
-    m_color_popover.open(
+    ColorPickerPopover::shared().open(
         *dot, initial, /*with_alpha=*/true,
         [this, i, dot](const color::Color& c) {
           if (i >= (int)m_doc->layers.size()) return;
@@ -2761,7 +2761,7 @@ void LayersPanel::add_guide_layer_row(int i, Gtk::Box *parent) {
     color::Color initial(m_doc->guide_color_r, m_doc->guide_color_g,
                          m_doc->guide_color_b, 1.0);
 
-    m_color_popover.open(
+    ColorPickerPopover::shared().open(
         *color_dot, initial, /*with_alpha=*/false,
         [this](const color::Color& c) {
           m_doc->guide_color_r = c.r;

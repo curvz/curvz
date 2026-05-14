@@ -70,8 +70,13 @@
 #include <gtkmm/togglebutton.h>
 #include <sigc++/signal.h>
 
+#include <memory>   // s207 m2 v9 — shared_ptr<bool> liveness flag
 #include <string>
 #include <vector>
+
+// s208 m5 — forward-declare substrate DropDown for the lazy-once palette
+// picker member. Full include in PaintEditor.cpp.
+namespace curvz::widgets { class DropDown; }
 
 namespace Curvz {
 
@@ -168,12 +173,15 @@ public:
         bool gradients_enabled = false;
     };
 
-    // Pass the shared popover by reference. Caller owns it; PaintEditor
-    // only borrows. The popover must already be attach()-ed before the
-    // widget tries to open() it (caller's responsibility — typically
-    // the host attaches in its own ctor).
-    explicit PaintEditor(ColorPickerPopover& popover);
-    ~PaintEditor() override = default;
+    // s207 m2: ColorPickerPopover is now an app-wide singleton accessed
+    // via ColorPickerPopover::shared(). The earlier ctor took the
+    // popover by reference; the m_popover member is gone. PaintEditor's
+    // open() site routes through shared() directly.
+    PaintEditor();
+    // s207 m2 v9 — flip the liveness flag so any popover callbacks
+    // captured by-value with [alive = m_alive] see *alive == false and
+    // skip their body. See m_alive declaration below.
+    ~PaintEditor() override;
 
     // Push a fresh RenderState. Call after construction (the widget is
     // not visible until the first call) and after every host-side
@@ -288,7 +296,8 @@ private:
                           double& r, double& g, double& b);
     static std::string format_hex(double r, double g, double b);
 
-    ColorPickerPopover& m_popover;
+    // s207 m2: ColorPickerPopover member removed — call sites use
+    // ColorPickerPopover::shared() directly.
 
     // Type toggle row (Solid / None / currentColor / Swatch / Gradient).
     // Persistent members so set_render_state can re-set their active
@@ -326,10 +335,12 @@ private:
 
     // S85 Picker section (palette dropdown + chip grid). Visible only
     // when the Swatch toggle is active AND the host wired a library.
-    Gtk::Box       m_picker_section{Gtk::Orientation::VERTICAL};
-    Gtk::DropDown* m_palette_dd = nullptr;       // owned by m_picker_section
-    Gtk::FlowBox*  m_chip_flow  = nullptr;       // owned by m_picker_section
-    Gtk::Label     m_picker_empty;               // shown when library has no swatches
+    // s208 m5: m_palette_dd flipped to substrate. Forward-declared above;
+    // full include in PaintEditor.cpp.
+    Gtk::Box                    m_picker_section{Gtk::Orientation::VERTICAL};
+    curvz::widgets::DropDown*   m_palette_dd = nullptr;  // owned by m_picker_section
+    Gtk::FlowBox*               m_chip_flow  = nullptr;  // owned by m_picker_section
+    Gtk::Label                  m_picker_empty;          // shown when library has no swatches
 
     // Shadow vector tracking the dropdown's row order so selection-
     // changed maps row index → palette id without a name lookup. Plus
@@ -368,6 +379,25 @@ private:
     SwatchPickedSignal  m_sig_swatch_picked;
     PickerClosedSignal  m_sig_picker_closed;
     GradientEditRequestedSignal m_sig_gradient_edit_requested;
+
+    // s207 m2 v9 — liveness flag for popover callbacks.
+    //
+    // The ColorPickerPopover is a singleton; the on_changed and
+    // on_closed lambdas passed to its open() are stored in the popover
+    // and outlive the PaintEditor that supplied them when the
+    // inspector rebuilds mid-session. The lambdas capture this via
+    // [this], which would dereference freed memory on the next fire.
+    //
+    // Liveness fix: lambdas capture a copy of this shared_ptr<bool>.
+    // The destructor sets *alive = false. The shared_ptr keeps the
+    // bool itself alive (since the lambdas hold their own copies),
+    // and the bool's value flips to false the moment this editor is
+    // destroyed. Each lambda fires its body only when *alive is true.
+    //
+    // Initialised to a default-constructed bool with value true. We
+    // could capture a shared_ptr<PaintEditor*> instead and check for
+    // null, but the bool is smaller and the semantics are clearer.
+    std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
 };
 
 } // namespace Curvz

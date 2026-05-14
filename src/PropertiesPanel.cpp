@@ -422,9 +422,9 @@ PropertiesPanel::PropertiesPanel() : Gtk::Box(Gtk::Orientation::VERTICAL) {
   // rather than being pushed to the bottom of the sidebar.
   append(m_scroll);
 
-  // Colour-picker popover lives at panel level so it survives rebuilds
-  // of the inner body. See ColorPickerPopover.hpp.
-  m_color_popover.attach(*this);
+  // s207 m2: ColorPickerPopover is the app-wide singleton; the earlier
+  // m_color_popover.attach(*this) is gone. ensure_attached() runs on
+  // first open() inside the singleton's widget-anchor overload.
 
   show_empty();
 }
@@ -1421,9 +1421,9 @@ void PropertiesPanel::build_theme_disclosure(CurvzDocument *doc,
 //
 // Same idiom as the inspector's existing colour swatches (build_guide_
 // section, the shadow swatch in build_shadow_section): a small clickable
-// DrawingArea opens m_color_popover with the current colour, the apply
-// callback writes the new rgb back to the doc and queues a panel
-// redraw + emits prop_changed so Canvas repaints.
+// DrawingArea opens ColorPickerPopover::shared() with the current
+// colour, the apply callback writes the new rgb back to the doc and
+// queues a panel redraw + emits prop_changed so Canvas repaints.
 //
 // No undo coverage — matches the precedent set by guide_color_*. Undo
 // for editor-presentation prefs is not consistently applied across the
@@ -1497,7 +1497,7 @@ void PropertiesPanel::build_canvas_colours_section(CurvzDocument *doc,
             return;
           auto [r, g, b] = get();
           color::Color initial(r, g, b, 1.0);
-          m_color_popover.open(*swatch, initial, /*with_alpha=*/false,
+          ColorPickerPopover::shared().open(*swatch, initial, /*with_alpha=*/false,
                                [this, set, swatch, gen](const color::Color &c) {
                                  if (m_build_gen != gen)
                                    return;
@@ -2238,7 +2238,7 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
             return;
           color::Color initial(doc->guide_color_r, doc->guide_color_g,
                                doc->guide_color_b, 1.0);
-          m_color_popover.open(
+          ColorPickerPopover::shared().open(
               *swatch, initial, /*with_alpha=*/false,
               [this, doc, swatch, gen](const color::Color &c) {
                 if (m_build_gen != gen)
@@ -2769,7 +2769,7 @@ void PropertiesPanel::build_grid_section(CurvzDocument *doc, Gtk::Box *parent) {
             return;
           color::Color initial(g->grid_color_r, g->grid_color_g,
                                g->grid_color_b, g->grid_color_a);
-          m_color_popover.open(*swatch, initial, /*with_alpha=*/true,
+          ColorPickerPopover::shared().open(*swatch, initial, /*with_alpha=*/true,
                                [this, doc, swatch, gen](const color::Color &c) {
                                  if (m_build_gen != gen)
                                    return;
@@ -3088,7 +3088,7 @@ void PropertiesPanel::build_margin_section(CurvzDocument *doc,
             return;
           color::Color initial(m->margin_color_r, m->margin_color_g,
                                m->margin_color_b, m->margin_color_a);
-          m_color_popover.open(*swatch, initial, /*with_alpha=*/true,
+          ColorPickerPopover::shared().open(*swatch, initial, /*with_alpha=*/true,
                                [this, doc, swatch, gen](const color::Color &c) {
                                  if (m_build_gen != gen)
                                    return;
@@ -6428,8 +6428,8 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
 //   OPACITY  [slider 0..100]
 //
 // Edits route directly to obj.shadow_* fields and call push_inspector_command
-// for undo coalescing. The colour swatch opens m_color_popover with
-// with_alpha=false; the alpha slider next to it controls shadow_color_a
+// for undo coalescing. The colour swatch opens ColorPickerPopover::shared()
+// with with_alpha=false; the alpha slider next to it controls shadow_color_a
 // independently. shadow_opacity is a separate slider (the multiplier), so a
 // user can dim/brighten without re-picking the colour.
 //
@@ -6590,7 +6590,7 @@ void PropertiesPanel::build_shadow_section(SceneNode *obj, Gtk::Box *parent) {
           return;
         color::Color initial(obj->shadow_color_r, obj->shadow_color_g,
                              obj->shadow_color_b, 1.0);
-        m_color_popover.open(*swatch, initial, /*with_alpha=*/false,
+        ColorPickerPopover::shared().open(*swatch, initial, /*with_alpha=*/false,
                              [this, obj, swatch, gen](const color::Color &c) {
                                if (m_build_gen != gen)
                                  return;
@@ -7837,7 +7837,7 @@ void PropertiesPanel::add_fill_stroke_section(SceneNode *obj,
       return s;
     };
 
-    auto *editor = Gtk::make_managed<PaintEditor>(m_color_popover);
+    auto *editor = Gtk::make_managed<PaintEditor>();
     if (out_editor)
       *out_editor = editor;
     outer_body->append(*editor);
@@ -8702,6 +8702,22 @@ void PropertiesPanel::sync_selected_pivot() {
   if (!m_sel_pivot_picker || !m_canvas_widget)
     return;
   if (!m_current)
+    return;
+
+  // s206 m2 — dangling-pointer identity gate. Mirrors the s122 m4 gate
+  // in sync_selection above. signal_doc_changed fires synchronously
+  // from structural ops that destroy SceneNodes (ungroup_selection,
+  // release_clip_group, and friends in Canvas_ops.cpp). The deferred
+  // refresh() that resets m_current to the new survivor object runs
+  // LATER on the idle queue. In the window between the SceneNode
+  // destruction and the next refresh(), m_current is a dangling
+  // pointer — the collect() walk below would dereference n->children
+  // / n->path on freed memory and segfault. If m_current has diverged
+  // from canvas's current selection, the deferred refresh is en
+  // route; bail and let it populate everything correctly when it
+  // runs. Same rationale as sync_selection's `obj != m_current` gate,
+  // adapted to sync_selected_pivot's signature (no obj parameter).
+  if (m_canvas_widget->selected_object() != m_current)
     return;
 
   // Refresh bbox first — selection geometry may have changed since the

@@ -1581,8 +1581,8 @@ void Canvas::draw_ref_coord_overlay(const Cairo::RefPtr<Cairo::Context> &cr) {
   if (!m_doc)
     return;
   // Snap to whole units for display
-  double doc_x = std::round(snap(m_cursor_doc_x));
-  double doc_y = std::round(snap(m_cursor_doc_y));
+  double doc_x = std::round(snap_x(m_cursor_doc_x));
+  double doc_y = std::round(snap_y(m_cursor_doc_y));
 
   // Format in display/user-space coords (ruler origin convention)
   double ux = doc_x - m_doc->ruler_origin_x;

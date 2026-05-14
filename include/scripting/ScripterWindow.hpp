@@ -62,6 +62,14 @@
 #include <gtkmm/texttag.h>
 #include <gtkmm/textview.h>
 
+// s206 m1 — Scripter substrate migration. Singleton value-held members
+// flipped to pointer-held substrate widgets so they register in the
+// ScriptableRegistry and become scriptable. The Scripter now drives the
+// Scripter (recursion of the self-running sort).
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/CheckButton.hpp"
+#include "curvz/widgets/SpinButton.hpp"
+
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -160,35 +168,40 @@ private:
     // window bottom. Every action sits next to its target.
 
     // Playback cluster.
-    Gtk::Button       m_btn_run         { "Run" };
+    // s206 m1 — flipped value→pointer for substrate migration. Members
+    // are constructed in build_ui() with their abbrevs; labels formerly
+    // in the brace-init move to the substrate ctor's label arg (Button)
+    // or to set_label() after construction (CheckButton lays out the
+    // label internally — same shape).
+    curvz::widgets::Button*       m_btn_run    = nullptr;
 
     // s187 m4 — pacing knob. Step delay (ms) between script lines.
-    Gtk::Label        m_lbl_delay       { "Step delay (ms):" };
-    Gtk::SpinButton   m_spn_delay;
+    Gtk::Label                    m_lbl_delay  { "Step delay (ms):" };
+    curvz::widgets::SpinButton*   m_spn_delay  = nullptr;
 
     // s193 m1 — step-through playback. When checked, Run pauses
     // between script lines and advances on spacebar.
-    Gtk::CheckButton  m_btn_step        { "Step" };
+    curvz::widgets::CheckButton*  m_btn_step   = nullptr;
 
     // s193 m2 — auto-lower. When checked + timed playback, Run lowers
     // the Scripter window behind MainWindow at start and presents it
     // back at end. Lets the user keep eyes on Curvz during demos
     // without manually managing window stacking. Ignored in step mode
     // (where the Scripter needs focus to receive spacebar).
-    Gtk::CheckButton  m_btn_lower       { "Auto-lower" };
+    curvz::widgets::CheckButton*  m_btn_lower  = nullptr;
 
     // Contextual action buttons — each lives next to its target.
-    Gtk::Button       m_btn_save;        // Script tab content header
-    Gtk::Button       m_btn_save_as;     // Script tab content header (s195 m1)
-    Gtk::Button       m_btn_clear;       // Output tab content header
-    Gtk::Button       m_btn_copy;        // Output tab content header
+    curvz::widgets::Button*       m_btn_save     = nullptr;  // Script tab content header
+    curvz::widgets::Button*       m_btn_save_as  = nullptr;  // Script tab content header (s195 m1)
+    curvz::widgets::Button*       m_btn_clear    = nullptr;  // Output tab content header
+    curvz::widgets::Button*       m_btn_copy     = nullptr;  // Output tab content header
 
     // s193 m1 — statusbar at bottom: whole strip is the change-folder
     // affordance. Button with a Box child (icon + path label) and the
     // "flat" CSS class so the strip reads like a status row, not a
     // button, while still being fully clickable.
-    Gtk::Button       m_btn_statusbar;
-    Gtk::Label        m_lbl_folder;
+    curvz::widgets::Button*       m_btn_statusbar = nullptr;
+    Gtk::Label                    m_lbl_folder;
 
     // s193 m1 — sidebar: collapsible category groups + script rows.
     Gtk::Box          m_sidebar         { Gtk::Orientation::VERTICAL, 0 };

@@ -186,9 +186,10 @@ private:
         DropZone     zone   = DropZone::None;
     } m_drop_hl;
 
-    // Reusable picker popover for layer-colour dots. One instance, many
-    // opens. Attached to `*this` in the constructor.
-    ColorPickerPopover m_color_popover;
+    // s207 m2: ColorPickerPopover is the app-wide singleton — accessed
+    // via ColorPickerPopover::shared(). The earlier `m_color_popover`
+    // member is gone; the shared instance's ensure_attached() runs on
+    // first open().
 
     // ── Widgets ───────────────────────────────────────────────────────────
     Gtk::Box            m_toolbar{Gtk::Orientation::HORIZONTAL};

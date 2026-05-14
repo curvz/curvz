@@ -1,6 +1,8 @@
 #include "Ruler.hpp"
 #include "CurvzLog.hpp"
 #include "UnitSystem.hpp"
+#include "curvz_utils.hpp"             // s208 m5 — curvz::utils::set_name
+#include "curvz/widgets/Button.hpp"    // s208 m5 — substrate origin-popover btn
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -724,7 +726,13 @@ void CornerSquare::build_origin_popover() {
   m_unit_lbl->add_css_class("pop-unit-label");
   outer->append(*m_unit_lbl);
 
-  auto *ok_btn = Gtk::make_managed<Gtk::Button>("Set Origin");
+  // s208 m5: substrate. CornerSquare is a single-instance member of
+  // MainWindow's ruler corner; build_origin_popover runs once per app
+  // lifetime, so the substrate registration is unproblematic.
+  auto *ok_btn = Gtk::make_managed<curvz::widgets::Button>(
+      "pop_or_set", "Set Origin");
+  curvz::utils::set_name(ok_btn, "pop_or_set",
+                         "popover_ruler_origin_set_btn");
   ok_btn->add_css_class("tb-type-btn");
   ok_btn->add_css_class("tb-type-btn-active");
   ok_btn->signal_clicked().connect([this]() {

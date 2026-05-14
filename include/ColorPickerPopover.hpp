@@ -44,20 +44,16 @@
 //   true if the session ended via Return / pick-recent / outside
 //   click, false if it ended via Esc.
 //
-// Typical caller:
+// Typical caller (s207 m2 singleton form):
 //
-//     class LayersPanel : public Gtk::Box {
-//         ColorPickerPopover m_color_popover;
-//         ...
-//     };
-//
-//     // In the panel ctor or equivalent init:
-//     m_color_popover.attach(*this);
-//
-//     // In a click handler:
-//     m_color_popover.open(
+//     // In a click handler — no member, no attach, just shared():
+//     ColorPickerPopover::shared().open(
 //         *dot_widget, initial_color, /*with_alpha=*/false,
 //         [this, i](const color::Color& c) { apply_to_layer(i, c); });
+//
+// First call from anywhere in the app self-attaches the singleton to
+// the toplevel Gtk::Window containing the anchor widget. Subsequent
+// calls re-use the attached popover.
 //
 // open() returns immediately. The popover dismisses itself on click-
 // outside (autohide), Escape (autohide → signal_closed → picker
@@ -152,11 +148,64 @@ public:
     ColorPickerPopover(ColorPickerPopover&&)                 = delete;
     ColorPickerPopover& operator=(ColorPickerPopover&&)      = delete;
 
+    // s207 m1 — application-wide singleton instance.
+    //
+    // The original design held one ColorPickerPopover per host (Toolbar,
+    // LayersPanel, PropertiesPanel, SwatchesPanel, plus 3 each in
+    // StyleEditorDialog and 6 in ThemeEditDialog — 13 instances total),
+    // each with its own attach() to a stable parent. That pattern was
+    // pure boilerplate: the popover carries no per-host state between
+    // open() calls (everything is per-call argument), and only one
+    // popover can be visible at a time anyway. The 13 instances also
+    // blocked substrate migration of the popover's internal name Entry
+    // (each attach() tried to register the same `pop_cp_nm` abbrev;
+    // the second registration would throw — see ledger Open Questions,
+    // "Shared widget classes owned per-parent").
+    //
+    // Collapsing to a single shared instance dissolves both problems.
+    // Hosts call shared().open(...) and don't carry a member. The
+    // popover's substrate registration happens exactly once at first
+    // attach.
+    //
+    // Heap-allocated, never freed. The single instance leaks at process
+    // exit, which is fine — its GTK widgets are children of a Gtk::Window
+    // that already gets destroyed during Gtk::Application shutdown. The
+    // leak is one struct holding stale pointers; sigc::connection
+    // disconnects on those stale pointers are no-ops because the slots
+    // were already invalidated by the widget destruction.
+    static ColorPickerPopover& shared();
+
     // Attach to a stable parent widget. Call exactly once, before any
     // open() call. The popover + picker widgets are constructed here
     // and parented to `stable_parent`. The popover lives until
     // `stable_parent` is destroyed.
+    //
+    // s207 m1: idempotent. Calling attach() after the popover is
+    // already attached is a no-op (re-attach to a different parent is
+    // not supported — the shared instance lives for the app lifetime
+    // and re-parenting would invalidate the popover's coordinate space
+    // mid-session).
     void attach(Gtk::Widget& stable_parent);
+
+    // s207 m1 — idempotent self-attach helper for the shared singleton.
+    //
+    // If not already attached, walks `anywhere`'s widget tree to the
+    // toplevel Gtk::Window and attaches the popover there. The toplevel
+    // is the right parent because color picking is an application-wide
+    // affordance and the popover's positioning math (set_pointing_to in
+    // the parent's frame) works for any anchor widget anywhere inside
+    // the same toplevel.
+    //
+    // Hosts that use the widget-anchor open() overload don't need to
+    // call this — that overload calls ensure_attached() internally with
+    // the anchor widget. Hosts that use the raw-rect open() overload
+    // (Toolbar's fill/stroke wells, which compute floating-position
+    // rects rather than anchoring to a real widget) MUST call
+    // ensure_attached() with some live widget in the same toplevel
+    // before their first open(), or open() will silently no-op.
+    //
+    // Safe to call repeatedly — second and subsequent calls are no-ops.
+    void ensure_attached(Gtk::Widget& anywhere);
 
     // S85 m4i-cont-1: unparent the popover widget. For transient
     // hosts (e.g. StyleEditorDialog) whose stable_parent is itself
@@ -172,6 +221,17 @@ public:
     // coordinate space). Wires `on_changed` as the live-apply callback,
     // replacing any callback from a previous open. Must be called after
     // attach().
+    //
+    // s207 m2 — single-visible-instance gate: if the popover is
+    // currently visible from a prior open() call, popdown() runs first.
+    // signal_closed fires synchronously, the previous session's
+    // ClosedFn runs with committed=true (treating the new open() like
+    // an outside-click on the old session — see existing autohide-
+    // outside-click semantics). The new bindings install on a clean
+    // popover. The invariant "at most one ColorPickerPopover session
+    // visible at a time" is structurally enforced both by the
+    // single-instance design and by this gate; together they make
+    // multi-host scripting safe.
     //
     // `on_closed` (optional) fires once after the popover popsdown,
     // with `committed` true for non-Esc dismissals and false for Esc.
@@ -223,6 +283,12 @@ public:
     // Explicit dismiss. Normally the popover autohides on outside-click
     // or commits; callers rarely need this.
     void close();
+
+    // s207 m2 v7 — am I currently showing? Used by open() as the
+    // single state-machine gate: if open, ignore the new request.
+    // Reads through to Gtk::Popover::get_visible(), so it's always
+    // empirically accurate — no shadow flag to stay in sync with.
+    bool is_open() const;
 
 private:
     Gtk::Widget*      m_parent          = nullptr;

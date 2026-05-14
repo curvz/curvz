@@ -30,6 +30,10 @@
 #include <thread>
 #include <vector>
 
+// s208 m5 — forward-declare substrate DropDown to keep this header light.
+// Full include in NewDocumentDialog.cpp.
+namespace curvz::widgets { class DropDown; }
+
 namespace Curvz {
 
 // Modal "New Document" dialog.
@@ -290,7 +294,8 @@ private:
     // deleted between opens), fall back to "No theme" and clear the
     // remembered id.
     Gtk::Box*                       m_theme_row  = nullptr;
-    Gtk::DropDown*                  m_theme_drop = nullptr;
+    // s208 m5: substrate. Forward-declared above; full include in .cpp.
+    curvz::widgets::DropDown*       m_theme_drop = nullptr;
     std::vector<theme::ThemeId>     m_theme_drop_ids;     // parallel to dropdown
     theme::ThemeId                  m_remembered_theme_id;  // persistent
 

@@ -280,13 +280,9 @@ void StyleEditorDialog::show(Gtk::Window& parent,
 void StyleEditorDialog::build() {
     m_syncing = true;
 
-    // Attach popovers to the dialog window itself — they need a stable
-    // parent that lives for the full dialog lifetime. s201 m1: the
-    // singleton form means "full lifetime" is the app's lifetime; no
-    // detach() in the close handler (popovers stay attached forever).
-    m_fill_popover.attach(*this);
-    m_stroke_popover.attach(*this);
-    m_shadow_popover.attach(*this);  // S98
+    // s207 m2: ColorPickerPopover is the app-wide singleton; the three
+    // per-purpose .attach(*this) calls (fill / stroke / shadow) are gone.
+    // ensure_attached() runs on first open() inside the singleton.
 
     auto* root = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
     root->set_margin(12);
@@ -405,7 +401,7 @@ void StyleEditorDialog::build_fill_section(Gtk::Box& root) {
     lbl->add_css_class("dim-label");
     root.append(*lbl);
 
-    m_fill_editor = Gtk::make_managed<PaintEditor>(m_fill_popover);
+    m_fill_editor = Gtk::make_managed<PaintEditor>();
     curvz::utils::set_name(m_fill_editor, "dlg_se_fill", "style_editor_dialog_fill_editor");
     root.append(*m_fill_editor);
     m_fill_editor->set_render_state(compute_render_state(m_working.fill));
@@ -421,7 +417,7 @@ void StyleEditorDialog::build_stroke_section(Gtk::Box& root) {
     root.append(*lbl);
 
     // Paint editor first.
-    m_stroke_editor = Gtk::make_managed<PaintEditor>(m_stroke_popover);
+    m_stroke_editor = Gtk::make_managed<PaintEditor>();
     curvz::utils::set_name(m_stroke_editor, "dlg_se_strk", "style_editor_dialog_stroke_editor");
     root.append(*m_stroke_editor);
     m_stroke_editor->set_render_state(
@@ -733,7 +729,7 @@ void StyleEditorDialog::build_shadow_section(Gtk::Box& root) {
                                  m_working.shadow.color_g,
                                  m_working.shadow.color_b,
                                  1.0);
-            m_shadow_popover.open(
+            ColorPickerPopover::shared().open(
                 *m_shadow_swatch, initial, /*with_alpha=*/false,
                 [this](const color::Color& c) {
                     m_working.shadow.color_r = c.r;

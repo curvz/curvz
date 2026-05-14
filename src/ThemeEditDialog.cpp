@@ -152,16 +152,10 @@ void ThemeEditDialog::show(Gtk::Window& parent,
         m_built = true;
         build();
 
-        // s183 m4 — attach colour-picker popovers to the dialog
-        // window. attach() runs once at first build(); open() per
-        // swatch click. No detach() needed at close-time in the
-        // singleton form (the window doesn't die between opens).
-        m_motif_artboard_popover.attach(*this);
-        m_motif_workspace_popover.attach(*this);
-        m_motif_creation_popover.attach(*this);
-        m_guides_popover.attach(*this);
-        m_grid_popover.attach(*this);
-        m_margin_popover.attach(*this);
+        // s207 m2: ColorPickerPopover is the app-wide singleton; the
+        // earlier six per-section .attach(*this) calls (motif artboard
+        // / workspace / creation, guides, grid, margin) are gone.
+        // ensure_attached() runs on first open() inside the singleton.
     } else {
         // s200 m1 — widgets already exist from a prior open; refresh
         // every value from the new working buffer. build()'s initial
@@ -736,9 +730,11 @@ void ThemeEditDialog::build_tab_colors_snap(Gtk::Box& page) {
     // ── Motif ─────────────────────────────────────────────────────
     page.append(*make_subhead("Motif"));
 
+    // s207 m2: helper signature changed — the per-section
+    // ColorPickerPopover argument is gone, replaced by
+    // ColorPickerPopover::shared() at the open() call site below.
     auto motif_swatch_row = [this, &page](const char* label,
                                           Gtk::DrawingArea*& slot_ptr,
-                                          ColorPickerPopover& popover,
                                           auto get_r, auto get_g, auto get_b,
                                           auto set_r, auto set_g, auto set_b) {
         auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
@@ -760,7 +756,7 @@ void ThemeEditDialog::build_tab_colors_snap(Gtk::Box& page) {
             },
             // on_click — open the popover for this slot, wired to
             // write back into whichever mode slot is current.
-            [this, slot_ptr_addr = &slot_ptr, &popover, get_r, get_g, get_b,
+            [this, slot_ptr_addr = &slot_ptr, get_r, get_g, get_b,
              set_r, set_g, set_b]() {
                 if (m_syncing) return;
                 color::Color initial(
@@ -768,7 +764,7 @@ void ThemeEditDialog::build_tab_colors_snap(Gtk::Box& page) {
                     get_g(m_working.motif, m_preview_mode),
                     get_b(m_working.motif, m_preview_mode),
                     1.0);
-                popover.open(
+                ColorPickerPopover::shared().open(
                     **slot_ptr_addr, initial, /*with_alpha=*/false,
                     [this, slot_ptr_addr, set_r, set_g, set_b]
                     (const color::Color& c) {
@@ -851,13 +847,10 @@ void ThemeEditDialog::build_tab_colors_snap(Gtk::Box& page) {
     };
 
     motif_swatch_row("Artboard",  m_swatch_motif_artboard,
-                     m_motif_artboard_popover,
                      art_r, art_g, art_b, art_set_r, art_set_g, art_set_b);
     motif_swatch_row("Workspace", m_swatch_motif_workspace,
-                     m_motif_workspace_popover,
                      ws_r, ws_g, ws_b, ws_set_r, ws_set_g, ws_set_b);
     motif_swatch_row("Creation",  m_swatch_motif_creation,
-                     m_motif_creation_popover,
                      cr_r, cr_g, cr_b, cr_set_r, cr_set_g, cr_set_b);
 
     // ── Guides ────────────────────────────────────────────────────
@@ -882,7 +875,7 @@ void ThemeEditDialog::build_tab_colors_snap(Gtk::Box& page) {
                 color::Color initial(m_working.guides.color_r,
                                      m_working.guides.color_g,
                                      m_working.guides.color_b, 1.0);
-                m_guides_popover.open(
+                ColorPickerPopover::shared().open(
                     *m_swatch_guides, initial, /*with_alpha=*/false,
                     [this](const color::Color& c) {
                         m_working.guides.color_r = c.r;
@@ -1168,7 +1161,7 @@ void ThemeEditDialog::build_tab_grid(Gtk::Box& page) {
                 color::Color initial(m_working.grid.color_r,
                                      m_working.grid.color_g,
                                      m_working.grid.color_b, 1.0);
-                m_grid_popover.open(
+                ColorPickerPopover::shared().open(
                     *m_swatch_grid, initial, /*with_alpha=*/false,
                     [this](const color::Color& c) {
                         m_working.grid.color_r = c.r;
@@ -1403,7 +1396,7 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box& page) {
                 color::Color initial(m_working.margins.color_r,
                                      m_working.margins.color_g,
                                      m_working.margins.color_b, 1.0);
-                m_margin_popover.open(
+                ColorPickerPopover::shared().open(
                     *m_swatch_margin, initial, /*with_alpha=*/false,
                     [this](const color::Color& c) {
                         m_working.margins.color_r = c.r;

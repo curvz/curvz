@@ -489,6 +489,17 @@ button.orient-btn.orient-active:hover {
 }
 .prop-hex-entry:focus { border-color: var(--hover-bg); }
 
+/* s204 m4: RefPointPicker (compound bbox-point picker — 9-grid + Other
+   checkbox + X/Y spinners). The DrawingArea reads its CSS `color:` at
+   paint time via Gtk::Widget::get_color(), so any rule that targets
+   `.refpoint-picker-grid` flows into the Cairo strokes (outer rect,
+   bisecting cross, dot outlines, and selected-dot fill). The
+   unselected-dot fill is derived as the FG's complement in code, so
+   the theme only needs to set FG. The motif fork in `window.curvz-light`
+   re-resolves --fg-primary and the picker repaints with the new color
+   automatically — no per-motif rule needed here. */
+.refpoint-picker-grid { color: var(--fg-primary); }
+
 /* Width entry (number + units) */
 .prop-width-entry {
     font-size: 11px;
