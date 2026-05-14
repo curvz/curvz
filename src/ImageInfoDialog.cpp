@@ -12,6 +12,7 @@
 //
 #include "ImageInfoDialog.hpp"
 
+#include "curvz/widgets/Entry.hpp"   // s214 m2 — substrate Entry
 #include "curvz_utils.hpp"   // set_name, apply_motif_class_from_parent
 #include "CurvzLog.hpp"
 
@@ -195,7 +196,12 @@ void ImageInfoDialog::add_row(const char* name, int row) {
     lbl_name->set_valign(Gtk::Align::CENTER);
     lbl_name->add_css_class("dim-label");   // GTK4 standard dim style
 
-    auto* ent_val = Gtk::make_managed<Gtk::Entry>();
+    // s214 m2: unregistered substrate Entry — N row instances per dialog
+    // build, sharing the role of "row N of an info display." Per-row
+    // addressability is model-Scriptables territory (the image
+    // SceneNode's metadata, addressed via iid), not per-widget.
+    auto* ent_val = Gtk::make_managed<curvz::widgets::Entry>(
+        curvz::scripting::unregistered);
     ent_val->set_editable(false);
     ent_val->set_can_focus(true);   // need focus for keyboard selection
     ent_val->set_hexpand(true);

@@ -24,6 +24,7 @@
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector-driven appearance edits
 #include <algorithm>
 // s202 m6 — quick-jump float construction
+#include "curvz/widgets/Button.hpp"  // s214 m2 — substrate Button
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
 #include <gtkmm/eventcontrollerkey.h>
@@ -1891,7 +1892,12 @@ void MainWindow::show_quick_jump_popover() {
   // raw pointer so the caller can append it in either the always-
   // visible block or the More-revealed block.
   auto make_row = [this, phase, &prefs](const std::string& title) -> Gtk::Button* {
-    auto* btn = Gtk::make_managed<Gtk::Button>(title);
+    // s214 m2: unregistered substrate Button — N instances per popover
+    // show, sharing the role of "quick-jump row." Per-row addressability
+    // would be a model-Scriptables question (inspector sections by name)
+    // and that's already addressed at the section level, not the row.
+    auto* btn = Gtk::make_managed<curvz::widgets::Button>(
+        curvz::scripting::unregistered, title);
     btn->set_has_frame(false);
     btn->add_css_class("qj-row");
     btn->set_margin_top(0);
@@ -1924,7 +1930,10 @@ void MainWindow::show_quick_jump_popover() {
   // for the tail on click. Self-removing pattern: capture outer +
   // tail vector; on click, remove self and append each tail row.
   if (candidates.size() > TOP_N) {
-    auto* more = Gtk::make_managed<Gtk::Button>("More…");
+    // s214 m2: unregistered substrate Button — one per popover show,
+    // but the popover itself rebuilds on every quick-jump invocation.
+    auto* more = Gtk::make_managed<curvz::widgets::Button>(
+        curvz::scripting::unregistered, "More…");
     more->set_has_frame(false);
     more->add_css_class("qj-row");
     more->add_css_class("dim-label");

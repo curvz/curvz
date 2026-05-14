@@ -540,7 +540,14 @@ void ScripterWindow::rescan_library() {
             hb->set_margin_top(1);
             hb->set_margin_bottom(1);
 
-            row->check = Gtk::make_managed<Gtk::CheckButton>();
+            // s214 m2: unregistered substrate widgets — per-row instances
+            // sharing the role of "script-set queue entry." Scripts are
+            // addressed by path (the model identity), not by per-row
+            // widget; future model-Scriptables (ARC m5a) would expose the
+            // script library at the path level if script-driven library
+            // mgmt ever becomes a use case.
+            row->check = Gtk::make_managed<curvz::widgets::CheckButton>(
+                curvz::scripting::unregistered);
             row->check->set_tooltip_text(
                 "Include this script in the next Run");
             hb->append(*row->check);
@@ -549,7 +556,8 @@ void ScripterWindow::rescan_library() {
             // control over xalign / ellipsize. A Button constructed with
             // a string label wraps the text in widgets we can't reliably
             // address via get_child().
-            row->label = Gtk::make_managed<Gtk::Button>();
+            row->label = Gtk::make_managed<curvz::widgets::Button>(
+                curvz::scripting::unregistered);
             row->label->add_css_class("flat");
             row->label->set_hexpand(true);
             row->label->set_halign(Gtk::Align::FILL);
@@ -573,7 +581,9 @@ void ScripterWindow::rescan_library() {
             // s195 m4 — flat trash button. Always visible at low visual
             // weight; sits next to the file it operates on. Click sends
             // through confirm_and_delete which prompts before trashing.
-            row->del = Gtk::make_managed<Gtk::Button>();
+            // s214 m2 — unregistered substrate per per-row rationale above.
+            row->del = Gtk::make_managed<curvz::widgets::Button>(
+                curvz::scripting::unregistered);
             row->del->set_icon_name("edit-delete-symbolic");
             row->del->add_css_class("flat");
             row->del->set_tooltip_text(

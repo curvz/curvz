@@ -1,5 +1,7 @@
 #include "ManageTemplatesDialog.hpp"
 #include "CurvzLog.hpp"
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/Entry.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
 #include <algorithm>
 #include <cairomm/cairomm.h>
@@ -72,11 +74,16 @@ void ManageTemplatesDialog::build_layout() {
     m_title_label.add_css_class("section-label");
     m_header_row.append(m_title_label);
 
-    m_btn_new_cat.add_css_class("flat");
-    curvz::utils::set_name(m_btn_new_cat, "dlg_mt_nc", "manage_templates_dialog_new_category_btn");
-    m_btn_new_cat.signal_clicked().connect(
+    // s214: substrate Button — registered as `dlg_mt_nc`. The existing
+    // set_name continues to populate the widget-name DB for the long-name
+    // resolver; the substrate name is the same abbrev.
+    m_btn_new_cat = Gtk::make_managed<curvz::widgets::Button>(
+        "dlg_mt_nc", "+ New Category");
+    m_btn_new_cat->add_css_class("flat");
+    curvz::utils::set_name(*m_btn_new_cat, "dlg_mt_nc", "manage_templates_dialog_new_category_btn");
+    m_btn_new_cat->signal_clicked().connect(
         sigc::mem_fun(*this, &ManageTemplatesDialog::on_new_category));
-    m_header_row.append(m_btn_new_cat);
+    m_header_row.append(*m_btn_new_cat);
     m_root.append(m_header_row);
 
     // ── Toast ─────────────────────────────────────────────────────────────
@@ -100,9 +107,12 @@ void ManageTemplatesDialog::build_layout() {
 
     // ── Footer ────────────────────────────────────────────────────────────
     m_footer.set_halign(Gtk::Align::END);
-    curvz::utils::set_name(m_btn_close, "dlg_mt_cls", "manage_templates_dialog_close_btn");
-    m_btn_close.signal_clicked().connect([this]() { hide(); });
-    m_footer.append(m_btn_close);
+    // s214: substrate Button — registered as `dlg_mt_cls`.
+    m_btn_close = Gtk::make_managed<curvz::widgets::Button>(
+        "dlg_mt_cls", "Close");
+    curvz::utils::set_name(*m_btn_close, "dlg_mt_cls", "manage_templates_dialog_close_btn");
+    m_btn_close->signal_clicked().connect([this]() { hide(); });
+    m_footer.append(*m_btn_close);
     m_root.append(m_footer);
 }
 
@@ -177,8 +187,12 @@ void ManageTemplatesDialog::append_category_section(
     header->set_spacing(6);
     header->add_css_class("template-category-header");
 
-    // Chevron button (▸ / ▾) — also toggles the revealer
-    auto* chevron = Gtk::make_managed<Gtk::Button>();
+    // Chevron button (▸ / ▾) — also toggles the revealer.
+    // s214: unregistered substrate Button — N instances per rebuild
+    // (one per category) sharing this role; addressed at category level
+    // via future model-Scriptables (LEDGER Reading C), not per-widget.
+    auto* chevron = Gtk::make_managed<curvz::widgets::Button>(
+        curvz::scripting::unregistered);
     chevron->add_css_class("flat");
     chevron->set_label("▾"); // start expanded
     header->append(*chevron);
@@ -198,7 +212,9 @@ void ManageTemplatesDialog::append_category_section(
     // Rename button — disabled on system-seeded categories. (We still allow
     // rename on user-created categories even if they share a name with a
     // system category; that rare case is handled by rename_category.)
-    auto* btn_rename = Gtk::make_managed<Gtk::Button>("✎");
+    // s214: unregistered substrate Button — per-category rebuild instance.
+    auto* btn_rename = Gtk::make_managed<curvz::widgets::Button>(
+        curvz::scripting::unregistered, "✎");
     btn_rename->add_css_class("flat");
     btn_rename->set_tooltip_text(is_system_seeded
         ? "System categories cannot be renamed"
@@ -211,7 +227,9 @@ void ManageTemplatesDialog::append_category_section(
     header->append(*btn_rename);
 
     // Delete button — disabled on system-seeded categories.
-    auto* btn_delete = Gtk::make_managed<Gtk::Button>("🗑");
+    // s214: unregistered substrate Button — per-category rebuild instance.
+    auto* btn_delete = Gtk::make_managed<curvz::widgets::Button>(
+        curvz::scripting::unregistered, "🗑");
     btn_delete->add_css_class("flat");
     btn_delete->set_tooltip_text(is_system_seeded
         ? "System categories cannot be deleted"
@@ -386,7 +404,11 @@ void ManageTemplatesDialog::append_template_row(
     // pointer, after which the app falls back to its built-in Default.
     // (Earlier versions used ⭐/★ which read as "favorite" — misleading
     // since only one entry can hold the default at a time.)
-    auto* btn_default = Gtk::make_managed<Gtk::Button>(
+    // s214: unregistered substrate Button — N instances per rebuild
+    // (one per template row). Per-template addressability is the model-
+    // Scriptables territory (LEDGER Reading C), not per-widget.
+    auto* btn_default = Gtk::make_managed<curvz::widgets::Button>(
+        curvz::scripting::unregistered,
         is_user_default ? "\u25CF" : "\u25CB");
     btn_default->add_css_class("flat");
     btn_default->add_css_class(is_user_default
@@ -405,8 +427,10 @@ void ManageTemplatesDialog::append_template_row(
     }
     row->append(*btn_default);
 
-    // Delete — disabled on system bundles
-    auto* btn_delete = Gtk::make_managed<Gtk::Button>("🗑");
+    // Delete — disabled on system bundles.
+    // s214: unregistered substrate Button — per-template rebuild instance.
+    auto* btn_delete = Gtk::make_managed<curvz::widgets::Button>(
+        curvz::scripting::unregistered, "🗑");
     btn_delete->add_css_class("flat");
     btn_delete->set_tooltip_text(e.is_user
         ? "Delete template"
@@ -504,7 +528,12 @@ void ManageTemplatesDialog::begin_rename_template(
     if (!parent) return;
     m_rename_in_progress = true;
 
-    auto* entry = Gtk::make_managed<Gtk::Entry>();
+    // s214: unregistered substrate Entry — transient per-rename instance.
+    // m_rename_in_progress guards against concurrent renames, but multiple
+    // sequential rename sessions would otherwise collide on a shared
+    // abbrev. Per-template addressability is model-Scriptables territory.
+    auto* entry = Gtk::make_managed<curvz::widgets::Entry>(
+        curvz::scripting::unregistered);
     entry->set_text(e.meta.name);
     entry->set_hexpand(true);
     entry->select_region(0, -1);
@@ -593,7 +622,10 @@ void ManageTemplatesDialog::begin_rename_category(const std::string& old_name,
     if (!parent) return;
     m_rename_in_progress = true;
 
-    auto* entry = Gtk::make_managed<Gtk::Entry>();
+    // s214: unregistered substrate Entry — transient per-rename instance,
+    // same shape as the template rename Entry above.
+    auto* entry = Gtk::make_managed<curvz::widgets::Entry>(
+        curvz::scripting::unregistered);
     entry->set_text(old_name);
     entry->set_hexpand(true);
     entry->select_region(0, -1);

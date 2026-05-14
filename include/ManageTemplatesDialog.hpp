@@ -2,13 +2,14 @@
 #include "TemplateLibrary.hpp"
 #include <functional>
 #include <gtkmm/box.h>
-#include <gtkmm/button.h>
 #include <gtkmm/label.h>
 #include <gtkmm/revealer.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/window.h>
 #include <string>
 #include <vector>
+
+namespace curvz::widgets { class Button; }
 
 namespace Curvz {
 
@@ -128,11 +129,14 @@ private:
     Gtk::Box            m_root{Gtk::Orientation::VERTICAL};
     Gtk::Box            m_header_row{Gtk::Orientation::HORIZONTAL};
     Gtk::Label          m_title_label;
-    Gtk::Button         m_btn_new_cat{"+ New Category"};
+    // s214: substrate Button. Constructed in build_layout(); make_managed
+    // gives Gtk ownership, dialog never deletes it explicitly.
+    curvz::widgets::Button* m_btn_new_cat = nullptr;
     Gtk::ScrolledWindow m_scroll;
     Gtk::Box            m_list{Gtk::Orientation::VERTICAL};
     Gtk::Box            m_footer{Gtk::Orientation::HORIZONTAL};
-    Gtk::Button         m_btn_close{"Close"};
+    // s214: substrate Button. Same ownership shape as m_btn_new_cat.
+    curvz::widgets::Button* m_btn_close = nullptr;
 
     // Toast
     Gtk::Revealer       m_toast_revealer;
