@@ -1380,6 +1380,39 @@ void MainWindow::connect_signals() {
   m_canvas.signal_request_save_to_library().connect(
       [this]() { on_request_save_selection_to_library(); });
 
+  // s210 m1: canvas right-click → image SceneNode emits this with a
+  // pre-baked ImageInfo payload. ImageInfoDialog is the presenter
+  // (peer to m_theme_edit_dialog / m_style_editor_dialog); we just
+  // forward parent + payload. Replaces the prior inline
+  // `new Gtk::Window`/`signal_hide → delete dlg` form that lived in
+  // Canvas.cpp (s125 m1g..m1j).
+  m_canvas.signal_request_image_info().connect(
+      [this](ImageInfo info) {
+        m_image_info_dialog.show(*this, std::move(info));
+      });
+
+  // s210 m2: canvas right-click-while-R-held places a custom pivot
+  // and emits this with the pivot doc coords. RotateFromPointDialog
+  // is the presenter; Apply routes back through Canvas::apply_rotate_
+  // from_point via the CommittedFn closure (does the selection walk,
+  // path/text/image rotation, and CompositeCommand push). Replaces
+  // the prior inline `new Gtk::Window`/`signal_hide → delete dlg`
+  // form that lived in Canvas_input.cpp.
+  m_canvas.signal_request_rotate_from_point().connect(
+      [this](double pivot_x, double pivot_y) {
+        // CanvasModel for unit display — read from the active doc.
+        // Null is acceptable; the dialog's spinners fall back to raw
+        // doc units. Matches the pre-conversion behaviour where the
+        // inline form read `m_doc ? &m_doc->canvas : nullptr`.
+        auto* active = m_project ? m_project->active_doc() : nullptr;
+        const CanvasModel* model = active ? &active->canvas : nullptr;
+        m_rotate_from_point_dialog.show(
+            *this, pivot_x, pivot_y, model,
+            [this](double px, double py, double angle_deg) {
+              m_canvas.apply_rotate_from_point(px, py, angle_deg);
+            });
+      });
+
   // Non-blocking info/warning messages emitted by Canvas (e.g. boolean op
   // skips)
   m_canvas.signal_show_message().connect(

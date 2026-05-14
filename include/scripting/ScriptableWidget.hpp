@@ -65,6 +65,17 @@
 //   instantiated, which means the template can't ship a leaf with no
 //   emit-side wiring.
 //
+// Unregistered substrate (s209 m1):
+//
+//   A second ctor takes `curvz::scripting::unregistered_t` instead of
+//   a name. The resulting widget IS-A substrate type (same universal
+//   verbs, same lifecycle) but skips the registry. The leaf shape is
+//   uniform — same init_scriptable() call, same bind_canonical()
+//   wiring; emit() short-circuits at the Scriptable layer for
+//   unregistered instances. See Scriptable.hpp's tag-block comment
+//   for the audit-driven rationale (Reading-C-blocked sites with
+//   shared abbrevs across short-lived instantiations).
+//
 // Universal verbs (s191 m4):
 //
 //   Every wrapped widget gains `hide` / `show` write verbs and a
@@ -137,6 +148,30 @@ public:
         // bind_canonical() is deferred to init_scriptable() because we
         // can't dispatch through the vtable from a base-class ctor.
         // See header notes above.
+    }
+
+    // s209 m1 — unregistered tagged ctor.
+    //
+    // The widget IS-A substrate type (same template, same universal
+    // verbs, same lifecycle) but is invisible to the script registry.
+    // Used by short-lived constructions that would otherwise collide
+    // on a shared abbrev when instantiated twice (per-show dialogs,
+    // per-click popovers, per-loop helpers — see Scriptable.hpp's
+    // tag-block comment).
+    //
+    // Leaves still call `init_scriptable()` as their final ctor line;
+    // bind_canonical() still wires the canonical signal handler. The
+    // handler's emit() call is a no-op (gated on m_registered in
+    // Scriptable::emit), so the leaf shape stays uniform between
+    // registered and unregistered instances. No leaf author needs to
+    // know which side they're on. The dtor assert on m_initialised
+    // continues to work identically.
+    template <class... GtkArgs>
+    explicit ScriptableWidget(unregistered_t, GtkArgs&&... args)
+        : GtkBase(std::forward<GtkArgs>(args)...)
+        , Scriptable(unregistered) {
+        // bind_canonical() still deferred to init_scriptable() —
+        // same vtable-readiness reason as the registered ctor.
     }
 
     ~ScriptableWidget() override {

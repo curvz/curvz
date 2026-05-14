@@ -311,6 +311,18 @@ set(SOURCES
     # opened from the Themes panel's row Edit (✎) button. Self-
     # deletes via signal_close_request → signal_idle.
     src/ThemeEditDialog.cpp
+    # s210 m1 — Image-info read-only properties dialog. Lifted out of
+    # Canvas.cpp's right-click handler into its own class, mirroring
+    # the s200/s201 hide-on-close singleton architecture. Was the last
+    # raw new-Gtk::Window self-deleting dialog in Canvas.cpp; the
+    # Close button was the last raw Gtk::Button in that file.
+    src/ImageInfoDialog.cpp
+    # s210 m2 — Rotate-from-point dialog (R-held + right-click flow).
+    # Lifted out of Canvas_input.cpp; same hide-on-close singleton
+    # pattern as ImageInfoDialog. Apply routes through Canvas::
+    # apply_rotate_from_point (extracted public method) via a
+    # CommittedFn closure threaded through MainWindow.
+    src/RotateFromPointDialog.cpp
     # s203 m1 — View Clipboard mini float. Edit ▸ View Clipboard…
     # opens a small chromeless window showing the current system
     # clipboard contents so the user can select a piece and Ctrl+C

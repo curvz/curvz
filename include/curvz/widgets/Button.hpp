@@ -32,6 +32,17 @@ class Button
 public:
     Button(std::string_view name, const Glib::ustring& label = {});
 
+    // s209 m1 — unregistered substrate Button. The widget IS-A
+    // substrate Button (same universal verbs, same Gtk::Button
+    // surface, same lifecycle), but skips the script registry — its
+    // `clicked` emission is silent on the outbound channel and it
+    // can't be addressed by abbrev. Use this at call sites where
+    // multiple instances would otherwise collide on a shared abbrev
+    // (ContextBar's `add_btn`, Ruler's per-unit popover buttons,
+    // about-dialog Close buttons, …).
+    Button(curvz::scripting::unregistered_t,
+           const Glib::ustring& label = {});
+
     curvz::scripting::ScriptValue invoke_leaf(
             std::string_view verb,
             const curvz::scripting::ScriptArgs& args) override;

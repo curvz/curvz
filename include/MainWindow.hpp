@@ -104,6 +104,8 @@
 #include "ThemeEditDialog.hpp"  // s200 m1 — hide-on-close singleton
 #include "StyleEditorDialog.hpp"  // s201 m1 — hide-on-close singleton
 #include "TranslateDialog.hpp"  // s205 m4 — pivot-aware transform hub
+#include "ImageInfoDialog.hpp"  // s210 m1 — hide-on-close singleton
+#include "RotateFromPointDialog.hpp"  // s210 m2 — hide-on-close singleton
 #include "ClipboardViewWindow.hpp"  // s203 m1 — hide-on-close singleton
 #include "Ruler.hpp"
 #include <gtkmm/applicationwindow.h>
@@ -405,6 +407,8 @@ private:
     ManageTemplatesDialog         m_manage_templates_dialog;
     ThemeEditDialog               m_theme_edit_dialog;  // s200 m1
     StyleEditorDialog             m_style_editor_dialog;  // s201 m1
+    ImageInfoDialog               m_image_info_dialog;  // s210 m1
+    RotateFromPointDialog         m_rotate_from_point_dialog;  // s210 m2
     ShortcutsDialog               m_shortcuts_dialog;
     HelpWindow                    m_help_window;
 

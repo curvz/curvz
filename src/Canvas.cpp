@@ -7,6 +7,7 @@
 #include "MacroSystem.hpp"
 #include "SvgParser.hpp"
 #include "curvz/widgets/RefPointPicker.hpp"  // s204 m4 — pivot right-click picker
+#include "curvz/widgets/Button.hpp"  // s209 m5: unregistered substrate Button (spiral Apply, blend Rebuild popovers)
 #include "curvz_utils.hpp"  // S97 m2 — box_blur_argb32 for drop-shadow render
 #include "color/SwatchLibrary.hpp"  // set_swatch_library + apply_swatch_to_selection
 #include "color/FillStyleInterop.hpp"  // to_fillstyle — live-recolour walk (s70 M3)
@@ -834,7 +835,13 @@ Canvas::Canvas() {
           auto *apply_row = Gtk::make_managed<Gtk::Box>(
               Gtk::Orientation::HORIZONTAL, 0);
           apply_row->set_halign(Gtk::Align::END);
-          auto *apply_btn = Gtk::make_managed<Gtk::Button>("Apply");
+          // s209 m5 — substrate Button with the unregistered tag.
+          // Per-click popover (spiral-stop context menu); rebuilt every
+          // right-click. No per-instance script addressability needed —
+          // the Apply button is a one-shot dismiss. Sibling pattern to
+          // ContextBar::show_context_menu (s209 m2).
+          auto *apply_btn = Gtk::make_managed<curvz::widgets::Button>(
+                                curvz::scripting::unregistered, "Apply");
           apply_btn->signal_clicked().connect(
               [popover]() { popover->popdown(); });
           apply_row->append(*apply_btn);
@@ -922,7 +929,13 @@ Canvas::Canvas() {
         box->set_margin_end(4);
         box->set_margin_top(4);
         box->set_margin_bottom(4);
-        auto *btn = Gtk::make_managed<Gtk::Button>("Rebuild Blend Steps");
+        // s209 m5 — substrate Button with the unregistered tag.
+        // Per-click popover (blend right-click rebuild affordance);
+        // rebuilt every right-click on a blend node. Sibling of the
+        // spiral-Apply migration above and ContextBar::show_context_menu
+        // (s209 m2) — same per-click costume.
+        auto *btn = Gtk::make_managed<curvz::widgets::Button>(
+                        curvz::scripting::unregistered, "Rebuild Blend Steps");
         btn->set_has_frame(false);
         btn->signal_clicked().connect([this, blend, popover]() {
           rebuild_blend(blend);
@@ -1070,122 +1083,34 @@ Canvas::Canvas() {
     snprintf(canvas_size, sizeof(canvas_size), "%.1f × %.1f", hit->image_w,
              hit->image_h);
 
-    // Find parent window — needed for transient_for + motif inheritance.
-    Gtk::Window *win = dynamic_cast<Gtk::Window *>(get_root());
-    if (!win)
-      return;
+    // s210 m1 — Build the ImageInfo payload and emit. MainWindow's
+    // ImageInfoDialog member (a hide-on-close singleton, peer to
+    // m_theme_edit_dialog / m_style_editor_dialog) is the presenter.
+    // Canvas still does the data gathering — it has the SceneNode, the
+    // path, and the helpers in Canvas_internal (read_image_meta,
+    // format_file_size) — so the dialog stays a pure presenter and
+    // doesn't need to know about Canvas internals.
+    //
+    // Replaces the prior s125 m1g..m1j inline form (heap-allocated
+    // Gtk::Window self-deleting on hide). The visual decisions
+    // (frameless flat-class Entries, dim-label name column, 480px
+    // non-resizable, the s125 m1h focus-idle dance, blank-when-unknown
+    // Format/Depth rows) are preserved verbatim inside ImageInfoDialog.
+    ImageInfo info;
+    info.filename = fname;
+    info.full_path = full_path;
+    info.pixels = meta.valid
+                      ? std::to_string(meta.width) + " × " +
+                            std::to_string(meta.height)
+                      : "unknown";
+    info.format = meta.format;   // "" → row hides
+    info.depth = meta.depth;     // "" → row hides
+    info.file_size = size_str;
+    info.modified = mtime_str;
+    info.placed_size = std::string(canvas_size) + " doc units";
+    info.linkage = "External file (not embedded)";
 
-    auto *dlg = new Gtk::Window();
-    curvz::utils::set_name(dlg, "dlg_imginfo", "image_info_dialog_root");
-    dlg->set_title("Image Info");
-    dlg->set_transient_for(*win);
-    curvz::utils::apply_motif_class_from_parent(*dlg, *win);
-    dlg->set_modal(true);
-    dlg->set_resizable(false);
-    // s125 m1j: with read-only Entry values (no wrap), the measure pass is
-    // stable — no width-for-height feedback loop. The earlier (m1g) attempt
-    // at set_default_size + set_resizable(false) + wrapping labels caused
-    // continuous "needs at least N" warnings on hover. This is fine now.
-    dlg->set_default_size(480, -1);
-
-    auto *outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
-    auto *grid = Gtk::make_managed<Gtk::Grid>();
-    grid->set_row_spacing(6);
-    grid->set_column_spacing(12);
-    grid->set_margin(16);
-    grid->set_margin_bottom(8);
-
-    // s125 m1j: value column is a read-only Gtk::Entry, not a selectable
-    // Gtk::Label. The Label approach (m1g/m1h) produced a "Trying to
-    // measure dlg_imginfo for height of N, but it needs at least M"
-    // warning storm on hover — selectable+wrapping labels in a non-fixed
-    // container have an unstable measure cycle, and tooltip hover-timeout
-    // re-measurements hit it on every hover. Entries don't wrap, scroll
-    // horizontally for long values, and have full keyboard selection
-    // (double-click word, triple-click all, Ctrl+A, Ctrl+C). They also
-    // visually signal "this is data you can interact with" better than
-    // a static label, which is what we want here.
-    int row = 0;
-    auto add_row = [&](const char *name, const std::string &value) {
-      auto *lbl_name = Gtk::make_managed<Gtk::Label>(name);
-      lbl_name->set_halign(Gtk::Align::END);
-      lbl_name->set_valign(Gtk::Align::CENTER);
-      lbl_name->add_css_class("dim-label");  // GTK4 standard dim style
-
-      auto *ent_val = Gtk::make_managed<Gtk::Entry>();
-      ent_val->set_text(value);
-      ent_val->set_editable(false);
-      ent_val->set_can_focus(true);  // need focus for keyboard selection
-      ent_val->set_hexpand(true);
-      // Frameless visual treatment — looks more like a value display
-      // than a text-entry field, while keeping all the selection
-      // affordances. The .flat CSS class is GTK4 standard for
-      // "show me as transparent / no border".
-      ent_val->add_css_class("flat");
-      // Width hint — typical fields fit comfortably; long paths
-      // scroll horizontally rather than blowing out the dialog.
-      ent_val->set_width_chars(48);
-
-      grid->attach(*lbl_name, 0, row, 1, 1);
-      grid->attach(*ent_val, 1, row, 1, 1);
-      ++row;
-    };
-
-    add_row("Name", fname);
-    add_row("Path", full_path);
-    add_row("Pixels",
-            meta.valid ? std::to_string(meta.width) + " × " +
-                             std::to_string(meta.height)
-                       : "unknown");
-    if (!meta.format.empty())
-      add_row("Format", meta.format);
-    if (!meta.depth.empty())
-      add_row("Depth", meta.depth);
-    add_row("File size", size_str);
-    add_row("Modified", mtime_str);
-    add_row("Placed", std::string(canvas_size) + " doc units");
-    add_row("Linkage", "External file (not embedded)");
-
-    outer->append(*grid);
-
-    // Close button row — right-aligned, takes initial focus so the
-    // selectable labels don't get a focus ring on open.
-    auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
-    btn_row->set_margin_start(16);
-    btn_row->set_margin_end(16);
-    btn_row->set_margin_bottom(12);
-    btn_row->set_halign(Gtk::Align::END);
-    auto *btn_close = Gtk::make_managed<Gtk::Button>("Close");
-    curvz::utils::set_name(btn_close, "dlg_imginfo_close",
-                           "image_info_dialog_close_btn");
-    btn_close->signal_clicked().connect([dlg]() { dlg->close(); });
-    btn_row->append(*btn_close);
-    outer->append(*btn_row);
-
-    dlg->set_child(*outer);
-
-    // Manage lifetime: delete on hide. Matches the Rotate-from-Point dialog
-    // pattern earlier in this file — heap-allocated, self-deletes on hide.
-    dlg->signal_hide().connect([dlg]() { delete dlg; });
-
-    // Enter activates Close (default widget). GTK4 doesn't auto-bind Esc
-    // for transient windows; the X button + Close button cover dismissal.
-    btn_close->set_receives_default(true);
-    dlg->set_default_widget(*btn_close);
-
-    dlg->present();
-    // s125 m1h: grab focus AFTER present(), and defer through signal_idle so
-    // we run after GTK4's initial focus-traversal walk. Without the defer,
-    // selectable labels claim focus during the first arrange pass and our
-    // grab_focus() is silently overridden — the dialog opens with a
-    // selection cursor on the first value field instead of the Close
-    // button. Calling set_focus on the window plus a deferred grab_focus
-    // covers both the window-level focus and the widget-level focus state.
-    // The idle fires on the next event-loop iteration, before any user
-    // input can reach the dialog, so btn_close is guaranteed alive.
-    dlg->set_focus(*btn_close);
-    Glib::signal_idle().connect_once(
-        [btn_close]() { btn_close->grab_focus(); });
+    m_sig_request_image_info.emit(std::move(info));
   });
   add_controller(rclick);
 

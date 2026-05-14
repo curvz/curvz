@@ -1,6 +1,8 @@
 #include "ContextBar.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s121 m7: curvz::utils::set_name
+#include "curvz/widgets/Button.hpp"  // s209 m1: unregistered substrate Button
+#include "curvz/widgets/ToggleButton.hpp"  // s209 m2: unregistered substrate ToggleButton
 #include <gtkmm/gestureclick.h>
 
 namespace Curvz {
@@ -167,7 +169,28 @@ Gtk::Separator* ContextBar::add_sep() {
 
 Gtk::Button* ContextBar::add_btn(const std::string& icon, const std::string& tip,
                                   sigc::slot<void()> slot) {
-    auto* btn = Gtk::make_managed<Gtk::Button>();
+    // s209 m1 — substrate Button with the unregistered tag.
+    //
+    // add_btn is called N times per tool-set rebuild; the per-tool
+    // metadata in rebuild() declares its button affordances and this
+    // helper instantiates them. A registered substrate Button here
+    // would need an abbrev (`ctx_<tool>_<role>` or similar) AND the
+    // registry would have to tolerate the old instance still being
+    // alive at GTK4-deferred-destruction time when the new one
+    // constructs — same shape as the s199 m1 PropertiesPanel
+    // rebuild-collision problem.
+    //
+    // These buttons aren't useful as per-instance script targets (the
+    // tool itself is addressable; the bar's affordances mirror the
+    // tool's own verbs). Skipping registration is faithful to the
+    // UX — the substrate type stays uniform with the rest of the
+    // codebase, the script registry stays clean.
+    //
+    // Pilot site for the s209 unregistered_t pattern. The other two
+    // raw sites in this file (add_toggle and show_context_menu's
+    // help_btn) follow in s209 m2 once the pattern is banked.
+    auto* btn = Gtk::make_managed<curvz::widgets::Button>(
+                    curvz::scripting::unregistered);
     btn->set_icon_name(icon.c_str());
     btn->set_tooltip_text(tip.c_str());
     btn->set_has_frame(false);
@@ -180,7 +203,16 @@ Gtk::Button* ContextBar::add_btn(const std::string& icon, const std::string& tip
 
 Gtk::ToggleButton* ContextBar::add_toggle(const std::string& icon, const std::string& tip,
                                            bool initial, sigc::slot<void(bool)> slot) {
-    auto* btn = Gtk::make_managed<Gtk::ToggleButton>();
+    // s209 m2 — substrate ToggleButton with the unregistered tag.
+    // Same rationale as add_btn's m1 migration: helper-multiplier
+    // called N times per tool-set rebuild; per-instance script
+    // addressability would force shared-abbrev collisions on tool
+    // change. The tool itself is the addressable surface; the bar's
+    // toggle affordances mirror the tool's verbs. Sibling of the
+    // s209 m1 Button site above — three sites in this file now sit
+    // on the same pattern.
+    auto* btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+                    curvz::scripting::unregistered);
     btn->set_icon_name(icon.c_str());
     btn->set_tooltip_text(tip.c_str());
     btn->set_has_frame(false);
@@ -212,7 +244,15 @@ void ContextBar::show_context_menu(double x, double y) {
     box->set_margin_top(4);
     box->set_margin_bottom(4);
 
-    auto* help_btn = Gtk::make_managed<Gtk::Button>();
+    // s209 m2 — substrate Button with the unregistered tag. Per-click
+    // popover construction: every right-click rebuilds the popover from
+    // scratch, so a registered abbrev would collide on the second
+    // right-click. The button is a one-shot affordance ("Open Help:
+    // <Tool>") whose work fires a single callback; no per-instance
+    // script addressability is meaningful. Third and final raw site
+    // in ContextBar — file is now fully substrate.
+    auto* help_btn = Gtk::make_managed<curvz::widgets::Button>(
+                          curvz::scripting::unregistered);
     help_btn->set_has_frame(false);
     help_btn->set_halign(Gtk::Align::FILL);
     auto* help_lbl = Gtk::make_managed<Gtk::Label>(

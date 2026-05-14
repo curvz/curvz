@@ -33,10 +33,51 @@ namespace curvz::scripting {
 
 using ScriptArgs = std::vector<ScriptValue>;
 
+// s209 m1 — opt-out tag for substrate widgets that don't need (or
+// can't have) a registry entry.
+//
+// The registry refuses two live Scriptables under the same name. That's
+// the right invariant for long-lived hosts (one PaintEditor, one
+// ColorPickerPopover, one Toolbar) where each widget is genuinely
+// addressable. It's the wrong invariant for short-lived constructions
+// that share an abbrev across instances:
+//
+//   - per-show heap-allocated self-deleting dialogs;
+//   - per-click popovers built inside controller lambdas;
+//   - per-loop helper-multipliers (`add_btn` called N times per tool
+//     change in ContextBar, four-button popovers in Ruler's unit list,
+//     per-tile entries in DocumentGallery, …).
+//
+// For these, the widget is structurally NOT script-addressable at the
+// per-instance level. An "About dialog Close button" doesn't need its
+// own script handle; a per-tile Entry in a per-doc loop is addressed
+// at the document level, not the entry level. Forcing them through
+// the registry collides on construction; refusing them substrate at
+// all leaves the type inconsistent with everything around them.
+//
+// `unregistered_t{}` is the tagged-ctor opt-out. A widget constructed
+// with the tag IS-A substrate type (uniform with every registered
+// substrate widget — same template, same `set_visible`/`show`/`hide`
+// surface, same lifecycle), but skips the registration step. The dtor,
+// `force_unregister()`, and `emit()` all bail when `m_registered`
+// is false, so the registry never sees the instance and the canonical
+// signal handler's emit() call is a no-op.
+//
+// Naming: empty `m_name`. An unregistered Scriptable can't be looked
+// up, can't be emit-targeted, can't collide with anything. Anyone
+// reading the registry sees only the registered surface.
+//
+// See LEDGER.md "On Reading C scope (s208 m5)" for the audit that
+// justified this; see CANON's "Lifetime shapes" section for the
+// long-lived/short-lived distinction the tag formalises.
+struct unregistered_t { explicit unregistered_t() = default; };
+inline constexpr unregistered_t unregistered{};
+
 class Scriptable {
 public:
     Scriptable() = delete;
     explicit Scriptable(std::string_view name);
+    explicit Scriptable(unregistered_t);
     virtual ~Scriptable();
 
     // No copy or move — registry holds raw pointers keyed by name.
@@ -66,6 +107,11 @@ public:
     // m_inner.remove(*c). That's the structural fix for the s191 m6
     // registry-collision crash — replaces the brittle signal_timeout
     // workaround.
+    //
+    // s209 m1: no-op for unregistered Scriptables (m_registered=false).
+    // The force_unregister_subtree pump walks any container that may
+    // hold substrate widgets; unregistered children must coexist with
+    // registered siblings without contributing to the registry.
     void force_unregister();
 
     // Write path. Returns a ScriptValue holding any result (Null for
@@ -92,6 +138,11 @@ protected:
 
 private:
     std::string m_name;
+    // s209 m1: false for instances constructed via `unregistered_t`.
+    // Gates ctor's registration, dtor's unregister, force_unregister(),
+    // and emit() — an unregistered Scriptable is invisible to the
+    // registry and silent on the outbound channel.
+    bool m_registered;
 };
 
 } // namespace curvz::scripting

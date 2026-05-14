@@ -47,6 +47,7 @@
 #include <gtkmm/gesturedrag.h>
 #include <gtkmm/image.h>      // s117 m19: custom About dialog hero logo
 #include <gtkmm/linkbutton.h> // s136 m1: About dialog outbound links
+#include "curvz/widgets/Button.hpp"  // s209 m4: unregistered substrate Button (About dialog)
 #include <gtkmm/settings.h>
 #include <gtkmm/stack.h> // s117 m19: custom About dialog flip animation
 #include <gtkmm/stylecontext.h>
@@ -265,8 +266,21 @@ void MainWindow::setup_headerbar() {
     btn_row->set_margin_start(12);
     btn_row->set_margin_end(12);
 
-    auto *btn_flip = Gtk::make_managed<Gtk::Button>("Credits");
-    auto *btn_close = Gtk::make_managed<Gtk::Button>("Close");
+    // s209 m4 — substrate Button with the unregistered tag for both
+    // About-dialog footer buttons. The dialog is heap-allocated and
+    // self-deleting via close-request → idle-delete; open / close /
+    // reopen would otherwise put two same-named instances live at
+    // once (the prior instance's idle delete hasn't fired when the
+    // new construction begins). Pre-substrate these were raw
+    // Gtk::Button with no registry interaction; the migration keeps
+    // that runtime behaviour exactly while bringing the type into
+    // the substrate family. Completes the third costume of the s208
+    // m5 audit (per-show heap-allocated dialog), alongside m1-m3's
+    // per-loop and per-click coverage.
+    auto *btn_flip = Gtk::make_managed<curvz::widgets::Button>(
+                          curvz::scripting::unregistered, "Credits");
+    auto *btn_close = Gtk::make_managed<curvz::widgets::Button>(
+                           curvz::scripting::unregistered, "Close");
     btn_close->add_css_class("suggested-action");
 
     // Flip button toggles the stack page and updates its own label.

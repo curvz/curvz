@@ -17,23 +17,53 @@ namespace curvz::scripting {
 
 // ── Scriptable ───────────────────────────────────────────────────────────────
 
-Scriptable::Scriptable(std::string_view name) : m_name(name) {
+Scriptable::Scriptable(std::string_view name)
+    : m_name(name), m_registered(true) {
     ScriptableRegistry::instance().register_object(m_name, this);
 }
 
+// s209 m1 — tagged ctor for substrate widgets that opt out of
+// registration. See Scriptable.hpp's tag-block comment for the
+// audit-driven rationale (Reading-C-blocked sites: per-show dialogs,
+// per-click popovers, per-loop helper-multipliers).
+//
+// m_name stays empty; an unregistered Scriptable is unreachable from
+// `find`, can never collide with a registered name, and emit() is a
+// no-op so the canonical signal handler runs harmlessly.
+Scriptable::Scriptable(unregistered_t)
+    : m_name(), m_registered(false) {
+    // No registry touch by design.
+}
+
 Scriptable::~Scriptable() {
-    ScriptableRegistry::instance().unregister_object(m_name);
+    if (m_registered) {
+        ScriptableRegistry::instance().unregister_object(m_name);
+    }
 }
 
 // s191 m7 — synchronous unregister for the subtree-clear path.
 // See Scriptable.hpp's comment block for the lifecycle rationale.
 // Idempotent: erase-on-missing is a no-op, so the dtor's
 // unregister_object after force_unregister is safe.
+//
+// s209 m1 — also a no-op for unregistered instances. The
+// force_unregister_subtree pump (curvz_utils) walks any container
+// that may hold substrate widgets; unregistered children must
+// pass through without touching the registry.
 void Scriptable::force_unregister() {
-    ScriptableRegistry::instance().unregister_object(m_name);
+    if (m_registered) {
+        ScriptableRegistry::instance().unregister_object(m_name);
+    }
 }
 
 void Scriptable::emit(std::string_view event, const ScriptValue& payload) {
+    // s209 m1: unregistered instances are silent on the outbound
+    // channel. Leaves still wire their canonical signal handler the
+    // same way — keeping the leaf shape uniform — but the resulting
+    // emit() call short-circuits here. No subscriber can be expecting
+    // events from an unregistered (and therefore unaddressable)
+    // instance, so dropping the event is the correct behaviour.
+    if (!m_registered) return;
     ScriptableRegistry::instance().emit(m_name,
                                         std::string(event),
                                         payload);

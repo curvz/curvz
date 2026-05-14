@@ -413,193 +413,130 @@ void Canvas::on_pivot_dialog(double doc_x, double doc_y) {
   queue_draw();
   m_sig_pivot_changed.emit();  // s205 m1 — inspector picker live-tracks
 
-  auto *win = dynamic_cast<Gtk::Window *>(get_root());
-  if (!win)
-    return;
+  // s210 m2 — emit the dialog request. MainWindow's
+  // RotateFromPointDialog (a hide-on-close singleton member) presents
+  // the angle entry and routes Apply back through
+  // apply_rotate_from_point. Replaces the prior inline `new
+  // Gtk::Window` self-deleting dialog construction that lived here.
+  m_sig_request_rotate_from_point.emit(m_custom_pivot_x, m_custom_pivot_y);
+}
 
-  auto *dlg = new Gtk::Window();
-  curvz::utils::set_name(dlg, "dlg_rfp", "rotate_from_point_dialog_root");
-  dlg->set_title("Rotate from Point");
-  dlg->set_transient_for(*win);
-  curvz::utils::apply_motif_class_from_parent(*dlg, *win);  // s117 m18 v2
-  dlg->set_modal(true);
-  dlg->set_resizable(false);
-  dlg->set_default_size(260, -1);
+// s210 m2 — extracted from the pre-conversion Apply lambda inside
+// on_pivot_dialog. The dialog (RotateFromPointDialog, owned by
+// MainWindow) hands the three input values here via its CommittedFn
+// callback after the user clicks Apply.
+//
+// Order of operations mirrors the original Apply handler:
+//   1. Commit the (possibly-edited) pivot via set_custom_pivot, which
+//      also queue_draws and emits m_sig_pivot_changed. Routing through
+//      the centralised seam (rather than poking m_custom_pivot_*
+//      directly here) preserves the inspector live-track contract.
+//   2. If |angle_deg| ≥ 0.0001, walk the selection, snapshot path /
+//      text / image leaves, rotate each anchor + control around the
+//      pivot, and push one CompositeCommand ("Rotate from point") of
+//      EditPathCommand + MoveObjectCommand entries.
+//   3. queue_draw at end regardless — the pivot may have moved even
+//      when the rotation was a no-op.
+void Canvas::apply_rotate_from_point(double pivot_x, double pivot_y,
+                                     double angle_deg) {
+  // (1) commit pivot through the centralised seam.
+  set_custom_pivot(pivot_x, pivot_y);
 
-  auto *vbox = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
-  auto *grid = Gtk::make_managed<Gtk::Grid>();
-  grid->set_row_spacing(8);
-  grid->set_column_spacing(12);
-  grid->set_margin(16);
-  grid->set_margin_bottom(8);
+  // (2) rotation work, if the angle is non-trivial.
+  if (m_doc && std::abs(angle_deg) > 0.0001) {
+    const double angle_rad = angle_deg * M_PI / 180.0;
+    const double px = m_custom_pivot_x;
+    const double py = m_custom_pivot_y;
+    const double cos_a = std::cos(angle_rad);
+    const double sin_a = std::sin(angle_rad);
 
-  auto make_lbl = [](const char *t) {
-    auto *l = Gtk::make_managed<Gtk::Label>(t);
-    l->set_halign(Gtk::Align::START);
-    return l;
-  };
-
-  // csb handles unit display + Y-flip (PositionY stores doc-Y-down internally
-  // and displays Y-up user space). Ruler origin = 0 so pivot coordinates are
-  // shown in raw canvas space, matching prior behavior.
-  const CanvasModel *cm = m_doc ? &m_doc->canvas : nullptr;
-  auto *spin_x =
-      Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX, cm, 0.0);
-  curvz::utils::set_name(spin_x, "dlg_rfp_x", "rotate_from_point_dialog_x_spn");
-  spin_x->with_value(m_custom_pivot_x);
-  spin_x->set_hexpand(true);
-
-  auto *spin_y =
-      Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY, cm, 0.0);
-  curvz::utils::set_name(spin_y, "dlg_rfp_y", "rotate_from_point_dialog_y_spn");
-  spin_y->with_value(m_custom_pivot_y); // doc-Y-down; csb flips for display
-  spin_y->set_hexpand(true);
-
-  auto *spin_a = Gtk::make_managed<CurvzSpinButton>(SpinType::Angle, cm);
-  curvz::utils::set_name(spin_a, "dlg_rfp_ang", "rotate_from_point_dialog_angle_spn");
-  spin_a->with_value(0.0);
-  spin_a->set_hexpand(true);
-
-  grid->attach(*make_lbl("Pivot X"), 0, 0);
-  grid->attach(*spin_x, 1, 0);
-  if (auto *ul = spin_x->get_unit_label())
-    grid->attach(*ul, 2, 0);
-  grid->attach(*make_lbl("Pivot Y"), 0, 1);
-  grid->attach(*spin_y, 1, 1);
-  if (auto *ul = spin_y->get_unit_label())
-    grid->attach(*ul, 2, 1);
-  auto *sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
-  sep->set_margin_top(4);
-  sep->set_margin_bottom(4);
-  grid->attach(*sep, 0, 2, 3, 1);
-  grid->attach(*make_lbl("Rotate °"), 0, 3);
-  grid->attach(*spin_a, 1, 3);
-
-  auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-  btn_row->set_halign(Gtk::Align::END);
-  btn_row->set_margin_start(16);
-  btn_row->set_margin_end(16);
-  btn_row->set_margin_bottom(16);
-  auto *btn_cancel = Gtk::make_managed<Gtk::Button>("Cancel");
-  auto *btn_apply = Gtk::make_managed<Gtk::Button>("Apply");
-  curvz::utils::set_name(btn_cancel, "dlg_rfp_cnc", "rotate_from_point_dialog_cancel_btn");
-  curvz::utils::set_name(btn_apply, "dlg_rfp_app", "rotate_from_point_dialog_apply_btn");
-  btn_apply->add_css_class("suggested-action");
-  btn_row->append(*btn_cancel);
-  btn_row->append(*btn_apply);
-
-  vbox->append(*grid);
-  vbox->append(*btn_row);
-  dlg->set_child(*vbox);
-  spin_x->grab_focus();
-
-  btn_cancel->signal_clicked().connect([dlg]() { dlg->close(); });
-
-  btn_apply->signal_clicked().connect([this, dlg, spin_x, spin_y, spin_a]() {
-    // csb internal = doc-Y-down coords already; no manual flip needed.
-    m_custom_pivot_x = spin_x->get_internal_value();
-    m_custom_pivot_y = spin_y->get_internal_value();
-    m_has_custom_pivot = true;
-    m_sig_pivot_changed.emit();  // s205 m1 — inspector picker live-tracks
-
-    double angle_deg = spin_a->get_internal_value();
-    if (m_doc && std::abs(angle_deg) > 0.0001) {
-      double angle_rad = angle_deg * M_PI / 180.0;
-      double px = m_custom_pivot_x, py = m_custom_pivot_y;
-      double cos_a = std::cos(angle_rad), sin_a = std::sin(angle_rad);
-
-      std::vector<SceneNode *> leaves, direct;
-      for (SceneNode *obj : m_selection) {
-        if (obj->is_path()) {
-          std::vector<SceneNode *> tmp;
-          // inline collect: paths only
-          std::function<void(SceneNode *)> gather = [&](SceneNode *n) {
-            if (n->is_path() && n->path)
-              leaves.push_back(n);
-            for (auto &ch : n->children)
-              gather(ch.get());
-          };
-          gather(obj);
-        } else if (obj->is_text() || obj->is_image()) {
-          direct.push_back(obj);
-        } else {
-          std::function<void(SceneNode *)> gather = [&](SceneNode *n) {
-            if (n->is_path() && n->path)
-              leaves.push_back(n);
-            for (auto &ch : n->children)
-              gather(ch.get());
-          };
-          gather(obj);
-        }
+    std::vector<SceneNode *> leaves, direct;
+    for (SceneNode *obj : m_selection) {
+      if (obj->is_path()) {
+        // inline collect: paths only
+        std::function<void(SceneNode *)> gather = [&](SceneNode *n) {
+          if (n->is_path() && n->path)
+            leaves.push_back(n);
+          for (auto &ch : n->children)
+            gather(ch.get());
+        };
+        gather(obj);
+      } else if (obj->is_text() || obj->is_image()) {
+        direct.push_back(obj);
+      } else {
+        std::function<void(SceneNode *)> gather = [&](SceneNode *n) {
+          if (n->is_path() && n->path)
+            leaves.push_back(n);
+          for (auto &ch : n->children)
+            gather(ch.get());
+        };
+        gather(obj);
       }
-
-      struct PSnap {
-        SceneNode *obj;
-        PathData before;
-      };
-      std::vector<PSnap> psnaps;
-      for (SceneNode *leaf : leaves)
-        if (leaf->path)
-          psnaps.push_back({leaf, *leaf->path});
-      struct TSnap {
-        SceneNode *obj;
-        double bx, by;
-      };
-      std::vector<TSnap> tsnaps;
-      for (SceneNode *obj : direct)
-        tsnaps.push_back({obj, obj->is_text() ? obj->text_x : obj->image_x,
-                          obj->is_text() ? obj->text_y : obj->image_y});
-
-      auto rot = [&](double &x, double &y) {
-        double dx = x - px, dy = y - py;
-        x = px + dx * cos_a - dy * sin_a;
-        y = py + dx * sin_a + dy * cos_a;
-      };
-
-      for (SceneNode *leaf : leaves)
-        if (leaf->path)
-          for (auto &n : leaf->path->nodes) {
-            rot(n.x, n.y);
-            rot(n.cx1, n.cy1);
-            rot(n.cx2, n.cy2);
-          }
-      for (SceneNode *obj : direct) {
-        if (obj->is_text()) {
-          rot(obj->text_x, obj->text_y);
-        } else {
-          double cx = obj->image_x + obj->image_w * 0.5;
-          double cy = obj->image_y + obj->image_h * 0.5;
-          rot(cx, cy);
-          obj->image_x = cx - obj->image_w * 0.5;
-          obj->image_y = cy - obj->image_h * 0.5;
-        }
-      }
-
-      if (m_history) {
-        auto comp = std::make_unique<CompositeCommand>("Rotate from point");
-        for (auto &s : psnaps)
-          comp->add(std::make_unique<EditPathCommand>(
-              project(), s.obj->internal_id, s.before, *s.obj->path,
-              "Rotate from point"));
-        for (auto &s : tsnaps) {
-          double ax = s.obj->is_text() ? s.obj->text_x : s.obj->image_x;
-          double ay = s.obj->is_text() ? s.obj->text_y : s.obj->image_y;
-          comp->add(
-              std::make_unique<MoveObjectCommand>(
-                  project(), s.obj->internal_id, s.bx, s.by, ax, ay));
-        }
-        if (!comp->steps.empty())
-          m_history->push(std::move(comp));
-      }
-      m_sig_doc_changed.emit();
-      queue_draw();
     }
-    queue_draw();
-    dlg->close();
-  });
 
-  dlg->signal_hide().connect([dlg]() { delete dlg; });
-  dlg->show();
+    struct PSnap {
+      SceneNode *obj;
+      PathData before;
+    };
+    std::vector<PSnap> psnaps;
+    for (SceneNode *leaf : leaves)
+      if (leaf->path)
+        psnaps.push_back({leaf, *leaf->path});
+    struct TSnap {
+      SceneNode *obj;
+      double bx, by;
+    };
+    std::vector<TSnap> tsnaps;
+    for (SceneNode *obj : direct)
+      tsnaps.push_back({obj, obj->is_text() ? obj->text_x : obj->image_x,
+                        obj->is_text() ? obj->text_y : obj->image_y});
+
+    auto rot = [&](double &x, double &y) {
+      double dx = x - px, dy = y - py;
+      x = px + dx * cos_a - dy * sin_a;
+      y = py + dx * sin_a + dy * cos_a;
+    };
+
+    for (SceneNode *leaf : leaves)
+      if (leaf->path)
+        for (auto &n : leaf->path->nodes) {
+          rot(n.x, n.y);
+          rot(n.cx1, n.cy1);
+          rot(n.cx2, n.cy2);
+        }
+    for (SceneNode *obj : direct) {
+      if (obj->is_text()) {
+        rot(obj->text_x, obj->text_y);
+      } else {
+        double cx = obj->image_x + obj->image_w * 0.5;
+        double cy = obj->image_y + obj->image_h * 0.5;
+        rot(cx, cy);
+        obj->image_x = cx - obj->image_w * 0.5;
+        obj->image_y = cy - obj->image_h * 0.5;
+      }
+    }
+
+    if (m_history) {
+      auto comp = std::make_unique<CompositeCommand>("Rotate from point");
+      for (auto &s : psnaps)
+        comp->add(std::make_unique<EditPathCommand>(
+            project(), s.obj->internal_id, s.before, *s.obj->path,
+            "Rotate from point"));
+      for (auto &s : tsnaps) {
+        double ax = s.obj->is_text() ? s.obj->text_x : s.obj->image_x;
+        double ay = s.obj->is_text() ? s.obj->text_y : s.obj->image_y;
+        comp->add(
+            std::make_unique<MoveObjectCommand>(
+                project(), s.obj->internal_id, s.bx, s.by, ax, ay));
+      }
+      if (!comp->steps.empty())
+        m_history->push(std::move(comp));
+    }
+    m_sig_doc_changed.emit();
+  }
+
+  // (3) always redraw — pivot may have moved even on the zero-angle path.
+  queue_draw();
 }
 
 void Canvas::on_text_begin(double sx, double sy) {

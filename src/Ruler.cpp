@@ -203,7 +203,17 @@ static void build_ruler_unit_popover(Gtk::Widget &widget, Gtk::Popover &pop,
   box->set_margin_end(6);
 
   for (auto &[lbl, unit] : k_units) {
-    auto *btn = Gtk::make_managed<Gtk::Button>(lbl);
+    // s209 m3 — substrate Button with the unregistered tag. The helper
+    // is called twice per launch (once per ruler in HRuler/VRuler
+    // ctors) and constructs 4 buttons each from the unit-list loop,
+    // so a registered abbrev would collide on the second-ruler call
+    // (and on every subsequent rebuild). Per-instance script
+    // addressability is meaningless here — the unit choice is the
+    // affordance, not the individual button. Force-multiplier
+    // instance of the s209 m1 pattern: one signature change, eight
+    // substrate widgets per app launch.
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>(
+                    curvz::scripting::unregistered, lbl);
     btn->add_css_class("flat");
     btn->add_css_class("tb-type-btn");
     btn->signal_clicked().connect([&pop, on_unit, unit = unit]() {

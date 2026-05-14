@@ -14,6 +14,19 @@ ToggleButton::ToggleButton(std::string_view name, const Glib::ustring& label)
     init_scriptable();
 }
 
+// s209 m2 — unregistered substrate ToggleButton.
+//
+// Mirrors the s209 m1 Button(unregistered_t, label) ctor. Forwards
+// the tag to the template's parallel ctor; bind_canonical() still
+// wires signal_toggled() to emit(); emit() short-circuits at the
+// Scriptable layer for unregistered instances. Uniform leaf shape
+// with the registered ctor by design — only the base-list
+// initialisation differs.
+ToggleButton::ToggleButton(unregistered_t, const Glib::ustring& label)
+    : ScriptableWidget<Gtk::ToggleButton>(unregistered, label) {
+    init_scriptable();
+}
+
 void ToggleButton::bind_canonical() {
     // signal_toggled fires whether the toggle was driven by real input
     // or by set_active() — so script-driven and user-driven paths

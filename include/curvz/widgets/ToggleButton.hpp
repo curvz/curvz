@@ -36,6 +36,17 @@ class ToggleButton
 public:
     ToggleButton(std::string_view name, const Glib::ustring& label = {});
 
+    // s209 m2 — unregistered substrate ToggleButton. The widget IS-A
+    // substrate ToggleButton (same universal verbs, same Gtk::ToggleButton
+    // surface, same lifecycle), but skips the script registry — its
+    // `toggled` emission is silent on the outbound channel and it
+    // can't be addressed by abbrev. Use this at call sites where
+    // multiple instances would otherwise collide on a shared abbrev
+    // (ContextBar's `add_toggle`, per-loop helper-multipliers, …).
+    // Mirrors the Button tagged ctor added in s209 m1.
+    ToggleButton(curvz::scripting::unregistered_t,
+                 const Glib::ustring& label = {});
+
     curvz::scripting::ScriptValue invoke_leaf(
             std::string_view verb,
             const curvz::scripting::ScriptArgs& args) override;

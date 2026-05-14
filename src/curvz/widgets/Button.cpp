@@ -11,6 +11,20 @@ Button::Button(std::string_view name, const Glib::ustring& label)
     init_scriptable();
 }
 
+// s209 m1 — unregistered substrate Button.
+//
+// Forwards the tag to the template's parallel ctor (which routes it
+// to Scriptable's unregistered ctor — empty name, m_registered=false).
+// Still calls init_scriptable(); bind_canonical() still wires
+// signal_clicked() to emit(); emit() short-circuits at the Scriptable
+// layer for unregistered instances. The leaf body is uniform with
+// the registered ctor by design — no special-casing here, only the
+// base-list initialisation differs.
+Button::Button(unregistered_t, const Glib::ustring& label)
+    : ScriptableWidget<Gtk::Button>(unregistered, label) {
+    init_scriptable();
+}
+
 void Button::bind_canonical() {
     signal_clicked().connect([this]() {
         emit("clicked", ScriptValue::null());

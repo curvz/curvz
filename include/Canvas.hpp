@@ -1,6 +1,7 @@
 #pragma once
 #include "CommandHistory.hpp"
 #include "CurvzDocument.hpp"
+#include "ImageInfo.hpp"  // s210 m1 — payload struct for signal_request_image_info
 #include "SceneNode.hpp"
 #include "SelectionContext.hpp"  // s158 m1 — capability classifier
 #include "Toolbar.hpp"
@@ -463,6 +464,21 @@ public:
     return m_sig_request_save_to_library;
   }
 
+  // s210 m1 — emitted when the user right-clicks an image SceneNode.
+  // The signal payload is a pre-baked ImageInfo (filename, path, pixel
+  // dims, format, depth, file size, mtime, placed size, linkage) —
+  // Canvas does the file-system reads (read_image_meta, last_write_time,
+  // format_file_size) before emitting; MainWindow's ImageInfoDialog
+  // member is a pure presenter. This replaces the prior inline
+  // `new Gtk::Window` self-deleting dialog that lived in Canvas.cpp
+  // (s125 m1g..m1j); the dialog is now an app-lifetime hide-on-close
+  // singleton living on MainWindow (mirrors s200 ThemeEditDialog and
+  // s201 StyleEditorDialog).
+  using RequestImageInfoSignal = sigc::signal<void(ImageInfo)>;
+  RequestImageInfoSignal &signal_request_image_info() {
+    return m_sig_request_image_info;
+  }
+
   // Pen tool — invoked from MainWindow key handler
   void commit_pen_path();
   void cancel_pen_path();
@@ -639,6 +655,35 @@ public:
   double custom_pivot_y()   const { return m_custom_pivot_y; }
   void   set_custom_pivot(double x, double y);
   void   clear_custom_pivot();
+
+  // s210 m2 — public seam for the rotate-from-point Apply path.
+  // Lifted out of Canvas_input.cpp's inline `on_pivot_dialog` apply
+  // handler when the dialog itself moved out to RotateFromPointDialog
+  // (the s200/s201 lifetime-conversion idiom). The dialog hands the
+  // three input values here via the CommittedFn closure; this method
+  // updates the pivot (delegated to set_custom_pivot so the
+  // pivot_changed signal still routes through that centralised seam),
+  // walks the selection (paths / text / image leaves), rotates every
+  // anchor + control around the pivot, and pushes one
+  // CompositeCommand ("Rotate from point") of EditPathCommand +
+  // MoveObjectCommand entries against m_history. No-op rotation when
+  // |angle_deg| < 0.0001 — the dialog can be Apply'd with angle 0 to
+  // commit only the pivot move, matching the pre-conversion behaviour.
+  void apply_rotate_from_point(double pivot_x, double pivot_y,
+                               double angle_deg);
+
+  // s210 m2 — emitted from on_pivot_dialog after the pivot is placed
+  // (right-click while R is held). MainWindow's RotateFromPointDialog
+  // member presents the angle entry and routes Apply back through
+  // apply_rotate_from_point. Replaces the prior inline
+  // `new Gtk::Window` self-deleting dialog. Payload is the doc-Y-down
+  // internal-coords pivot the dialog should seed its X/Y spinners
+  // from.
+  using RequestRotateFromPointSignal =
+      sigc::signal<void(double pivot_x, double pivot_y)>;
+  RequestRotateFromPointSignal& signal_request_rotate_from_point() {
+    return m_sig_request_rotate_from_point;
+  }
 
   // Called by MainWindow key handler to forward Space state — same reason.
   // Space held during left-drag → pan instead of tool action.
@@ -1790,6 +1835,16 @@ private:
   // s125 m1a: emitted from the canvas right-click context menu's
   // "Save to Library…" entry. See accessor banner above.
   RequestSaveToLibrarySignal m_sig_request_save_to_library;
+  // s210 m1: emitted from the canvas right-click handler on an image
+  // SceneNode. Payload pre-baked by Canvas; MainWindow's ImageInfoDialog
+  // presents it. See accessor banner above.
+  RequestImageInfoSignal m_sig_request_image_info;
+  // s210 m2: emitted from on_pivot_dialog after right-click-while-R-held
+  // places a custom pivot. Payload is the pivot doc-Y-down coords;
+  // MainWindow's RotateFromPointDialog presents the dialog and routes
+  // Apply back through Canvas::apply_rotate_from_point. See accessor
+  // banner above.
+  RequestRotateFromPointSignal m_sig_request_rotate_from_point;
   // s113 m3: emitted when outline mode flips for any reason (manual
   // toggle OR auto-engaged by the zoom-safety gate). MainWindow connects
   // this to sync the action checkmark and statusbar mode label so all
