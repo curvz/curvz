@@ -41,6 +41,20 @@ public:
     DropDown(std::string_view name,
               const Glib::RefPtr<Gtk::StringList>& model);
 
+    // s212 m2 — unregistered substrate DropDown. The widget IS-A substrate
+    // DropDown (same universal verbs, same Gtk::DropDown surface, same
+    // lifecycle), but skips the script registry — its `selected` emission
+    // is silent on the outbound channel and it can't be addressed by
+    // abbrev. Use this at call sites where multiple instances would
+    // otherwise collide on a shared abbrev (StylesPanel's `prompt_text`
+    // new-category dropdown built per-prompt, …). Mirrors the Button
+    // (s209 m1), ToggleButton (s209 m2), Entry (s211 m1), and SpinButton
+    // (s211 m2) tagged ctors. Only the StringList overload gets the tag
+    // for now — first-use site is the model-taking form, and substrate
+    // widening follows demand, not symmetry.
+    DropDown(curvz::scripting::unregistered_t,
+              const Glib::RefPtr<Gtk::StringList>& model);
+
     curvz::scripting::ScriptValue invoke_leaf(
             std::string_view verb,
             const curvz::scripting::ScriptArgs& args) override;

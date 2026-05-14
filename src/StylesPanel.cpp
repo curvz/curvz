@@ -9,6 +9,9 @@
 #include "style/StyleIO.hpp"           // S102 m1: import/export bridge
 #include "CurvzLog.hpp"                // S102 m1: LOG_WARN / LOG_INFO in handlers
 #include "curvz_utils.hpp"             // s117 m18 v2: apply_motif_class_from_parent
+#include "curvz/widgets/Button.hpp"    // s212 m2 — unregistered substrate Button for prompt_text variants
+#include "curvz/widgets/DropDown.hpp"  // s212 m2 — registered substrate DropDown (st_cat) + unregistered for new-category prompt
+#include "curvz/widgets/Entry.hpp"     // s212 m2 — unregistered substrate Entry for prompt_text variants
 
 #ifdef CURVZ_DIAGNOSTIC
 #include "scripting/StylesPanelScriptable.hpp"  // s202 m1: panel-as-Scriptable
@@ -374,11 +377,23 @@ void StylesPanel::refresh() {
     // lifetime — skip it. Anything else (the previous dropdown or
     // its placeholder) gets removed. Children are managed so GTK
     // owns them after remove.
+    //
+    // s212 m2: with `st_cat` now a registered substrate widget, the
+    // refresh path needs `force_unregister_subtree` BEFORE the
+    // `m_header.remove(...)` call — otherwise the next refresh's
+    // construction of `st_cat` would collide with the about-to-die
+    // predecessor whose registry entry hasn't been cleared yet
+    // (GTK4's deferred-destruction model means the destructor that
+    // would call force_unregister_subtree in its own dtor hasn't
+    // run yet at remove() time). Same discipline s208 m5 added to
+    // SwatchesPanel for `sw_pal`. Third canonical instance of the
+    // s199 m1 pump being used outside its PropertiesPanel home.
     {
         auto* child = m_header.get_first_child();
         while (child) {
             auto* next = child->get_next_sibling();
             if (child != static_cast<Gtk::Widget*>(&m_btn_add)) {
+                curvz::utils::force_unregister_subtree(child);
                 m_header.remove(*child);
             }
             child = next;
@@ -386,7 +401,18 @@ void StylesPanel::refresh() {
     }
 
     // Tear down body. Children are managed (Gtk::make_managed
-    // throughout) so ownership returns to GTK on remove.
+    // throughout) so ownership returns to GTK on remove. The body
+    // contains no substrate Scriptables today (chooser + active body
+    // are built from raw GTK widgets), but the force_unregister walk
+    // is null-safe and idempotent — adding it keeps the pattern
+    // uniform across both m_header and m_body teardowns, and any
+    // future substrate migration in the body is covered without
+    // further teardown changes (mirror of s208 m5's SwatchesPanel
+    // forward-discipline comment).
+    for (Gtk::Widget* c = m_body.get_first_child(); c;
+         c = c->get_next_sibling()) {
+        curvz::utils::force_unregister_subtree(c);
+    }
     while (auto* child = m_body.get_first_child())
         m_body.remove(*child);
 
@@ -473,7 +499,8 @@ void StylesPanel::build_chooser() {
         return;
     }
 
-    auto* drop = Gtk::make_managed<Gtk::DropDown>(string_list);
+    auto* drop = Gtk::make_managed<curvz::widgets::DropDown>(
+                     "st_cat", string_list);
     curvz::utils::set_name(drop, "st_cat", "styles_panel_category_dd");
     drop->set_hexpand(true);
     // S88: unified inspector dropdown styling. `flat` removes GTK4's
@@ -1709,15 +1736,22 @@ void StylesPanel::prompt_text(const std::string& title,
     root->set_margin(12);
     win->set_child(*root);
 
-    auto* entry = Gtk::make_managed<Gtk::Entry>();
+    // s212 m2 — unregistered substrate Entry + 2 Buttons. Variant 1
+    // of StylesPanel's two prompt_text shapes; identical shape to
+    // SwatchesPanel::prompt_text closed in s211 m2. Per-prompt
+    // transient with no script-addressability requirement.
+    auto* entry = Gtk::make_managed<curvz::widgets::Entry>(
+                       curvz::scripting::unregistered);
     entry->set_text(initial);
     entry->set_activates_default(true);
     root->append(*entry);
 
     auto* btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
     btn_row->set_halign(Gtk::Align::END);
-    auto* btn_cancel = Gtk::make_managed<Gtk::Button>("Cancel");
-    auto* btn_ok     = Gtk::make_managed<Gtk::Button>("OK");
+    auto* btn_cancel = Gtk::make_managed<curvz::widgets::Button>(
+                            curvz::scripting::unregistered, "Cancel");
+    auto* btn_ok     = Gtk::make_managed<curvz::widgets::Button>(
+                            curvz::scripting::unregistered, "OK");
     btn_ok->add_css_class("suggested-action");
     btn_ok->set_receives_default(true);
     btn_row->append(*btn_cancel);
@@ -1805,7 +1839,16 @@ void StylesPanel::prompt_category_picker(
     const guint new_row_index = strings->get_n_items();
     strings->append("+ New category…");
 
-    auto* dropdown = Gtk::make_managed<Gtk::DropDown>(strings);
+    // s212 m2 — unregistered substrate DropDown. Variant 2's
+    // category-picker dropdown rebuilt per-prompt with the running
+    // list of categories; the StringList is fresh each invocation,
+    // so there's no shared abbrev to register at. The DropDown
+    // substrate gained an unregistered ctor for this milestone
+    // (mirrors the s211 m2 SpinButton work — first-use site is the
+    // StringList-model form, basic-options form doesn't get a tag
+    // yet).
+    auto* dropdown = Gtk::make_managed<curvz::widgets::DropDown>(
+                          curvz::scripting::unregistered, strings);
     dropdown->set_hexpand(true);
     root->append(*dropdown);
 
@@ -1823,7 +1866,11 @@ void StylesPanel::prompt_category_picker(
     dropdown->set_selected(initial_index);
 
     // ── New-category entry (hidden unless "+ New" selected) ───────────────
-    auto* entry = Gtk::make_managed<Gtk::Entry>();
+    // s212 m2 — unregistered substrate Entry. Per-prompt transient,
+    // visibility-driven by the dropdown selection. No script-
+    // addressability requirement.
+    auto* entry = Gtk::make_managed<curvz::widgets::Entry>(
+                       curvz::scripting::unregistered);
     entry->set_placeholder_text("New category name");
     entry->set_activates_default(true);
     entry->set_visible(false);
@@ -1837,10 +1884,13 @@ void StylesPanel::prompt_category_picker(
     dropdown->property_selected().signal_changed().connect(sync_entry_visibility);
 
     // ── Buttons ──────────────────────────────────────────────────────────
+    // s212 m2 — unregistered substrate Cancel/OK Buttons.
     auto* btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
     btn_row->set_halign(Gtk::Align::END);
-    auto* btn_cancel = Gtk::make_managed<Gtk::Button>("Cancel");
-    auto* btn_ok     = Gtk::make_managed<Gtk::Button>("OK");
+    auto* btn_cancel = Gtk::make_managed<curvz::widgets::Button>(
+                            curvz::scripting::unregistered, "Cancel");
+    auto* btn_ok     = Gtk::make_managed<curvz::widgets::Button>(
+                            curvz::scripting::unregistered, "OK");
     btn_ok->add_css_class("suggested-action");
     btn_ok->set_receives_default(true);
     btn_row->append(*btn_cancel);

@@ -26,6 +26,23 @@ DropDown::DropDown(std::string_view name,
     init_scriptable();
 }
 
+// s212 m2 — unregistered substrate DropDown (StringList-model form).
+//
+// Forwards the tag to the template's parallel ctor (which routes it
+// to Scriptable's unregistered ctor — empty name, m_registered=false).
+// Model is set after the base ctor returns, matching the s189 m1
+// registered overload's shape exactly. Still calls init_scriptable();
+// bind_canonical() still wires property_selected to emit(); emit()
+// short-circuits at the Scriptable layer for unregistered instances.
+// Mirrors Button.cpp's s209 m1, ToggleButton.cpp's s209 m2,
+// Entry.cpp's s211 m1, and SpinButton.cpp's s211 m2 work.
+DropDown::DropDown(unregistered_t,
+                    const Glib::RefPtr<Gtk::StringList>& model)
+    : ScriptableWidget<Gtk::DropDown>(unregistered) {
+    set_model(model);
+    init_scriptable();
+}
+
 // s197 m2 — single-source-of-truth model accessor. The model lives on
 // the base Gtk::DropDown; we read it back via get_model() and cast to
 // StringList. Call sites that swap models at runtime (palette picker,

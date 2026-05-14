@@ -33,17 +33,25 @@
 #include "curvz/widgets/RefPointPicker.hpp"
 
 #include <gtkmm/box.h>
-#include <gtkmm/button.h>
-#include <gtkmm/checkbutton.h>
-#include <gtkmm/dropdown.h>
 #include <gtkmm/grid.h>
 #include <gtkmm/label.h>
 #include <gtkmm/separator.h>
 #include <gtkmm/stack.h>
-#include <gtkmm/togglebutton.h>
 #include <gtkmm/window.h>
 
 #include <functional>
+
+// s212 m3 — forward-declare the substrate widget types used by
+// pointer-held members below. Full includes live in the .cpp (the
+// s208 m5 header-coupling discipline). Avoids pulling
+// ScriptableWidget + Scriptable + ScriptValue into every TU that
+// includes TranslateDialog.hpp.
+namespace curvz::widgets {
+class Button;
+class DropDown;
+class SpinButton;
+class ToggleButton;
+}
 
 namespace Curvz {
 
@@ -136,11 +144,21 @@ private:
     Gtk::Stack     m_param_stack;
     Gtk::Separator m_btn_sep;
     Gtk::Box       m_btn_row{Gtk::Orientation::HORIZONTAL};
-    Gtk::Button    m_btn_close{"Close"};
-    Gtk::Button    m_btn_apply{"Apply"};
 
-    // Verb dropdown
-    Gtk::DropDown  m_verb_drop;
+    // s212 m3 — Close/Apply buttons flipped from value-held
+    // Gtk::Button members to substrate-pointer-held (mirrors s198 m1
+    // Toolbar zoom_spin/width_spin pattern). The substrate ctor takes
+    // the abbrev as a build-time arg, so the previous
+    // curvz::utils::set_name(...) calls collapse into the ctor. Build
+    // sites moved to make_managed in build_button_row().
+    curvz::widgets::Button* m_btn_close = nullptr;  // dlg_xlt_cls
+    curvz::widgets::Button* m_btn_apply = nullptr;  // dlg_xlt_app
+
+    // s212 m3 — Verb dropdown flipped from value-held to substrate-
+    // pointer-held. Same pattern as Close/Apply above. Built in
+    // build_action_row(), still set_model'd with the
+    // ("Move","Scale","Rotate","Skew") vector at construction time.
+    curvz::widgets::DropDown* m_verb_drop = nullptr;  // dlg_xlt_verb
 
     // Picker — rebuilt per-present() against the active CanvasModel.
     // Held by raw pointer because gtkmm Box::remove + make_managed re-
@@ -152,22 +170,22 @@ private:
     CurvzSpinButton* m_move_dx_spin = nullptr;
     CurvzSpinButton* m_move_dy_spin = nullptr;
 
-    // ── Scale row params ─────────────────────────────────────────────────
-    Gtk::Box*        m_scale_row     = nullptr;
-    Gtk::SpinButton* m_scale_sx_spin = nullptr;
-    Gtk::SpinButton* m_scale_sy_spin = nullptr;
-    Gtk::ToggleButton* m_scale_link_btn = nullptr;
-    bool             m_scale_linked = true;
+    // ── Scale row params (s212 m3: substrate) ────────────────────────────
+    Gtk::Box*                       m_scale_row      = nullptr;
+    curvz::widgets::SpinButton*     m_scale_sx_spin  = nullptr;  // dlg_xlt_sx
+    curvz::widgets::SpinButton*     m_scale_sy_spin  = nullptr;  // dlg_xlt_sy
+    curvz::widgets::ToggleButton*   m_scale_link_btn = nullptr;  // dlg_xlt_sln
+    bool                            m_scale_linked   = true;
 
-    // ── Rotate row params ────────────────────────────────────────────────
-    Gtk::Box*        m_rotate_row     = nullptr;
-    Gtk::SpinButton* m_rotate_a_spin  = nullptr;
+    // ── Rotate row params (s212 m3: substrate) ───────────────────────────
+    Gtk::Box*                       m_rotate_row     = nullptr;
+    curvz::widgets::SpinButton*     m_rotate_a_spin  = nullptr;  // dlg_xlt_ra
 
-    // ── Skew row params ──────────────────────────────────────────────────
-    Gtk::Box*           m_skew_row    = nullptr;
-    Gtk::ToggleButton*  m_skew_h_btn  = nullptr;  // grouped pair
-    Gtk::ToggleButton*  m_skew_v_btn  = nullptr;
-    Gtk::SpinButton*    m_skew_a_spin = nullptr;
+    // ── Skew row params (s212 m3: substrate) ─────────────────────────────
+    Gtk::Box*                       m_skew_row       = nullptr;
+    curvz::widgets::ToggleButton*   m_skew_h_btn     = nullptr;  // dlg_xlt_kh  (grouped pair)
+    curvz::widgets::ToggleButton*   m_skew_v_btn     = nullptr;  // dlg_xlt_kv
+    curvz::widgets::SpinButton*     m_skew_a_spin    = nullptr;  // dlg_xlt_ka
 
     // Reusable scratch for the spinner re-target on doc switch (and
     // because CurvzSpinButton wants a CanvasModel* by-construction).

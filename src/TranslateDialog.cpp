@@ -12,6 +12,15 @@
 #include "SceneNode.hpp"      // SceneNode, PathData, BezierNode
 #include "curvz_utils.hpp"
 
+// s212 m3 — full substrate widget includes (header used forward
+// decls per the s208 m5 discipline). The dialog dereferences
+// substrate pointers in its build / signal-connect / apply paths
+// throughout this TU, so the full type is needed here.
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/DropDown.hpp"
+#include "curvz/widgets/SpinButton.hpp"
+#include "curvz/widgets/ToggleButton.hpp"
+
 #include <gtkmm/stringlist.h>
 #include <algorithm>
 #include <cmath>
@@ -204,15 +213,21 @@ void TranslateDialog::build_action_row() {
     m_action_row.append(*lbl);
 
     auto verbs = Gtk::StringList::create({"Move", "Scale", "Rotate", "Skew"});
-    m_verb_drop.set_model(verbs);
-    m_verb_drop.set_selected(0);  // Move default
-    m_verb_drop.set_hexpand(true);
-    curvz::utils::set_name(m_verb_drop, "dlg_xlt_verb",
+    // s212 m3 — substrate DropDown. Abbrev folded into the ctor; the
+    // long-name annotation now lives in a comment alongside (substrate
+    // ctor is invisible to widget_names_sync's regex on
+    // curvz::utils::set_name, so the explicit set_name call remains
+    // below to keep the harvester picking up the long name).
+    m_verb_drop = Gtk::make_managed<curvz::widgets::DropDown>(
+                       "dlg_xlt_verb", verbs);
+    m_verb_drop->set_selected(0);  // Move default
+    m_verb_drop->set_hexpand(true);
+    curvz::utils::set_name(*m_verb_drop, "dlg_xlt_verb",
                            "translate_dialog_verb_dd");
-    m_verb_drop.property_selected().signal_changed().connect([this]() {
+    m_verb_drop->property_selected().signal_changed().connect([this]() {
         // Switch stack page to match the dropdown selection. Page names
         // are set in build_param_stack().
-        auto sel = m_verb_drop.get_selected();
+        auto sel = m_verb_drop->get_selected();
         const char* page = "move";
         switch (sel) {
             case 0: page = "move";   break;
@@ -223,7 +238,7 @@ void TranslateDialog::build_action_row() {
         }
         m_param_stack.set_visible_child(page);
     });
-    m_action_row.append(m_verb_drop);
+    m_action_row.append(*m_verb_drop);
 }
 
 void TranslateDialog::build_param_stack() {
@@ -262,11 +277,13 @@ Gtk::Box* TranslateDialog::build_scale_row() {
     row->append(*lbl_x);
 
     auto adj_sx = Gtk::Adjustment::create(100.0, 0.1, 10000.0, 0.1, 10.0);
-    m_scale_sx_spin = Gtk::make_managed<Gtk::SpinButton>(adj_sx, 0.1, 1);
+    // s212 m3 — substrate SpinButton (s189 m2 Adjustment overload).
+    m_scale_sx_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+                           "dlg_xlt_sx", adj_sx, 0.1, 1);
     m_scale_sx_spin->set_width_chars(8);
     m_scale_sx_spin->add_css_class("prop-width-entry");
     m_scale_sx_spin->add_css_class("node-spin");
-    curvz::utils::set_name(m_scale_sx_spin, "dlg_xlt_sx",
+    curvz::utils::set_name(*m_scale_sx_spin, "dlg_xlt_sx",
                            "translate_dialog_scale_x_spn");
     row->append(*m_scale_sx_spin);
 
@@ -275,7 +292,12 @@ Gtk::Box* TranslateDialog::build_scale_row() {
     row->append(*unit_x);
 
     // Link toggle — same monochrome dim/bright style as the inspector
-    m_scale_link_btn = Gtk::make_managed<Gtk::ToggleButton>();
+    // s212 m3 — substrate ToggleButton. Existing abbrev `dlg_xlt_sln`
+    // from the s205 m4 set_name preserved (the header member-comment
+    // said `dlg_xlt_lnk` — claude's first guess — but the existing
+    // set_name is authoritative).
+    m_scale_link_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+                            "dlg_xlt_sln");
     m_scale_link_btn->set_active(m_scale_linked);
     m_scale_link_btn->set_tooltip_text("Link X/Y scale");
     m_scale_link_btn->add_css_class("flat");
@@ -286,7 +308,7 @@ Gtk::Box* TranslateDialog::build_scale_row() {
         m_scale_linked = m_scale_link_btn->get_active();
         m_scale_link_btn->set_opacity(m_scale_linked ? 1.0 : 0.3);
     });
-    curvz::utils::set_name(m_scale_link_btn, "dlg_xlt_sln",
+    curvz::utils::set_name(*m_scale_link_btn, "dlg_xlt_sln",
                            "translate_dialog_scale_link_toggle");
     row->append(*m_scale_link_btn);
 
@@ -295,11 +317,13 @@ Gtk::Box* TranslateDialog::build_scale_row() {
     row->append(*lbl_y);
 
     auto adj_sy = Gtk::Adjustment::create(100.0, 0.1, 10000.0, 0.1, 10.0);
-    m_scale_sy_spin = Gtk::make_managed<Gtk::SpinButton>(adj_sy, 0.1, 1);
+    // s212 m3 — substrate SpinButton (s189 m2 Adjustment overload).
+    m_scale_sy_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+                           "dlg_xlt_sy", adj_sy, 0.1, 1);
     m_scale_sy_spin->set_width_chars(8);
     m_scale_sy_spin->add_css_class("prop-width-entry");
     m_scale_sy_spin->add_css_class("node-spin");
-    curvz::utils::set_name(m_scale_sy_spin, "dlg_xlt_sy",
+    curvz::utils::set_name(*m_scale_sy_spin, "dlg_xlt_sy",
                            "translate_dialog_scale_y_spn");
     row->append(*m_scale_sy_spin);
 
@@ -331,11 +355,13 @@ Gtk::Box* TranslateDialog::build_rotate_row() {
     row->append(*lbl);
 
     auto adj_a = Gtk::Adjustment::create(0.0, -360.0, 360.0, 0.1, 10.0);
-    m_rotate_a_spin = Gtk::make_managed<Gtk::SpinButton>(adj_a, 0.1, 3);
+    // s212 m3 — substrate SpinButton (s189 m2 Adjustment overload).
+    m_rotate_a_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+                           "dlg_xlt_ra", adj_a, 0.1, 3);
     m_rotate_a_spin->set_width_chars(10);
     m_rotate_a_spin->add_css_class("prop-width-entry");
     m_rotate_a_spin->add_css_class("node-spin");
-    curvz::utils::set_name(m_rotate_a_spin, "dlg_xlt_ra",
+    curvz::utils::set_name(*m_rotate_a_spin, "dlg_xlt_ra",
                            "translate_dialog_rotate_a_spn");
     row->append(*m_rotate_a_spin);
 
@@ -361,14 +387,18 @@ Gtk::Box* TranslateDialog::build_skew_row() {
     // active toggle visibly stands out. min-height 17px and font-size
     // 10px keep the row tight; min-width 0 lets the buttons size to
     // their 1-char content rather than GTK's default button width.
-    m_skew_h_btn = Gtk::make_managed<Gtk::ToggleButton>("H");
-    m_skew_v_btn = Gtk::make_managed<Gtk::ToggleButton>("V");
+    // s212 m3 — substrate ToggleButtons. Existing abbrevs `dlg_xlt_kh`
+    // / `dlg_xlt_kv` from the s205 m4 set_name preserved.
+    m_skew_h_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+                        "dlg_xlt_kh", "H");
+    m_skew_v_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+                        "dlg_xlt_kv", "V");
     m_skew_h_btn->set_active(true);
     m_skew_h_btn->add_css_class("prop-toggle");
     m_skew_v_btn->add_css_class("prop-toggle");
-    curvz::utils::set_name(m_skew_h_btn, "dlg_xlt_kh",
+    curvz::utils::set_name(*m_skew_h_btn, "dlg_xlt_kh",
                            "translate_dialog_skew_h_toggle");
-    curvz::utils::set_name(m_skew_v_btn, "dlg_xlt_kv",
+    curvz::utils::set_name(*m_skew_v_btn, "dlg_xlt_kv",
                            "translate_dialog_skew_v_toggle");
 
     // Mutual exclusion: when one goes on, the other goes off. At least
@@ -397,11 +427,13 @@ Gtk::Box* TranslateDialog::build_skew_row() {
     row->append(*lbl_a);
 
     auto adj_a = Gtk::Adjustment::create(0.0, -89.0, 89.0, 0.1, 5.0);
-    m_skew_a_spin = Gtk::make_managed<Gtk::SpinButton>(adj_a, 0.1, 3);
+    // s212 m3 — substrate SpinButton (s189 m2 Adjustment overload).
+    m_skew_a_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+                         "dlg_xlt_ka", adj_a, 0.1, 3);
     m_skew_a_spin->set_width_chars(10);
     m_skew_a_spin->add_css_class("prop-width-entry");
     m_skew_a_spin->add_css_class("node-spin");
-    curvz::utils::set_name(m_skew_a_spin, "dlg_xlt_ka",
+    curvz::utils::set_name(*m_skew_a_spin, "dlg_xlt_ka",
                            "translate_dialog_skew_a_spn");
     row->append(*m_skew_a_spin);
 
@@ -415,16 +447,22 @@ Gtk::Box* TranslateDialog::build_skew_row() {
 void TranslateDialog::build_button_row() {
     m_btn_row.set_spacing(8);
     m_btn_row.set_halign(Gtk::Align::END);
-    curvz::utils::set_name(m_btn_close, "dlg_xlt_cls",
+    // s212 m3 — Close/Apply substrate buttons. Abbrevs in the ctor;
+    // explicit set_name retained for the widget_names_sync harvester.
+    m_btn_close = Gtk::make_managed<curvz::widgets::Button>(
+                       "dlg_xlt_cls", "Close");
+    m_btn_apply = Gtk::make_managed<curvz::widgets::Button>(
+                       "dlg_xlt_app", "Apply");
+    curvz::utils::set_name(*m_btn_close, "dlg_xlt_cls",
                            "translate_dialog_close_btn");
-    curvz::utils::set_name(m_btn_apply, "dlg_xlt_app",
+    curvz::utils::set_name(*m_btn_apply, "dlg_xlt_app",
                            "translate_dialog_apply_btn");
-    m_btn_apply.add_css_class("suggested-action");
-    m_btn_row.append(m_btn_close);
-    m_btn_row.append(m_btn_apply);
+    m_btn_apply->add_css_class("suggested-action");
+    m_btn_row.append(*m_btn_close);
+    m_btn_row.append(*m_btn_apply);
 
-    m_btn_close.signal_clicked().connect([this]() { hide(); });
-    m_btn_apply.signal_clicked().connect(
+    m_btn_close->signal_clicked().connect([this]() { hide(); });
+    m_btn_apply->signal_clicked().connect(
         [this]() { apply_current_verb(); });
 }
 
@@ -597,7 +635,7 @@ bool TranslateDialog::current_pivot(double& out_px, double& out_py) {
 void TranslateDialog::apply_current_verb() {
     if (!m_canvas || !m_history || !m_project) return;
 
-    auto sel = m_verb_drop.get_selected();
+    auto sel = m_verb_drop->get_selected();
     switch (sel) {
         case 0: do_move();   break;
         case 1: do_scale();  break;
