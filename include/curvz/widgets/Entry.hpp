@@ -24,6 +24,18 @@ class Entry
 public:
     explicit Entry(std::string_view name);
 
+    // s211 m1 — unregistered substrate Entry. The widget IS-A
+    // substrate Entry (same universal verbs, same Gtk::Entry
+    // surface, same lifecycle), but skips the script registry — its
+    // `changed` emission is silent on the outbound channel and it
+    // can't be addressed by abbrev. Use this at call sites where
+    // multiple instances would otherwise collide on a shared abbrev
+    // (DocumentGallery's per-tile rename Entry, MacroEditorWindow's
+    // per-property add_entry lambda, SwatchesPanel's prompt_text
+    // transient builders, …). Mirrors the Button tagged ctor added
+    // in s209 m1 and the ToggleButton tagged ctor added in s209 m2.
+    Entry(curvz::scripting::unregistered_t);
+
     curvz::scripting::ScriptValue invoke_leaf(
             std::string_view verb,
             const curvz::scripting::ScriptArgs& args) override;

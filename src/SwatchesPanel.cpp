@@ -14,6 +14,8 @@
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
 #include "curvz/widgets/DropDown.hpp"  // s208 m5 — substrate palette dropdown
+#include "curvz/widgets/Button.hpp"    // s211 m2 — unregistered substrate Button for prompt_text dialog
+#include "curvz/widgets/Entry.hpp"     // s211 m2 — unregistered substrate Entry for prompt_text dialog
 
 #include <cairomm/context.h>
 #include <cctype>
@@ -983,15 +985,27 @@ void SwatchesPanel::prompt_text(const std::string& title,
     root->set_margin(12);
     win->set_child(*root);
 
-    auto* entry = Gtk::make_managed<Gtk::Entry>();
+    // s211 m2 — unregistered substrate Entry + 2 Buttons. `prompt_text`
+    // is called per-prompt (new-palette name, swatch-name edit, rename
+    // palette) — each invocation builds a fresh transient Gtk::Window
+    // with three widgets inside. Shared abbrevs (`pop_pt_ent`,
+    // `pop_pt_cnc`, `pop_pt_ok`) would collide across simultaneous
+    // prompts. The interaction surface is fully local (Enter or OK
+    // commits, Cancel closes, focus-loss does nothing) — no script
+    // addressability needed. The transient window itself stays as a
+    // raw Gtk::Window (substrate doesn't cover windows; not in scope).
+    auto* entry = Gtk::make_managed<curvz::widgets::Entry>(
+                       curvz::scripting::unregistered);
     entry->set_text(initial);
     entry->set_activates_default(true);
     root->append(*entry);
 
     auto* btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
     btn_row->set_halign(Gtk::Align::END);
-    auto* btn_cancel = Gtk::make_managed<Gtk::Button>("Cancel");
-    auto* btn_ok     = Gtk::make_managed<Gtk::Button>("OK");
+    auto* btn_cancel = Gtk::make_managed<curvz::widgets::Button>(
+                            curvz::scripting::unregistered, "Cancel");
+    auto* btn_ok     = Gtk::make_managed<curvz::widgets::Button>(
+                            curvz::scripting::unregistered, "OK");
     btn_ok->add_css_class("suggested-action");
     btn_ok->set_receives_default(true);
     btn_row->append(*btn_cancel);

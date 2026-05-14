@@ -1,6 +1,7 @@
 #include "HelpWindow.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
+#include "curvz/widgets/Button.hpp"  // s211 m2 — unregistered substrate Button for per-leaf sidebar rows
 
 #include <cmark.h>
 #include <gio/gio.h>
@@ -900,7 +901,14 @@ void HelpWindow::build_sidebar() {
 
     Gtk::Widget *leaf_widget = nullptr;
     if (t.available) {
-      auto *btn = Gtk::make_managed<Gtk::Button>();
+      // s211 m2 — unregistered substrate Button. Per-leaf transient
+      // built inside `build_sidebar`'s topic-iteration loop; the help
+      // outline has N leaves so any shared abbrev would collide. The
+      // leaf's `select_leaf(leaf_idx)` click handler is the only
+      // interaction surface — no per-leaf script addressability
+      // needed. Same pattern as ContextBar's add_btn (s209 m1).
+      auto *btn = Gtk::make_managed<curvz::widgets::Button>(
+                      curvz::scripting::unregistered);
       btn->add_css_class("flat");
       btn->add_css_class("help-leaf");
       auto *lbl = Gtk::make_managed<Gtk::Label>(t.title);

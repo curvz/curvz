@@ -13,6 +13,21 @@ Entry::Entry(std::string_view name)
     init_scriptable();
 }
 
+// s211 m1 — unregistered substrate Entry.
+//
+// Forwards the tag to the template's parallel ctor (which routes it
+// to Scriptable's unregistered ctor — empty name, m_registered=false).
+// Still calls init_scriptable(); bind_canonical() still wires
+// signal_changed() to emit(); emit() short-circuits at the Scriptable
+// layer for unregistered instances. The leaf body is uniform with
+// the registered ctor by design — no special-casing here, only the
+// base-list initialisation differs. Mirrors Button.cpp's s209 m1 work
+// and ToggleButton.cpp's s209 m2 work.
+Entry::Entry(unregistered_t)
+    : ScriptableWidget<Gtk::Entry>(unregistered) {
+    init_scriptable();
+}
+
 void Entry::bind_canonical() {
     signal_changed().connect([this]() {
         emit("changed", ScriptValue::text(get_text()));

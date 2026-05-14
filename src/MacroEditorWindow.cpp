@@ -1,6 +1,8 @@
 #include "MacroEditorWindow.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
+#include "curvz/widgets/SpinButton.hpp"  // s211 m2 — unregistered substrate SpinButton for add_spin lambda
+#include "curvz/widgets/Entry.hpp"       // s211 m2 — unregistered substrate Entry for add_entry lambda
 #include <gtkmm/gestureclick.h>
 #include <gtkmm/eventcontrollerkey.h>
 #include <gtkmm/adjustment.h>
@@ -251,7 +253,17 @@ void MacroEditorWindow::rebuild_property_editor() {
 
         auto adj = Gtk::Adjustment::create(val, lo, hi, step_inc, step_inc * 10);
         m_adjs.push_back(adj);
-        auto* spin = Gtk::make_managed<Gtk::SpinButton>(adj, step_inc, digits);
+        // s211 m2 — unregistered substrate SpinButton (Adjustment-taking
+        // form). Per-property transient built inside the `add_spin`
+        // lambda inside `rebuild_property_editor`; the lambda is called
+        // multiple times per rebuild (once per macro field) with no
+        // field-specific abbrev. The `adj->signal_value_changed`
+        // connection below is the interaction surface — no per-spin
+        // script addressability needed. The Adjustment overload was
+        // added to the substrate for this site.
+        auto* spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+                          curvz::scripting::unregistered,
+                          adj, step_inc, digits);
         spin->set_hexpand(true);
         spin->set_numeric(true);
         m_prop_grid.attach(*spin, 1, row);
@@ -270,7 +282,15 @@ void MacroEditorWindow::rebuild_property_editor() {
         lbl->set_xalign(1.0f);
         m_prop_grid.attach(*lbl, 0, row);
 
-        auto* entry = Gtk::make_managed<Gtk::Entry>();
+        // s211 m2 — unregistered substrate Entry. Per-property
+        // transient built inside the `add_entry` lambda inside
+        // `rebuild_property_editor`; same shape as the `add_spin`
+        // lambda above. Signal-activate handler is the only
+        // interaction surface — no per-entry script addressability
+        // needed. Mirrors DocumentGallery's s211 m1 application of
+        // the Entry tagged ctor.
+        auto* entry = Gtk::make_managed<curvz::widgets::Entry>(
+                          curvz::scripting::unregistered);
         entry->set_text(val);
         entry->set_hexpand(true);
         m_prop_grid.attach(*entry, 1, row);

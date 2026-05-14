@@ -31,6 +31,24 @@ SpinButton::SpinButton(std::string_view name,
     init_scriptable();
 }
 
+// s211 m2 — unregistered substrate SpinButton (Adjustment-taking form).
+//
+// Forwards the tag to the template's parallel ctor (which routes it
+// to Scriptable's unregistered ctor — empty name, m_registered=false);
+// the trailing (adj, climb_rate, digits) goes to Gtk::SpinButton's
+// adjustment-taking ctor via perfect-forwarding. Still calls
+// init_scriptable(); bind_canonical() still wires
+// signal_value_changed() to emit(); emit() short-circuits at the
+// Scriptable layer for unregistered instances. Mirrors Button.cpp's
+// s209 m1 work, ToggleButton.cpp's s209 m2 work, and Entry.cpp's
+// s211 m1 work.
+SpinButton::SpinButton(unregistered_t,
+                       Glib::RefPtr<Gtk::Adjustment> adj,
+                       double climb_rate, int digits)
+    : ScriptableWidget<Gtk::SpinButton>(unregistered, adj, climb_rate, digits) {
+    init_scriptable();
+}
+
 void SpinButton::bind_canonical() {
     signal_value_changed().connect([this]() {
         emit("value_changed", ScriptValue::real(get_value()));

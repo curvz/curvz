@@ -48,6 +48,23 @@ public:
                 Glib::RefPtr<Gtk::Adjustment> adj,
                 double climb_rate, int digits = 0);
 
+    // s211 m2 — unregistered substrate SpinButton (Adjustment-taking
+    // form). The widget IS-A substrate SpinButton (same universal
+    // verbs, same Gtk::SpinButton surface, same lifecycle), but skips
+    // the script registry — its `value_changed` emission is silent on
+    // the outbound channel and it can't be addressed by abbrev. Use
+    // this at call sites where multiple instances would otherwise
+    // collide on a shared abbrev (MacroEditorWindow's per-property
+    // `add_spin` lambda, PropertiesPanel's per-row spin helpers if
+    // they ever land here, …). Mirrors the Button ctor added in
+    // s209 m1, the ToggleButton ctor added in s209 m2, and the Entry
+    // ctor added in s211 m1. The (min, max, step, digits) form
+    // doesn't get a tagged ctor yet — first need is the Adjustment
+    // form, and the leaf shape is uniform via perfect forwarding.
+    SpinButton(curvz::scripting::unregistered_t,
+               Glib::RefPtr<Gtk::Adjustment> adj,
+               double climb_rate, int digits = 0);
+
     curvz::scripting::ScriptValue invoke_leaf(
             std::string_view verb,
             const curvz::scripting::ScriptArgs& args) override;

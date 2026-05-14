@@ -4,6 +4,7 @@
 #include "SvgWriter.hpp"
 #include "curvz_utils.hpp"   // s135 m2 — cairo_set_source_pixbuf pump
 #include "curvz/widgets/DropDown.hpp"  // s208 m5 — substrate system-tab dropdowns
+#include "curvz/widgets/Entry.hpp"     // s211 m1 — unregistered substrate Entry for per-tile rename
 #include "math/BezierPath.hpp"
 #include <algorithm>
 #include <cairomm/cairomm.h>
@@ -677,7 +678,15 @@ void DocumentGallery::rebuild_project_tab() {
     const std::string orig_name = name;
     auto begin_rename = [this, vbox, name_label, dc_idx, orig_name]() {
       // Replace label with Entry
-      auto *entry = Gtk::make_managed<Gtk::Entry>();
+      // s211 m1 — unregistered substrate Entry. Per-tile transient
+      // built inside a gesture-triggered lambda; the gallery has N
+      // tiles so any shared abbrev (e.g. "gal_rename") would collide
+      // across simultaneous renames. The rename UX is fully local to
+      // the tile (Enter commits, Esc reverts, focus-loss commits via
+      // the explicit `commit` slot below) — no script-addressability
+      // requirement. Same pattern as ContextBar's add_btn (s209 m1).
+      auto *entry = Gtk::make_managed<curvz::widgets::Entry>(
+                        curvz::scripting::unregistered);
       entry->set_text(orig_name);
       entry->set_max_width_chars(8);
       entry->set_width_chars(8);
@@ -812,7 +821,12 @@ void DocumentGallery::rebuild_project_tab() {
     const int ridx = i;
     const std::string row_orig_name = name;
     auto begin_rename_row = [this, row_box, row_label, ridx, row_orig_name]() {
-      auto *entry = Gtk::make_managed<Gtk::Entry>();
+      // s211 m1 — unregistered substrate Entry. Same rationale as the
+      // icon-mode `begin_rename` lambda above: per-tile transient
+      // built inside a gesture-triggered lambda, no shared abbrev to
+      // collide on, no script-addressability needed.
+      auto *entry = Gtk::make_managed<curvz::widgets::Entry>(
+                        curvz::scripting::unregistered);
       entry->set_text(row_orig_name);
       entry->set_hexpand(true);
       entry->set_margin_start(4);

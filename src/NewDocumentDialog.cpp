@@ -2,6 +2,7 @@
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
 #include "curvz/widgets/DropDown.hpp"  // s208 m5 — substrate theme dropdown
+#include "curvz/widgets/Button.hpp"  // s211 m2 — unregistered substrate Button for preset-button loops
 #include <algorithm>
 #include <cairomm/cairomm.h>
 #include <cmath>
@@ -908,7 +909,16 @@ Gtk::Widget &NewDocumentDialog::build_pixel_tab() {
   preset_row->append(*preset_lbl);
 
   for (int px : PX_PRESETS) {
-    auto *btn = Gtk::make_managed<Gtk::Button>(std::to_string(px));
+    // s211 m2 — unregistered substrate Button. Per-preset transient
+    // built inside `build_pixel_tab`'s `for (int px : PX_PRESETS)`
+    // loop; preset count is fixed but each tab rebuild constructs
+    // fresh instances, so a shared abbrev would collide on the
+    // singleton dialog's per-show rebuild. The click handler is the
+    // only interaction surface — no per-button script addressability
+    // needed.
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>(
+                    curvz::scripting::unregistered,
+                    std::to_string(px));
     btn->add_css_class("flat");
     btn->signal_clicked().connect([this, px]() {
       m_updating = true;
@@ -1012,7 +1022,11 @@ Gtk::Widget &NewDocumentDialog::build_ratio_tab() {
   preset_row->append(*preset_lbl);
 
   for (const auto &p : RATIO_PRESETS) {
-    auto *btn = Gtk::make_managed<Gtk::Button>(p.label);
+    // s211 m2 — unregistered substrate Button. Same rationale as the
+    // pixel-tab preset loop above: per-preset transient with no
+    // script-addressability requirement.
+    auto *btn = Gtk::make_managed<curvz::widgets::Button>(
+                    curvz::scripting::unregistered, p.label);
     btn->add_css_class("flat");
     btn->signal_clicked().connect([this, p]() {
       m_updating = true;
