@@ -11,6 +11,22 @@ CheckButton::CheckButton(std::string_view name, const Glib::ustring& label)
     init_scriptable();
 }
 
+// s213 m1 — unregistered substrate CheckButton.
+//
+// Forwards the tag to the template's parallel ctor (which routes it
+// to Scriptable's unregistered ctor — empty name, m_registered=false).
+// Still calls init_scriptable(); bind_canonical() still wires
+// signal_toggled() to emit(); emit() short-circuits at the Scriptable
+// layer for unregistered instances. The leaf body is uniform with
+// the registered ctor by design — no special-casing here, only the
+// base-list initialisation differs. Mirrors Button.cpp's s209 m1 work,
+// ToggleButton.cpp's s209 m2 work, Entry.cpp's s211 m1 work,
+// SpinButton.cpp's s211 m2 work, and DropDown.cpp's s212 m2 work.
+CheckButton::CheckButton(unregistered_t, const Glib::ustring& label)
+    : ScriptableWidget<Gtk::CheckButton>(unregistered, label) {
+    init_scriptable();
+}
+
 void CheckButton::bind_canonical() {
     signal_toggled().connect([this]() {
         emit("toggled", ScriptValue::boolean(get_active()));

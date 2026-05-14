@@ -2,16 +2,21 @@
 #include "MacroSystem.hpp"
 #include <gtkmm/window.h>
 #include <gtkmm/box.h>
-#include <gtkmm/button.h>
 #include <gtkmm/label.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/separator.h>
-#include <gtkmm/entry.h>
 #include <gtkmm/revealer.h>
 #include <gtkmm/popover.h>
 #include <functional>
 #include <unordered_map>
 #include <string>
+
+// s213 m3 — forward-declare the substrate widget types used by
+// pointer-held members below. Full includes live in the .cpp (the
+// s208 m5 / s212 m3 / s213 m2 header-coupling discipline).
+namespace curvz::widgets {
+class Button;
+}  // namespace curvz::widgets
 
 namespace Curvz {
 
@@ -78,9 +83,18 @@ private:
     // ── Widgets ───────────────────────────────────────────────────────────
     // Action bar
     Gtk::Box    m_action_bar   { Gtk::Orientation::HORIZONTAL };
-    Gtk::Button m_btn_record;
-    Gtk::Button m_btn_stop;
-    Gtk::Button m_btn_run;
+    // s213 m3 — value→pointer flips for the action-bar + footer Buttons.
+    // Substrate ctors take the abbrev as a build-time arg, so value-held
+    // members can't carry the substrate type — they flip to pointer-held
+    // with construction moved into the ctor body. Same shape as
+    // TranslateDialog s212 m3, PrintManager s213 m2, and the s198 m1
+    // Toolbar precedent. All six are persistent for app lifetime
+    // (MacroManagerWindow is MainWindow-owned and hide-on-close), so
+    // registered substrate is the right choice — no rebuild-path
+    // collision risk.
+    curvz::widgets::Button* m_btn_record = nullptr;
+    curvz::widgets::Button* m_btn_stop   = nullptr;
+    curvz::widgets::Button* m_btn_run    = nullptr;
     Gtk::Label  m_current_label;   // shows name of current macro
 
     // Content
@@ -89,9 +103,9 @@ private:
 
     // Footer
     Gtk::Box    m_footer       { Gtk::Orientation::HORIZONTAL };
-    Gtk::Button m_btn_add_folder;
-    Gtk::Button m_btn_add_macro;
-    Gtk::Button m_btn_delete;
+    curvz::widgets::Button* m_btn_add_folder = nullptr;
+    curvz::widgets::Button* m_btn_add_macro  = nullptr;
+    curvz::widgets::Button* m_btn_delete     = nullptr;
 
     // ── State ─────────────────────────────────────────────────────────────
     std::string m_selected_macro_id;   // highlighted row

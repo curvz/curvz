@@ -1,6 +1,10 @@
 #include "PrintManager.hpp"
 #include "CurvzLog.hpp"
 #include "DocUnits.hpp"
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/CheckButton.hpp"
+#include "curvz/widgets/SpinButton.hpp"
+#include "curvz/widgets/ToggleButton.hpp"
 #include "curvz_utils.hpp"
 #include "math/BezierPath.hpp"
 #include <gtkmm/printoperation.h>
@@ -79,37 +83,52 @@ void PrintManager::build_ui() {
     auto *style_lbl = Gtk::make_managed<Gtk::Label>("Style:");
     style_lbl->set_xalign(0.0f);
     m_style_bar.append(*style_lbl);
-    m_sheet_btn.set_active(true);
-    m_sheet_btn.add_css_class("tb-type-btn");
-    m_plot_btn.add_css_class("tb-type-btn");
-    m_normal_btn.add_css_class("tb-type-btn");
-    curvz::utils::set_name(m_sheet_btn, "win_pr_sht", "print_manager_window_sheet_toggle");
-    curvz::utils::set_name(m_plot_btn, "win_pr_plt", "print_manager_window_plot_toggle");
-    curvz::utils::set_name(m_normal_btn, "win_pr_nrm", "print_manager_window_normal_toggle");
+
+    // s213 m2 — registered substrate ToggleButtons (value→pointer flip
+    // from the value-held members in s211-era PrintManager.hpp). All
+    // three are persistent for the PrintManager's app-lifetime (the
+    // window is MainWindow-owned and `set_hide_on_close(true)`), so
+    // registered substrate is the right choice — no rebuild-path
+    // collision risk. Explicit `set_name` calls retained for
+    // widget_names_sync's harvester (same discipline TranslateDialog
+    // applied in s212 m3).
+    m_sheet_btn  = Gtk::make_managed<curvz::widgets::ToggleButton>(
+        "win_pr_sht", "Sheet");
+    m_plot_btn   = Gtk::make_managed<curvz::widgets::ToggleButton>(
+        "win_pr_plt", "Plot");
+    m_normal_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+        "win_pr_nrm", "Normal");
+    m_sheet_btn->set_active(true);
+    m_sheet_btn->add_css_class("tb-type-btn");
+    m_plot_btn->add_css_class("tb-type-btn");
+    m_normal_btn->add_css_class("tb-type-btn");
+    curvz::utils::set_name(*m_sheet_btn, "win_pr_sht", "print_manager_window_sheet_toggle");
+    curvz::utils::set_name(*m_plot_btn, "win_pr_plt", "print_manager_window_plot_toggle");
+    curvz::utils::set_name(*m_normal_btn, "win_pr_nrm", "print_manager_window_normal_toggle");
     // All three buttons share the same group so they act as a radio set.
-    m_sheet_btn.set_group(m_plot_btn);
-    m_normal_btn.set_group(m_plot_btn);
-    m_sheet_btn.signal_toggled().connect([this]() {
-        if (m_sheet_btn.get_active()) {
+    m_sheet_btn->set_group(*m_plot_btn);
+    m_normal_btn->set_group(*m_plot_btn);
+    m_sheet_btn->signal_toggled().connect([this]() {
+        if (m_sheet_btn->get_active()) {
             m_style = Style::Sheet;
             update_style_panel();
         }
     });
-    m_plot_btn.signal_toggled().connect([this]() {
-        if (m_plot_btn.get_active()) {
+    m_plot_btn->signal_toggled().connect([this]() {
+        if (m_plot_btn->get_active()) {
             m_style = Style::Plot;
             update_style_panel();
         }
     });
-    m_normal_btn.signal_toggled().connect([this]() {
-        if (m_normal_btn.get_active()) {
+    m_normal_btn->signal_toggled().connect([this]() {
+        if (m_normal_btn->get_active()) {
             m_style = Style::Normal;
             update_style_panel();
         }
     });
-    m_style_bar.append(m_sheet_btn);
-    m_style_bar.append(m_plot_btn);
-    m_style_bar.append(m_normal_btn);
+    m_style_bar.append(*m_sheet_btn);
+    m_style_bar.append(*m_plot_btn);
+    m_style_bar.append(*m_normal_btn);
     right->append(m_style_bar);
 
     // Options frame
@@ -137,7 +156,11 @@ void PrintManager::build_ui() {
     m_bottom_bar.set_margin_start(10);
     m_bottom_bar.set_margin_end(10);
 
-    auto *page_btn = Gtk::make_managed<Gtk::Button>("Page Setup…");
+    // s213 m2 — registered substrate Button. Built once in build_ui()
+    // and persists for the PrintManager's app lifetime; no rebuild-path
+    // collision risk. Explicit set_name retained for widget_names_sync.
+    auto *page_btn = Gtk::make_managed<curvz::widgets::Button>(
+        "win_pr_pg", "Page Setup…");
     curvz::utils::set_name(page_btn, "win_pr_pg", "print_manager_window_page_setup_btn");
     page_btn->signal_clicked().connect([this]() {
         // gtk_print_run_page_setup_dialog is the GTK4 way — modal, returns new setup
@@ -154,12 +177,16 @@ void PrintManager::build_ui() {
     spacer->set_hexpand(true);
     m_bottom_bar.append(*spacer);
 
-    auto *cancel_btn = Gtk::make_managed<Gtk::Button>("Cancel");
+    // s213 m2 — registered substrate Button (single-shot in build_ui).
+    auto *cancel_btn = Gtk::make_managed<curvz::widgets::Button>(
+        "win_pr_cnc", "Cancel");
     curvz::utils::set_name(cancel_btn, "win_pr_cnc", "print_manager_window_cancel_btn");
     cancel_btn->signal_clicked().connect([this]() { hide(); });
     m_bottom_bar.append(*cancel_btn);
 
-    auto *print_btn = Gtk::make_managed<Gtk::Button>("Print");
+    // s213 m2 — registered substrate Button (single-shot in build_ui).
+    auto *print_btn = Gtk::make_managed<curvz::widgets::Button>(
+        "win_pr_prn", "Print");
     curvz::utils::set_name(print_btn, "win_pr_prn", "print_manager_window_print_btn");
     print_btn->add_css_class("suggested-action");
     print_btn->signal_clicked().connect([this]() { run_print(); });
@@ -171,6 +198,18 @@ void PrintManager::build_ui() {
 }
 
 void PrintManager::build_doc_list() {
+    // s213 m2 — force_unregister_subtree discipline before the
+    // destructive `remove` loop. `build_doc_list` is called every
+    // `PrintManager::show()`, and the All / None buttons inside this
+    // rebuild path are registered substrate (abbrevs `win_pr_all` /
+    // `win_pr_non`). Without the synchronous unregister walk, the
+    // next show()'s registration would collide with the about-to-die
+    // predecessor. Fourth canonical instance of the s199 m1 pump
+    // outside its PropertiesPanel home — after SwatchesPanel s208 m5,
+    // StylesPanel s212 m2, and now PrintManager s213 m2. The walk is
+    // null-tolerant (first-show: nothing to walk).
+    curvz::utils::force_unregister_subtree(&m_doc_box);
+
     // Clear existing
     while (auto *child = m_doc_box.get_first_child())
         m_doc_box.remove(*child);
@@ -181,8 +220,14 @@ void PrintManager::build_doc_list() {
     // Select all / none row
     auto *hdr = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     hdr->set_spacing(4);
-    auto *all_btn = Gtk::make_managed<Gtk::Button>("All");
-    auto *none_btn = Gtk::make_managed<Gtk::Button>("None");
+    // s213 m2 — registered substrate Buttons. Rebuilt per-show but
+    // single-instance within each show, so the abbrev is stable; the
+    // teardown discipline above (force_unregister_subtree) handles
+    // the cross-show registration handoff.
+    auto *all_btn  = Gtk::make_managed<curvz::widgets::Button>(
+        "win_pr_all", "All");
+    auto *none_btn = Gtk::make_managed<curvz::widgets::Button>(
+        "win_pr_non", "None");
     curvz::utils::set_name(all_btn, "win_pr_all", "print_manager_window_all_btn");
     curvz::utils::set_name(none_btn, "win_pr_non", "print_manager_window_none_btn");
     all_btn->add_css_class("flat");
@@ -224,7 +269,12 @@ void PrintManager::build_doc_list() {
         auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
         row->set_margin_bottom(4);
 
-        auto *check = Gtk::make_managed<Gtk::CheckButton>(name);
+        // s213 m2 — unregistered substrate CheckButton. Per-doc loop;
+        // no per-row abbrev possible. First-costume use case for the
+        // s213 m1 CheckButton(unregistered_t, label) ctor (which was
+        // pioneered on ThemesPanel's targets list in this same arc).
+        auto *check = Gtk::make_managed<curvz::widgets::CheckButton>(
+            curvz::scripting::unregistered_t{}, name);
         check->set_active(m_selected[i]);
         check->signal_toggled().connect([this, i, check]() {
             m_selected[i] = check->get_active();
@@ -247,8 +297,19 @@ void PrintManager::update_style_panel() {
     while (auto *child = m_options_box.get_first_child())
         m_options_box.remove(*child);
 
+    // s213 m2 — unregistered substrate widgets across update_style_panel.
+    // The `m_options_box` subtree is torn down and rebuilt on every
+    // style switch (lines below), and every helper here mints multiple
+    // widgets per build. Per-loop / per-rebuild costume → the s212 m1
+    // CANON-banked `unregistered_t{}` idiom. Keeping the whole panel
+    // uniformly unregistered (including `cb_coords` / `prec_spin` in
+    // the Plot branch) means no `force_unregister_subtree` discipline
+    // is needed on the m_options_box teardown — simpler than splitting
+    // registered / unregistered. Per substrate-widening-follows-demand:
+    // no script need for Plot sub-options has surfaced yet.
     auto add_check = [&](const char* lbl, bool& state) {
-        auto *cb = Gtk::make_managed<Gtk::CheckButton>(lbl);
+        auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>(
+            curvz::scripting::unregistered_t{}, lbl);
         cb->set_active(state);
         cb->signal_toggled().connect([&state, cb]() { state = cb->get_active(); });
         m_options_box.append(*cb);
@@ -261,7 +322,11 @@ void PrintManager::update_style_panel() {
         l->set_xalign(0.0f);
         l->set_hexpand(true);
         auto adj = Gtk::Adjustment::create(val, lo, hi, 1, 10);
-        auto *spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1, 0);
+        // s213 m2 — unregistered substrate SpinButton via the s211 m2
+        // Adjustment-taking overload (`SpinButton(unregistered_t, adj,
+        // climb_rate, digits)`).
+        auto *spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+            curvz::scripting::unregistered_t{}, adj, 1, 0);
         spin->set_width_chars(4);
         adj->signal_value_changed().connect([&val, adj]() {
             val = (int)adj->get_value();
@@ -300,7 +365,13 @@ void PrintManager::update_style_panel() {
         // as the inspector's dependent fields. Have to build these
         // by hand (not via add_check / add_spin) so the coords
         // toggle handler can flip the spinner's sensitivity.
-        auto *cb_coords = Gtk::make_managed<Gtk::CheckButton>("Show coordinates");
+        //
+        // s213 m2 — both unregistered substrate, matching the
+        // surrounding add_check / add_spin sites (consistent panel
+        // shape; no force_unregister_subtree discipline needed on
+        // the m_options_box rebuild path).
+        auto *cb_coords = Gtk::make_managed<curvz::widgets::CheckButton>(
+            curvz::scripting::unregistered_t{}, "Show coordinates");
         cb_coords->set_active(m_plot_coords);
         m_options_box.append(*cb_coords);
 
@@ -311,7 +382,8 @@ void PrintManager::update_style_panel() {
         prec_label->set_xalign(0.0f);
         prec_label->set_hexpand(true);
         auto prec_adj = Gtk::Adjustment::create(m_plot_precision, 0, 6, 1, 1);
-        auto *prec_spin = Gtk::make_managed<Gtk::SpinButton>(prec_adj, 1, 0);
+        auto *prec_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+            curvz::scripting::unregistered_t{}, prec_adj, 1, 0);
         prec_spin->set_width_chars(3);
         prec_adj->signal_value_changed().connect([this, prec_adj]() {
             m_plot_precision = (int)prec_adj->get_value();

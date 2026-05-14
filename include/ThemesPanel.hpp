@@ -73,8 +73,6 @@
 
 #include <giomm/simpleactiongroup.h>
 #include <gtkmm/box.h>
-#include <gtkmm/button.h>
-#include <gtkmm/checkbutton.h>
 #include <gtkmm/label.h>
 #include <gtkmm/menubutton.h>
 #include <sigc++/connection.h>
@@ -83,6 +81,17 @@
 #include <functional>
 #include <string>
 #include <vector>
+
+// s213 m1 — forward-declare the substrate widget types used by
+// pointer-held members below. Full includes live in the .cpp (the
+// s208 m5 / s212 m3 header-coupling discipline). Avoids pulling
+// ScriptableWidget + Scriptable + ScriptValue into every TU that
+// includes ThemesPanel.hpp. Note: `curvz::widgets` is global —
+// distinct from the codebase's `Curvz` (capital-C) namespace.
+namespace curvz::widgets {
+class Button;
+class CheckButton;
+}  // namespace curvz::widgets
 
 namespace Curvz {
 
@@ -207,15 +216,15 @@ private:
     theme::ThemeId m_selected_id;
 
     // ── Library section widgets ────────────────────────────────────
-    Gtk::Box*        m_library_list  = nullptr;  // VERTICAL box of theme rows
-    Gtk::Label*      m_library_empty = nullptr;  // shown when user tier empty
-    Gtk::Button*     m_btn_save      = nullptr;  // "+" — save active as theme
-    Gtk::MenuButton* m_btn_io_kebab  = nullptr;  // import/export popover
+    Gtk::Box*                m_library_list  = nullptr;  // VERTICAL box of theme rows
+    Gtk::Label*              m_library_empty = nullptr;  // shown when user tier empty
+    curvz::widgets::Button*  m_btn_save      = nullptr;  // "+" — save active as theme
+    Gtk::MenuButton*         m_btn_io_kebab  = nullptr;  // import/export popover
 
     // ── Targets section widgets ────────────────────────────────────
     Gtk::Box*    m_targets_list = nullptr;       // VERTICAL box of CheckButtons
-    std::vector<Gtk::CheckButton*> m_target_checks;  // parallel to project->documents
-    Gtk::Button* m_btn_apply    = nullptr;
+    std::vector<curvz::widgets::CheckButton*> m_target_checks;  // parallel to project->documents
+    curvz::widgets::Button*  m_btn_apply    = nullptr;
     Gtk::Label*  m_hint_label   = nullptr;       // "Not undoable" warning
 
     Glib::RefPtr<Gio::SimpleActionGroup> m_actions;

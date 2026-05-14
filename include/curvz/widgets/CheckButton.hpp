@@ -25,6 +25,20 @@ class CheckButton
 public:
     CheckButton(std::string_view name, const Glib::ustring& label = {});
 
+    // s213 m1 — unregistered substrate CheckButton. The widget IS-A
+    // substrate CheckButton (same universal verbs, same Gtk::CheckButton
+    // surface, same lifecycle), but skips the script registry — its
+    // `toggled` emission is silent on the outbound channel and it
+    // can't be addressed by abbrev. Use this at call sites where
+    // multiple instances would otherwise collide on a shared abbrev
+    // (ThemesPanel's per-doc targets-list CheckButtons rebuilt on
+    // every doc-list change). Mirrors the Button tagged ctor added in
+    // s209 m1, ToggleButton in s209 m2, Entry in s211 m1, SpinButton
+    // in s211 m2, and DropDown in s212 m2. Sixth banked substrate
+    // type to gain the tag.
+    CheckButton(curvz::scripting::unregistered_t,
+                const Glib::ustring& label = {});
+
     curvz::scripting::ScriptValue invoke_leaf(
             std::string_view verb,
             const curvz::scripting::ScriptArgs& args) override;

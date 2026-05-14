@@ -1,5 +1,7 @@
 #include "MacroManagerWindow.hpp"
 #include "CurvzLog.hpp"
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/Entry.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
 #include <gtkmm/gestureclick.h>
 #include <gtkmm/eventcontrollerkey.h>
@@ -30,20 +32,26 @@ MacroManagerWindow::MacroManagerWindow() {
     m_action_bar.set_spacing(4);
     m_action_bar.set_margin(8);
 
-    m_btn_record.set_label("● Record");
-    m_btn_record.set_tooltip_text("Start recording a new macro step sequence");
-    curvz::utils::set_name(m_btn_record, "win_mm_rec", "macro_manager_window_record_btn");
-    m_btn_record.signal_clicked().connect(
+    // s213 m3 — registered substrate Buttons (value→pointer flip from
+    // the value-held members in the s108-era MacroManagerWindow.hpp).
+    // Construction now happens here, not implicitly at MacroManagerWindow
+    // construction. set_name calls retained for widget_names_sync.
+    m_btn_record = Gtk::make_managed<curvz::widgets::Button>(
+        "win_mm_rec", "● Record");
+    m_btn_record->set_tooltip_text("Start recording a new macro step sequence");
+    curvz::utils::set_name(*m_btn_record, "win_mm_rec", "macro_manager_window_record_btn");
+    m_btn_record->signal_clicked().connect(
         sigc::mem_fun(*this, &MacroManagerWindow::on_record_clicked));
-    m_action_bar.append(m_btn_record);
+    m_action_bar.append(*m_btn_record);
 
-    m_btn_stop.set_label("■ Stop");
-    m_btn_stop.set_tooltip_text("Stop recording");
-    m_btn_stop.set_sensitive(false);
-    curvz::utils::set_name(m_btn_stop, "win_mm_stp", "macro_manager_window_stop_btn");
-    m_btn_stop.signal_clicked().connect(
+    m_btn_stop = Gtk::make_managed<curvz::widgets::Button>(
+        "win_mm_stp", "■ Stop");
+    m_btn_stop->set_tooltip_text("Stop recording");
+    m_btn_stop->set_sensitive(false);
+    curvz::utils::set_name(*m_btn_stop, "win_mm_stp", "macro_manager_window_stop_btn");
+    m_btn_stop->signal_clicked().connect(
         sigc::mem_fun(*this, &MacroManagerWindow::on_stop_clicked));
-    m_action_bar.append(m_btn_stop);
+    m_action_bar.append(*m_btn_stop);
 
     // Spacer
     auto* spacer = Gtk::make_managed<Gtk::Box>();
@@ -58,14 +66,15 @@ MacroManagerWindow::MacroManagerWindow() {
     curvz::utils::set_name(m_current_label, "win_mm_cur", "macro_manager_window_current_lbl");
     m_action_bar.append(m_current_label);
 
-    m_btn_run.set_label("▶ Run");
-    m_btn_run.set_tooltip_text("Run current macro  (Ctrl+M)");
-    m_btn_run.add_css_class("suggested-action");
-    m_btn_run.set_sensitive(false);
-    curvz::utils::set_name(m_btn_run, "win_mm_run", "macro_manager_window_run_btn");
-    m_btn_run.signal_clicked().connect(
+    m_btn_run = Gtk::make_managed<curvz::widgets::Button>(
+        "win_mm_run", "▶ Run");
+    m_btn_run->set_tooltip_text("Run current macro  (Ctrl+M)");
+    m_btn_run->add_css_class("suggested-action");
+    m_btn_run->set_sensitive(false);
+    curvz::utils::set_name(*m_btn_run, "win_mm_run", "macro_manager_window_run_btn");
+    m_btn_run->signal_clicked().connect(
         sigc::mem_fun(*this, &MacroManagerWindow::on_run_clicked));
-    m_action_bar.append(m_btn_run);
+    m_action_bar.append(*m_btn_run);
 
     outer->append(m_action_bar);
     outer->append(*Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL));
@@ -84,33 +93,36 @@ MacroManagerWindow::MacroManagerWindow() {
     m_footer.set_spacing(4);
     m_footer.set_margin(8);
 
-    m_btn_add_folder.set_label("+ Folder");
-    m_btn_add_folder.set_tooltip_text("Add a new macro folder");
-    curvz::utils::set_name(m_btn_add_folder, "win_mm_af", "macro_manager_window_add_folder_btn");
-    m_btn_add_folder.signal_clicked().connect(
+    m_btn_add_folder = Gtk::make_managed<curvz::widgets::Button>(
+        "win_mm_af", "+ Folder");
+    m_btn_add_folder->set_tooltip_text("Add a new macro folder");
+    curvz::utils::set_name(*m_btn_add_folder, "win_mm_af", "macro_manager_window_add_folder_btn");
+    m_btn_add_folder->signal_clicked().connect(
         sigc::mem_fun(*this, &MacroManagerWindow::on_add_folder));
-    m_footer.append(m_btn_add_folder);
+    m_footer.append(*m_btn_add_folder);
 
-    m_btn_add_macro.set_label("+ Macro");
-    m_btn_add_macro.set_tooltip_text("Add a new macro to the selected folder");
-    m_btn_add_macro.set_sensitive(false);
-    curvz::utils::set_name(m_btn_add_macro, "win_mm_am", "macro_manager_window_add_macro_btn");
-    m_btn_add_macro.signal_clicked().connect(
+    m_btn_add_macro = Gtk::make_managed<curvz::widgets::Button>(
+        "win_mm_am", "+ Macro");
+    m_btn_add_macro->set_tooltip_text("Add a new macro to the selected folder");
+    m_btn_add_macro->set_sensitive(false);
+    curvz::utils::set_name(*m_btn_add_macro, "win_mm_am", "macro_manager_window_add_macro_btn");
+    m_btn_add_macro->signal_clicked().connect(
         sigc::mem_fun(*this, &MacroManagerWindow::on_add_macro));
-    m_footer.append(m_btn_add_macro);
+    m_footer.append(*m_btn_add_macro);
 
     auto* del_spacer = Gtk::make_managed<Gtk::Box>();
     del_spacer->set_hexpand(true);
     m_footer.append(*del_spacer);
 
-    m_btn_delete.set_label("Delete");
-    m_btn_delete.set_tooltip_text("Delete selected macro or folder");
-    m_btn_delete.add_css_class("destructive-action");
-    m_btn_delete.set_sensitive(false);
-    curvz::utils::set_name(m_btn_delete, "win_mm_del", "macro_manager_window_delete_btn");
-    m_btn_delete.signal_clicked().connect(
+    m_btn_delete = Gtk::make_managed<curvz::widgets::Button>(
+        "win_mm_del", "Delete");
+    m_btn_delete->set_tooltip_text("Delete selected macro or folder");
+    m_btn_delete->add_css_class("destructive-action");
+    m_btn_delete->set_sensitive(false);
+    curvz::utils::set_name(*m_btn_delete, "win_mm_del", "macro_manager_window_delete_btn");
+    m_btn_delete->signal_clicked().connect(
         sigc::mem_fun(*this, &MacroManagerWindow::on_delete_selected));
-    m_footer.append(m_btn_delete);
+    m_footer.append(*m_btn_delete);
 
     outer->append(m_footer);
     set_child(*outer);
@@ -192,7 +204,11 @@ void MacroManagerWindow::rebuild() {
         if (exp_it != m_folder_expanded.end()) expanded = exp_it->second;
         else m_folder_expanded[folder.internal_id] = true;
 
-        auto* arrow_btn = Gtk::make_managed<Gtk::Button>(expanded ? "▾" : "▸");
+        // s213 m3 — unregistered substrate Button (per-folder loop in
+        // rebuild path; no per-folder abbrev possible). First-costume
+        // use case for the s209 m1 unregistered_t pattern.
+        auto* arrow_btn = Gtk::make_managed<curvz::widgets::Button>(
+            curvz::scripting::unregistered_t{}, expanded ? "▾" : "▸");
         arrow_btn->add_css_class("flat");
         arrow_btn->set_has_frame(false);
         frow->append(*arrow_btn);
@@ -221,9 +237,9 @@ void MacroManagerWindow::rebuild() {
             [this, fid](int, double, double) {
                 m_selected_folder_id = fid;
                 m_selected_macro_id  = "";
-                m_btn_add_macro.set_sensitive(true);
-                m_btn_delete.set_sensitive(true);
-                m_btn_run.set_sensitive(false);
+                m_btn_add_macro->set_sensitive(true);
+                m_btn_delete->set_sensitive(true);
+                m_btn_run->set_sensitive(false);
                 m_current_label.set_text("Folder selected");
             });
         frow->add_controller(fclick);
@@ -261,7 +277,11 @@ void MacroManagerWindow::rebuild() {
             // ★ Layer-panel toggle
             // Must use a CAPTURE-phase GestureClick that claims the sequence
             // before the row-level mclick gesture can consume it.
-            auto* star_btn = Gtk::make_managed<Gtk::Button>(
+            //
+            // s213 m3 — unregistered substrate Button (per-macro inner
+            // loop in rebuild path).
+            auto* star_btn = Gtk::make_managed<curvz::widgets::Button>(
+                curvz::scripting::unregistered_t{},
                 mac->in_layer_panel ? "★" : "☆");
             star_btn->add_css_class("flat");
             star_btn->set_has_frame(false);
@@ -316,7 +336,9 @@ void MacroManagerWindow::rebuild() {
             mrow->append(*badge_lbl);
 
             // Run button
-            auto* run_btn = Gtk::make_managed<Gtk::Button>("▶");
+            // s213 m3 — unregistered substrate Button (per-macro inner loop).
+            auto* run_btn = Gtk::make_managed<curvz::widgets::Button>(
+                curvz::scripting::unregistered_t{}, "▶");
             run_btn->add_css_class("flat");
             run_btn->set_has_frame(false);
             run_btn->set_tooltip_text("Run this macro");
@@ -334,7 +356,9 @@ void MacroManagerWindow::rebuild() {
             mrow->append(*run_btn);
 
             // Edit button
-            auto* edit_btn = Gtk::make_managed<Gtk::Button>("✎");
+            // s213 m3 — unregistered substrate Button (per-macro inner loop).
+            auto* edit_btn = Gtk::make_managed<curvz::widgets::Button>(
+                curvz::scripting::unregistered_t{}, "✎");
             edit_btn->add_css_class("flat");
             edit_btn->set_has_frame(false);
             edit_btn->set_tooltip_text("Edit macro steps");
@@ -405,9 +429,9 @@ void MacroManagerWindow::rebuild() {
                                 lit->second->add_css_class("accent");
                         }
 
-                        m_btn_run.set_sensitive(true);
-                        m_btn_add_macro.set_sensitive(true);
-                        m_btn_delete.set_sensitive(true);
+                        m_btn_run->set_sensitive(true);
+                        m_btn_add_macro->set_sensitive(true);
+                        m_btn_delete->set_sensitive(true);
                     } else if (n_press == 2) {
                         begin_rename_macro(cmid);
                     }
@@ -428,8 +452,8 @@ void MacroManagerWindow::rebuild() {
     // Update footer sensitivity
     bool has_folder = !mgr.folders().empty();
     bool has_macro  = !m_selected_macro_id.empty();
-    m_btn_add_macro.set_sensitive(!m_selected_folder_id.empty());
-    m_btn_delete.set_sensitive(has_folder || has_macro);
+    m_btn_add_macro->set_sensitive(!m_selected_folder_id.empty());
+    m_btn_delete->set_sensitive(has_folder || has_macro);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -439,12 +463,12 @@ void MacroManagerWindow::rebuild() {
 void MacroManagerWindow::update_record_ui() {
     auto& mgr = MacroManager::instance();
     bool rec  = mgr.is_recording();
-    m_btn_record.set_sensitive(!rec);
-    m_btn_stop.set_sensitive(rec);
+    m_btn_record->set_sensitive(!rec);
+    m_btn_stop->set_sensitive(rec);
     if (rec) {
-        m_btn_record.add_css_class("destructive-action");
+        m_btn_record->add_css_class("destructive-action");
     } else {
-        m_btn_record.remove_css_class("destructive-action");
+        m_btn_record->remove_css_class("destructive-action");
     }
 }
 
@@ -525,9 +549,9 @@ void MacroManagerWindow::set_selected(const std::string& macro_id) {
         m_selected_folder_id = m->folder_id;
     }
 
-    m_btn_run.set_sensitive(true);
-    m_btn_add_macro.set_sensitive(true);
-    m_btn_delete.set_sensitive(true);
+    m_btn_run->set_sensitive(true);
+    m_btn_add_macro->set_sensitive(true);
+    m_btn_delete->set_sensitive(true);
     // Defer highlight redraw to idle so any in-progress gesture completes first
     Glib::signal_idle().connect_once([this]() { rebuild(); });
 }
@@ -565,7 +589,15 @@ void MacroManagerWindow::begin_rename_macro(const std::string& macro_id) {
     box->set_spacing(8);
     box->set_margin(12);
 
-    auto* entry = Gtk::make_managed<Gtk::Entry>();
+    // s213 m3 — unregistered substrate widgets for the per-show
+    // transient rename prompt. Per-show heap-allocated dialog
+    // (set_hide_on_close + delete-on-idle) — different lifetime
+    // shape than PrintManager/TranslateDialog/ThemesPanel hosts
+    // (which are MainWindow-owned singletons), but the substrate
+    // sweep is the same: every show rebuilds, no per-call abbrev
+    // is possible, so the unregistered_t tag is the right call.
+    auto* entry = Gtk::make_managed<curvz::widgets::Entry>(
+        curvz::scripting::unregistered_t{});
     entry->set_text(m->name);
     entry->select_region(0, -1);
     box->append(*entry);
@@ -573,7 +605,8 @@ void MacroManagerWindow::begin_rename_macro(const std::string& macro_id) {
     auto* btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     btn_row->set_spacing(8);
     btn_row->set_halign(Gtk::Align::END);
-    auto* ok_btn = Gtk::make_managed<Gtk::Button>("Rename");
+    auto* ok_btn = Gtk::make_managed<curvz::widgets::Button>(
+        curvz::scripting::unregistered_t{}, "Rename");
     ok_btn->add_css_class("suggested-action");
     btn_row->append(*ok_btn);
     box->append(*btn_row);
@@ -625,7 +658,10 @@ void MacroManagerWindow::begin_rename_folder(const std::string& folder_id,
     box->set_spacing(8);
     box->set_margin(12);
 
-    auto* entry = Gtk::make_managed<Gtk::Entry>();
+    // s213 m3 — unregistered substrate widgets for the per-show
+    // transient rename prompt (sibling of begin_rename_macro above).
+    auto* entry = Gtk::make_managed<curvz::widgets::Entry>(
+        curvz::scripting::unregistered_t{});
     entry->set_text(f->name);
     entry->select_region(0, -1);
     box->append(*entry);
@@ -633,7 +669,8 @@ void MacroManagerWindow::begin_rename_folder(const std::string& folder_id,
     auto* btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     btn_row->set_spacing(8);
     btn_row->set_halign(Gtk::Align::END);
-    auto* ok_btn = Gtk::make_managed<Gtk::Button>("Rename");
+    auto* ok_btn = Gtk::make_managed<curvz::widgets::Button>(
+        curvz::scripting::unregistered_t{}, "Rename");
     ok_btn->add_css_class("suggested-action");
     btn_row->append(*ok_btn);
     box->append(*btn_row);

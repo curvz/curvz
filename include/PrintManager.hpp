@@ -2,21 +2,28 @@
 #include "CurvzProject.hpp"
 #include <gtkmm/window.h>
 #include <gtkmm/box.h>
-#include <gtkmm/button.h>
-#include <gtkmm/checkbutton.h>
 #include <gtkmm/label.h>
 #include <gtkmm/separator.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/frame.h>
 #include <gtkmm/grid.h>
-#include <gtkmm/spinbutton.h>
 #include <gtkmm/adjustment.h>
-#include <gtkmm/togglebutton.h>
 #include <gtkmm/printoperation.h>
 #include <gtkmm/printcontext.h>
 #include <gtkmm/pagesetup.h>
 #include <gtkmm/printsettings.h>
 #include <vector>
+
+// s213 m2 — forward-declare the substrate widget types used by
+// pointer-held members below. Full includes live in the .cpp (the
+// s208 m5 / s212 m3 header-coupling discipline). Avoids pulling
+// ScriptableWidget + Scriptable + ScriptValue into every TU that
+// includes PrintManager.hpp. Note: `curvz::widgets` is global —
+// distinct from the codebase's `Curvz` (capital-C) namespace.
+namespace curvz::widgets {
+class CheckButton;
+class ToggleButton;
+}  // namespace curvz::widgets
 
 // ── PrintManager ──────────────────────────────────────────────────────────────
 // Modal dialog for printing Curvz documents.
@@ -127,13 +134,26 @@ private:
     // Doc list
     Gtk::ScrolledWindow          m_doc_scroll;
     Gtk::Box                     m_doc_box{Gtk::Orientation::VERTICAL};
-    std::vector<Gtk::CheckButton*> m_doc_checks;
+    // s213 m2 — substrate CheckButton element type. The doc-list rows
+    // are rebuilt per `show()` and the per-row checks are unregistered
+    // substrate (per-loop costume — no per-row abbrev possible).
+    std::vector<curvz::widgets::CheckButton*> m_doc_checks;
 
     // Style toggle
     Gtk::Box          m_style_bar{Gtk::Orientation::HORIZONTAL};
-    Gtk::ToggleButton m_sheet_btn{"Sheet"};
-    Gtk::ToggleButton m_plot_btn {"Plot"};
-    Gtk::ToggleButton m_normal_btn{"Normal"};
+    // s213 m2 — value→pointer flip for the three style-toggle members.
+    // Substrate ctors take the abbrev as a build-time arg, so
+    // value-held members can't carry the substrate type — they need
+    // to flip to pointer-held with the construction moved into
+    // `build_ui()`. Same shape as TranslateDialog's s212 m3 flip of
+    // `m_verb_drop` / `m_btn_close` / `m_btn_apply` (and s198 m1's
+    // Toolbar pattern before that). Persistent for app lifetime
+    // (PrintManager itself is MainWindow-owned and `set_hide_on_close`),
+    // so registered substrate is the right choice — no rebuild-path
+    // collision risk.
+    curvz::widgets::ToggleButton* m_sheet_btn  = nullptr;
+    curvz::widgets::ToggleButton* m_plot_btn   = nullptr;
+    curvz::widgets::ToggleButton* m_normal_btn = nullptr;
 
     // Options area (rebuilt on style change)
     Gtk::Frame        m_options_frame;

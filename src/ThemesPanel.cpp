@@ -13,6 +13,10 @@
 #include "CurvzDocument.hpp"
 #include "CurvzLog.hpp"
 #include "CurvzProject.hpp"
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/CheckButton.hpp"
+#include "curvz/widgets/Entry.hpp"
+#include "curvz/widgets/ToggleButton.hpp"
 #include "curvz_utils.hpp"
 #include "theme/Theme.hpp"
 #include "theme/ThemeIO.hpp"
@@ -24,13 +28,11 @@
 #include <giomm/menu.h>
 #include <giomm/simpleaction.h>
 #include <gtkmm/alertdialog.h>
-#include <gtkmm/entry.h>
 #include <gtkmm/filedialog.h>
 #include <gtkmm/filefilter.h>
 #include <gtkmm/popovermenu.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/separator.h>
-#include <gtkmm/togglebutton.h>
 #include <gtkmm/window.h>
 
 #include <cctype>
@@ -127,7 +129,12 @@ void ThemesPanel::build_ui() {
     // [+] — save active doc as a new theme. Same shape as StylesPanel's
     // create button. Tooltip distinguishes it from generic "+" in
     // sibling panels (Library has its own +, Swatches has its own +).
-    m_btn_save = Gtk::make_managed<Gtk::Button>();
+    //
+    // s213 m1 — substrate Button. Abbrev folded into the ctor; the
+    // explicit set_name call below stays so widget_names_sync's regex
+    // on curvz::utils::set_name keeps harvesting the long-name
+    // annotation. (Same pattern as TranslateDialog's s212 m3 sweep.)
+    m_btn_save = Gtk::make_managed<curvz::widgets::Button>("th_save");
     curvz::utils::set_name(m_btn_save, "th_save", "themes_panel_save_btn");
     m_btn_save->set_icon_name("list-add-symbolic");
     m_btn_save->set_tooltip_text("Save active document as a new theme…");
@@ -199,14 +206,22 @@ void ThemesPanel::build_ui() {
     title->add_css_class("inspector-section-title");
     hdr->append(*title);
 
-    auto *btn_all = Gtk::make_managed<Gtk::Button>("All");
+    // s213 m1 — substrate Buttons. The targets-section select-all /
+    // select-none mini-buttons are persistent build-once panel children
+    // and worth registering for script-driven test flows that need to
+    // batch-tick / untick the targets list. Picked fresh abbrevs in
+    // the panel's `th_*` neighbourhood: `th_tall` (targets-all) and
+    // `th_tnone` (targets-none).
+    auto *btn_all = Gtk::make_managed<curvz::widgets::Button>("th_tall", "All");
+    curvz::utils::set_name(btn_all, "th_tall", "themes_panel_targets_all_btn");
     btn_all->add_css_class("flat");
     btn_all->set_tooltip_text("Tick all documents");
     btn_all->signal_clicked().connect(
         [this]() { on_select_all_targets(); });
     hdr->append(*btn_all);
 
-    auto *btn_none = Gtk::make_managed<Gtk::Button>("None");
+    auto *btn_none = Gtk::make_managed<curvz::widgets::Button>("th_tnone", "None");
+    curvz::utils::set_name(btn_none, "th_tnone", "themes_panel_targets_none_btn");
     btn_none->add_css_class("flat");
     btn_none->set_tooltip_text("Untick all documents");
     btn_none->signal_clicked().connect(
@@ -238,7 +253,7 @@ void ThemesPanel::build_ui() {
     row->set_halign(Gtk::Align::END);
     row->set_margin_top(2);
 
-    m_btn_apply = Gtk::make_managed<Gtk::Button>("Apply");
+    m_btn_apply = Gtk::make_managed<curvz::widgets::Button>("th_apply", "Apply");
     curvz::utils::set_name(m_btn_apply, "th_apply",
                            "themes_panel_apply_btn");
     m_btn_apply->add_css_class("suggested-action");
@@ -334,7 +349,16 @@ void ThemesPanel::rebuild_library_list() {
       // ToggleButton with the label as child. signal_toggled fires on
       // every state change; we guard against feedback loops via the
       // m_loading flag (set during programmatic set_active calls below).
-      auto *click_btn = Gtk::make_managed<Gtk::ToggleButton>();
+      //
+      // s213 m1 — unregistered substrate ToggleButton. This is the
+      // **last raw `Gtk::ToggleButton` site in the codebase** — the
+      // substrate sweep takes the ToggleButton type to 0 raw (second
+      // type after Scale to hit zero). The per-theme-row build loop
+      // has no per-row abbrev (every row would collide on a shared
+      // name), which is the canonical first-costume use case for the
+      // `unregistered_t{}` tag banked in s212 m1's CANON entry.
+      auto *click_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+          curvz::scripting::unregistered_t{});
       click_btn->set_child(*lbl);
       click_btn->set_hexpand(true);
       click_btn->set_has_frame(false);
@@ -370,8 +394,16 @@ void ThemesPanel::rebuild_library_list() {
       row->append(*click_btn);
 
       // Per-row icon buttons. s183 m2: edit / dup / del.
+      //
+      // s213 m1 — unregistered substrate Button. The lambda mints
+      // three icon buttons per theme row × N theme rows; no per-row
+      // abbrev is available (every row would collide). Canonical
+      // first-costume use case for the `unregistered_t{}` tag — same
+      // shape as s211 m2's NewDocumentDialog preset-button loops and
+      // s209 m1's ContextBar `add_btn` helper.
       auto make_icon_btn = [](const char *icon_name, const char *tooltip) {
-        auto *b = Gtk::make_managed<Gtk::Button>();
+        auto *b = Gtk::make_managed<curvz::widgets::Button>(
+            curvz::scripting::unregistered_t{});
         b->set_icon_name(icon_name);
         b->set_tooltip_text(tooltip);
         b->add_css_class("flat");
@@ -459,7 +491,17 @@ void ThemesPanel::rebuild_targets_list() {
     if (static_cast<int>(i) == active_idx) {
       label += "  (active)";
     }
-    auto *cb = Gtk::make_managed<Gtk::CheckButton>(label);
+    // s213 m1 — unregistered substrate CheckButton. Per-doc rebuild
+    // loop — every CheckButton would collide on a shared abbrev. The
+    // substrate gains a parallel `CheckButton(unregistered_t, label)`
+    // ctor for this site (one decl line in CheckButton.hpp, one ctor
+    // body in CheckButton.cpp forwarding to ScriptableWidget's tagged
+    // ctor — same shape as the prior five additions). CheckButton is
+    // the sixth substrate type to gain the tag, after Button (s209
+    // m1), ToggleButton (s209 m2), Entry (s211 m1), SpinButton (s211
+    // m2), and DropDown (s212 m2).
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>(
+        curvz::scripting::unregistered_t{}, label);
     bool initial = (i < prev_checked.size()) ? prev_checked[i] : true;
     cb->set_active(initial);
     cb->signal_toggled().connect([this]() { update_apply_button_state(); });
@@ -712,7 +754,15 @@ void ThemesPanel::on_rename_theme(const theme::ThemeId &id) {
   lbl->set_xalign(0.0f);
   box->append(*lbl);
 
-  auto *entry = Gtk::make_managed<Gtk::Entry>();
+  // s213 m1 — unregistered substrate widgets for the per-show
+  // transient rename prompt. Same costume as SwatchesPanel's
+  // s211 m2 prompt_text + StylesPanel's s212 m2 prompt_text builders:
+  // the Gtk::Window itself isn't substrate-scope, but the inner
+  // Entry + Cancel/OK Buttons gain the tag to ride the universal
+  // verb / lifecycle machinery without claiming shared abbrevs that
+  // would collide across repeated prompts.
+  auto *entry = Gtk::make_managed<curvz::widgets::Entry>(
+      curvz::scripting::unregistered_t{});
   entry->set_text(current->header.name);
   entry->select_region(0, -1);
   box->append(*entry);
@@ -720,8 +770,10 @@ void ThemesPanel::on_rename_theme(const theme::ThemeId &id) {
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_spacing(6);
   btn_row->set_halign(Gtk::Align::END);
-  auto *btn_cancel = Gtk::make_managed<Gtk::Button>("Cancel");
-  auto *btn_ok = Gtk::make_managed<Gtk::Button>("Rename");
+  auto *btn_cancel = Gtk::make_managed<curvz::widgets::Button>(
+      curvz::scripting::unregistered_t{}, "Cancel");
+  auto *btn_ok = Gtk::make_managed<curvz::widgets::Button>(
+      curvz::scripting::unregistered_t{}, "Rename");
   btn_ok->add_css_class("suggested-action");
   btn_row->append(*btn_cancel);
   btn_row->append(*btn_ok);
@@ -906,7 +958,10 @@ void ThemesPanel::on_save_current_as_theme() {
   lbl->set_xalign(0.0f);
   box->append(*lbl);
 
-  auto *entry = Gtk::make_managed<Gtk::Entry>();
+  // s213 m1 — unregistered substrate widgets for the per-show
+  // transient save-as prompt. Sibling of on_rename_theme above.
+  auto *entry = Gtk::make_managed<curvz::widgets::Entry>(
+      curvz::scripting::unregistered_t{});
   entry->set_hexpand(true);
   // Suggest a fresh default name. Walks "Theme N" against existing
   // user names — same as the dialog used to do.
@@ -927,8 +982,10 @@ void ThemesPanel::on_save_current_as_theme() {
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_spacing(6);
   btn_row->set_halign(Gtk::Align::END);
-  auto *btn_cancel = Gtk::make_managed<Gtk::Button>("Cancel");
-  auto *btn_ok = Gtk::make_managed<Gtk::Button>("Save");
+  auto *btn_cancel = Gtk::make_managed<curvz::widgets::Button>(
+      curvz::scripting::unregistered_t{}, "Cancel");
+  auto *btn_ok = Gtk::make_managed<curvz::widgets::Button>(
+      curvz::scripting::unregistered_t{}, "Save");
   btn_ok->add_css_class("suggested-action");
   btn_row->append(*btn_cancel);
   btn_row->append(*btn_ok);
