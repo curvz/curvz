@@ -462,12 +462,16 @@ set(SOURCES
     # First concrete PanelScriptable subclass — wraps StylesPanel under
     # abbrev "pnl_styles".
     src/scripting/StylesPanelScriptable.cpp
-    # Row-bound model Scriptables. Wrap the project's layer / guide
-    # collections under abbrevs "layers" / "guides" with transient
-    # per-instance proxies (`layer.<iid>`, `guides.<iid>`) routed through
-    # the Scriptable::can_resolve / proxy_for hooks.
+    # Row-bound model Scriptables. Wrap the project's layer / guide /
+    # swatch collections under abbrevs "layers" / "guides" / "swatches"
+    # with transient per-instance proxies (`layer.<iid>`, `guides.<iid>`,
+    # `swatches.<id>`) routed through the Scriptable::can_resolve /
+    # proxy_for hooks. The swatches one (s221 m1) is the first
+    # library-collection Scriptable; the previous two wrap SceneNode
+    # collections.
     src/scripting/LayersScriptable.cpp
     src/scripting/GuidesScriptable.cpp
+    src/scripting/SwatchesScriptable.cpp
     src/curvz/widgets/ToggleButton.cpp
     src/curvz/widgets/Button.cpp
     src/curvz/widgets/CheckButton.cpp

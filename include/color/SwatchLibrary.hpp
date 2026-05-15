@@ -243,10 +243,33 @@ public:
     //
     // Rename fires nothing here — the id (the binding key) is immutable;
     // only the display name shifts, and bound objects don't care about
-    // names. Delete also fires nothing — the remove path has its own
-    // usage walk (M4).
+    // names.
+    //
+    // s220 m1a hotfix: add/remove now have their own signals
+    // (signal_swatch_added / signal_swatch_removed). The original design
+    // assumed the panel was always the originator and self-refreshed, but
+    // undo-driven CRUD bypasses the panel and needs the library to fan
+    // out a "your view is stale" notification. Mirrors StyleLibrary's
+    // three-signal pattern (style_added / style_changed / style_removed).
     using SwatchChangedSignal = sigc::signal<void(const SwatchId&)>;
     SwatchChangedSignal& signal_swatch_changed() { return m_sig_swatch_changed; }
+
+    // s220 m1a hotfix — fired by add_swatch after a successful insert.
+    // Carries the assigned id (whether minted or pre-set). Listeners
+    // (SwatchesPanel) react with a rebuild so newly-added swatches
+    // appear immediately, regardless of who pushed the add — panel,
+    // command undo/redo, or future scripting paths.
+    using SwatchAddedSignal = sigc::signal<void(const SwatchId&)>;
+    SwatchAddedSignal& signal_swatch_added() { return m_sig_swatch_added; }
+
+    // s220 m1a hotfix — fired by remove_swatch after a successful remove.
+    // Carries the just-removed id. Listeners (SwatchesPanel) react with
+    // a rebuild so the swatch disappears from the grid immediately. Note
+    // the id is no longer resolvable through find_swatch when the signal
+    // fires — listeners that need the value should snapshot before the
+    // remove (the panel just rebuilds the grid, which reads what's left).
+    using SwatchRemovedSignal = sigc::signal<void(const SwatchId&)>;
+    SwatchRemovedSignal& signal_swatch_removed() { return m_sig_swatch_removed; }
 
     // --- JSON round-trip ---------------------------------------------------
     //
@@ -330,6 +353,8 @@ private:
 
     PaintChangedSignal m_sig_paint_changed;
     SwatchChangedSignal m_sig_swatch_changed;
+    SwatchAddedSignal   m_sig_swatch_added;    // s220 m1a hotfix
+    SwatchRemovedSignal m_sig_swatch_removed;  // s220 m1a hotfix
 };
 
 // ── App-global defaults singleton ───────────────────────────────────────────

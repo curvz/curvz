@@ -14,8 +14,9 @@
 
 #include "curvz_utils.hpp"        // s206 m1: curvz::utils::set_name; s219 m1: apply_motif_class_from_parent in show()
 
-#include <giomm/application.h>        // s193 m2: Gio::Application::get_default()
-#include <gtkmm/application.h>        // s219 m1: Gtk::Application complete type for Auto-lower dynamic_pointer_cast (was implicit via gtkmm/applicationwindow.h before s219 m1)
+// s221 m1 fix-1: gtkmm/application.h and giomm/application.h were
+// needed for the s193 m2 Auto-lower path's app-window-walk. That path
+// is gone now; the includes are dropped.
 #include <giomm/file.h>               // s195 m1: Gio::File::create_for_path for save-as initial folder
 #include <gdkmm/clipboard.h>          // s186 close-out: copy-output button
 #include <gdkmm/contentprovider.h>    // s186 close-out: copy-output button
@@ -156,12 +157,22 @@ void ScripterWindow::build_ui() {
     // Ignored in step mode (where Scripter needs focus to receive
     // spacebar).
     // s206 m1 — substrate.
-    m_btn_lower = Gtk::make_managed<curvz::widgets::CheckButton>("scr_lower", "Auto-lower");
-    curvz::utils::set_name(m_btn_lower, "scr_lower", "scripter_autolower_chk");
+    // s221 m1 fix-1: repurposed from "Auto-lower" to "Auto-hide". The
+    // raise-MainWindow approach (the GTK4-supported replacement for
+    // programmatic lower) leaves the Scripter visible underneath,
+    // taking up real estate. Hide-on-Run / show-on-completion is what
+    // the user actually wants — the trace buffer fills up during the
+    // run, and the user reads it when the window comes back. Checkbox
+    // id / abbrev unchanged (scr_lower) so existing scripts that
+    // toggle it keep working; only the visible label and behaviour
+    // changed.
+    m_btn_lower = Gtk::make_managed<curvz::widgets::CheckButton>("scr_lower", "Auto-hide");
+    curvz::utils::set_name(m_btn_lower, "scr_lower", "scripter_autohide_chk");
     m_btn_lower->set_tooltip_text(
-        "Lower the Scripter behind the main window during timed Runs "
-        "so you can watch Curvz drive itself. The Scripter returns "
-        "when the Run finishes. Ignored when Step is checked.");
+        "Hide the Scripter during timed Runs so it doesn't take up "
+        "screen real estate while the script drives Curvz. The "
+        "Scripter returns when the Run finishes. Ignored when Step "
+        "is checked.");
     m_btn_lower->set_margin_start(6);
     bar->append(*m_btn_lower);
 
@@ -1140,34 +1151,25 @@ void ScripterWindow::on_run() {
         show_output_tab();
     }
 
-    // s193 m2: in timed mode, if Auto-lower is checked, raise
-    // MainWindow above the Scripter so the user can watch Curvz
-    // react. GTK4 deliberately deprecated programmatic window
-    // lowering (Wayland compositors don't honor it); the supported
-    // direction is "raise the other window," which produces the
-    // same UX outcome. Step mode is incompatible (Scripter needs
-    // focus for spacebar) and is silently the winner — the option
-    // pairing is documented in the Auto-lower tooltip. Idle-
-    // scheduled so the focus/tab shuffling above settles first.
+    // s193 m2 / s221 m1 fix-1: in timed mode, if Auto-hide is checked,
+    // hide the Scripter so it doesn't take up real estate while the
+    // script runs. Step mode is incompatible (Scripter needs focus for
+    // spacebar) and is silently the winner — the option pairing is
+    // documented in the Auto-hide tooltip. Idle-scheduled so the
+    // focus/tab shuffling above settles first.
+    //
+    // The Scripter's set_hide_on_close(true) (set in its ctor) means
+    // hide() doesn't destroy — same path the X-button takes. present()
+    // at run-end brings it back with the trace buffer intact.
+    //
+    // m_run_lowered field name kept (no rename pass) — it tracks the
+    // "we hid the window at Run start, remember to un-hide on
+    // completion" state regardless of whether the hide is structural
+    // (s221) or stacking-based (s193).
     if (m_btn_lower->get_active() && !m_btn_step->get_active()) {
         m_run_lowered = true;
         Glib::signal_idle().connect_once([this]() {
-            // Find a non-Scripter application window and present it.
-            //
-            // Path notes: get_application() returns null when called
-            // from this idle callback (cause TBD), so we fetch the
-            // running app via Gio::Application::get_default() and
-            // cast it via std::dynamic_pointer_cast (the codebase's
-            // gtkmm aliases Glib::RefPtr to std::shared_ptr, so
-            // dynamic_pointer_cast is the standard-library cast, not
-            // a gtkmm-specific one).
-            auto app_base = Gio::Application::get_default();
-            auto app_ref = std::dynamic_pointer_cast<Gtk::Application>(
-                app_base);
-            if (!app_ref) return;
-            for (auto* w : app_ref->get_windows()) {
-                if (w && w != this) w->present();
-            }
+            hide();
         });
     }
 

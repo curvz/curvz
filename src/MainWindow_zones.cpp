@@ -1617,6 +1617,7 @@ void MainWindow::setup_layout() {
   // Documents (project-level).
   m_swatches.set_library(&m_project->swatches);
   m_swatches.set_canvas(&m_canvas);
+  m_swatches.set_history(&m_history); // s220 m1a: undo for swatch CRUD
   m_swatches.signal_library_changed().connect([this]() {
     schedule_save();
     // S91: re-call set_swatch_library so the toolbar re-runs its

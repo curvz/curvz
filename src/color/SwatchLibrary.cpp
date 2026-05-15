@@ -80,6 +80,12 @@ SwatchId SwatchLibrary::add_swatch(Swatch s) {
     }
     SwatchId id = h.id;
     m_custom_swatches.emplace(id, std::move(s));
+    // s220 m1a hotfix: fire the add signal so listeners (panel) refresh
+    // regardless of who triggered the add — direct panel call, undo/redo,
+    // or future scripted CRUD. The library is the only source of truth
+    // for "your view is stale"; the panel can no longer rely on always
+    // being the originator.
+    m_sig_swatch_added.emit(id);
     return id;
 }
 
@@ -139,6 +145,10 @@ bool SwatchLibrary::remove_swatch(const SwatchId& id) {
     // FillStyle colour; the delete-with-usage-check flow is the later
     // milestone that gives the user an informed choice first.
 
+    // s220 m1a hotfix: fire the remove signal so listeners (panel)
+    // refresh regardless of originator. See add_swatch's matching
+    // comment.
+    m_sig_swatch_removed.emit(id);
     return true;
 }
 

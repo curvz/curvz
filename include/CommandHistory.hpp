@@ -10,6 +10,7 @@
 #include <string>
 #include <algorithm>
 #include <unordered_map>
+#include <utility>  // s220 m1a: std::pair in RemoveSwatchCommand
 #include <vector>
 
 namespace Curvz {
@@ -1825,6 +1826,344 @@ private:
         updated.header.name = n;
         library->update_swatch(swatch_id, color::Swatch{updated});
     }
+};
+
+// ── AddSwatchCommand (s220 m1a) ───────────────────────────────────────────────
+//
+// Adds a Swatch to the custom tier of the SwatchLibrary. Long-standing
+// backlog item (referenced in AddStyleCommand's header as the symmetric
+// future work for the swatch side); the SwatchesScriptable.new verb in
+// s220 m1b is the forcing function that closes the gap.
+//
+// Identity model — mirrors AddStyleCommand:
+//   * If swatch_value's header.id is empty at construction, execute()
+//     calls library->add_swatch() and lets the library generate a
+//     fresh id. The assigned id is captured into m_assigned_id so
+//     undo() / redo() target the same id consistently.
+//   * If the id is pre-set (uncommon — scripted callers pass empty;
+//     re-do of an undone add reuses the captured id), execute() preserves
+//     it via add_swatch's pre-set-id branch. add_swatch rejects collisions.
+//
+// Redo policy: replay the SAME id captured during the first execute.
+// add_swatch with a pre-set id succeeds because the id was just freed
+// by undo()'s remove_swatch call. Bindings made between the original
+// execute and a subsequent undo can resolve cleanly on redo because
+// the id is stable.
+//
+// Two construction modes:
+//   * Standard ctor: caller hands over the value, command's first
+//     execute() adds. Scripted callers (s220 m1b's `swatches new`)
+//     use this.
+//   * "Already-added" factory: caller has ALREADY called add_swatch
+//     directly (e.g. the popover create flow that adds-on-first-colour-
+//     emit and only learns at commit time that it wants undo). The id
+//     is pre-populated from the value's header, first execute() is a
+//     no-op (the swatch is already there), undo() removes by the
+//     captured id, redo() re-adds.
+//     Required: value.header.id MUST be non-empty (the live id of the
+//     swatch in the library).
+//
+// Palette membership (s220 m1a fix-3):
+//   The popover-commit flow adds the new swatch to the active palette
+//   during the live-edit phase, BEFORE the AddSwatchCommand is built.
+//   Undo's remove_swatch correctly strips palette membership (via
+//   remove_swatch's own scrub of custom palettes). But REDO's add_swatch
+//   only restores the swatch to the swatches pool — palette membership
+//   is gone, and the chip stays invisible in the grid until something
+//   else triggers a palette-rebuild.
+//
+//   Fix: the already_added factory snapshots palette memberships at
+//   commit time (same shape as RemoveSwatchCommand's snapshot). On
+//   redo, execute() replays add_to_palette + reorder_in_palette after
+//   the swatch is re-added, then re-emits signal_swatch_added so the
+//   panel refreshes with palette state correct. Same ORDERING
+//   SUBTLETY noted on RemoveSwatchCommand::undo() — add_swatch's
+//   signal fires before the replay; the post-replay re-emit closes
+//   the gap.
+//
+//   The standard ctor doesn't snapshot palette memberships; scripted
+//   callers (s220 m1b) that want palette assignment alongside swatch
+//   creation will compose AddSwatchCommand + add_to_palette as separate
+//   undoable units (or wrap in a CompositeCommand). The popover flow's
+//   "create + add-to-active-palette in one user gesture" is the only
+//   site that needs the composite snapshot, and it has the factory.
+//
+// Library pointer captured at push time, lifetime guaranteed by the
+// project (same as EditSwatchCommand).
+//
+// preserves_selection: true. Library mutation, not a scene-tree change.
+//
+// Future restructure (logged for a later session, not this milestone):
+//   The popover currently performs a "live mid-popover" create: the
+//   swatch enters the library on the first colour-pick inside the
+//   popover, and the popover edits in place from then on. Esc undoes
+//   the create by removing the swatch; Return commits. A cleaner
+//   structural model is "draft until commit" — the popover holds a
+//   draft SolidSwatch in local state and only writes to the library
+//   on Return. That eliminates the entire already_added factory + the
+//   palette-membership-snapshot dance below; the standard AddSwatchCommand
+//   ctor would suffice. Out of scope for s220 m1a.
+struct AddSwatchCommand : CurvzCommand {
+    color::SwatchLibrary* library;
+    color::Swatch         swatch_value;     // captured at construction
+    color::SwatchId       m_assigned_id;    // captured on first execute()
+    std::string           desc;
+    bool                  m_first_execute_consumed = false;  // true after
+                                                             // the already-
+                                                             // added factory
+    // Captured by the already_added factory only. Each pair is
+    // (palette_id, index-within-that-palette's-swatches) at commit time.
+    // Empty for the standard ctor path.
+    std::vector<std::pair<color::PaletteId, std::size_t>> palette_memberships;
+
+    AddSwatchCommand(color::SwatchLibrary* lib,
+                     color::Swatch s,
+                     std::string description = "Add swatch")
+        : library(lib)
+        , swatch_value(std::move(s))
+        , desc(std::move(description)) {}
+
+    // Already-added variant. Caller has done the add_swatch directly
+    // (and may have added to one or more palettes). This factory
+    // captures the live id AND the swatch's palette memberships, then
+    // treats the first execute() as a no-op so push() doesn't double-add.
+    // Subsequent redoes (after an undo) replay the add normally AND
+    // restore palette memberships.
+    static std::unique_ptr<AddSwatchCommand>
+    already_added(color::SwatchLibrary* lib,
+                  color::Swatch live_value,
+                  std::string description = "Add swatch") {
+        auto cmd = std::make_unique<AddSwatchCommand>(
+            lib, std::move(live_value), std::move(description));
+        const color::SwatchId& live_id =
+            color::swatch_header(cmd->swatch_value).id;
+        cmd->m_assigned_id = live_id;
+        cmd->m_first_execute_consumed = true;
+
+        // Snapshot palette memberships while the swatch is live. Same
+        // walk shape as RemoveSwatchCommand's ctor (custom palettes
+        // only; defaults can't reference custom-tier swatches). If lib
+        // is null or the id doesn't resolve, leave empty — redo will
+        // just re-add the swatch with no palette restoration, matching
+        // the standard-ctor behaviour.
+        if (lib && !live_id.empty()) {
+            for (const auto& pid : lib->all_palette_ids()) {
+                if (lib->is_default_palette(pid)) continue;
+                const color::Palette* pal = lib->find_palette(pid);
+                if (!pal) continue;
+                for (std::size_t i = 0; i < pal->swatches.size(); ++i) {
+                    if (pal->swatches[i] == live_id) {
+                        cmd->palette_memberships.emplace_back(pid, i);
+                        break;
+                    }
+                }
+            }
+        }
+        return cmd;
+    }
+
+    void execute() override {
+        if (!library) return;
+        if (m_first_execute_consumed) {
+            // The swatch is already in the library (caller did the
+            // add). Drop this execute, but flip the flag so subsequent
+            // redoes go through the normal add path.
+            m_first_execute_consumed = false;
+            return;
+        }
+        // First execute: id may be empty → library mints. Subsequent
+        // redoes: id is non-empty (carried in m_assigned_id and
+        // mirrored back into the swatch header below).
+        color::SwatchId result = library->add_swatch(swatch_value);
+        if (result.empty()) {
+            // add_swatch rejected — typically a redo-after-collision
+            // (shouldn't happen since undo just freed the id). Library
+            // logs WARN; we leave m_assigned_id empty so undo() becomes
+            // a no-op.
+            return;
+        }
+        m_assigned_id = result;
+        // Mirror the assigned id back into swatch_value's header so a
+        // second redo (after another undo) targets the same id with a
+        // pre-set value.
+        color::swatch_header(swatch_value).id = result;
+
+        // s220 m1a fix-3: replay palette memberships on redo. Snapshot
+        // exists only when the already_added factory captured it (the
+        // popover-commit path); empty for standard ctor (scripted) paths.
+        // After replay, re-emit signal_swatch_added so the panel
+        // refreshes with palette state correct — same ORDERING SUBTLETY
+        // story as RemoveSwatchCommand::undo() (add_swatch's own signal
+        // fires before the replay).
+        if (!palette_memberships.empty()) {
+            for (const auto& [pid, idx] : palette_memberships) {
+                library->add_to_palette(pid, result);
+                library->reorder_in_palette(pid, result, idx);
+            }
+            library->signal_swatch_added().emit(result);
+        }
+    }
+
+    void undo() override {
+        if (!library) return;
+        if (m_assigned_id.empty()) return;  // execute failed earlier
+        library->remove_swatch(m_assigned_id);
+        // Don't clear m_assigned_id — redo needs to re-add with the
+        // same id (so any external bindings or palette memberships made
+        // between the original execute and this undo can resolve cleanly
+        // on redo).
+        //
+        // Palette membership scrubbing happens automatically inside
+        // remove_swatch's own walk of custom palettes; nothing further
+        // needed here.
+    }
+
+    std::string description() const override { return desc; }
+
+    bool preserves_selection() const override { return true; }
+};
+
+// ── RemoveSwatchCommand (s220 m1a) ────────────────────────────────────────────
+//
+// Removes a custom-tier Swatch from the SwatchLibrary, capturing enough
+// state to round-trip undo through the library's destructive cleanup.
+// Mirrors RemoveStyleCommand in shape but carries an extra snapshot
+// dimension: palette membership.
+//
+// What SwatchLibrary::remove_swatch destroys vs what undo must restore:
+//   * The swatch record itself        → restored via add_swatch(snapshot)
+//                                       with pre-set id (id was freed
+//                                       by the remove).
+//   * Membership in every custom      → restored by re-walking the
+//     palette that referenced the id    captured (palette_id, index)
+//                                       list and replaying add_to_palette
+//                                       + reorder_in_palette.
+//   * Recents entry                   → NOT restored. Recents is a
+//                                       transient MRU working list; on
+//                                       undo the swatch reappears but
+//                                       its recents position is gone.
+//                                       A subsequent touch puts it back
+//                                       at the front naturally. The
+//                                       alternative — capturing and
+//                                       restoring the recents index —
+//                                       fights the "MRU is current
+//                                       working state" semantics for
+//                                       no UX win.
+//
+// Defaults-tier guard: panel never builds a RemoveSwatchCommand for a
+// defaults id (the UI hides the delete affordance for read-only swatches);
+// the scripted path's `swatches delete` verb refuses on is_default_swatch
+// before constructing the command. The command itself doesn't enforce
+// — symmetric with RemoveStyleCommand which trusts its panel guard.
+//
+// Snapshot timing: built in the ctor, BEFORE execute() runs. The panel's
+// usage shape is:
+//     auto cmd = std::make_unique<RemoveSwatchCommand>(lib, id);
+//     cmd->execute();
+//     history->push(std::move(cmd));
+// The library walk in the ctor sees the live, pre-remove state.
+//
+// preserves_selection: true. Library mutation, not a scene-tree change.
+struct RemoveSwatchCommand : CurvzCommand {
+    color::SwatchLibrary* library;
+    color::Swatch         swatch_value;   // full snapshot pre-remove
+    // Per-palette membership pre-remove. Order matters: each pair is
+    // (palette_id, index-within-that-palette's-swatches). On undo we
+    // re-add to each palette then reorder to the captured index. Empty
+    // if the swatch wasn't in any custom palette.
+    std::vector<std::pair<color::PaletteId, std::size_t>> palette_memberships;
+    std::string           desc;
+
+    RemoveSwatchCommand(color::SwatchLibrary* lib,
+                        const color::SwatchId& id,
+                        std::string description = "Delete swatch")
+        : library(lib)
+        , desc(std::move(description)) {
+        // Snapshot the swatch value and palette memberships while the
+        // swatch is still live. If lib is null or the id doesn't resolve,
+        // leave everything empty — execute() becomes a no-op and undo()
+        // matches.
+        if (!library) return;
+        const color::Swatch* existing = library->find_swatch(id);
+        if (!existing) return;
+        swatch_value = *existing;
+
+        // Walk custom palettes only — defaults palettes can't reference
+        // a custom-tier swatch by construction (defaults palettes were
+        // loaded from the same defaults file as defaults swatches; any
+        // cross-tier reference goes the other way, custom-palette to
+        // defaults-swatch).
+        for (const auto& pid : library->all_palette_ids()) {
+            if (library->is_default_palette(pid)) continue;
+            const color::Palette* pal = library->find_palette(pid);
+            if (!pal) continue;
+            for (std::size_t i = 0; i < pal->swatches.size(); ++i) {
+                if (pal->swatches[i] == id) {
+                    palette_memberships.emplace_back(pid, i);
+                    break;  // a swatch appears at most once per palette
+                            // (add_to_palette is idempotent)
+                }
+            }
+        }
+    }
+
+    void execute() override {
+        if (!library) return;
+        if (color::swatch_header(swatch_value).id.empty()) return;  // ctor failed to snapshot
+        library->remove_swatch(color::swatch_header(swatch_value).id);
+    }
+
+    void undo() override {
+        if (!library) return;
+        if (color::swatch_header(swatch_value).id.empty()) return;
+        // Re-add with the original id. add_swatch accepts pre-set ids
+        // as long as they're not in either tier — the id is free because
+        // execute() just removed it.
+        //
+        // ORDERING SUBTLETY: add_swatch fires signal_swatch_added
+        // synchronously, which triggers the panel's refresh() — at that
+        // moment the palette hasn't been re-populated yet (the replay
+        // loop below hasn't run), so the panel's chip-flow rebuild reads
+        // an active_palette_size that's one short of correct. The chip
+        // for the restored swatch is missing from the visible grid even
+        // though the library has the swatch back.
+        //
+        // Fix: replay palette memberships, then re-emit signal_swatch_added
+        // so the panel refreshes a second time with the palette now
+        // correct. Double-fire is harmless (refresh is idempotent;
+        // schedule_save is debounced).
+        color::SwatchId restored = library->add_swatch(swatch_value);
+        if (restored.empty()) return;  // collision shouldn't happen; bail.
+
+        // Replay palette memberships in capture order. add_to_palette
+        // appends; reorder_in_palette moves to the captured index. If
+        // a palette has been deleted between the original execute and
+        // this undo, the calls return false and we move on — best-effort
+        // restoration.
+        for (const auto& [pid, idx] : palette_memberships) {
+            library->add_to_palette(pid, restored);
+            library->reorder_in_palette(pid, restored, idx);
+        }
+
+        // s220 m1a hotfix-2: nudge listeners to re-read state now that
+        // palette membership has been replayed. Without this the panel's
+        // chip grid stays one entry short until the next user-triggered
+        // refresh. See the ORDERING SUBTLETY comment above for why
+        // add_swatch's own signal fires too early. The fix lives on the
+        // command because palette membership replay is a command-level
+        // concern (the library's add_swatch doesn't know it's part of
+        // an undo); a deeper structural fix would add signals to
+        // add_to_palette / remove_from_palette themselves and rewire the
+        // panel to listen for palette-shape changes, but that's a wider
+        // sweep than this hotfix.
+        if (!palette_memberships.empty()) {
+            library->signal_swatch_added().emit(restored);
+        }
+    }
+
+    std::string description() const override { return desc; }
+
+    bool preserves_selection() const override { return true; }
 };
 
 // ── BindStyleCommand (S79 m4a) ────────────────────────────────────────────────

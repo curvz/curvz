@@ -11,6 +11,7 @@
 
 #include "SwatchesPanel.hpp"
 #include "Canvas.hpp"
+#include "CommandHistory.hpp"  // s220 m1a: AddSwatchCommand / RemoveSwatchCommand / EditSwatchCommand
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
 #include "curvz/widgets/DropDown.hpp"  // s208 m5 — substrate palette dropdown
@@ -217,6 +218,8 @@ void SwatchesPanel::set_library(color::SwatchLibrary* lib) {
     // Safe on default-constructed connections.
     m_library_paint_changed_conn.disconnect();
     m_library_swatch_changed_conn.disconnect();
+    m_library_swatch_added_conn.disconnect();    // s220 m1a hotfix
+    m_library_swatch_removed_conn.disconnect();  // s220 m1a hotfix
 
     m_library = lib;
 
@@ -245,6 +248,28 @@ void SwatchesPanel::set_library(color::SwatchLibrary* lib) {
         m_library_swatch_changed_conn =
             m_library->signal_swatch_changed().connect(
                 [this](const color::SwatchId& /*id*/) {
+                    refresh();
+                });
+
+        // s220 m1a hotfix — hook signal_swatch_added and
+        // signal_swatch_removed so the chip grid refreshes when CRUD
+        // happens through any path (panel, command undo/redo, future
+        // scripted CRUD). schedule_save also needs to fire because
+        // CRUD changes the persisted swatches.json. Mirrors
+        // m_sig_library_changed.emit() that the panel's panel-driven
+        // sites already do; here we route it through the same channel
+        // so MainWindow's schedule_save wiring picks it up.
+        m_library_swatch_added_conn =
+            m_library->signal_swatch_added().connect(
+                [this](const color::SwatchId& /*id*/) {
+                    m_sig_library_changed.emit();
+                    refresh();
+                });
+        m_library_swatch_removed_conn =
+            m_library->signal_swatch_removed().connect(
+                [this](const color::SwatchId& /*id*/) {
+                    m_sig_library_changed.emit();
+                    m_sig_inspector_refresh_needed.emit();
                     refresh();
                 });
     }
@@ -894,10 +919,15 @@ void SwatchesPanel::on_add_clicked() {
         //                     Don't push undo: the session is being
         //                     cancelled, there's nothing to undo.
         //   committed=true  → Return / pick-recent / outside-click.
-        //                     Leave the swatch in place. NB: no
-        //                     AddSwatchCommand is pushed yet — Ctrl-Z
-        //                     won't remove a committed-create. Tracked
-        //                     as a separate backlog item.
+        //                     Leave the swatch in place. s220 m1a:
+        //                     push an "already-added" AddSwatchCommand
+        //                     so Ctrl-Z removes the commit-create. The
+        //                     swatch is already in the library (the
+        //                     mid-session create did the add directly,
+        //                     because the popover live-previews each
+        //                     colour change); we use the already_added
+        //                     factory so push() doesn't double-add and
+        //                     undo correctly removes by the live id.
         //
         // S85 cont-2: on commit, also stamp the popover's last_
         // committed_name onto the just-created swatch via rename_swatch.
@@ -915,9 +945,25 @@ void SwatchesPanel::on_add_clicked() {
                     ColorPickerPopover::shared().last_committed_name();
                 if (!nm.empty()) {
                     m_library->rename_swatch(m_session_created_id, nm);
-                    m_sig_library_changed.emit();
-                    refresh();
                 }
+                // s220 m1a — push the AddSwatchCommand so the commit
+                // is undoable. Snapshot the live swatch (post-rename)
+                // and use the already_added factory: the swatch is
+                // already in the library from the mid-session direct
+                // add, so first execute() is a no-op. Undo removes by
+                // the captured id; redo re-adds.
+                if (m_history) {
+                    const color::Swatch* live =
+                        m_library->find_swatch(m_session_created_id);
+                    if (live) {
+                        auto cmd = AddSwatchCommand::already_added(
+                            m_library, *live, "Create swatch");
+                        cmd->execute();   // no-op for already_added
+                        m_history->push(std::move(cmd));
+                    }
+                }
+                m_sig_library_changed.emit();
+                refresh();
             }
             m_editing_swatch_id.clear();
             m_session_created_id.clear();
@@ -1663,7 +1709,20 @@ void SwatchesPanel::on_ctx_rename_swatch() {
     std::string current = color::swatch_header(*sw).name;
     color::SwatchId id = m_ctx_swatch_id;  // capture by value
 
-    prompt_text("Rename swatch", current, [this, id](const std::string& name) {
+    // s220 m1a: snapshot the colour pre-rename so we can build an
+    // EditSwatchCommand carrying name_before/name_after (and colour
+    // unchanged, before == after). The existing EditSwatchCommand
+    // shape already supports rename-only edits (S85 cont-2) — the
+    // description() resolves to "Rename swatch" when only the name
+    // changed.
+    color::Color color_snapshot = color::Color::black();
+    if (const auto* solid = std::get_if<color::SolidSwatch>(sw)) {
+        color_snapshot = solid->color;
+    }
+
+    prompt_text("Rename swatch", current,
+                [this, id, current, color_snapshot]
+                (const std::string& name) {
         if (!m_library) return;
         // S83 m4h v5: empty input is meaningful here — it means
         // "clear the user-supplied name; use the auto-derived
@@ -1673,7 +1732,23 @@ void SwatchesPanel::on_ctx_rename_swatch() {
         // This implements the user-facing rule "every swatch has
         // a non-empty display name — user-set OR auto-derived"
         // (memory rule from session start).
-        m_library->rename_swatch(id, name);
+        //
+        // s220 m1a: push EditSwatchCommand through the history if
+        // available (panel was given a history pointer at startup).
+        // The command's execute() calls update_swatch which fires
+        // signal_swatch_changed → live recolour walk; same path the
+        // direct call took, plus undo coverage. Skip the push if name
+        // didn't change (Esc / OK-with-no-edit no-op).
+        if (name == current) return;
+        if (m_history) {
+            auto cmd = std::make_unique<EditSwatchCommand>(
+                m_library, id, color_snapshot, color_snapshot,
+                current, name);
+            cmd->execute();
+            m_history->push(std::move(cmd));
+        } else {
+            m_library->rename_swatch(id, name);
+        }
         m_sig_library_changed.emit();
         // Bound objects' inspector annotations show the (now-stale)
         // old name until the panel triggers a rebuild. Inspector
@@ -1697,7 +1772,29 @@ void SwatchesPanel::on_ctx_duplicate_swatch() {
     copy.header.id.clear();
     if (!copy.header.name.empty()) copy.header.name += " copy";
 
-    color::SwatchId new_id = m_library->add_swatch(color::Swatch{copy});
+    // s220 m1a: push AddSwatchCommand instead of calling add_swatch
+    // directly. The command mints a fresh id on execute(); we read it
+    // back from m_assigned_id (mirrored into swatch_value.header by
+    // execute()) so the touch_recent / add_to_palette follow-ups
+    // address the right swatch.
+    //
+    // The follow-up operations (touch_recent, add_to_palette) are NOT
+    // covered by undo. Recents is a transient working list; palette
+    // membership for a freshly-duplicated swatch is best-effort — if
+    // the user undoes the duplicate, RemoveSwatchCommand's scrub on
+    // the eventual remove would clean up anyway, but here the AddSwatch
+    // undo just removes the swatch, and remove_swatch's own palette
+    // scrubbing strips the membership transitively.
+    color::SwatchId new_id;
+    if (m_history) {
+        auto cmd = std::make_unique<AddSwatchCommand>(
+            m_library, color::Swatch{copy}, "Duplicate swatch");
+        cmd->execute();
+        new_id = cmd->m_assigned_id;
+        m_history->push(std::move(cmd));
+    } else {
+        new_id = m_library->add_swatch(color::Swatch{copy});
+    }
     if (new_id.empty()) return;
     m_library->touch_recent(new_id);
 
@@ -1724,13 +1821,32 @@ void SwatchesPanel::on_ctx_delete_swatch() {
     // m4h v4 implements the no-confirm version: bound objects
     // unbind cleanly, the cache (the actual rendered colour) is
     // preserved per break-on-override v1, the inspector falls back
-    // to the derived region name. Not undoable in this version —
-    // tracked alongside AddSwatchCommand.
+    // to the derived region name.
+    //
+    // s220 m1a note: this unbind step is NOT yet covered by undo.
+    // The RemoveSwatchCommand below covers the library-side remove
+    // (re-adds the swatch + restores palette memberships on undo),
+    // but the per-node binding-clear is a scene-tree mutation that
+    // would need its own command snapshot. Tracked as a follow-up;
+    // the un-undoable unbind has been the behaviour since m4h v4
+    // and isn't a new regression.
     if (m_canvas) {
         m_canvas->unbind_swatch_from_doc(m_ctx_swatch_id);
     }
-    // remove_swatch cleans up references in all palettes + recents.
-    m_library->remove_swatch(m_ctx_swatch_id);
+    // s220 m1a: push RemoveSwatchCommand. The ctor snapshots the
+    // swatch value + palette memberships BEFORE execute() runs, then
+    // execute() calls remove_swatch (cleaning palettes + recents).
+    // Undo re-adds via add_swatch with the captured id and replays
+    // the palette memberships.
+    if (m_history) {
+        auto cmd = std::make_unique<RemoveSwatchCommand>(
+            m_library, m_ctx_swatch_id);
+        cmd->execute();
+        m_history->push(std::move(cmd));
+    } else {
+        // remove_swatch cleans up references in all palettes + recents.
+        m_library->remove_swatch(m_ctx_swatch_id);
+    }
     m_sig_library_changed.emit();
     m_sig_inspector_refresh_needed.emit();
     refresh();

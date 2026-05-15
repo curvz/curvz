@@ -13,6 +13,7 @@
 #include "TemplateLibrary.hpp"
 #include "scripting/LayersScriptable.hpp"  // s216 m1 — model Scriptable pilot
 #include "scripting/GuidesScriptable.hpp"  // s218 m1 — second model Scriptable
+#include "scripting/SwatchesScriptable.hpp"  // s221 m1 — third model Scriptable
 #include "scripting/ScripterWindow.hpp"    // s219 m1 — apply_scripter_pref present/hide
 #include "curvz/widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
 #include "Application.hpp"                  // s219 m1 — Curvz::Application (main_window only)
@@ -240,6 +241,21 @@ MainWindow::MainWindow(Application & /*app*/) {
           [this]() -> CurvzProject* { return m_project.get(); },
           &m_history);
 
+  // s221 m1 — `swatches` collection Scriptable. First library-
+  // collection Scriptable (the previous two wrap SceneNode collections;
+  // this one wraps the project's SwatchLibrary). Same construction
+  // shape: project-getter resolves m_project.get() fresh on every verb
+  // call, history pointer to the doc's CommandHistory.
+  //
+  // Unlike the guides Scriptable's captured-but-unused history pointer,
+  // this one is DEREFERENCED on every mutating verb — s220 m1a made
+  // swatch CRUD undoable (AddSwatchCommand / RemoveSwatchCommand /
+  // EditSwatchCommand) and the Scriptable rides that plumbing.
+  m_swatches_scriptable =
+      std::make_unique<curvz::scripting::SwatchesScriptable>(
+          [this]() -> CurvzProject* { return m_project.get(); },
+          &m_history);
+
   // s219 m1 — Scripter window construction. Previously lived in
   // Application::on_activate; moved here so MainWindow owns the
   // window the way it owns HelpWindow, ShortcutsDialog, and the
@@ -326,14 +342,14 @@ MainWindow::MainWindow(Application & /*app*/) {
   LOG_INFO("MainWindow created");
 }
 
-// s216 m1 / s218 m1 / s219 m1 — out-of-line dtor. The header forward-declares
-// curvz::scripting::LayersScriptable and curvz::scripting::GuidesScriptable;
-// the unique_ptrs in the header need the complete types at MainWindow
-// destruction time, and they're only visible in this TU (where we
-// included the full headers above). Defaulted body is the right answer
-// — every member has its own destructor; we just need the complete
-// types visible at the dtor's point-of-emission. No longer gated as
-// of s219 m1.
+// s216 m1 / s218 m1 / s219 m1 / s221 m1 — out-of-line dtor. The header forward-declares
+// curvz::scripting::LayersScriptable, curvz::scripting::GuidesScriptable,
+// and curvz::scripting::SwatchesScriptable; the unique_ptrs in the header
+// need the complete types at MainWindow destruction time, and they're
+// only visible in this TU (where we included the full headers above).
+// Defaulted body is the right answer — every member has its own
+// destructor; we just need the complete types visible at the dtor's
+// point-of-emission. No longer gated as of s219 m1.
 MainWindow::~MainWindow() = default;
 
 // s219 m1 — apply scripter_enabled to every dependent surface.

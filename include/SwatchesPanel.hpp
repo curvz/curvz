@@ -54,6 +54,7 @@ namespace curvz::widgets { class DropDown; }
 namespace Curvz {
 
 class Canvas;  // fwd — the panel calls apply_fill/stroke_to_selection
+class CommandHistory;  // s220 m1a — fwd; m_history* passes through set_history
 
 class SwatchesPanel : public Gtk::Box {
 public:
@@ -69,6 +70,13 @@ public:
     // panel still renders, but clicks silently do nothing beyond touching
     // recents and no ring is drawn.
     void set_canvas(Canvas* canvas);
+
+    // s220 m1a — Non-owning. CommandHistory used by the panel's CRUD
+    // paths (add / delete / rename / duplicate) so swatch mutations
+    // land in the undo stack. Null = panel still functions but
+    // mutations are direct-write and un-undoable; the StylesPanel
+    // precedent (S80 m4c-2) is the same shape.
+    void set_history(CommandHistory* history) { m_history = history; }
 
     // Rebuild the panel body from scratch.
     void refresh();
@@ -100,6 +108,7 @@ public:
 private:
     color::SwatchLibrary* m_library = nullptr;
     Canvas*               m_canvas  = nullptr;
+    CommandHistory*       m_history = nullptr;  // s220 m1a: undo for CRUD
 
     // --- Header row --------------------------------------------------------
     Gtk::Box        m_header { Gtk::Orientation::HORIZONTAL };
@@ -249,6 +258,15 @@ private:
     // outside the panel (e.g. EditSwatchCommand undo/redo) where
     // the chip view would otherwise show the stale colour.
     sigc::connection m_library_swatch_changed_conn;
+
+    // s220 m1a hotfix — connections for the new add/remove signals on
+    // the library. Without these, undo/redo of AddSwatchCommand or
+    // RemoveSwatchCommand mutates the library correctly but the panel
+    // grid stays stale (the original design assumed the panel was
+    // always the originator of add/remove and self-refreshed). These
+    // hookups close that gap.
+    sigc::connection m_library_swatch_added_conn;
+    sigc::connection m_library_swatch_removed_conn;
 
     // --- Right-click context (M5) -----------------------------------------
     //

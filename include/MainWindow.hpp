@@ -152,6 +152,7 @@ namespace curvz::widgets { class ToggleButton; }  // s219 m1 — headerbar Scrip
 // owns it as a unique_ptr too (was previously held by Application).
 namespace curvz::scripting { class LayersScriptable; }
 namespace curvz::scripting { class GuidesScriptable; }
+namespace curvz::scripting { class SwatchesScriptable; }
 namespace curvz::scripting { class ScripterWindow; }
 
 namespace Curvz {
@@ -161,8 +162,9 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
-    // s216 m1 / s219 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>
-    // and unique_ptr<curvz::scripting::GuidesScriptable> can hold incomplete
+    // s216 m1 / s219 m1 / s221 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
+    // unique_ptr<curvz::scripting::GuidesScriptable>, and
+    // unique_ptr<curvz::scripting::SwatchesScriptable> can hold incomplete
     // types at the header level. Implementation lives in MainWindow.cpp
     // alongside the construction. No longer gated as of s219 m1.
     ~MainWindow();
@@ -617,6 +619,16 @@ private:
     // route through this object's `proxy_for`. Held as unique_ptr for
     // the same forward-decl reason.
     std::unique_ptr<curvz::scripting::GuidesScriptable> m_guides_scriptable;
+    // s221 m1 — `swatches` collection Scriptable, third row-bound model
+    // Scriptable. First library-collection Scriptable (layers/guides
+    // wrap SceneNode collections; this one wraps the project's
+    // SwatchLibrary). Same lifetime / construction / destruction shape
+    // as the two above; transient per-instance `swatches.<id>` proxies
+    // route through this object's `proxy_for`. Unlike GuidesScriptable's
+    // captured-but-unused history pointer, this one IS dereferenced —
+    // s220 m1a made swatch CRUD undoable and the Scriptable rides that
+    // plumbing.
+    std::unique_ptr<curvz::scripting::SwatchesScriptable> m_swatches_scriptable;
 
     // s219 m1 — Scripter window. Owned by MainWindow as a unique_ptr
     // member, matching the pattern of every other persistent floating
