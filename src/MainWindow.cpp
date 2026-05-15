@@ -11,6 +11,10 @@
 #include "SvgParser.hpp"
 #include "SvgWriter.hpp"
 #include "TemplateLibrary.hpp"
+#ifdef CURVZ_DIAGNOSTIC
+#include "scripting/LayersScriptable.hpp"  // s216 m1 — model Scriptable pilot
+#include "scripting/GuidesScriptable.hpp"  // s218 m1 — second model Scriptable
+#endif
 #include <functional>
 #include <giomm/simpleactiongroup.h> // s144 m3 — recents action group
 #include <gtkmm/application.h>
@@ -202,8 +206,57 @@ MainWindow::MainWindow(Application & /*app*/) {
   // matches.
   toggle_rulers(m_rulers_visible);
 
+#ifdef CURVZ_DIAGNOSTIC
+  // s216 m1 — construct the `layers` model Scriptable now that
+  // setup_project has run (m_project is initialised). The getter
+  // captures `this` so it resolves the CURRENT m_project pointer on
+  // every verb invocation — the unique_ptr can be reset / reassigned
+  // (close-project, load-project) without invalidating the Scriptable.
+  // The history pointer is stable (m_history is a value member at a
+  // fixed address); pass by raw pointer.
+  //
+  // Pilot scope: one collection registered. Per-instance addresses
+  // (`layer.<iid>`) come from the router hooks; no per-instance
+  // registry entry. Registry list shows `layers` once for the
+  // lifetime of the window, regardless of how many layers exist or
+  // how many proxies are materialised across script runs.
+  m_layers_scriptable =
+      std::make_unique<curvz::scripting::LayersScriptable>(
+          [this]() -> CurvzProject* { return m_project.get(); },
+          &m_history);
+
+  // s218 m1 — `guides` collection Scriptable. Same construction shape
+  // as the layers Scriptable above: same project-getter (resolves
+  // m_project.get() fresh on every verb call so close/open survives),
+  // same m_history pointer (captured for shape-symmetry — guides
+  // aren't undoable today, but the wiring is in place for whenever
+  // guide-flavored field-edit commands land).
+  m_guides_scriptable =
+      std::make_unique<curvz::scripting::GuidesScriptable>(
+          [this]() -> CurvzProject* { return m_project.get(); },
+          &m_history);
+#endif
+
   LOG_INFO("MainWindow created");
 }
+
+#ifdef CURVZ_DIAGNOSTIC
+// s216 m1 — out-of-line dtor. The header forward-declares
+// curvz::scripting::LayersScriptable; the unique_ptr in the header
+// needs the complete type at MainWindow destruction time, and that's
+// only visible in this TU (where we included the full header above).
+// Defaulted body is the right answer — every member has its own
+// destructor; we just need the complete type visible at the dtor's
+// point-of-emission.
+//
+// s218 m1 — the same out-of-line dtor also covers
+// curvz::scripting::GuidesScriptable (forward-declared in the header,
+// fully included above). One dtor, every fwd-declared scripting
+// member destroyed correctly. Future row-bound model Scriptables
+// (swatches, styles, themes, objects) ride on this same dtor without
+// further changes.
+MainWindow::~MainWindow() = default;
+#endif
 
 void MainWindow::setup_project() {
   // s144 m2 — Reopen-last-project pref. When false, skip the

@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <memory>
 #include <sstream>
 #include <glib.h>   // g_usleep for `sleep` verb
 
@@ -135,6 +136,8 @@ void ScriptListener::reset() {
     m_stats    = {};
     m_finished = false;
     m_next_delay_mult = 1;  // s191 m3 — drop any leftover subtitle hint
+    m_last_result.clear();  // s216 m2 — fresh `result` slot per run
+    m_vars.clear();         // s217 m1 — fresh variable table per run
     // m_subscribed is preserved — if the previous run subscribed, the
     // subscription on the registry is still live; flipping it back to
     // false here would silently drop emit_trace output on the next run.
@@ -276,20 +279,96 @@ static std::string closest_name_across_columns(
     return {};
 }
 
-// Find a Scriptable by token, accepting either abbrev or long_name.
-// Returns nullptr if the token resolves to no registered object.
-static Scriptable* find_object(const std::string& token) {
+// ── ResolvedObject (s216 m1) ─────────────────────────────────────────────────
+//
+// Small RAII wrapper around `find_object`'s result. Holds either a
+// borrowed pointer (registered objects — listener doesn't own, registry
+// does) or an owned `unique_ptr` (transient proxies — listener owns for
+// the duration of a single dispatch). The implicit-bool conversion and
+// `operator->` keep the three call sites in `run_line` reading the
+// same way they always did:
+//
+//   auto obj = find_object(toks[1].text);
+//   if (!obj) { report_unknown(toks[1].text); return; }
+//   obj->invoke(...);
+//
+// The wrapper destructs at end-of-statement scope; transient proxies
+// allocated by collection Scriptables' `proxy_for()` are released
+// cleanly without the caller having to know whether the resolution
+// went through the registry or the router. Private to this TU — see
+// the canon entry for the placement decision (promote when a second
+// consumer surfaces).
+class ResolvedObject {
+    Scriptable*                 m_borrowed = nullptr;
+    std::unique_ptr<Scriptable> m_owned;
+public:
+    static ResolvedObject borrow(Scriptable* p) {
+        ResolvedObject r;
+        r.m_borrowed = p;
+        return r;
+    }
+    static ResolvedObject own(std::unique_ptr<Scriptable> p) {
+        ResolvedObject r;
+        r.m_owned = std::move(p);
+        return r;
+    }
+    static ResolvedObject none() { return {}; }
+
+    Scriptable* get() const {
+        return m_owned ? m_owned.get() : m_borrowed;
+    }
+    explicit operator bool() const { return get() != nullptr; }
+    Scriptable* operator->() const { return get(); }
+};
+
+// Find a Scriptable by token, accepting either abbrev, long_name, or
+// the s216 m1 parameterised `<prefix>.<key>` address. Returns a
+// `ResolvedObject` that either borrows a registered pointer (registry
+// or resolver hit) or owns a transient proxy materialised by a
+// collection Scriptable's router hooks. Empty ResolvedObject on miss
+// — listener's `if (!obj)` shape is unchanged.
+//
+// Lookup order:
+//   1. Direct registry lookup — common case for widgets and singletons.
+//   2. WidgetNameResolver — long_name → abbrev → registry.
+//   3. (s216 m1) parameterised address — if token contains '.', split
+//      on the first dot, look up the prefix as a collection Scriptable,
+//      ask `can_resolve(key)`, materialise via `proxy_for(key)`.
+//
+// Only the FIRST dot splits the address. UUIDs (the keys used by every
+// model collection in 5a) contain hyphens, not dots — so
+// `layer.7f3a4b8c-9e2d-4c1a-8b3f-2e9d8c7a6b54` splits cleanly to
+// (`layer`, `7f3a4b8c-9e2d-4c1a-8b3f-2e9d8c7a6b54`). User-facing
+// names that contain dots (swatches, styles, themes) won't reach the
+// router stage because the keys are iids — name lookups happen via
+// collection queries like `find_by_name "name.with.dots"` and resolve
+// to an iid before the router sees them.
+static ResolvedObject find_object(const std::string& token) {
     auto& reg = ScriptableRegistry::instance();
 
-    // Try as abbrev first — common case.
-    if (auto* obj = reg.find(token)) return obj;
+    // 1. Try as abbrev first — common case.
+    if (auto* obj = reg.find(token)) return ResolvedObject::borrow(obj);
 
-    // Try as long_name via the resolver.
-    auto abbrev = WidgetNameResolver::instance().resolve(token);
-    if (abbrev) {
-        if (auto* obj = reg.find(*abbrev)) return obj;
+    // 2. Try as long_name via the resolver.
+    if (auto abbrev = WidgetNameResolver::instance().resolve(token)) {
+        if (auto* obj = reg.find(*abbrev)) return ResolvedObject::borrow(obj);
     }
-    return nullptr;
+
+    // 3. (s216 m1) Parameterised address — split on first dot.
+    auto dot = token.find('.');
+    if (dot != std::string::npos && dot > 0 && dot + 1 < token.size()) {
+        std::string prefix = token.substr(0, dot);
+        std::string key    = token.substr(dot + 1);
+        if (auto* collection = reg.find(prefix)) {
+            if (collection->can_resolve(key)) {
+                if (auto proxy = collection->proxy_for(key)) {
+                    return ResolvedObject::own(std::move(proxy));
+                }
+            }
+        }
+    }
+
+    return ResolvedObject::none();
 }
 
 static ScriptValue token_to_value(const Token& t) {
@@ -322,6 +401,172 @@ static CommentTag parse_comment_tag(const std::string& line) {
                    [](unsigned char c){ return std::tolower(c); });
     ct.body = trim(line.substr(close + 1));
     return ct;
+}
+
+// ── Token substitution (s216 m2 / s217 m1) ──────────────────────────────────
+//
+// Replace standalone identifier tokens with their slot or variable
+// values. "Standalone" means: outside any quoted string, and bounded
+// on both sides by either end-of-string, whitespace, or `.`. The `.`
+// boundary is the load-bearing case — it lets `layers.bg` substitute
+// cleanly to `layers.<iid>` without the user needing to insert a
+// separator the router would have to peel off again.
+//
+// Two kinds of substitution share this pass:
+//
+//   `result`    — the listener's last-`=` slot (single-shot, refreshed
+//                 every time an `=` line emits). This is the s216 m2
+//                 mechanism with its old `@` token replaced by the
+//                 AppleScript-style word.
+//   user names  — anything bound earlier via `set <name> to result`.
+//                 The slot's value at the time of `set` was copied into
+//                 m_vars[name]; whenever `name` appears as a standalone
+//                 identifier, its stored value substitutes in.
+//
+// `result` is checked first and is the only "built-in" — it can never
+// be set by the user (rejected at `set` parse time), so the lookup is
+// unambiguous. After `result`, the token is checked against m_vars.
+// Other identifiers — verb names, property names, language keywords —
+// fall through and are left in place; the tokeniser sees them as
+// regular tokens and dispatch handles them.
+//
+// What the substitution rules buy:
+//
+//   layers find_by_name "X"          --> = "<iid>"   (slot := <iid>)
+//   set bg to result                  --> ok          (m_vars["bg"] := <iid>)
+//   layers.bg toggle_visible          --> ok          (substitutes to layers.<iid>)
+//   assert layers.bg visible == false --> PASS        (substitutes again; slot unchanged)
+//
+// Quoted strings are NEVER touched — a layer named literally `result`
+// is hypothetical-but-legal and the script writer's `"result"` literal
+// must survive verbatim. The substitution is text-level, pre-tokenise;
+// the quote-state walk mirrors tokenise()'s own quote handling so the
+// two agree on what "inside quotes" means.
+//
+// Slot semantics: starts empty. First substitution of `result` before
+// any `=` line yields an empty string, which then propagates through
+// the line — e.g. `layers.result X` becomes `layers. X`, which
+// tokenises to two tokens (`layers.`, `X`) and falls through to the
+// unknown-object path. That's defensive: a script that uses `result`
+// before producing a result gets a loud failure, not silent-wrong. The
+// slot is updated only by lines that emit `=` output (get, and non-Null
+// invokes); `ok`, `PASS`, `FAIL`, `error`, and subscribed `event` lines
+// leave it alone.
+//
+// Identifier shape: ASCII letter or `_` to start, then any mix of
+// letters / digits / `_`. Matches the natural shape of every keyword
+// and verb in the grammar; matches valid C-style variable names so
+// `set` rejects anything that wouldn't have parsed as a single token
+// anyway.
+static bool is_ident_start(unsigned char c) {
+    return std::isalpha(c) || c == '_';
+}
+static bool is_ident_cont(unsigned char c) {
+    return std::isalnum(c) || c == '_';
+}
+
+static std::string substitute_tokens(
+        const std::string& line,
+        const std::string& last_result,
+        const std::unordered_map<std::string, std::string>& vars) {
+    std::string out_str;
+    out_str.reserve(line.size() + last_result.size());
+    bool in_quotes = false;
+    size_t i = 0;
+    while (i < line.size()) {
+        char c = line[i];
+        if (in_quotes) {
+            out_str.push_back(c);
+            if (c == '"') in_quotes = false;
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            in_quotes = true;
+            out_str.push_back(c);
+            ++i;
+            continue;
+        }
+        // Identifier candidate: must start at a left-boundary position
+        // (start-of-line, whitespace, or `.`). Anything else means we're
+        // mid-token — a verb name, a keyword, a property — and we leave
+        // it alone. The dispatch layer handles those as plain text.
+        bool left_ok = (i == 0)
+            || std::isspace(static_cast<unsigned char>(line[i-1]))
+            || line[i-1] == '.';
+        if (left_ok && is_ident_start(static_cast<unsigned char>(c))) {
+            size_t j = i + 1;
+            while (j < line.size()
+                   && is_ident_cont(static_cast<unsigned char>(line[j]))) {
+                ++j;
+            }
+            // Right boundary check — must terminate cleanly. If the
+            // next char is anything else (`(`, `:`, etc.), this isn't
+            // a substitution target.
+            bool right_ok = (j == line.size())
+                || std::isspace(static_cast<unsigned char>(line[j]))
+                || line[j] == '.';
+            if (right_ok) {
+                std::string ident = line.substr(i, j - i);
+                if (ident == "result") {
+                    out_str.append(last_result);
+                    i = j;
+                    continue;
+                }
+                auto it = vars.find(ident);
+                if (it != vars.end()) {
+                    out_str.append(it->second);
+                    i = j;
+                    continue;
+                }
+                // Not a substitution token — copy the identifier through
+                // verbatim. Cheaper than re-scanning.
+                out_str.append(line, i, j - i);
+                i = j;
+                continue;
+            }
+        }
+        out_str.push_back(c);
+        ++i;
+    }
+    return out_str;
+}
+
+// Reserved names that `set <name> to result` rejects. Anything that's
+// a built-in verb/keyword would shadow grammar if it became a variable;
+// `result` would break the slot contract (the var would silently
+// shadow the slot in substitution, and the user's expectation that
+// `result` means "the last `=`" no longer holds). Keep this list
+// aligned with the verbs handled in run_line and the substitution
+// special-case in substitute_tokens. New built-ins added later should
+// be added here too.
+static bool is_reserved_var_name(const std::string& name) {
+    static const char* const reserved[] = {
+        "result", "set", "to", "get", "assert", "list", "subscribe",
+        "sleep", "quit", "do", "true", "false", "null",
+    };
+    for (const char* r : reserved) {
+        if (name == r) return true;
+    }
+    return false;
+}
+
+// ── bare_repr — string repr WITHOUT the wrapping quotes ─────────────────────
+//
+// ScriptValue::repr() wraps strings in quotes (`"<value>"`) so the
+// printed form is paste-back-compatible with the script DSL. For the
+// `result`-slot substitution (and stored variable values) we want the
+// BARE form — substituting "abc-def" into `layers.result` should
+// produce `layers.abc-def`, not `layers."abc-def"`. Use repr() for
+// printing to the trace; use this for the slot value.
+//
+// Non-string kinds (Null, Bool, Int, Double) come back identical to
+// repr() because none of them quote — `123`, `true`, `1.5`, `null`. A
+// caller substituting one of those into the next line gets the bare
+// literal, same as if they'd typed it.
+static std::string bare_repr(const ScriptValue& v) {
+    if (v.kind == ValueKind::String) return v.s;
+    return v.repr();
 }
 
 void ScriptListener::run_line(const std::string& raw) {
@@ -360,6 +605,86 @@ void ScriptListener::run_line(const std::string& raw) {
         // Unknown tag, empty-body sub, or plain comment — skip.
         return;
     }
+
+    // s217 m1 — `set <name> to result` is recognised BEFORE token
+    // substitution so the name slot is the literal user text. If we
+    // substituted first, `set result to result` would post-substitute
+    // both `result` tokens to the slot value and bypass the reserved-
+    // name check. Recognising the keyword head against the raw
+    // (trimmed, pre-substitution) line is clean: `set` is not in
+    // m_vars and not the `result` token, so substitution would never
+    // touch it; the only reason to look at the raw line at all is
+    // catching `set result to result` cleanly.
+    //
+    // Cheap prefix-check first so we only tokenise twice on actual
+    // `set` lines. Every other line falls through to the normal
+    // substitute → tokenise → dispatch flow with no extra work.
+    //
+    // Form is fixed: exactly four tokens, `set <name> to result`.
+    // Future extensions — `set X to "literal"`, `set X to Y` — slot
+    // into the same handler by checking what follows `to`. For s217 m1
+    // the strict shape is both sufficient (the test ergonomics need
+    // exactly this) and safe (no expression parser to maintain).
+    if (line.size() >= 4
+        && line.compare(0, 3, "set") == 0
+        && std::isspace(static_cast<unsigned char>(line[3]))) {
+        auto raw_toks = tokenise(line);   // `line` is trimmed, not yet substituted
+        if (!raw_toks.empty()
+            && !raw_toks[0].quoted
+            && raw_toks[0].text == "set") {
+            // Echo BEFORE handling so the trace shows the literal
+            // source. (substitute_tokens would have echoed the post-
+            // substitution form, which for `set` lines would just be
+            // less informative — the user wrote `set bg to result`
+            // and that's exactly what they want to see in the trace.)
+            out("> " + line + "\n");
+            ++m_stats.lines_run;
+
+            if (raw_toks.size() != 4
+                || raw_toks[1].quoted
+                || raw_toks[2].text != "to" || raw_toks[2].quoted
+                || raw_toks[3].text != "result" || raw_toks[3].quoted) {
+                out("error set syntax: set <name> to result\n");
+                ++m_stats.errors;
+                return;
+            }
+            const std::string& name = raw_toks[1].text;
+            // Identifier shape: must look like a valid name. Catches
+            // `set 123 to result`, `set foo.bar to result`, etc.
+            if (name.empty()
+                || !is_ident_start(static_cast<unsigned char>(name[0]))) {
+                out("error set: '" + name
+                    + "' is not a valid variable name (must start with a letter or '_')\n");
+                ++m_stats.errors;
+                return;
+            }
+            for (char c : name) {
+                if (!is_ident_cont(static_cast<unsigned char>(c))) {
+                    out("error set: '" + name
+                        + "' is not a valid variable name (letters, digits, and '_' only)\n");
+                    ++m_stats.errors;
+                    return;
+                }
+            }
+            if (is_reserved_var_name(name)) {
+                out("error set: '" + name
+                    + "' is a reserved name and cannot be used as a variable\n");
+                ++m_stats.errors;
+                return;
+            }
+            m_vars[name] = m_last_result;
+            out("ok\n");
+            return;
+        }
+    }
+
+    // s216 m2 / s217 m1 — token substitution. Apply before echoing the
+    // line so the trace shows the substituted form (the address that's
+    // actually about to be dispatched), not the symbolic source. The
+    // slot is updated below at each `=` emit site; the variable table
+    // is updated by the `set <name> to result` keyword handler above.
+    line = substitute_tokens(line, m_last_result, m_vars);
+
     out("> " + line + "\n");
     ++m_stats.lines_run;
 
@@ -386,6 +711,7 @@ void ScriptListener::run_line(const std::string& raw) {
 
     // ── Built-in verbs ───────────────────────────────────────────────────────
     const std::string& head = toks[0].text;
+
     if (!toks[0].quoted && head == "list") {
         // Render each registered object as: "  abbrev  (long_name)".
         // If the resolver doesn't know a long_name for an abbrev (e.g. a
@@ -474,10 +800,11 @@ void ScriptListener::run_line(const std::string& raw) {
             ++m_stats.errors;
             return;
         }
-        auto* obj = find_object(toks[1].text);
+        auto obj = find_object(toks[1].text);
         if (!obj) { report_unknown(toks[1].text); return; }
         ScriptValue v = obj->query(toks[2].text);
         out("= " + v.repr() + "\n");
+        m_last_result = bare_repr(v);   // s216 m2 — feed the `result` slot
         return;
     }
     if (!toks[0].quoted && head == "assert") {
@@ -486,7 +813,7 @@ void ScriptListener::run_line(const std::string& raw) {
             ++m_stats.errors;
             return;
         }
-        auto* obj = find_object(toks[1].text);
+        auto obj = find_object(toks[1].text);
         if (!obj) { report_unknown(toks[1].text); return; }
         ScriptValue actual   = obj->query(toks[2].text);
         ScriptValue expected = token_to_value(toks[4]);
@@ -506,7 +833,7 @@ void ScriptListener::run_line(const std::string& raw) {
         ++m_stats.errors;
         return;
     }
-    auto* obj = find_object(toks[0].text);
+    auto obj = find_object(toks[0].text);
     if (!obj) { report_unknown(toks[0].text); return; }
     ScriptArgs args;
     for (size_t i = 2; i < toks.size(); ++i) args.push_back(token_to_value(toks[i]));
@@ -516,6 +843,7 @@ void ScriptListener::run_line(const std::string& raw) {
             out("ok\n");
         } else {
             out("= " + result.repr() + "\n");
+            m_last_result = bare_repr(result);   // s216 m2 — feed the `result` slot
         }
     } catch (const std::exception& e) {
         out(std::string("error invoke threw: ") + e.what() + "\n");

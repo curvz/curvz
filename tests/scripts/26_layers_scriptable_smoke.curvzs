@@ -1,0 +1,282 @@
+# 26_layers_scriptable_smoke — first row-bound model Scriptable
+# end-to-end (s216 m1 + m2 + m3), rewritten in s217 m1 to use the
+# new `set <name> to result` variable grammar.
+#
+# Validates the design banked in CANON's "Row-bound model Scriptables —
+# collection-as-router with transient per-instance proxies" entry.
+#
+# Two addressing surfaces, one router:
+#
+#   layers         — collection. ONE registry entry. Set verbs, set
+#                    queries, name lookup, iid enumeration.
+#   layers.<iid>   — per-instance proxy. NOT in the registry —
+#                    materialised on demand, destroyed at end-of-
+#                    statement. Element verbs, element queries.
+#
+# The shared `layers` prefix is load-bearing: the router splits a
+# dotted token on the first `.`, looks the prefix up in the registry,
+# and asks the matched object to resolve the suffix. Collection name
+# and proxy prefix MUST be the same string. m3 corrected the smoke
+# test (had used `layer.<iid>` singular, which missed the `layers`
+# entry and threw 'unknown object' on every per-instance address).
+#
+# This script owns its conditions. As long as Curvz is running with at
+# least one project + one document open (the Scriptable surface can't
+# create those yet — that's 5b headless-verb territory), the script
+# builds up its own test world, validates it, and tears it back down
+# to the exact state it found.
+#
+# ── Test-isolation strategy ────────────────────────────────────────────────
+#
+# Every layer this script creates is renamed to a "smoke_test_*" prefix
+# immediately after creation. Existing user layers (whatever was in the
+# doc when the script started) are NEVER touched: not toggled, not
+# renamed, not deleted. The teardown step at the bottom deletes every
+# smoke_test_* layer by bound variable, leaving the user's original
+# state pristine.
+#
+# That isolation works even if the user already had layers named
+# "Layer 1", "Layer 2", etc. — we never address by those generic names,
+# only by the iids of layers we created.
+#
+# ── Substitution grammar (s216 m2 / s217 m1) ───────────────────────────────
+#
+# The listener has two kinds of substitution. Both happen text-level,
+# pre-tokenise, outside quoted strings, bounded by start/whitespace/`.`:
+#
+#   result      — the value of the last `=` line. Single-shot; every
+#                 `get` and every non-Null `invoke` overwrites it.
+#                 Lines emitting `ok` / `PASS` / `FAIL` / `error`
+#                 leave it alone.
+#   <var>       — anything bound earlier via `set <var> to result`.
+#                 The slot's value at bind time is captured into the
+#                 variable; subsequent lines can address `<var>` as a
+#                 substitution token forever after, or until reset().
+#
+# Variables let this script bind each layer's iid ONCE and reference
+# it by name through the rest of the run — no more `find_by_name`
+# wallpaper between every per-instance line. Compare git history for
+# the pre-s217 m1 version: ~40 lines of build-up wallpaper collapses
+# to three `set` calls.
+#
+# ── Phases ─────────────────────────────────────────────────────────────────
+#
+#   1. BUILD UP  — create three smoke_test_* layers, bind each iid to
+#                  a variable (a / b / c) via `set <var> to result`.
+#   2. VALIDATE  — exercise collection queries and per-instance
+#                  verbs/queries using the bound variables.
+#   3. TEAR DOWN — delete every smoke_test_* layer; verify cleanup.
+
+#[sub] === Phase 1: BUILD UP ===
+#[sub] Create three test layers. After each `new` the slot holds the
+#[sub] iid; `set X to result` binds it into a variable that survives
+#[sub] across every subsequent line. Rename happens via the bound
+#[sub] variable, not via the slot — so the variable binding is what
+#[sub] makes per-layer addressing durable.
+
+layers new
+set a to result
+layers.a rename "smoke_test_a"
+assert layers.a name == "smoke_test_a"
+
+layers new
+set b to result
+layers.b rename "smoke_test_b"
+assert layers.b name == "smoke_test_b"
+
+layers new
+set c to result
+layers.c rename "smoke_test_c"
+assert layers.c name == "smoke_test_c"
+
+#[sub] === Phase 2: VALIDATE ===
+#[sub] Three test layers exist, bound to variables `a`, `b`, `c`.
+#[sub] Exercise the per-instance surface through `layers.<var> <verb>`
+#[sub] without `find_by_name` wallpaper.
+
+#[sub] Element queries: name, visible (default true), locked (default
+#[sub] false), opacity (default 1.0), child_count (default 0), iid.
+
+assert layers.a name == "smoke_test_a"
+assert layers.a visible == true
+assert layers.a locked == false
+assert layers.a opacity == 1.0
+assert layers.a child_count == 0
+get layers.a iid
+
+#[sub] toggle_visible round-trip — the headline element verb.
+
+assert layers.b visible == true
+layers.b toggle_visible
+assert layers.b visible == false
+layers.b toggle_visible
+assert layers.b visible == true
+
+#[sub] set_visible with explicit bool args.
+
+layers.c set_visible false
+assert layers.c visible == false
+layers.c set_visible true
+assert layers.c visible == true
+
+#[sub] toggle_locked / set_locked.
+
+assert layers.a locked == false
+layers.a toggle_locked
+assert layers.a locked == true
+layers.a set_locked false
+assert layers.a locked == false
+
+#[sub] color — write a hex string, read it back. (s217 m2 renamed
+#[sub] this verb from `set_color`; the old name is tested below as
+#[sub] a deprecated alias.)
+
+layers.b color "#ff8800"
+assert layers.b color == "#ff8800"
+layers.b color ""
+assert layers.b color == ""
+
+#[sub] opacity — note: no undo today (EditLayerFieldCommand's
+#[sub] Field enum doesn't include Opacity). Round-trip on the model.
+#[sub] (s217 m2 renamed this verb from `set_opacity`; the old name
+#[sub] is tested below as a deprecated alias.)
+
+layers.c opacity 0.5
+assert layers.c opacity == 0.5
+layers.c opacity 1.0
+assert layers.c opacity == 1.0
+
+#[sub] rename via the proxy — the variable's value is the iid, not
+#[sub] the name, so renaming the layer doesn't invalidate the
+#[sub] variable binding. `layers.a` keeps resolving to the same iid
+#[sub] regardless of what the layer is currently called. That's the
+#[sub] design payoff: variables outlast renames.
+
+layers.a rename "smoke_test_a_renamed"
+assert layers.a name == "smoke_test_a_renamed"
+layers.a rename "smoke_test_a"
+assert layers.a name == "smoke_test_a"
+
+#[sub] activate — promote each test layer to active in turn,
+#[sub] verify via the collection's active_iid query. We capture the
+#[sub] active_iid into a separate variable each time so we can
+#[sub] cross-reference without slot interference. The `layers.active_a`
+#[sub] form resolves through the same proxy router — the substitution
+#[sub] is text-level, so the iid in `active_a` slots cleanly into the
+#[sub] `layers.<iid>` address shape. (s217 m2 renamed this verb from
+#[sub] `make_active`; the old name is tested below as a deprecated
+#[sub] alias.)
+
+layers.a activate
+get layers active_iid
+set active_a to result
+assert layers.active_a name == "smoke_test_a"
+
+layers.b activate
+get layers active_iid
+set active_b to result
+assert layers.active_b name == "smoke_test_b"
+
+layers.c activate
+get layers active_iid
+set active_c to result
+assert layers.active_c name == "smoke_test_c"
+
+#[sub] hide_others — set verb. Hides every other real layer; the
+#[sub] target stays visible. We can't easily assert "every other layer
+#[sub] is now hidden" without iteration (no foreach yet), but we can
+#[sub] verify the TARGET stayed visible and the bound peers flipped.
+#[sub]
+#[sub] CAVEAT — TRANSIENT TOUCH OF USER LAYERS: hide_others operates
+#[sub] on every real layer (Type::Layer), not just the test layers.
+#[sub] During this section the user's existing layers ALSO flip to
+#[sub] hidden, then back to visible when show_all runs below. The
+#[sub] net state change is zero (visibility is restored), but the
+#[sub] user's undo stack accumulates N EditLayerFieldCommands here
+#[sub] and N reverses on the show_all. That's the documented chatty-
+#[sub] for-undo property of these set verbs.
+#[sub]
+#[sub] Note: `hide_others` takes the target iid as its first arg.
+#[sub] Variables substitute outside-quoted-strings, bounded by
+#[sub] start/whitespace/`.`, so `hide_others a` substitutes the
+#[sub] bound iid in cleanly.
+
+layers hide_others a
+assert layers.a visible == true
+assert layers.b visible == false
+assert layers.c visible == false
+
+#[sub] show_all — reverse the previous. All test layers visible again.
+
+layers show_all
+assert layers.a visible == true
+assert layers.b visible == true
+assert layers.c visible == true
+
+#[sub] move — reorder. We don't have iid-relative position queries
+#[sub] yet, so the assert here is "the verb dispatched without error
+#[sub] and the iid still resolves afterwards" (the layer didn't get
+#[sub] lost in the reorder).
+
+layers move a "top"
+assert layers.a name == "smoke_test_a"
+layers move a "bottom"
+assert layers.a name == "smoke_test_a"
+
+#[sub] Deprecated-alias regression (s217 m2). The old verb names
+#[sub] `set_color`, `set_opacity`, `make_active` still dispatch to
+#[sub] the same code paths as their renamed counterparts. Existing
+#[sub] scripts predating s217 m2 keep working unchanged. The aliases
+#[sub] are NOT listed in `verbs()` (so new authors discover the
+#[sub] canonical names from `list`-style introspection); they're
+#[sub] purely behavioural compatibility. Scheduled for removal in
+#[sub] s218+ once existing scripts have been swept.
+
+layers.b set_color "#00ff00"
+assert layers.b color == "#00ff00"
+layers.b set_color ""
+
+layers.c set_opacity 0.75
+assert layers.c opacity == 0.75
+layers.c set_opacity 1.0
+
+layers.a make_active
+get layers active_iid
+set alias_active_a to result
+assert layers.alias_active_a name == "smoke_test_a"
+
+#[sub] === Phase 3: TEAR DOWN ===
+#[sub] Delete every smoke_test_* layer using the bound variables.
+#[sub] The keep-at-least-one-real-layer invariant means at least one
+#[sub] of the original layers survives — but that's the user's, not
+#[sub] ours, so we never touched it. After deletion, name queries on
+#[sub] the bound variables would dispatch to dead iids — the router's
+#[sub] proxy lookup fails because the iid is no longer in the model.
+#[sub] We rely on the `delete` verb's own `ok` report rather than
+#[sub] asserting post-delete state (which would unknown-object and
+#[sub] increment the error count).
+
+layers delete a
+layers delete b
+layers delete c
+
+#[sub] Registry sanity — list at end, same as list at start of any
+#[sub] previous m1-style run. `layers` remains; no `layers.<iid>`
+#[sub] entries despite the dozens of transient proxies materialised
+#[sub] across this run. Variables don't get registered either —
+#[sub] they're listener-local, not registry entries.
+
+list
+
+#[sub] Done. Build-up created three test layers and bound each iid to
+#[sub] a variable. Validate exercised every element verb and element
+#[sub] query through `layers.<var>` addressing — no `find_by_name`
+#[sub] wallpaper, no slot-refresh dance. Tear-down removed every
+#[sub] smoke_test_* layer, returning the project to its pre-test state
+#[sub] (minus undo-stack entries, which the user can clear via Edit
+#[sub] menu if needed). The user's original layers were never
+#[sub] addressed.
+#[sub]
+#[sub] Compare git history: this script went from ~300 lines of
+#[sub] find_by_name wallpaper to ~210 lines of direct addressing.
+#[sub] Every model Scriptable in 5a inherits this pattern.

@@ -566,6 +566,20 @@ if(CURVZ_DIAGNOSTIC)
         # exists to serve scripted narration and tests; production
         # builds get the panel without the script-side companion.
         src/scripting/StylesPanelScriptable.cpp
+        # s216 m1 — first row-bound model Scriptable. Wraps the
+        # project's layer surface under abbrev "layers" with transient
+        # per-instance `layer.<iid>` proxies routed through the s216 m1
+        # Scriptable::can_resolve / proxy_for hooks. See CANON's
+        # "Row-bound model Scriptables" entry for the design that
+        # this file pair implements.
+        src/scripting/LayersScriptable.cpp
+        # s218 m1 — second row-bound model Scriptable. Wraps the
+        # active document's guide surface under abbrev "guides" with
+        # transient `guides.<iid>` proxies. Same architectural shape
+        # as LayersScriptable; verb surface inherits from the
+        # PropertiesPanel guide section's UI vocabulary per the s217
+        # m2 banked rule.
+        src/scripting/GuidesScriptable.cpp
     )
     target_compile_definitions(curvz PRIVATE CURVZ_DIAGNOSTIC)
     message(STATUS "CURVZ_DIAGNOSTIC: enabled — Scripter window will open at startup")

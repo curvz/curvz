@@ -1,0 +1,199 @@
+# 27_guides_scriptable_smoke — second row-bound model Scriptable
+# end-to-end (s218 m1), modelled on 26_layers_scriptable_smoke.
+#
+# Validates the design banked in CANON's "Row-bound model Scriptables —
+# collection-as-router with transient per-instance proxies" entry, now
+# applied for the second time to the active document's guide surface.
+#
+# Two addressing surfaces, one router:
+#
+#   guides         — collection. ONE registry entry. Set verbs (new,
+#                    delete, color) and set queries (count, all_iids,
+#                    color).
+#   guides.<iid>   — per-instance proxy. NOT in the registry —
+#                    materialised on demand, destroyed at end-of-
+#                    statement. Element verbs (toggle_locked /
+#                    set_locked / x / y / angle) and element queries
+#                    (locked / x / y / angle / type / iid).
+#
+# The shared `guides` prefix is load-bearing: the router splits a
+# dotted token on the first `.`, looks the prefix up in the registry,
+# and asks the matched object to resolve the suffix. Collection name
+# and proxy prefix MUST be the same string.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# Every guide this script creates is bound to a script-local variable
+# at creation time. Existing guides (whatever was in the doc when the
+# script started) are NEVER touched: not toggled, not deleted, not
+# moved. The teardown step at the bottom deletes only the guides we
+# created, by bound iid.
+#
+# This is more permissive than the layers smoke (which uses
+# "smoke_test_*" name prefixes to distinguish test guides — but guides
+# have no name field, so the iid-binding pattern is the only way to
+# track ours). Side effects on the doc's guide colour ARE reversible:
+# we save the original at script start, do our colour round-trips, and
+# restore it at teardown.
+#
+# ── Phases ────────────────────────────────────────────────────────────────
+#
+#   1. BUILD UP  — capture the original guide colour, create three
+#                  test guides, bind each iid to a variable (a / b / c).
+#   2. VALIDATE  — exercise collection queries, doc-level colour, and
+#                  per-instance verbs/queries on each bound variable.
+#   3. TEAR DOWN — delete every test guide; restore the original
+#                  guide colour; verify cleanup.
+
+#[sub] === Phase 1: BUILD UP ===
+#[sub] Save the doc's current guide colour so teardown can restore it.
+#[sub] The colour is doc-level state (one colour for all guides in the
+#[sub] doc); we round-trip it in Phase 2 and put it back at the end.
+
+get guides color
+set orig_color to result
+
+#[sub] Create three test guides. `guides new` returns the iid of the
+#[sub] new guide; `set X to result` binds it. Default geometry is
+#[sub] centred horizontal at canvas (w/2, h/2), angle 0 — the proxy
+#[sub] verbs reshape each guide individually.
+
+guides new
+set a to result
+assert guides.a type == "h"
+
+guides new
+set b to result
+assert guides.b type == "h"
+
+guides new
+set c to result
+assert guides.c type == "h"
+
+#[sub] === Phase 2: VALIDATE ===
+#[sub] Three test guides exist, bound to variables `a`, `b`, `c`.
+#[sub] Exercise the per-instance surface through `guides.<var> <verb>`
+#[sub] addressing.
+
+#[sub] Element queries: locked (default false), iid (round-trip), type
+#[sub] (h/v/a derived from angle). x and y are doc-canvas-dependent so
+#[sub] we round-trip them via setters rather than asserting an exact
+#[sub] default — different docs have different canvas sizes.
+
+assert guides.a locked == false
+assert guides.a angle == 0.0
+get guides.a iid
+get guides.a x
+get guides.a y
+
+#[sub] x / y / angle round-trip on `a`. Each verb is a direct write
+#[sub] on the model (guides aren't undoable today — the inspector
+#[sub] doesn't push commands for these either, so the Scriptable
+#[sub] mirrors that posture exactly).
+
+guides.a x 123.5
+assert guides.a x == 123.5
+guides.a y 456.5
+assert guides.a y == 456.5
+guides.a x 200.0
+guides.a y 300.0
+assert guides.a x == 200.0
+assert guides.a y == 300.0
+
+#[sub] angle round-trip. 0 → horizontal type, 90 → vertical type, any
+#[sub] other → arbitrary (a). The `type` query reads the model's
+#[sub] guide_is_horizontal / guide_is_vertical helpers, same axis-
+#[sub] aligned tests the canvas snap/hit-test use.
+
+assert guides.a type == "h"
+guides.a angle 90.0
+assert guides.a angle == 90.0
+assert guides.a type == "v"
+guides.a angle 45.0
+assert guides.a angle == 45.0
+assert guides.a type == "a"
+guides.a angle 0.0
+assert guides.a type == "h"
+
+#[sub] toggle_locked / set_locked round-trip on `b`. The inspector's
+#[sub] lock button mutates SceneNode::locked directly without a
+#[sub] command push; the verb does the same.
+
+assert guides.b locked == false
+guides.b toggle_locked
+assert guides.b locked == true
+guides.b set_locked false
+assert guides.b locked == false
+guides.b set_locked true
+assert guides.b locked == true
+guides.b toggle_locked
+assert guides.b locked == false
+
+#[sub] Collection queries. count should be >= 3 (our three plus any
+#[sub] pre-existing user guides). all_iids returns comma-separated
+#[sub] iids in children order — we don't assert an exact count or
+#[sub] order here because pre-existing user guides shift both; the
+#[sub] presence of our bound iids in subsequent per-instance addressing
+#[sub] is the real test that the collection's enumeration is wired.
+
+get guides count
+get guides all_iids
+
+#[sub] Doc-level guide colour round-trip. `guides color "<hex>"`
+#[sub] parses the hex string through color::from_hex and writes
+#[sub] doc->guide_color_r/g/b. `get guides color` reads it back as a
+#[sub] hex string. The default colour is cyan (#00bfff approx); our
+#[sub] orig_color variable captured whatever was there at script start.
+#[sub]
+#[sub] Round-trip is bit-exact for pure-component hex values: the write
+#[sub] goes through from_hex (3 doubles); the read goes through
+#[sub] doc_guide_color_as_hex (3 lround-to-255s). For "#ff0000" the
+#[sub] math is 255/255 = 1.0, lround(1.0*255) = 255 → "#ff0000".
+
+guides color "#ff0000"
+assert guides color == "#ff0000"
+guides color "#00ff00"
+assert guides color == "#00ff00"
+guides color "#0000ff"
+assert guides color == "#0000ff"
+
+#[sub] Invalid hex is silently rejected — the inspector path uses
+#[sub] ColorPickerPopover which emits valid hex by construction, so the
+#[sub] from_hex parse failure here matches "user couldn't have produced
+#[sub] this through the UI". Colour should stay at the last-good value.
+
+guides color "not-a-hex"
+assert guides color == "#0000ff"
+guides color ""
+assert guides color == "#0000ff"
+
+#[sub] === Phase 3: TEAR DOWN ===
+#[sub] Restore the original guide colour from the variable saved at
+#[sub] script start. Then delete every test guide using the bound
+#[sub] variables. After deletion, addressing `guides.<var>` would
+#[sub] dispatch to a dead iid — the router's proxy lookup fails because
+#[sub] the iid is no longer in the model. We rely on the `delete`
+#[sub] verb's own `ok` report rather than asserting post-delete state.
+
+guides color orig_color
+assert guides color == orig_color
+
+guides delete a
+guides delete b
+guides delete c
+
+#[sub] Registry sanity — list at end. `guides` should appear exactly
+#[sub] once, alongside `layers` and whatever other registered entries
+#[sub] exist. No `guides.<iid>` entries despite the dozens of transient
+#[sub] proxies materialised across this run.
+
+list
+
+#[sub] Done. Build-up captured the original guide colour and created
+#[sub] three test guides bound to variables. Validate exercised every
+#[sub] element verb (toggle_locked / set_locked / x / y / angle) and
+#[sub] every element query (locked / x / y / angle / type / iid), plus
+#[sub] doc-level guide colour round-trips. Tear-down restored the
+#[sub] original colour and deleted every test guide. The user's
+#[sub] original guides (if any) and the doc's guide colour preference
+#[sub] are unchanged.

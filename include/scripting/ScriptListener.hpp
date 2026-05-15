@@ -12,7 +12,7 @@
 // fire (their handlers run on the main loop) and how the output
 // callback's TextView appends get a chance to repaint.
 //
-// DSL grammar (m1, sandbox / m2, Curvz integration — unchanged):
+// DSL grammar (m1, sandbox / m2, Curvz integration / s217 m1, variables):
 //
 //   # comment                                  (ignored)
 //   #[sub] subtitle text                       (rendered as a caption)
@@ -27,7 +27,28 @@
 //                                              qualified name — opens
 //                                              menus the substrate
 //                                              can't address as widgets
+//   set <name> to result                       (s217 m1) bind the
+//                                              current value of the
+//                                              `result` slot into a
+//                                              named variable; the
+//                                              name becomes addressable
+//                                              as a substitution token
+//                                              on later lines (same
+//                                              boundary rules as
+//                                              `result` itself).
 //   quit                                       end the script early
+//
+// Substitution tokens (s216 m2 / s217 m1):
+//
+//   result      — the value emitted by the most recent `=` line. Each
+//                 `get` and each non-Null `invoke` refreshes it. Lines
+//                 emitting `ok` / `PASS` / `FAIL` / `error` leave it
+//                 alone. Substituted text-level before tokenisation,
+//                 so the trace's `>` echo shows the substituted form.
+//   <name>      — any identifier bound earlier via `set <name> to result`.
+//                 Same substitution rules as `result`: boundary on both
+//                 sides is start / whitespace / `.`; never substituted
+//                 inside quoted strings.
 //
 // Tag markers (s191) — the `#[tag]` shape is a small extensible DSL
 // inside the comment marker. Today only `#[sub]` is defined; future
@@ -55,6 +76,7 @@
 #include <functional>
 #include <istream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace curvz::scripting {
@@ -186,6 +208,53 @@ private:
     DoneCallback             m_on_done;
     ActionCallback           m_action;  // s201 m3
     int                      m_next_delay_mult = 1;
+
+    // s216 m2 / s217 m1 — last-result slot for the `result` substitution
+    // token. (Was `@` in s216 m2; renamed in s217 m1 to match
+    // AppleScript's `result` predefined variable, which is the same
+    // idea with a more discoverable name.)
+    //
+    // Holds the bare (un-quoted) string form of the most recent `=`
+    // line's value. Persist-until-next-`=` semantics: every `get` and
+    // every successful non-Null `invoke` updates this slot; lines that
+    // emit `ok` (Null returns), `PASS` / `FAIL`, `error`, or no output
+    // at all leave it unchanged. The slot starts empty; substituting
+    // `result` before any `=` line has fired produces an empty string,
+    // which falls through to the listener's normal unknown-object
+    // path (defensive, not silent-wrong).
+    //
+    // The substitution happens BEFORE `out("> ...")` echoes the line,
+    // so the user sees the substituted form in the trace ("> get
+    // layers.7f3a4b... visible") not the literal source form ("> get
+    // layers.result visible"). That's much more debuggable when the
+    // resolution misfires — the trace shows the address that was
+    // actually addressed, not the symbolic source.
+    std::string              m_last_result;
+
+    // s217 m1 — user-named variable table.
+    //
+    // `set <name> to result` binds the current value of `m_last_result`
+    // (the slot fed by the previous `=` line) into this map under
+    // `<name>`. Substitution then resolves any standalone identifier
+    // token matching a key here against its stored value, with the same
+    // boundary rules as `result` (start / whitespace / `.` on both
+    // sides; never inside quoted strings).
+    //
+    // Why a separate map and not a single slot reused: the slot is
+    // single-shot — every `=` overwrites it — and the variable table
+    // is the answer to that. Scripts that manipulate multiple objects
+    // bind each one to a name once and address them by name through
+    // the rest of the script, without `find_by_name` wallpaper.
+    //
+    // Reserved names (rejected at `set` parse time): the language's
+    // own keywords plus `result` itself. Storing values for those would
+    // either shadow grammar (`set get to result`) or break the slot
+    // contract (`set result to result`).
+    //
+    // Reset semantics: cleared alongside `m_last_result` in reset().
+    // A re-run starts fresh; no leftover variables from the previous
+    // run can change addressing.
+    std::unordered_map<std::string, std::string> m_vars;
 };
 
 // Lexer / literal parser exposed for the listener but useful for tests.

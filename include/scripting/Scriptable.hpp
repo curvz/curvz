@@ -25,6 +25,7 @@
 
 #pragma once
 #include "scripting/ScriptValue.hpp"
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -129,6 +130,42 @@ public:
     // --list-script-objects / --describe in later milestones).
     virtual std::vector<std::string> verbs()      const = 0;
     virtual std::vector<std::string> properties() const = 0;
+
+    // ── Router hooks (s216 m1) ───────────────────────────────────────────
+    //
+    // Collection-as-router with transient per-instance proxies. See
+    // CANON's "Row-bound model Scriptables" entry.
+    //
+    // The default implementations make these a no-op for every existing
+    // widget Scriptable — only collection Scriptables (LayersScriptable
+    // and the future guides / swatches / styles / themes / objects
+    // collections) override. The listener's `find_object` calls
+    // `can_resolve(key)` to ask whether this collection owns the iid
+    // after the prefix dot, and `proxy_for(key)` to materialise a
+    // transient per-instance Scriptable for the dispatch.
+    //
+    // Proxies are owned for the duration of a single listener dispatch
+    // by the `ResolvedObject` wrapper find_object returns. Their
+    // invoke/query bodies resolve the iid through the project's iid
+    // index on every call — the iid index is the truth, the registry
+    // entry is incidental. A deleted iid stops resolving; an undeleted
+    // iid (undo) resolves again.
+
+    // Does this Scriptable resolve `key` to something it owns right
+    // now? Default false — non-collection Scriptables don't route.
+    virtual bool can_resolve(std::string_view /*key*/) const {
+        return false;
+    }
+
+    // Materialise a transient Scriptable for `key`. Returns nullptr if
+    // can_resolve(key) would return false; callers should check first.
+    // The returned proxy is owned by the listener for the duration of
+    // the single-line dispatch and destroyed when the wrapper goes
+    // out of scope.
+    virtual std::unique_ptr<Scriptable>
+        proxy_for(std::string_view /*key*/) {
+        return nullptr;
+    }
 
 protected:
     // Subclasses call this from their canonical signal handler so real

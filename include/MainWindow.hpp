@@ -137,6 +137,20 @@
 // in MainWindow_handlers.cpp).
 namespace curvz::widgets { class CheckButton; }
 
+#ifdef CURVZ_DIAGNOSTIC
+// s216 m1 — fwd declared rather than full-include so production builds
+// don't pull scripting headers. The unique_ptr member below is
+// incomplete-type friendly only when the dtor is out-of-line; we
+// provide that in MainWindow.cpp alongside the construction.
+//
+// s218 m1 — same shape for GuidesScriptable, the second row-bound model
+// Scriptable. Forward-declared in the same block so production builds
+// drop both transparently; both members share the single out-of-line
+// dtor below.
+namespace curvz::scripting { class LayersScriptable; }
+namespace curvz::scripting { class GuidesScriptable; }
+#endif
+
 namespace Curvz {
 
 class Application;
@@ -144,6 +158,15 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
+#ifdef CURVZ_DIAGNOSTIC
+    // s216 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>
+    // can hold an incomplete type at the header level. Implementation
+    // lives in MainWindow.cpp alongside the construction site.
+    // s218 m1 — same dtor also covers unique_ptr<curvz::scripting::GuidesScriptable>
+    // (added below alongside the LayersScriptable member); a single
+    // out-of-line dtor handles every forward-declared scripting member.
+    ~MainWindow();
+#endif
 
     // s126: last-used folder accessors. Public so non-MainWindow dialogs
     // (ExportDialog and friends) can opt into the same per-purpose
@@ -543,6 +566,23 @@ private:
     // public method's comment for the wiring story.
     Gtk::Revealer       m_caption_revealer;
     Gtk::Label          m_caption_label;
+
+    // s216 m1 — `layers` collection Scriptable. One registry entry per
+    // app session; transient per-instance `layer.<iid>` proxies route
+    // through this object's `proxy_for`. Holds a project-getter lambda
+    // that resolves `m_project.get()` on every verb call, so the
+    // Scriptable survives File→Open / File→Close without re-registering.
+    // Held as unique_ptr because LayersScriptable is forward-declared
+    // (see fwd-decl above the namespace) — only the .cpp side sees the
+    // complete type. Constructed in MainWindow's ctor, destroyed in
+    // the out-of-line dtor.
+    std::unique_ptr<curvz::scripting::LayersScriptable> m_layers_scriptable;
+    // s218 m1 — `guides` collection Scriptable, second row-bound model
+    // Scriptable. Same lifetime / construction / destruction shape as
+    // m_layers_scriptable; transient per-instance `guides.<iid>` proxies
+    // route through this object's `proxy_for`. Held as unique_ptr for
+    // the same forward-decl reason.
+    std::unique_ptr<curvz::scripting::GuidesScriptable> m_guides_scriptable;
 #endif
 
     StatusBar       m_statusbar;
