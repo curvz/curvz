@@ -1607,6 +1607,114 @@ static void set_all_properties_sections(PropertiesPanel& panel, bool on) {
   panel.set_section_open_state(state);
 }
 
+// s222 m2 fix-2 — parent-resolution helpers, lifted from the local
+// lambdas that focus_inspector_on used to declare inline. The lift
+// gives us a single source of truth for "what is X's parent?" — used
+// by focus_inspector_on (collapse-all + open-with-ancestors) and
+// apply_section_open (open-with-ancestors only, no collapse), and
+// the next consumer (whoever wants the same n-order ancestor walk)
+// picks them up too.
+//
+// Two helpers because the inspector mixes two parent-resolution
+// mechanisms: PropertiesPanel-internal sections use a static
+// title→group table (parent_group_for) plus an intermediate-parent
+// table for the Theme-disclosure children (intermediate_parent_for).
+// The right-panel sections use a uniform rule: every key in
+// m_sec_apply except "Content" itself is a child of "Content."
+// parent_of_section composes those rules into a single
+// "give me the immediate parent of this title" answer that the
+// while-loop ancestor walk in apply_section_open can stop on.
+//
+// Return convention: empty string means "no parent" (the title is a
+// root, or it's unknown — both cases stop the ancestor walk). When
+// the parent IS a PropertiesPanel GROUP (Document / Object /
+// Application), the returned string is the "__group__"-prefixed
+// key, ready to look up directly in PropertiesPanel::section_open_state
+// (the prefix is how PropertiesPanel disambiguates group flags from
+// section flags in its flat map).
+static const char* parent_group_for(const std::string& title) {
+  // Document group — Metadata + Dimensions directly; Theme is its
+  // own collapsible that contains Canvas / Margins / Grid as nested
+  // children (handled separately via intermediate_parent_for).
+  if (title == "Metadata" || title == "Theme" || title == "Canvas" ||
+      title == "Dimensions" || title == "Margins" || title == "Grid")
+    return "Document";
+  // Object group — selection-dependent sections, Guides under Object
+  // (s179 m3v2), Styling under Object as the apply-style surface.
+  if (title == "Selection" || title == "Text" || title == "Blend" ||
+      title == "Warp" || title == "Node" || title == "Appearance" ||
+      title == "Shadow" || title == "Styling" || title == "Guides")
+    return "Object";
+  // Application group — boot-time + editing prefs.
+  if (title == "Startup" || title == "Editing" || title == "Paths" ||
+      title == "Boolean cleanup")
+    return "Application";
+  return nullptr;
+}
+
+// s203 m5 fix1 — Theme-nested children. Canvas / Margins / Grid live
+// inside the Theme disclosure (build_theme_disclosure), not directly
+// under Document. The m_section_open keys are flat — "Canvas",
+// "Margins", "Grid" all sit at the same level in the map as "Theme"
+// itself — but the visual disclosure tree is Document → Theme →
+// {Canvas, Margins, Grid}. The intermediate parent is Theme; the
+// outer group is still Document, walked via parent_group_for.
+//
+// Returns the intermediate section title to also flip open, or empty
+// string if the title is not nested inside an intermediate.
+static std::string intermediate_parent_for(const std::string& title) {
+  if (title == "Canvas" || title == "Margins" || title == "Grid")
+    return "Theme";
+  return {};
+}
+
+// Resolve the immediate parent of any inspector section. Returns
+// empty string for roots (Content, or unknown titles). The result is
+// either:
+//   * A bare title that appears as a key in m_sec_apply
+//     (e.g. "Content" — currently the only such non-leaf in the
+//     right-panel registry).
+//   * A bare title that appears as a key in PropertiesPanel's
+//     section_open_state map (e.g. "Theme" — intermediate parent of
+//     Canvas / Margins / Grid).
+//   * A "__group__"-prefixed key for PropertiesPanel group headers
+//     (e.g. "__group__Document" — outermost parent of Metadata /
+//     Dimensions / etc.).
+//
+// The caller is responsible for routing the returned key to the
+// right registry. apply_section_open's ancestor walk currently
+// handles only the m_sec_apply branch (right-panel sections); a
+// future variant can extend the routing to PropertiesPanel sections
+// as well, using the prefix to discriminate.
+static std::string parent_of_section(const std::string& title) {
+  // PropertiesPanel intermediate parent wins first — Canvas/Margins/
+  // Grid have BOTH an intermediate (Theme) AND a group parent
+  // (Document). The walk visits the intermediate first; the next
+  // step of the walk will resolve the intermediate's own parent
+  // (Theme → __group__Document).
+  std::string intermediate = intermediate_parent_for(title);
+  if (!intermediate.empty()) return intermediate;
+  // PropertiesPanel group parent — for titles like Metadata,
+  // Dimensions, Theme, Selection, etc. that sit directly inside a
+  // Document/Object/Application group.
+  if (const char* group = parent_group_for(title)) {
+    return std::string("__group__") + group;
+  }
+  // Right-panel rule: every right-panel section except "Content"
+  // itself is a child of Content. We don't enumerate the children
+  // explicitly — the rule is "if it's not Content, it's under
+  // Content." Group headers ("__group__Document" etc.) are roots
+  // (they have no parent above them).
+  if (title == "Content") return {};
+  if (title.rfind("__group__", 0) == 0) return {};
+  // The remaining cases — Layers, Library, Swatches, Styles, Themes,
+  // Documents, Preview — all sit under Content. We don't check
+  // m_sec_apply membership here because the helper is static (no
+  // access to the map); the apply walk's lookup-or-skip at each step
+  // handles the "unknown title" case naturally.
+  return "Content";
+}
+
 void MainWindow::collapse_all_inspector_sections() {
   // Phase 1: collapse every section in MainWindow's m_sec_apply registry
   // (Content group, Layers, Library, Swatches, Styles, Themes,
@@ -1622,6 +1730,86 @@ void MainWindow::collapse_all_inspector_sections() {
   // re-renders with the new flags in place.
   set_all_properties_sections(m_properties, false);
   refresh_inspector();
+}
+
+// s222 m2 — single-section open (no collapse of siblings). See the
+// header comment for the limitation: only m_sec_apply-registered
+// sections are reached; PropertiesPanel-internal sections need the
+// keyboard quick-jump's focus path (or a future cascade-aware variant
+// of this method).
+//
+// s222 m2 fix-2 — ancestor walk on open. The first cut missed that
+// every right-panel section except "Content" is a CHILD of the
+// Content group. Opening a leaf without first opening its parent
+// sets the leaf's body visible-flag to true, but the Content
+// container that holds it is still hidden, so the leaf renders
+// inside a hidden parent and the user sees nothing. The fix is the
+// "while parent closed, open parent" routine — generalised so any
+// future deeper nesting (PropertiesPanel sections inside a group
+// inside an intermediate) just works without per-case code here.
+//
+// The walk uses parent_of_section (file-local static) to resolve
+// each ancestor; the loop stops when the resolver returns empty.
+// Each step looks the ancestor up in m_sec_apply and opens it if
+// present; ancestors that resolve to PropertiesPanel-side keys
+// (the "__group__..." form, or intermediate names like "Theme")
+// won't be found in m_sec_apply and the step silently skips them,
+// which is correct for m2's scope — opening a PropertiesPanel
+// section through this verb isn't supported yet (see header note),
+// so we don't need to drive PropertiesPanel's map. When that scope
+// extends, the same ancestor walk runs unchanged; only the per-
+// step apply gains a PropertiesPanel branch.
+//
+// Cascade only fires on open (on=true). On close (on=false) we
+// don't walk — close is monotonic (an already-hidden body stays
+// hidden regardless of its parent's state) and closing ancestors
+// would close siblings the caller didn't ask to close. Bare lookup
+// is correct for the close direction.
+//
+// A title that isn't in m_sec_apply is a silent no-op (the leaf
+// step's lookup misses); this mirrors focus_inspector_on's behaviour
+// on stale/unknown titles, and means the script-side `inspector
+// open "Bogus"` doesn't crash or emit errors — the ancestor walk
+// runs (parent_of_section returns empty for unknown titles, so the
+// walk stops immediately), then the leaf lookup misses too.
+void MainWindow::apply_section_open(const std::string& section_title, bool on) {
+  // Verify the leaf is something we can act on before doing any work.
+  // An unknown title should be a strict no-op — not "no-op on the
+  // leaf but open Content as a side-effect because the resolver
+  // guessed Content as its parent." For m2 we only address
+  // m_sec_apply leaves; PropertiesPanel sections aren't yet supported
+  // through this entry point (see header note), so an unknown title
+  // either way produces no mutation.
+  auto leaf = m_sec_apply.find(section_title);
+  if (leaf == m_sec_apply.end()) return;
+
+  if (on) {
+    // Ancestor walk — collect chain bottom-up, then apply top-down so
+    // a future PropertiesPanel-aware variant (which DOES need
+    // outer-first ordering because GTK visibility cascades through
+    // the widget tree at refresh time) reads the same shape. Today's
+    // m_sec_apply-only path could apply in either order — body
+    // visibility is a flat boolean — but uniform ordering is cheaper
+    // to reason about than two shapes.
+    std::vector<std::string> chain;
+    std::string cur = parent_of_section(section_title);
+    while (!cur.empty()) {
+      chain.push_back(cur);
+      cur = parent_of_section(cur);
+    }
+    // Apply outermost-first. The chain was built innermost-first
+    // (immediate parent → grandparent → root), so iterate reverse.
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+      auto found = m_sec_apply.find(*it);
+      if (found != m_sec_apply.end()) {
+        found->second(true);
+      }
+      // Else: ancestor lives in PropertiesPanel's map, not m_sec_apply
+      // — out of scope for m2's verb (see header). Silently skip.
+    }
+  }
+  // Apply the leaf itself, whether on or off.
+  leaf->second(on);
 }
 
 void MainWindow::focus_inspector_on(const std::string& section_title) {
@@ -1657,53 +1845,11 @@ void MainWindow::focus_inspector_on(const std::string& section_title) {
   }
 
   // Case 2: PropertiesPanel sections — Document / Object / Application.
-  // Static title→group mapping. Ambiguous titles (Guides appears under
-  // both Object and Application as of the current refresh structure)
-  // resolve to their most common home for the user-driven case;
-  // future per-mode disambiguation can land here when needed.
-  //
-  // s203 m5 fix1 — Canvas, Margins, Grid only exist as sections inside
-  // the Theme disclosure under Document (see build_theme_disclosure in
-  // PropertiesPanel.cpp around line 1353). The original s202 mapping
-  // also listed Margins/Grid under "Application", which was dead — no
-  // such sections are built under Application. Removed from the
-  // Application branch so the routing is honest about where they live.
-  auto parent_group_for = [](const std::string& title) -> const char* {
-    // Document group — Metadata + Dimensions directly; Theme is its
-    // own collapsible that contains Canvas / Margins / Grid as nested
-    // children (handled below via intermediate_parent_for).
-    if (title == "Metadata" || title == "Theme" || title == "Canvas" ||
-        title == "Dimensions" || title == "Margins" || title == "Grid")
-      return "Document";
-    // Object group — selection-dependent sections, Guides under
-    // Object (s179 m3v2), Styling under Object as the apply-style
-    // surface.
-    if (title == "Selection" || title == "Text" || title == "Blend" ||
-        title == "Warp" || title == "Node" || title == "Appearance" ||
-        title == "Shadow" || title == "Styling" || title == "Guides")
-      return "Object";
-    // Application group — boot-time + editing prefs.
-    if (title == "Startup" || title == "Editing" || title == "Paths" ||
-        title == "Boolean cleanup")
-      return "Application";
-    return nullptr;
-  };
-
-  // s203 m5 fix1 — Theme-nested children. Canvas / Margins / Grid live
-  // inside the Theme disclosure (build_theme_disclosure), not directly
-  // under Document. The m_section_open keys are flat — "Canvas",
-  // "Margins", "Grid" all sit at the same level in the map as "Theme"
-  // itself — but the visual disclosure tree is Document → Theme →
-  // {Canvas, Margins, Grid}. So opening one of those three requires
-  // opening Theme too, otherwise the leaf's flag is true but the user
-  // sees a collapsed Theme disclosure with nothing visible.
-  // Returns the intermediate section title to also flip open, or
-  // empty string if the title is not nested inside an intermediate.
-  auto intermediate_parent_for = [](const std::string& title) -> std::string {
-    if (title == "Canvas" || title == "Margins" || title == "Grid")
-      return "Theme";
-    return {};
-  };
+  // Parent-resolution helpers (parent_group_for, intermediate_parent_for)
+  // are file-local statics — see their definitions near the top of this
+  // TU. Lifted from inline lambdas during s222 m2 fix-2 so apply_section_open
+  // can share them; the table is the single source of truth for "which
+  // group owns which title" across both consumers.
 
   auto state = m_properties.section_open_state();
   if (state.find(section_title) != state.end()) {

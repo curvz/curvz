@@ -463,15 +463,23 @@ set(SOURCES
     # abbrev "pnl_styles".
     src/scripting/StylesPanelScriptable.cpp
     # Row-bound model Scriptables. Wrap the project's layer / guide /
-    # swatch collections under abbrevs "layers" / "guides" / "swatches"
-    # with transient per-instance proxies (`layer.<iid>`, `guides.<iid>`,
-    # `swatches.<id>`) routed through the Scriptable::can_resolve /
-    # proxy_for hooks. The swatches one (s221 m1) is the first
-    # library-collection Scriptable; the previous two wrap SceneNode
+    # swatch / style collections under abbrevs "layers" / "guides" /
+    # "swatches" / "styles" with transient per-instance proxies
+    # (`layer.<iid>`, `guides.<iid>`, `swatches.<id>`, `styles.<id>`)
+    # routed through the Scriptable::can_resolve / proxy_for hooks. The
+    # swatches one (s221 m1) is the first library-collection Scriptable,
+    # styles (s222 m1) is the second; the first two wrap SceneNode
     # collections.
     src/scripting/LayersScriptable.cpp
     src/scripting/GuidesScriptable.cpp
     src/scripting/SwatchesScriptable.cpp
+    src/scripting/StylesScriptable.cpp
+    # s222 m2 — inspector area Scriptable. Flat verb surface (no proxy
+    # routing) that delegates to MainWindow's collapse-all and
+    # apply-section-open methods. Sibling of the model Scriptables but
+    # a different shape — meta over the window's layout, not over a
+    # project sub-system.
+    src/scripting/InspectorScriptable.cpp
     src/curvz/widgets/ToggleButton.cpp
     src/curvz/widgets/Button.cpp
     src/curvz/widgets/CheckButton.cpp

@@ -1,0 +1,106 @@
+# 31_inspector_sections_smoke — exercises s222 m2's `inspector`
+# Scriptable. Two verbs, no queries — the test is visual: the
+# operator runs the script and watches the right-panel sections
+# collapse and re-open one at a time.
+#
+# ── What this Scriptable is for ──────────────────────────────────────────
+#
+# Scott's demo-prep workflow: before running a script that mutates
+# (say) the styles library, the inspector should be set up so the
+# user can SEE the changes happen. That means collapsing every
+# right-panel section except the one the demo is about to use.
+# Without these verbs the operator does the collapse-and-open by
+# hand before each demo run; with them it's a two-line preamble in
+# the script itself.
+#
+# ── Verb surface ─────────────────────────────────────────────────────────
+#
+#   inspector collapse_all       — close every right-panel section AND
+#                                  every PropertiesPanel-internal
+#                                  collapsible. Spans BOTH registries
+#                                  via MainWindow's existing
+#                                  collapse_all_inspector_sections
+#                                  (originally built for the s202 m6
+#                                  keyboard quick-jump float).
+#   inspector open "<title>"     — open one named section. Limited to
+#                                  right-panel sections today (those
+#                                  registered in MainWindow's
+#                                  m_sec_apply: Layers, Library,
+#                                  Swatches, Styles, Themes, Documents,
+#                                  Preview, plus the Content group).
+#                                  PropertiesPanel-internal sections
+#                                  aren't reached by this verb yet —
+#                                  the cascade path lives inside
+#                                  MainWindow::focus_inspector_on and
+#                                  hasn't been lifted out yet.
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# This smoke MUTATES inspector view-state across the run (it
+# collapses everything and opens a sequence of sections). The state
+# is persisted — when the script finishes, the right-panel sections
+# will be in whatever state the last `open` left them. That's
+# acceptable for an inspector-prep verb; the next session's
+# load-project will restore the saved state if needed, and the
+# user can collapse-all by hand from the keyboard (Ctrl+Backtick or
+# whatever the current binding is).
+#
+# No `count_before`-style baseline capture; there's nothing to
+# round-trip. The visual confirmation IS the test.
+
+#[sub] Registry sanity — `inspector` should be visible in `list`.
+#[sub] (Same Scriptable-registry plumbing as styles/swatches/layers/
+#[sub] guides; the registry entry is created in InspectorScriptable's
+#[sub] base-class ctor.)
+list
+
+#[sub] Phase 1: collapse everything. After this line, every right-
+#[sub] panel section AND every PropertiesPanel-internal collapsible
+#[sub] should be closed. The arrow glyphs should all show ▸, no
+#[sub] section bodies visible. The persisted state (project's
+#[sub] sec_*_open fields) is also updated — schedule_save fires.
+
+inspector collapse_all
+
+#[sub] Phase 2: open one section. The Styles section should now be
+#[sub] visible — the dropdown for category selection and the chip
+#[sub] grid for the active category. Other sections stay collapsed.
+
+inspector open "Styles"
+
+#[sub] Open another. Both Styles AND Swatches should now be open;
+#[sub] this verb doesn't collapse siblings (use collapse_all + open
+#[sub] for that "spotlight" behaviour).
+
+inspector open "Swatches"
+
+#[sub] Open Layers too. Three sections open now (Styles, Swatches,
+#[sub] Layers); everything else still collapsed.
+
+inspector open "Layers"
+
+#[sub] Unknown section title — silent no-op. apply_section_open's
+#[sub] map lookup misses, returns without doing anything; no error,
+#[sub] no warning, no panel state change.
+
+inspector open "NoSuchSection"
+
+#[sub] Empty arg — silent no-op. The Scriptable's invoke checks
+#[sub] args.empty() before calling MainWindow, so this short-
+#[sub] circuits there.
+
+inspector open ""
+
+#[sub] Phase 3: collapse and re-open just one. This is the canonical
+#[sub] demo-prep preamble — close everything, then open the one
+#[sub] section the script is about to mutate. Operator should see
+#[sub] all three previously-open sections close, then Styles
+#[sub] re-appear.
+
+inspector collapse_all
+inspector open "Styles"
+
+#[sub] s222 m2 smoke complete. Manual verification: the right-panel
+#[sub] should have Styles open and every other section closed.
+#[sub] Re-running the smoke is idempotent (collapse_all + open
+#[sub] always lands in the same state).

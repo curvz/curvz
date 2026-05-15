@@ -153,6 +153,8 @@ namespace curvz::widgets { class ToggleButton; }  // s219 m1 — headerbar Scrip
 namespace curvz::scripting { class LayersScriptable; }
 namespace curvz::scripting { class GuidesScriptable; }
 namespace curvz::scripting { class SwatchesScriptable; }
+namespace curvz::scripting { class StylesScriptable; }
+namespace curvz::scripting { class InspectorScriptable; }
 namespace curvz::scripting { class ScripterWindow; }
 
 namespace Curvz {
@@ -162,9 +164,11 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
-    // s216 m1 / s219 m1 / s221 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
-    // unique_ptr<curvz::scripting::GuidesScriptable>, and
-    // unique_ptr<curvz::scripting::SwatchesScriptable> can hold incomplete
+    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
+    // unique_ptr<curvz::scripting::GuidesScriptable>,
+    // unique_ptr<curvz::scripting::SwatchesScriptable>,
+    // unique_ptr<curvz::scripting::StylesScriptable>, and
+    // unique_ptr<curvz::scripting::InspectorScriptable> can hold incomplete
     // types at the header level. Implementation lives in MainWindow.cpp
     // alongside the construction. No longer gated as of s219 m1.
     ~MainWindow();
@@ -238,6 +242,32 @@ public:
     void collapse_all_inspector_sections();
     void focus_inspector_on(const std::string& section_title);
     void show_quick_jump_popover();
+
+    // s222 m2 — open a single inspector section by title without
+    // collapsing siblings. Lookup is against m_sec_apply (the right-
+    // panel registry: Layers, Library, Swatches, Styles, Themes,
+    // Documents, Preview, plus the Content group). Unknown titles are
+    // silent no-ops. The applier closure handles widget cascade
+    // (body visibility + arrow glyph) and project-field persistence,
+    // identical to the path the user takes by clicking the header.
+    //
+    // Limitation: PropertiesPanel-internal sections (Dimensions, Node,
+    // Object/Application/Document groups and their inner sections) are
+    // NOT reached by this method — the body lookup for those lives in
+    // PropertiesPanel's m_section_open map and per-section lambdas,
+    // not in m_sec_apply. The keyboard quick-jump's focus_inspector_on
+    // method spans BOTH registries (its first phase collapses
+    // everything via m_sec_apply + PropertiesPanel's set_section_open_state,
+    // then opens the leaf via the appropriate path). The cascading
+    // logic isn't lifted here yet — the s222 m2 use case (script
+    // demo-prep) targets the right-panel sections, which m_sec_apply
+    // covers fully. A future "open with cascade" variant can lift the
+    // body of focus_inspector_on once a use case demands it.
+    //
+    // Public for the same reason collapse_all_inspector_sections and
+    // focus_inspector_on are — script-driven and keyboard-driven entry
+    // points both sit at the MainWindow public surface.
+    void apply_section_open(const std::string& section_title, bool on);
     // ── end s202 m6 ────────────────────────────────────────────────────
 
     // s203 m1 — View Clipboard mini float (Edit ▸ View Clipboard…).
@@ -629,6 +659,35 @@ private:
     // s220 m1a made swatch CRUD undoable and the Scriptable rides that
     // plumbing.
     std::unique_ptr<curvz::scripting::SwatchesScriptable> m_swatches_scriptable;
+    // s222 m1 — `styles` collection Scriptable, fourth row-bound model
+    // Scriptable. Second library-collection Scriptable (sibling of
+    // m_swatches_scriptable; both wrap project-scoped libraries rather
+    // than per-doc SceneNode collections). Same lifetime / construction
+    // / destruction shape as the three above; transient per-instance
+    // `styles.<id>` proxies route through this object's `proxy_for`.
+    // history pointer is DEREFERENCED on every mutating verb — the
+    // S81 m4c-3 commands (AddStyleCommand / UpdateStyleCommand /
+    // RemoveStyleCommand) cover every CRUD verb, exactly like the
+    // swatch Scriptable rides the s220 m1a swatch commands.
+    //
+    // s222 m1 fix-1: this Scriptable also carries a StylesPanel
+    // getter (constructed in MainWindow.cpp pointing at m_styles)
+    // for after-mutation navigation on `new` and `duplicate`. The
+    // mechanism differs from the swatches fix-1 (library-side
+    // add_to_palette) because the styles panel filters by panel
+    // state (m_active_category), not by library state.
+    std::unique_ptr<curvz::scripting::StylesScriptable> m_styles_scriptable;
+    // s222 m2 — `inspector` Scriptable, wraps the inspector-area
+    // section open/close orchestration (collapse_all + open). NOT a
+    // model-collection Scriptable (no proxy_for surface, no per-row
+    // addressing); flat verb surface that delegates to MainWindow's
+    // existing collapse_all_inspector_sections / apply_section_open
+    // methods. Same lifetime / dtor story as the model Scriptables
+    // above; the dtor stays out-of-line so the unique_ptr can hold an
+    // incomplete type. See InspectorScriptable.hpp for the design
+    // block (in particular, why this isn't a verb on pnl_styles or a
+    // PropertiesPanel-only Scriptable).
+    std::unique_ptr<curvz::scripting::InspectorScriptable> m_inspector_scriptable;
 
     // s219 m1 — Scripter window. Owned by MainWindow as a unique_ptr
     // member, matching the pattern of every other persistent floating

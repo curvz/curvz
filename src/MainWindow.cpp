@@ -14,6 +14,8 @@
 #include "scripting/LayersScriptable.hpp"  // s216 m1 — model Scriptable pilot
 #include "scripting/GuidesScriptable.hpp"  // s218 m1 — second model Scriptable
 #include "scripting/SwatchesScriptable.hpp"  // s221 m1 — third model Scriptable
+#include "scripting/StylesScriptable.hpp"  // s222 m1 — fourth model Scriptable
+#include "scripting/InspectorScriptable.hpp"  // s222 m2 — inspector area Scriptable
 #include "scripting/ScripterWindow.hpp"    // s219 m1 — apply_scripter_pref present/hide
 #include "curvz/widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
 #include "Application.hpp"                  // s219 m1 — Curvz::Application (main_window only)
@@ -256,6 +258,44 @@ MainWindow::MainWindow(Application & /*app*/) {
           [this]() -> CurvzProject* { return m_project.get(); },
           &m_history);
 
+  // s222 m1 — `styles` collection Scriptable. Second library-collection
+  // Scriptable (sibling of m_swatches_scriptable; both wrap
+  // project-scoped libraries — the swatches Scriptable wraps
+  // CurvzProject::swatches, this one wraps CurvzProject::styles). Same
+  // construction shape: project-getter resolves m_project.get() fresh
+  // on every verb call, history pointer to the doc's CommandHistory.
+  //
+  // history is DEREFERENCED on every mutating verb — the S81 m4c-3
+  // commands (AddStyleCommand / UpdateStyleCommand / RemoveStyleCommand)
+  // make every style CRUD undoable from the panel, and the Scriptable
+  // rides exactly that plumbing.
+  //
+  // s222 m1 fix-1: panel-getter for after-mutation navigation. Without
+  // this, scripted `new`/`duplicate` leave the panel sitting on
+  // whatever category was selected before the script ran — library
+  // is populated, dropdown has the new category as an option, but the
+  // user sees nothing change. With this, the Scriptable navigates the
+  // panel to the new style's category right after the command pushes.
+  // See StylesScriptable.hpp's "Panel visibility" block for the full
+  // rationale and the comparison with SwatchesScriptable's library-
+  // side fix-1.
+  m_styles_scriptable =
+      std::make_unique<curvz::scripting::StylesScriptable>(
+          [this]() -> CurvzProject* { return m_project.get(); },
+          &m_history,
+          [this]() -> StylesPanel* { return &m_styles; });
+
+  // s222 m2 — `inspector` Scriptable. Flat verb surface (no proxy
+  // routing) that delegates to MainWindow's existing collapse-all
+  // and apply-section-open methods. Constructed last among the
+  // Scriptables because it's a meta-Scriptable — it talks to
+  // MainWindow itself rather than to a project sub-system, and only
+  // makes sense once MainWindow's section state is initialised
+  // (which happens elsewhere in the ctor before this point). Same
+  // unique_ptr / out-of-line dtor pattern as the four above.
+  m_inspector_scriptable =
+      std::make_unique<curvz::scripting::InspectorScriptable>(this);
+
   // s219 m1 — Scripter window construction. Previously lived in
   // Application::on_activate; moved here so MainWindow owns the
   // window the way it owns HelpWindow, ShortcutsDialog, and the
@@ -342,9 +382,10 @@ MainWindow::MainWindow(Application & /*app*/) {
   LOG_INFO("MainWindow created");
 }
 
-// s216 m1 / s218 m1 / s219 m1 / s221 m1 — out-of-line dtor. The header forward-declares
+// s216 m1 / s218 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 — out-of-line dtor. The header forward-declares
 // curvz::scripting::LayersScriptable, curvz::scripting::GuidesScriptable,
-// and curvz::scripting::SwatchesScriptable; the unique_ptrs in the header
+// curvz::scripting::SwatchesScriptable, curvz::scripting::StylesScriptable,
+// and curvz::scripting::InspectorScriptable; the unique_ptrs in the header
 // need the complete types at MainWindow destruction time, and they're
 // only visible in this TU (where we included the full headers above).
 // Defaulted body is the right answer — every member has its own
