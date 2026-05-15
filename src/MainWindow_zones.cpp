@@ -1,6 +1,5 @@
 #include "MainWindow.hpp"
 #include "AppPreferences.hpp" // s139 m2 / s143 m1 — boolean-cleanup quality pref + sync
-#include "Application.hpp" // s190 m2 — Application::present_scripter() (CURVZ_DIAGNOSTIC)
 #include "ContextBar.hpp"
 #include "CoordSpace.hpp"
 #include "CurvzLog.hpp"
@@ -13,10 +12,8 @@
 #include "SvgWriter.hpp"
 #include "TemplateLibrary.hpp"
 #include "ThemeEditDialog.hpp" // s183 m2 — Edit-theme dialog wiring
-#include "curvz/widgets/ToggleButton.hpp" // s190 m2 — substrate-routed Scripter toggle (CURVZ_DIAGNOSTIC)
-#ifdef CURVZ_DIAGNOSTIC
-#include "scripting/ScripterWindow.hpp" // s190 m2 — present/get_visible/property_visible
-#endif
+#include "curvz/widgets/ToggleButton.hpp" // s190 m2 / s219 m1 — substrate-routed Scripter toggle
+#include "scripting/ScripterWindow.hpp" // s190 m2 / s219 m1 — present/get_visible/property_visible
 #include <functional>
 #include <giomm/simpleactiongroup.h> // s144 m3 — recents action group
 #include <gtkmm/application.h>
@@ -312,21 +309,23 @@ void MainWindow::setup_headerbar() {
   });
   m_headerbar.pack_start(m_logo_btn);
 
-#ifdef CURVZ_DIAGNOSTIC
-  // s190 m2 — Scripter quick-open toggle. Diagnostic-mode-only; gives
-  // an accidental-close recovery path and a way to hide the Scripter
-  // without searching for its X button.
-  //
+  // s190 m2 / s219 m1 — Scripter quick-open toggle ("the monkey button").
   // Sits immediately after the app logo (left edge of the headerbar)
-  // so the diagnostic-surface entry point is the first thing visible
-  // alongside the application's primary brand mark. Symbolic icon —
-  // face-monkey is stock Adwaita and reads as "diagnostic / playful
-  // operator surface" without conflicting with any tool-button icon
-  // in the toolbar.
+  // so the scripting entry point is the first thing visible alongside
+  // the application's primary brand mark. Symbolic icon — face-monkey
+  // is stock Adwaita and reads as "diagnostic / playful operator
+  // surface" without conflicting with any tool-button icon in the
+  // toolbar.
   //
-  // s190 m2-rev2 — promoted to ToggleButton so the checked state is
-  // a live indicator of whether the Scripter is currently visible.
-  // Bidirectional sync:
+  // s219 m1 — visibility is governed by AppPreferences::scripter_enabled.
+  // The button is always constructed and packed into the headerbar so
+  // its slot is reserved and its substrate registration is stable, but
+  // it's HIDDEN when the pref is off. The initial visibility is left
+  // false here and the canonical apply_scripter_pref() call at the end
+  // of MainWindow's ctor flips it to the correct state — single source
+  // of truth, no risk of an out-of-sync default.
+  //
+  // Bidirectional sync (s190 m2-rev2 design, unchanged in s219 m1):
   //   toggle.signal_toggled  →  show/hide the Scripter (forward)
   //   scripter.property_visible.signal_changed  →  flip the toggle
   //                                                 (back-channel,
@@ -339,14 +338,26 @@ void MainWindow::setup_headerbar() {
   // Substrate-routed (curvz::widgets::ToggleButton) so the scriptable
   // registry sees it under the abbrev "mw_scripter". Toggling from a
   // script via `mw_scripter toggle` works the same as a real click.
+  //
+  // s219 m1 — toggling the button does NOT change the pref; it only
+  // shows/hides the window. This is intentional: the headerbar button
+  // is a quick-access window toggle (like minimise), not a feature
+  // enable/disable. The pref is changed via the menu item or the
+  // inspector switch — both of which DO own the pref's state. If the
+  // user disables the feature via the menu/inspector, the button
+  // disappears from the headerbar entirely (apply_scripter_pref hides
+  // it). If they only want to hide the window briefly, they click the
+  // button or its X.
   auto* scripter_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
       "mw_scripter");
   scripter_btn->set_icon_name("face-monkey-symbolic");
   scripter_btn->set_tooltip_text("Scripter (toggle visibility)");
   scripter_btn->set_has_frame(false);
   scripter_btn->add_css_class("mw-scripter-btn");  // for :checked accent
+  scripter_btn->set_visible(false);  // canonical state set later by apply_scripter_pref
   curvz::utils::set_name(*scripter_btn, "mw_scripter",
                          "main_window_scripter_open_btn");
+  m_scripter_btn = scripter_btn;  // s219 m1 — held for apply_scripter_pref
 
   // Seed the toggle's checked state from the Scripter's current
   // visibility. Construction order: Application::on_activate creates
@@ -355,34 +366,58 @@ void MainWindow::setup_headerbar() {
   // yet. We defer the initial sync via signal_idle so application
   // setup can finish first.
   //
-  // s190 m2-rev4 lesson — both sides of the toggle MUST flip the same
-  // property symmetrically. present() is "make me visible AND focus
-  // me" — a stronger guarantee than set_visible(true) and a different
-  // shape than its inverse set_visible(false). The asymmetric pairing
-  // caused a mousedown-hide / mouseup-show flicker; symmetric
-  // set_visible(true/false) eliminates it.
+  // s190 m2-rev4 lesson — both sides of the toggle initially flipped the
+  // same property symmetrically (set_visible true/false) to eliminate
+  // a mousedown-hide / mouseup-show flicker observed in --diagnostic
+  // builds. s219 m1 update: that's still right for the HIDE side, but
+  // the SHOW side now needs present() instead of set_visible(true).
+  //
+  // The reason: hide_on_close() drops the window's window-manager
+  // registration when the X button is pressed. The next show has to
+  // re-register it — present() does that (it's "realize + show + raise +
+  // focus"), set_visible(true) does not. Without present(), the window
+  // surface comes back but its titlebar decorations (min/max/close) come
+  // up inert because the WM hasn't been told this is a top-level again.
+  //
+  // The asymmetric pairing also matches apply_scripter_pref()'s shape
+  // — that helper has always used present() for show (it's the pref-
+  // change path, which is the canonical "make this exist properly"
+  // moment). The monkey button is just one more way to reach the same
+  // show, so they should flow the same way.
+  //
+  // If the s190 m2-rev4 flicker comes back as a result of this
+  // asymmetry, we instrument before guessing — log mode rather than
+  // re-toggling between set_visible and present chasing the right
+  // answer.
+  // s219 m1 — toggle handler. The monkey button drives the Scripter
+  // window's visibility; show_scripter() is the canonical entry point
+  // on MainWindow that does the right thing on each side. Show path
+  // calls into m_scripter->show(*this) which sets transient_for and
+  // applies the motif class on every show — matching the HelpWindow /
+  // ShortcutsDialog pattern that's known to behave well on GNOME.
+  //
+  // The s190 m2-rev4 mousedown-hide/mouseup-show flicker that the
+  // earlier symmetric-set_visible code was guarding against doesn't
+  // recur with the show()-based approach because show() is idempotent
+  // (re-asserting transient_for and presenting an already-visible
+  // window is a no-op at the user-perceivable level).
   auto syncing = std::make_shared<bool>(false);
   scripter_btn->signal_toggled().connect([this, scripter_btn, syncing]() {
     if (*syncing) return;  // change came from back-channel; don't recurse
-    auto app_ref = get_application();
-    auto* app = dynamic_cast<Curvz::Application*>(app_ref.get());
-    if (!app) return;
-    auto* sw = app->scripter();
-    if (!sw) return;
-    sw->set_visible(scripter_btn->get_active());
+    show_scripter(scripter_btn->get_active());
   });
 
   // Back-channel: keep the toggle in sync with the actual window
   // visibility. property_visible fires on any visibility change
   // regardless of cause (X-button close, set_visible(false), present
   // from cold), which is the correct signal for "stay in sync."
+  //
+  // Deferred via signal_idle so MainWindow's ctor finishes (and
+  // therefore m_scripter is alive) before we subscribe.
   Glib::signal_idle().connect_once(
       [this, scripter_btn, syncing]() {
-        auto app_ref = get_application();
-        auto* app = dynamic_cast<Curvz::Application*>(app_ref.get());
-        if (!app) return;
-        auto* sw = app->scripter();
-        if (!sw) return;
+        if (!m_scripter) return;
+        auto* sw = m_scripter.get();
         // Initial seed.
         *syncing = true;
         scripter_btn->set_active(sw->get_visible());
@@ -397,7 +432,6 @@ void MainWindow::setup_headerbar() {
       });
 
   m_headerbar.pack_start(*scripter_btn);
-#endif
 
   // S60 M3: "Documents" label + vertical separator packed into
   // pack_start immediately after the logo so they hug the left edge.
@@ -685,6 +719,31 @@ void MainWindow::setup_menu() {
   auto navigate_section = Gio::Menu::create();
   navigate_section->append_submenu("Navigate", navigate_menu);
   menu->append_section("", navigate_section);
+
+  // ── Developer submenu (s219 m1) ────────────────────────────────────────
+  // Top-level submenu for power-user / contributor surfaces. First (and
+  // currently only) inhabitant: Scripting — the master toggle for
+  // Curvz's script-driven test harness (the Scripter window).
+  //
+  // The menu item is a stateful boolean GAction so a checkmark
+  // mirrors the live AppPreferences::scripter_enabled value. When the
+  // user activates it, the action flips the pref; the pref's
+  // signal_changed re-runs apply_scripter_pref() which feeds the new
+  // state back into the action via set_state(). The two paths can
+  // re-enter each other safely because:
+  //   - set_state on the action is silent (doesn't re-fire activate)
+  //   - set_scripter_enabled is no-op-if-equal
+  // so the loop terminates after one round-trip regardless of who
+  // started it.
+  //
+  // The matching inspector switch (Application ▸ Developer ▸ Scripting)
+  // mirrors this surface — both write to the same pref. Future
+  // Developer-menu inhabitants land here as a sibling section.
+  auto developer_menu = Gio::Menu::create();
+  developer_menu->append("Scripting", "win.toggle-scripting");
+  auto developer_section = Gio::Menu::create();
+  developer_section->append_submenu("Developer", developer_menu);
+  menu->append_section("", developer_section);
 
   // ── App items ───────────────────────────────────────────────────────────
   auto app_section = Gio::Menu::create();
@@ -1148,6 +1207,37 @@ void MainWindow::setup_menu() {
   act_outline->signal_activate().connect(
       [this](const Glib::VariantBase &) { try_toggle_outline_safely(); });
   add_action(act_outline);
+
+  // Developer — Scripting toggle (s219 m1, stateful boolean action).
+  // The action's state mirrors AppPreferences::scripter_enabled.
+  //
+  // Activation flow:
+  //   1. User clicks the menu item → Gio fires activate() with no
+  //      parameter (stateful bool actions invert their current state).
+  //   2. We read the action's current state, compute the new value,
+  //      and write the pref. set_scripter_enabled fires signal_changed.
+  //   3. apply_scripter_pref() (subscribed to signal_changed in
+  //      MainWindow's ctor) updates the action state, the headerbar
+  //      button visibility, and the Scripter window's present/hide.
+  //
+  // The action is created with its initial state matching the loaded
+  // pref so the menu's checkmark is correct from first paint. The
+  // member ref m_act_toggle_scripting lets apply_scripter_pref()
+  // update the state without an action-group lookup round-trip
+  // (same pattern as m_recents_clear_action above).
+  m_act_toggle_scripting = Gio::SimpleAction::create_bool(
+      "toggle-scripting",
+      AppPreferences::instance().scripter_enabled());
+  m_act_toggle_scripting->signal_activate().connect(
+      [this](const Glib::VariantBase &) {
+        bool current = false;
+        m_act_toggle_scripting->get_state(current);
+        AppPreferences::instance().set_scripter_enabled(!current);
+        // No direct apply_scripter_pref() call here — the pref's
+        // signal_changed will fire it for us, keeping a single
+        // re-sync path regardless of who triggered the change.
+      });
+  add_action(m_act_toggle_scripting);
 
   // S93 m7: toggle-clipper2 action removed. Boolean ops now run
   // exclusively through Clipper2; hand-rolled engine is retained on
@@ -1624,8 +1714,7 @@ void MainWindow::setup_layout() {
   content.container->append(
       *make_section("Styles", m_styles, false, false, &m_sec_open_styles));
 
-#ifdef CURVZ_DIAGNOSTIC
-  // s202 m4 — give StylesPanel's panel-as-Scriptable a hookup to drive
+  // s202 m4 / s219 m1 — give StylesPanel's panel-as-Scriptable a hookup to drive
   // the parent inspector section's expand/collapse state. The kebab
   // popover positions relative to its button's on-screen allocation;
   // when the section is collapsed the kebab has no allocation, so
@@ -1639,31 +1728,20 @@ void MainWindow::setup_layout() {
   // open/close cascade — body visibility, arrow glyph, project field
   // update, schedule_save — without the Scriptable needing to know
   // any of that machinery.
+  //
+  // s219 m1 — always wired now. The panel-Scriptable is always built
+  // (CMake change in s219 m1); the hookup is harmless when no script
+  // ever runs, since the closure only fires when a script invokes
+  // expand_section / focus_section on pnl_styles.
   m_styles.set_section_state(m_sec_open_styles,
       [this](bool on) {
         auto it = m_sec_apply.find("Styles");
         if (it != m_sec_apply.end()) it->second(on);
       });
 
-  // s202 m5 — composite focus-move hookup. The narrow set_section_state
-  // above flips only the "Styles" section's flag; that's not enough on
-  // its own because Styles lives inside the "Content" group section,
-  // which is itself collapsed by default. A closed group hides every
-  // child section's on-screen allocation regardless of the child's own
-  // open flag, so expanding only "Styles" leaves the kebab unrendered
-  // and the popover fallback-positions to the app's upper-right.
-  //
-  // set_section_chain publishes (a) the ancestor chain — outermost-
-  // first — and (b) a closure that collapses every registered section
-  // before walking the chain open. The Scriptable's focus_section
-  // verb invokes it. The "collapse every section" pass is intentional:
-  // a narrated walkthrough should quiet the inspector before drawing
-  // attention to a specific panel, the same way a presenter clears
-  // the slide before pointing at the new figure.
-  //
-  // The chain is data, not part of the closure, so future panels
-  // (pnl_themes, pnl_swatches, etc.) reuse the same closure shape by
-  // varying just their chain vector.
+  // s202 m5 / s219 m1 — composite focus-move hookup. See set_section_state
+  // comment above for the gating rationale; same shape, same always-wired
+  // story.
   m_styles.set_section_chain(
       {"Content", "Styles"},
       [this](const std::vector<std::string>& chain) {
@@ -1684,7 +1762,6 @@ void MainWindow::setup_layout() {
           if (it != m_sec_apply.end()) it->second(true);
         }
       });
-#endif
 
   // Themes panel — s147 m3 replacement for ThemesDialog. Project-scoped
   // library + apply-to-targets flow, always-visible. on_changed routes
@@ -1764,8 +1841,7 @@ void MainWindow::setup_layout() {
     }
   });
 
-#ifdef CURVZ_DIAGNOSTIC
-  // s191 m3 + s192 m4 — caption bar. Floats above the canvas as an
+  // s191 m3 + s192 m4 / s219 m1 — caption bar. Floats above the canvas as an
   // overlay rather than taking a row in m_root's layout flow. Anchored
   // to the bottom edge of the canvas overlay, full width, with the
   // SLIDE_UP transition revealing it from below the canvas edge into
@@ -1781,6 +1857,12 @@ void MainWindow::setup_layout() {
   // verbs to address it through. The revealer is also plain;
   // visibility is driven by ScriptListener via Application's
   // SubtitleCallback bridge, not by user scripts.
+  //
+  // s219 m1 — always compiled. The revealer's reveal-state starts
+  // false and only flips when a running script emits `#[sub]` lines,
+  // which can't happen unless the user has scripting enabled and is
+  // running something. Cost when unused: a hidden Gtk::Revealer in
+  // the overlay tree.
   m_caption_label.set_text("");
   m_caption_label.set_halign(Gtk::Align::CENTER);
   m_caption_label.set_hexpand(true);
@@ -1801,7 +1883,6 @@ void MainWindow::setup_layout() {
   // used on m_text_fixed (the text-tool overlay above).
   m_caption_revealer.set_can_target(false);
   m_canvas_overlay.add_overlay(m_caption_revealer);
-#endif
 
   // Status bar — deferred append to avoid snapshot-before-allocation
   // warning on startup (S60). If appended synchronously at the end of
@@ -2031,9 +2112,11 @@ void MainWindow::update_corner_panel_position() {
   // No-op for now — position managed by alignment + margins
 }
 
-#ifdef CURVZ_DIAGNOSTIC
 // ─────────────────────────────────────────────────────────────────────
 // ━━━ caption bar ━━━ Subtitle-driven caption row above the status bar.
+// s219 m1: always compiled. Only fires when a script with `#[sub]`
+// lines runs (which requires the user to have enabled scripting and
+// hit Run); otherwise the revealer sits hidden and untouched.
 // ─────────────────────────────────────────────────────────────────────
 
 void MainWindow::set_subtitle(const std::string& text) {
@@ -2056,6 +2139,5 @@ void MainWindow::set_subtitle(const std::string& text) {
   m_caption_label.set_text(text);
   m_caption_revealer.set_reveal_child(true);
 }
-#endif
 
 } // namespace Curvz

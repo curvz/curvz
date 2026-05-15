@@ -136,20 +136,23 @@
 // dialog's perp toggle (member-pointer here, constructed and dereferenced
 // in MainWindow_handlers.cpp).
 namespace curvz::widgets { class CheckButton; }
+namespace curvz::widgets { class ToggleButton; }  // s219 m1 — headerbar Scripter btn member
 
-#ifdef CURVZ_DIAGNOSTIC
-// s216 m1 — fwd declared rather than full-include so production builds
-// don't pull scripting headers. The unique_ptr member below is
+// s216 m1 / s219 m1 — fwd declared rather than full-include so MainWindow.hpp
+// doesn't pull scripting headers. The unique_ptr members below are
 // incomplete-type friendly only when the dtor is out-of-line; we
 // provide that in MainWindow.cpp alongside the construction.
 //
 // s218 m1 — same shape for GuidesScriptable, the second row-bound model
-// Scriptable. Forward-declared in the same block so production builds
-// drop both transparently; both members share the single out-of-line
-// dtor below.
+// Scriptable. Forward-declared in the same block; both members share
+// the single out-of-line dtor below.
+//
+// s219 m1 — these are no longer gated. The scripting TUs always compile.
+// ScripterWindow joins the same fwd-decl list because MainWindow now
+// owns it as a unique_ptr too (was previously held by Application).
 namespace curvz::scripting { class LayersScriptable; }
 namespace curvz::scripting { class GuidesScriptable; }
-#endif
+namespace curvz::scripting { class ScripterWindow; }
 
 namespace Curvz {
 
@@ -158,15 +161,11 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
-#ifdef CURVZ_DIAGNOSTIC
-    // s216 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>
-    // can hold an incomplete type at the header level. Implementation
-    // lives in MainWindow.cpp alongside the construction site.
-    // s218 m1 — same dtor also covers unique_ptr<curvz::scripting::GuidesScriptable>
-    // (added below alongside the LayersScriptable member); a single
-    // out-of-line dtor handles every forward-declared scripting member.
+    // s216 m1 / s219 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>
+    // and unique_ptr<curvz::scripting::GuidesScriptable> can hold incomplete
+    // types at the header level. Implementation lives in MainWindow.cpp
+    // alongside the construction. No longer gated as of s219 m1.
     ~MainWindow();
-#endif
 
     // s126: last-used folder accessors. Public so non-MainWindow dialogs
     // (ExportDialog and friends) can opt into the same per-purpose
@@ -176,8 +175,7 @@ public:
     void        set_last_folder(const std::string& purpose,
                                 const std::string& path);  // category: helper: persistence
 
-#ifdef CURVZ_DIAGNOSTIC
-    // s191 m3 — caption bar driven by the Scripter's `#[sub]` lines.
+    // s191 m3 / s219 m1 — caption bar driven by the Scripter's `#[sub]` lines.
     // Empty text hides the bar (reveals collapses). Non-empty shows
     // the text and reveals. Replacement is instant (no fade between
     // captions); the reveal animation only plays on show-from-empty
@@ -185,10 +183,12 @@ public:
     //
     // Application wires this to the ScriptListener's subtitle
     // callback after both MainWindow and ScripterWindow exist. The
-    // diagnostic gate keeps production builds free of the surface.
+    // surface is always compiled (s219 m1); it only animates when a
+    // script with `#[sub]` lines runs, which happens only when the
+    // user has the Scripter open and hits Run.
     void set_subtitle(const std::string& text);  // category: zone: caption-bar
 
-    // s201 m3 — panel accessors for the script-driven action-dispatch
+    // s201 m3 / s219 m1 — panel accessors for the script-driven action-dispatch
     // verb. The Scripter's `do <prefix.action>` verb routes to whichever
     // panel owns the action group with that prefix (StylesPanel inserts
     // "styles", ThemesPanel inserts "themes-io", etc.). Application
@@ -196,11 +196,10 @@ public:
     // handles on each panel to call activate_action() through them —
     // GTK's action-group resolution walks up from the originating
     // widget, so the call must originate on the widget that holds the
-    // group. These accessors are the route; they exist only in the
-    // diagnostic build because nothing in production needs them.
+    // group. These accessors are the route; they're always available
+    // as of s219 m1.
     StylesPanel& styles_panel() { return m_styles; }
     ThemesPanel& themes_panel() { return m_themes; }
-#endif
 
     // ── s202 m6 — inspector focus / quick-jump ─────────────────────────
     //
@@ -247,12 +246,47 @@ public:
     // trip through an external text editor.
     void show_clipboard_view();
 
+    // s219 m1 — show or hide the Scripter window. Called from the
+    // headerbar monkey-button's toggled signal (forward direction) and
+    // from apply_scripter_pref() when the pref is being turned off
+    // (hide-only on that path; the pref-on path leaves the window's
+    // current visibility alone, per the s219 m1 design where the user
+    // explicitly clicks to open).
+    //
+    // The Scripter is a member of MainWindow (m_scripter), constructed
+    // in the ctor right after setup_project. The window's lifetime is
+    // MainWindow's lifetime; the X-button close hides it via
+    // set_hide_on_close(true) in its ctor.
+    //
+    // `visible=true`  → set_transient_for(*this) then present()
+    // `visible=false` → set_visible(false)
+    //
+    // The asymmetry matches HelpWindow / ShortcutsDialog: every show
+    // re-asserts the transient relationship; hide is just a visibility
+    // flip.
+    void show_scripter(bool visible);
+
 private:
     void setup_headerbar();  // category: zone: headerbar
     void setup_layout();  // category: zone: layout
     void setup_project();  // category: glue
     void setup_menu();  // category: zone: menu
     void connect_signals();  // category: bindings
+
+    // s219 m1 — re-sync every surface tied to scripter_enabled. Called
+    // once at the end of construction (after every relevant widget,
+    // action, and pref subscription is in place) and again whenever
+    // AppPreferences::signal_changed fires. Idempotent — flipping a
+    // control to its current state is a no-op everywhere.
+    //
+    // Surfaces synced:
+    //   - the headerbar Scripter toggle (m_scripter_btn): visible/hidden
+    //   - the Developer ▸ Scripting menu action state (checkmark)
+    //   - the Scripter window: present()/set_visible(false)
+    // The inspector switch syncs itself when PropertiesPanel rebuilds
+    // (the standard m_loading-guarded pattern); it reads scripter_enabled()
+    // at construction time of each row.
+    void apply_scripter_pref();  // category: glue: scripter integration
 
     void load_project(std::unique_ptr<CurvzProject> project);  // category: helper: flow orchestrator
     void update_all_panels();  // category: helper: display sync
@@ -560,14 +594,14 @@ private:
     StylesPanel     m_styles;
     ThemesPanel     m_themes;
 
-#ifdef CURVZ_DIAGNOSTIC
-    // s191 m3 — caption bar. Sits between m_middle and m_statusbar
-    // in the root vertical box; revealed by set_subtitle(). See the
-    // public method's comment for the wiring story.
+    // s191 m3 / s219 m1 — caption bar. Sits as an overlay on the canvas
+    // (added in setup_layout); revealed by set_subtitle(). See the
+    // public method's comment for the wiring story. Always compiled
+    // as of s219 m1; only animates when a script runs.
     Gtk::Revealer       m_caption_revealer;
     Gtk::Label          m_caption_label;
 
-    // s216 m1 — `layers` collection Scriptable. One registry entry per
+    // s216 m1 / s219 m1 — `layers` collection Scriptable. One registry entry per
     // app session; transient per-instance `layer.<iid>` proxies route
     // through this object's `proxy_for`. Holds a project-getter lambda
     // that resolves `m_project.get()` on every verb call, so the
@@ -575,15 +609,49 @@ private:
     // Held as unique_ptr because LayersScriptable is forward-declared
     // (see fwd-decl above the namespace) — only the .cpp side sees the
     // complete type. Constructed in MainWindow's ctor, destroyed in
-    // the out-of-line dtor.
+    // the out-of-line dtor. Always present as of s219 m1.
     std::unique_ptr<curvz::scripting::LayersScriptable> m_layers_scriptable;
-    // s218 m1 — `guides` collection Scriptable, second row-bound model
+    // s218 m1 / s219 m1 — `guides` collection Scriptable, second row-bound model
     // Scriptable. Same lifetime / construction / destruction shape as
     // m_layers_scriptable; transient per-instance `guides.<iid>` proxies
     // route through this object's `proxy_for`. Held as unique_ptr for
     // the same forward-decl reason.
     std::unique_ptr<curvz::scripting::GuidesScriptable> m_guides_scriptable;
-#endif
+
+    // s219 m1 — Scripter window. Owned by MainWindow as a unique_ptr
+    // member, matching the pattern of every other persistent floating
+    // dialog (HelpWindow, ShortcutsDialog, BlendDialog, MacroEditorWindow,
+    // MacroManagerWindow are value members; this one is unique_ptr
+    // because ScripterWindow is forward-declared to keep MainWindow.hpp
+    // free of scripting includes).
+    //
+    // Constructed at the end of MainWindow's ctor, destroyed by the
+    // out-of-line dtor. The X-button close hides via set_hide_on_close
+    // (the window's ctor sets that). MainWindow's show_scripter()
+    // method is the canonical entry for showing or hiding it.
+    //
+    // Previously the Scripter was owned by Application and add_window'd
+    // to the Gtk::Application directly. That arrangement made mutter
+    // treat the Scripter as a peer top-level rather than a secondary
+    // of MainWindow, with the visible consequence that hide/show
+    // cycles left the titlebar decorations unresponsive. Moving
+    // ownership down into MainWindow puts the Scripter on the same
+    // window-relationship footing as every other dialog in the app.
+    std::unique_ptr<curvz::scripting::ScripterWindow> m_scripter;
+
+    // s219 m1 — headerbar Scripter toggle (the "monkey button"). Held
+    // as a managed pointer so MainWindow can hide/show it in response
+    // to AppPreferences::scripter_enabled changes. Constructed in
+    // setup_headerbar() and packed into m_headerbar; visibility is
+    // driven by apply_scripter_pref(). Type forward-declared above.
+    curvz::widgets::ToggleButton* m_scripter_btn = nullptr;
+
+    // s219 m1 — stateful menu action for Developer ▸ Scripting. Held
+    // as a member so apply_scripter_pref() can update its state when
+    // the pref changes from any other surface (the inspector switch,
+    // or a future scripted toggle). The action lives in the window's
+    // "win" action group; this ref is just for fast state updates.
+    Glib::RefPtr<Gio::SimpleAction> m_act_toggle_scripting;
 
     StatusBar       m_statusbar;
 

@@ -12,9 +12,10 @@
 
 #include "scripting/ScripterWindow.hpp"
 
-#include "curvz_utils.hpp"        // s206 m1: curvz::utils::set_name for substrate harvester
+#include "curvz_utils.hpp"        // s206 m1: curvz::utils::set_name; s219 m1: apply_motif_class_from_parent in show()
 
 #include <giomm/application.h>        // s193 m2: Gio::Application::get_default()
+#include <gtkmm/application.h>        // s219 m1: Gtk::Application complete type for Auto-lower dynamic_pointer_cast (was implicit via gtkmm/applicationwindow.h before s219 m1)
 #include <giomm/file.h>               // s195 m1: Gio::File::create_for_path for save-as initial folder
 #include <gdkmm/clipboard.h>          // s186 close-out: copy-output button
 #include <gdkmm/contentprovider.h>    // s186 close-out: copy-output button
@@ -97,6 +98,17 @@ ScripterWindow::ScripterWindow(const std::string& initial_folder)
 
     build_ui();
     rescan_library();
+}
+
+// s219 m1 — show pattern matches HelpWindow / ShortcutsDialog. Called
+// from MainWindow's monkey-button handler (and apply_scripter_pref's
+// initial show path if any). Sets transient_for on every show so the
+// relationship is reasserted to mutter; without that, hide/show
+// cycles end with unresponsive titlebar buttons on GNOME.
+void ScripterWindow::show(Gtk::Window& parent) {
+    set_transient_for(parent);
+    curvz::utils::apply_motif_class_from_parent(*this, parent);
+    present();
 }
 
 // ── UI build ────────────────────────────────────────────────────────────────

@@ -6,11 +6,11 @@
 #include "RecentProjects.hpp"  // s144 m3 — load recents list at startup
 #include "TemplateLibrary.hpp"
 #include "color/SwatchLibrary.hpp"  // color::load_app_defaults (s69 M2)
-#ifdef CURVZ_DIAGNOSTIC
-#include "scripting/ScripterWindow.hpp"  // s186 m2
+// s219 m1 — ScripterWindow include removed; the Scripter lives in
+// MainWindow now. <filesystem> stays for any future Application-side
+// path work; glibmm/main.h stays for the GLib main-loop warmup below.
 #include <filesystem>
 #include <glibmm/main.h>                 // s186 m2 close-out: warmup
-#endif
 #include <cstdlib>             // s145 m4 — getenv for early prefs.json lookup
 #include <cstring>             // s180 — std::strcmp in warning-filter writer fn
 #include <filesystem>
@@ -367,97 +367,20 @@ void Application::on_activate() {
   win->present();
   m_main_window = win;  // s193 m2 — held for Scripter's Auto-lower toggle
 
-#ifdef CURVZ_DIAGNOSTIC
-  // s186 m2: Scripter window — the developer/QA surface for the
-  // script-driven substrate. Visible only in diagnostic builds.
+  // s219 m1 — Scripter is no longer constructed here. It moved into
+  // MainWindow as a member (matching the pattern of every other
+  // persistent floating dialog in Curvz: HelpWindow, ShortcutsDialog,
+  // BlendDialog, MacroEditorWindow, MacroManagerWindow). Letting
+  // MainWindow own it gives mutter the right window relationship
+  // automatically — the Scripter becomes a secondary of the main
+  // window rather than another top-level peer registered with the
+  // Gtk::Application, which on GNOME was producing unresponsive
+  // titlebar buttons after hide/show cycles.
   //
-  // Script library location: prefer ./tests/scripts (run from build
-  // tree during dev) and ../tests/scripts (run from inside build/).
-  // Falls back to "tests/scripts" so the picker shows a folder name
-  // even if nothing's there yet — user can use the Folder… button
-  // to point elsewhere.
-  //
-  // Theme: this is a regular Gtk::ApplicationWindow added to the
-  // application, so MainWindow::apply_motif_to_window() walks every
-  // top-level via gtk_window_get_toplevels() and stamps curvz-light
-  // on the next project-load / motif-change. First-present may show
-  // the system theme briefly — acceptable for a diagnostic window.
-  namespace fs = std::filesystem;
-  std::string scripts_dir = "tests/scripts";
-  for (auto candidate : {
-          fs::path("tests/scripts"),
-          fs::path("../tests/scripts"),
-       }) {
-      if (fs::exists(candidate) && fs::is_directory(candidate)) {
-          scripts_dir = fs::absolute(candidate).string();
-          break;
-      }
-  }
-  auto* scripter = new curvz::scripting::ScripterWindow(scripts_dir);
-  add_window(*scripter);
-  scripter->present();
-  m_scripter = scripter;  // s190 m2 — held for MainWindow's Scripter toggle
-  LOG_INFO("Application: CURVZ_DIAGNOSTIC build — Scripter window opened "
-           "(scripts dir: {})", scripts_dir);
-
-  // s191 m3 — bridge `#[sub]` lines from the Scripter's listener to
-  // MainWindow's caption bar. Two surfaces, one trigger: the
-  // listener still emits its flanked-caption line to the Scripter
-  // output pane (driven by the OutputCallback wired inside
-  // ScripterWindow), and ALSO hands the body text to MainWindow's
-  // set_subtitle() via this bridge. Where the user's eyes are —
-  // watching Curvz drive itself — is where the caption lands.
-  //
-  // Wired here in Application rather than inside ScripterWindow
-  // because ScripterWindow has no handle on MainWindow; Application
-  // is the only place that knows both. Both windows exist by this
-  // point: MainWindow at line 365, ScripterWindow at line 395.
-  if (auto* lst = scripter->listener()) {
-    lst->set_subtitle_callback([win](const std::string& text) {
-      win->set_subtitle(text);
-    });
-
-    // s201 m3 — `do <action.name>` dispatch. The script's user-driven
-    // verbs reach substrate widgets directly (toolbar buttons,
-    // inspector toggles, dialog OK), but menu items and inline action-
-    // driven buttons aren't substrate-addressable — they fire Gio
-    // actions instead. The action-dispatch callback bridges that gap
-    // so a test like 24_style_editor_dialog_full can open the dialog
-    // itself via `do styles.create-empty` rather than asking the
-    // tester to click "+ New style" by hand.
-    //
-    // Routing by prefix because GTK's activate_action walks UP from
-    // the originating widget looking for the action group: we have
-    // to call activate_action() on the widget that owns the group
-    // (the panel that inserted it), not on MainWindow above it.
-    // Returning false lets the listener emit a uniform "not
-    // recognised" error so a typo / missing prefix surfaces as a
-    // script-level error rather than a silent no-op.
-    //
-    // The prefix list grows as new action-driven UI surfaces want
-    // to be script-addressable. Today's roster:
-    //   styles.*    — StylesPanel kebab + context menu actions
-    //                 (create-empty, ctx-edit, ctx-edit-copy, etc.)
-    lst->set_action_callback([win](const std::string& action_name) -> bool {
-      const auto dot = action_name.find('.');
-      if (dot == std::string::npos) return false;
-      const std::string prefix = action_name.substr(0, dot);
-
-      if (prefix == "styles") {
-        // Gtk::Widget::activate_action returns true if it found and
-        // activated an action, false if the action wasn't found in
-        // any group on the widget chain. Surface that so a typo in
-        // the action name (e.g. "styles.create-emptyy") returns
-        // false to the listener, which prints a uniform error.
-        return win->styles_panel().activate_action(action_name);
-      }
-      // Future prefixes ("themes-io", "swatches", "tabctx", etc.)
-      // land here as the dynamic-widget unblock arc unfolds. Each
-      // panel that owns an action group can be reached by adding
-      // an accessor in MainWindow.hpp and one route line here.
-      return false;
-    });
-  }
+  // The subtitle bridge and action-dispatch callback that used to live
+  // in this block also moved into MainWindow, where the Scripter's
+  // listener is reachable directly without a round-trip through
+  // Application::scripter().
 
   // s186 m2 close-out: warm the GLib main-loop dispatch mechanism.
   //
@@ -477,21 +400,15 @@ void Application::on_activate() {
   // against existing startup time) instead of during the user's
   // first test (where it lies about state).
   //
-  // If this fixes 01_node_tool_toggle's cold-start FAIL: the
-  // mechanism is GLib-side. m3 calibration formalises this as
-  // a wait-class system.
-  //
-  // If this DOESN'T fix it: the cold path is in the click cascade
-  // itself (gesture-controller init, signal_realize chain, lazy
-  // tool-state lookup). Different fix needed; this five-line
-  // change costs nothing if it doesn't work.
+  // s219 m1: the warmup runs unconditionally — it's cheap and
+  // benefits any future script run regardless of when the user
+  // first enables scripting.
   Glib::signal_idle().connect_once([]() {
       LOG_INFO("Application: GLib main-loop idle warmup fired");
   });
   Glib::signal_timeout().connect_once([]() {
       LOG_INFO("Application: GLib main-loop timeout warmup fired");
   }, 0);
-#endif
 }
 
 } // namespace Curvz

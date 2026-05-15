@@ -46,7 +46,7 @@
 #pragma once
 #include "scripting/ScriptListener.hpp"
 
-#include <gtkmm/applicationwindow.h>
+#include <gtkmm/window.h>
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
 #include <gtkmm/checkbutton.h>
@@ -79,9 +79,18 @@
 
 namespace curvz::scripting {
 
-class ScripterWindow : public Gtk::ApplicationWindow {
+class ScripterWindow : public Gtk::Window {
 public:
     explicit ScripterWindow(const std::string& initial_folder);
+
+    // s219 m1 — show pattern matching the rest of Curvz's persistent
+    // floating dialogs (HelpWindow, ShortcutsDialog, BlendDialog,
+    // MacroEditorWindow, MacroManagerWindow). set_transient_for(parent)
+    // declares the window secondary on every show — mutter needs this
+    // every time, not just once at construction, to keep the
+    // titlebar decorations responsive across hide/show cycles. Apply
+    // the motif class so first-show is themed correctly.
+    void show(Gtk::Window& parent);
 
     // s191 m3 — Application bridges the listener's SubtitleCallback
     // to MainWindow's caption bar. Exposed as a raw pointer (the

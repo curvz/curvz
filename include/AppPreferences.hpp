@@ -228,6 +228,27 @@ public:
     int  toolbar_density() const { return m_toolbar_density; }
     void set_toolbar_density(int v);
 
+    // s219 m1 — Scripter window enablement.
+    // When true, Curvz boots with the Scripter window presented and the
+    // headerbar "monkey" toggle visible; the Developer ▸ Scripting menu
+    // item and the Application ▸ Developer inspector switch are
+    // checked. When false (default), the Scripter window still exists
+    // (always-constructed at startup, single app-owned instance), but
+    // it stays hidden and the monkey button is removed from the
+    // headerbar. Toggling the pref live presents/hides the window and
+    // updates the headerbar without restart.
+    //
+    // The pref is read by MainWindow on construction to seed the action
+    // state, the headerbar button visibility, and the inspector switch.
+    // signal_changed() drives the live response on later toggles.
+    //
+    // Stored as `scripter_enabled` in preferences.json; default false so
+    // users opening Curvz for the first time after the s219 m1 rollout
+    // get the production-looking app without the scripting surface
+    // intruding.
+    bool scripter_enabled() const { return m_scripter_enabled; }
+    void set_scripter_enabled(bool v);
+
     // s202 m6 — Quick-jump counter store. Tracks how often the user
     // picks each (phase, section) pair from the Ctrl+Space quick-jump.
     // The float orders candidates by descending count, so the user's
@@ -298,6 +319,11 @@ private:
     // s152 — Toolbar density. 0=Comfortable, 1=Standard (default),
     // 2=Compact, 3=Tight. Maps to Toolbar::Density enum.
     int  m_toolbar_density = 1;
+
+    // s219 m1 — Scripter enablement. Default false: scripting surface
+    // stays hidden until the user opts in via Developer ▸ Scripting
+    // (hamburger menu) or Application ▸ Developer (inspector).
+    bool m_scripter_enabled = false;
 
     // s202 m6 — quick-jump (phase, section) → pick count. Persisted
     // as a flat object in preferences.json under "quick_jump_counts"

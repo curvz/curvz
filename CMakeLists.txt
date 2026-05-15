@@ -49,26 +49,14 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
-# ── Build options ─────────────────────────────────────────────────────────────
-# s186 m2: CURVZ_DIAGNOSTIC gates the script-driven test harness.
-#
-# When ON: the Scripter window (curvz::scripting::ScripterWindow) opens
-# alongside the main window, the script listener compiles in, and the
-# Node-tool toolbar button uses curvz::widgets::ToggleButton instead of
-# a bare Gtk::ToggleButton — so a script can drive `tool.node click`.
-#
-# When OFF (production default): listener and scripter window aren't
-# compiled at all; the Node-tool button uses Gtk::ToggleButton as
-# before. The substrate (registry + Scriptable + ScriptableWidget +
-# the widget wrappers) still compiles in — cost is one std::string per
-# wrapper construction and a process-wide std::unordered_map, which
-# is negligible.
-#
-# Toggle with: cmake -B build -DCURVZ_DIAGNOSTIC=ON
-option(CURVZ_DIAGNOSTIC
-       "Build the script-driven test harness (Scripter window + listener)"
-       OFF)
-message(STATUS "CURVZ_DIAGNOSTIC: ${CURVZ_DIAGNOSTIC}")
+# s219 m1 — the CURVZ_DIAGNOSTIC option is gone. The Scripter window,
+# its listener, the model Scriptables (LayersScriptable / GuidesScriptable),
+# and the panel-as-Scriptable (StylesPanelScriptable) now compile into
+# every build unconditionally. Whether the Scripter actually opens at
+# runtime is a user preference (AppPreferences::scripter_enabled), wired
+# to a "Developer ▸ Scripting" menu item and an Application ▸ Developer
+# inspector switch. Production users who never flip the toggle pay
+# nothing beyond the binary size of a few extra TUs.
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -461,12 +449,25 @@ set(SOURCES
     # SVG-id codec lives here (S96); future utilities accumulate alongside.
     src/curvz_utils.cpp
 
-    # s186 m2 / s187 m1: script-driven substrate. Registry + Scriptable
-    # mixin + widget wrappers compile into production builds. The listener
-    # and ScripterWindow are gated by CURVZ_DIAGNOSTIC and appended below.
+    # s186 m2 / s187 m1 / s219 m1: script-driven substrate. Originally
+    # the listener and Scripter window were CURVZ_DIAGNOSTIC-gated; s219
+    # m1 collapsed the gate into a user preference, so every scripting
+    # TU now compiles unconditionally. Whether the Scripter opens at
+    # runtime is decided by AppPreferences::scripter_enabled.
     # See ARC.md "The Script-Driven Curvz programme" for the design.
     src/scripting/ScriptableRegistry.cpp
     src/scripting/WidgetNameResolver.cpp
+    src/scripting/ScriptListener.cpp
+    src/scripting/ScripterWindow.cpp
+    # First concrete PanelScriptable subclass — wraps StylesPanel under
+    # abbrev "pnl_styles".
+    src/scripting/StylesPanelScriptable.cpp
+    # Row-bound model Scriptables. Wrap the project's layer / guide
+    # collections under abbrevs "layers" / "guides" with transient
+    # per-instance proxies (`layer.<iid>`, `guides.<iid>`) routed through
+    # the Scriptable::can_resolve / proxy_for hooks.
+    src/scripting/LayersScriptable.cpp
+    src/scripting/GuidesScriptable.cpp
     src/curvz/widgets/ToggleButton.cpp
     src/curvz/widgets/Button.cpp
     src/curvz/widgets/CheckButton.cpp
@@ -548,42 +549,12 @@ target_compile_definitions(curvz PRIVATE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG
 )
 
-# ── s186 m2: CURVZ_DIAGNOSTIC ─────────────────────────────────────────────────
-# When the diagnostic build is on, append the listener + scripter window
-# to the target sources, and inject -DCURVZ_DIAGNOSTIC so the gated
-# branches in Application.cpp and Toolbar.cpp activate.
-#
-# These TUs only compile when needed; production builds drop them
-# entirely. The substrate already lifted into SOURCES above (registry +
-# ToggleButton wrapper) is cheap and stays unconditional.
-if(CURVZ_DIAGNOSTIC)
-    target_sources(curvz PRIVATE
-        src/scripting/ScriptListener.cpp
-        src/scripting/ScripterWindow.cpp
-        # s202 m1 — panel-as-Scriptable foundation. First concrete
-        # PanelScriptable subclass; wraps StylesPanel under abbrev
-        # "pnl_styles". Diagnostic-only because the Scriptable surface
-        # exists to serve scripted narration and tests; production
-        # builds get the panel without the script-side companion.
-        src/scripting/StylesPanelScriptable.cpp
-        # s216 m1 — first row-bound model Scriptable. Wraps the
-        # project's layer surface under abbrev "layers" with transient
-        # per-instance `layer.<iid>` proxies routed through the s216 m1
-        # Scriptable::can_resolve / proxy_for hooks. See CANON's
-        # "Row-bound model Scriptables" entry for the design that
-        # this file pair implements.
-        src/scripting/LayersScriptable.cpp
-        # s218 m1 — second row-bound model Scriptable. Wraps the
-        # active document's guide surface under abbrev "guides" with
-        # transient `guides.<iid>` proxies. Same architectural shape
-        # as LayersScriptable; verb surface inherits from the
-        # PropertiesPanel guide section's UI vocabulary per the s217
-        # m2 banked rule.
-        src/scripting/GuidesScriptable.cpp
-    )
-    target_compile_definitions(curvz PRIVATE CURVZ_DIAGNOSTIC)
-    message(STATUS "CURVZ_DIAGNOSTIC: enabled — Scripter window will open at startup")
-endif()
+# s219 m1 — the CURVZ_DIAGNOSTIC sources block is gone. The previously-
+# gated TUs (ScriptListener.cpp, ScripterWindow.cpp, StylesPanelScriptable.cpp,
+# LayersScriptable.cpp, GuidesScriptable.cpp) are folded into the main
+# SOURCES list above and compile unconditionally. Runtime visibility is
+# governed by the AppPreferences::scripter_enabled preference, wired to
+# a Developer menu and an Application ▸ Developer inspector toggle.
 
 # ── Install ───────────────────────────────────────────────────────────────────
 include(GNUInstallDirs)

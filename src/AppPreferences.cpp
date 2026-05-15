@@ -173,6 +173,17 @@ void AppPreferences::load() {
             m_toolbar_density = n;
         }
 
+        // s219 m1 — scripter enablement. Missing key defaults to false
+        // (the field default), so existing users without this key in
+        // their preferences.json get the production-looking app on
+        // first launch after the s219 m1 rollout. Toggling either
+        // surface writes back, so the missing key is a transient
+        // condition resolved at the first set call.
+        if (j.contains("scripter_enabled") &&
+            j["scripter_enabled"].is_boolean()) {
+            m_scripter_enabled = j["scripter_enabled"].get<bool>();
+        }
+
         // s202 m6 — quick-jump pick counters. JSON shape is a flat
         // object: { "0:Canvas": 7, "1:Selection": 23, ... } where
         // the key is "<phase_int>:<section_title>". Tolerate missing
@@ -251,6 +262,7 @@ void AppPreferences::save() const {
     j["custom_css_path_override"]   = m_custom_css_path_override;
     j["library_defaults_seeded"]    = m_library_defaults_seeded;
     j["toolbar_density"]            = m_toolbar_density;
+    j["scripter_enabled"]           = m_scripter_enabled;  // s219 m1
 
     // s202 m6 — quick-jump pick counters. Flat object keyed
     // "<phase>:<title>". Omitting when empty would save the file
@@ -429,6 +441,18 @@ void AppPreferences::set_toolbar_density(int v) {
     if (v > 3) v = 3;
     if (m_toolbar_density == v) return;
     m_toolbar_density = v;
+    save();
+    m_sig_changed.emit();
+}
+
+// s219 m1 — Scripter enablement. No clamp (it's a bool), the standard
+// no-op-if-equal guard + save + emit. MainWindow subscribes to
+// signal_changed and re-reads scripter_enabled() to drive the
+// Scripter window's present/hide, the headerbar monkey-button's
+// visibility, and the menu/inspector control states.
+void AppPreferences::set_scripter_enabled(bool v) {
+    if (m_scripter_enabled == v) return;
+    m_scripter_enabled = v;
     save();
     m_sig_changed.emit();
 }

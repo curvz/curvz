@@ -1,9 +1,11 @@
 #pragma once
 #include <gtkmm/application.h>
 
-#ifdef CURVZ_DIAGNOSTIC
-namespace curvz::scripting { class ScripterWindow; }
-#endif
+// s219 m1 — the Scripter window is no longer owned by Application.
+// It lives inside MainWindow now (held as a unique_ptr member), the
+// same way HelpWindow / ShortcutsDialog / BlendDialog / MacroEditorWindow
+// / MacroManagerWindow do. Application no longer needs to know about
+// the Scripter at all.
 
 namespace Curvz {
 
@@ -19,19 +21,6 @@ public:
     // nullptr only if startup hasn't completed.
     MainWindow* main_window() { return m_main_window; }
 
-#ifdef CURVZ_DIAGNOSTIC
-    // s190 m2 — access the diagnostic Scripter window. Built once at
-    // on_activate and held by Application; X-button close hides it
-    // rather than destroying (set_hide_on_close(true) in the ctor).
-    //
-    // Returns nullptr if construction failed (shouldn't occur in
-    // diagnostic builds, but defensive). MainWindow's headerbar
-    // toggle drives present()/set_visible(false) directly and
-    // subscribes to property_visible() to keep its checked state in
-    // sync when the X-button hides the window.
-    curvz::scripting::ScripterWindow* scripter() { return m_scripter; }
-#endif
-
 protected:
     Application();
     void on_startup() override;
@@ -39,10 +28,6 @@ protected:
 
 private:
     MainWindow* m_main_window = nullptr;
-
-#ifdef CURVZ_DIAGNOSTIC
-    curvz::scripting::ScripterWindow* m_scripter = nullptr;
-#endif
 };
 
 } // namespace Curvz

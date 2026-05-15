@@ -66,13 +66,11 @@
 #include <utility>               // std::pair
 #include <vector>
 
-#ifdef CURVZ_DIAGNOSTIC
-// s202 m1 — fwd declared rather than full-include so production builds
-// don't pull scripting headers when CURVZ_DIAGNOSTIC is off. The
-// unique_ptr below is incomplete-type friendly only if the dtor is
-// out-of-line, which we provide in StylesPanel.cpp.
+// s202 m1 / s219 m1 — fwd declared rather than full-include so the StylesPanel
+// header doesn't pull scripting headers. The unique_ptr below is
+// incomplete-type friendly only if the dtor is out-of-line, which we
+// provide in StylesPanel.cpp. No longer gated as of s219 m1.
 namespace curvz::scripting { class StylesPanelScriptable; }
-#endif
 
 namespace Curvz {
 
@@ -85,12 +83,10 @@ class Canvas;  // fwd — selection-changed hookup only, no method calls in m4c-
 class StylesPanel : public Gtk::Box {
 public:
     StylesPanel();
-#ifdef CURVZ_DIAGNOSTIC
-    // s202 m1 — out-of-line dtor so unique_ptr<StylesPanelScriptable>
+    // s202 m1 / s219 m1 — out-of-line dtor so unique_ptr<StylesPanelScriptable>
     // can hold an incomplete type at the header level. Implementation
     // lives in StylesPanel.cpp alongside the construction site.
     ~StylesPanel();
-#endif
 
     // Non-owning. Caller guarantees the library outlives the panel or
     // calls set_library(nullptr) before destroying it. Hooks the
@@ -121,14 +117,12 @@ public:
     // correctness regression. Wired from MainWindow at startup.
     void set_history(CommandHistory* history) { m_history = history; }
 
-#ifdef CURVZ_DIAGNOSTIC
-    // s202 m4 — diagnostic-only hookup that gives the panel-as-
-    // Scriptable a way to drive the parent inspector section's
-    // expand/collapse state. The panel itself doesn't know it's
-    // inside a section (the make_section wrapper is constructed by
-    // MainWindow); these two handles publish the section's state to
-    // the Scriptable without leaking section-internals into the
-    // panel's public API.
+    // s202 m4 / s219 m1 — hookup that gives the panel-as-Scriptable a way to
+    // drive the parent inspector section's expand/collapse state. The
+    // panel itself doesn't know it's inside a section (the make_section
+    // wrapper is constructed by MainWindow); these two handles publish
+    // the section's state to the Scriptable without leaking section-
+    // internals into the panel's public API.
     //
     //   open_flag: shared_ptr<bool> that mirrors the section's
     //     current open state. Updated by make_section's click handler
@@ -144,11 +138,11 @@ public:
     // Both nullopt-safe at the panel side — the panel never invokes
     // them itself, so if MainWindow forgets the wiring the panel
     // still works and only the section-aware Scriptable verbs go
-    // no-op.
+    // no-op. Always available as of s219 m1.
     void set_section_state(std::shared_ptr<bool> open_flag,
                            std::function<void(bool)> apply);
 
-    // s202 m5 — composite "focus on me" hookup. Distinct from
+    // s202 m5 / s219 m1 — composite "focus on me" hookup. Distinct from
     // set_section_state because the responsibilities are different:
     // set_section_state is the narrow flip (just my section);
     // set_section_chain is the focus move (collapse the inspector
@@ -188,7 +182,6 @@ public:
         std::vector<std::string> chain,
         std::function<void(const std::vector<std::string>&)>
             focus_closure);
-#endif
 
     // S87 — view state accessors for project-level persistence. The
     // category dropdown selection is per-project state; CurvzProject
@@ -256,19 +249,19 @@ public:
     }
 
 private:
-#ifdef CURVZ_DIAGNOSTIC
-    // s202 m1 — the companion Scriptable that publishes this panel's
+    // s202 m1 / s219 m1 — the companion Scriptable that publishes this panel's
     // user-outcome verbs to the script under abbrev "pnl_styles".
     // Friend reach lets it call action_create_empty() and read
     // private state directly; per CANON's "The script has no fingers",
     // this is the panel's deliberate publication of outcomes (an
     // interior consumer), not an outside-the-panel scripting handle.
     // Held by pointer because the header forward-declares the class.
+    // Always present as of s219 m1.
     friend class curvz::scripting::StylesPanelScriptable;
     std::unique_ptr<curvz::scripting::StylesPanelScriptable>
         m_panel_scriptable;
 
-    // s202 m4 — section-state handles passed in by MainWindow at
+    // s202 m4 / s219 m1 — section-state handles passed in by MainWindow at
     // setup_layout time (see make_section call site). Empty by
     // default so the Scriptable's expand/collapse verbs read as
     // safe-no-ops if MainWindow forgets the wiring or the panel
@@ -276,12 +269,11 @@ private:
     std::shared_ptr<bool>     m_section_open_flag;
     std::function<void(bool)> m_section_apply;
 
-    // s202 m5 — composite focus-move handles. See set_section_chain
+    // s202 m5 / s219 m1 — composite focus-move handles. See set_section_chain
     // header comment for full design notes.
     std::vector<std::string>  m_section_chain;
     std::function<void(const std::vector<std::string>&)>
                               m_section_focus;
-#endif
 
     style::StyleLibrary* m_library = nullptr;
     color::SwatchLibrary* m_swatch_library = nullptr;  // S85 cont-3

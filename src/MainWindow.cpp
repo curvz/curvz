@@ -11,10 +11,11 @@
 #include "SvgParser.hpp"
 #include "SvgWriter.hpp"
 #include "TemplateLibrary.hpp"
-#ifdef CURVZ_DIAGNOSTIC
 #include "scripting/LayersScriptable.hpp"  // s216 m1 — model Scriptable pilot
 #include "scripting/GuidesScriptable.hpp"  // s218 m1 — second model Scriptable
-#endif
+#include "scripting/ScripterWindow.hpp"    // s219 m1 — apply_scripter_pref present/hide
+#include "curvz/widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
+#include "Application.hpp"                  // s219 m1 — Curvz::Application (main_window only)
 #include <functional>
 #include <giomm/simpleactiongroup.h> // s144 m3 — recents action group
 #include <gtkmm/application.h>
@@ -206,8 +207,7 @@ MainWindow::MainWindow(Application & /*app*/) {
   // matches.
   toggle_rulers(m_rulers_visible);
 
-#ifdef CURVZ_DIAGNOSTIC
-  // s216 m1 — construct the `layers` model Scriptable now that
+  // s216 m1 / s219 m1 — construct the `layers` model Scriptable now that
   // setup_project has run (m_project is initialised). The getter
   // captures `this` so it resolves the CURRENT m_project pointer on
   // every verb invocation — the unique_ptr can be reset / reassigned
@@ -220,12 +220,16 @@ MainWindow::MainWindow(Application & /*app*/) {
   // registry entry. Registry list shows `layers` once for the
   // lifetime of the window, regardless of how many layers exist or
   // how many proxies are materialised across script runs.
+  //
+  // s219 m1 — always constructed. The Scriptable is cheap (one
+  // unique_ptr + one registry entry); whether the SCRIPTER WINDOW is
+  // visible is a separate concern governed by scripter_enabled.
   m_layers_scriptable =
       std::make_unique<curvz::scripting::LayersScriptable>(
           [this]() -> CurvzProject* { return m_project.get(); },
           &m_history);
 
-  // s218 m1 — `guides` collection Scriptable. Same construction shape
+  // s218 m1 / s219 m1 — `guides` collection Scriptable. Same construction shape
   // as the layers Scriptable above: same project-getter (resolves
   // m_project.get() fresh on every verb call so close/open survives),
   // same m_history pointer (captured for shape-symmetry — guides
@@ -235,28 +239,191 @@ MainWindow::MainWindow(Application & /*app*/) {
       std::make_unique<curvz::scripting::GuidesScriptable>(
           [this]() -> CurvzProject* { return m_project.get(); },
           &m_history);
-#endif
+
+  // s219 m1 — Scripter window construction. Previously lived in
+  // Application::on_activate; moved here so MainWindow owns the
+  // window the way it owns HelpWindow, ShortcutsDialog, and the
+  // other persistent floating dialogs.
+  //
+  // Script library location: prefer ./tests/scripts (run from build
+  // tree during dev) and ../tests/scripts (run from inside build/).
+  // Falls back to "tests/scripts" so the picker shows a folder name
+  // even if nothing's there yet — user can use the Folder… button
+  // to point elsewhere.
+  {
+    namespace fs = std::filesystem;
+    std::string scripts_dir = "tests/scripts";
+    for (auto candidate : {
+            fs::path("tests/scripts"),
+            fs::path("../tests/scripts"),
+         }) {
+        if (fs::exists(candidate) && fs::is_directory(candidate)) {
+            scripts_dir = fs::absolute(candidate).string();
+            break;
+        }
+    }
+    m_scripter = std::make_unique<curvz::scripting::ScripterWindow>(
+        scripts_dir);
+    LOG_INFO("MainWindow: Scripter constructed (scripts dir: {})",
+             scripts_dir);
+
+    // s191 m3 / s219 m1 — bridge `#[sub]` lines from the Scripter's
+    // listener to MainWindow's caption bar. Previously wired in
+    // Application; moved here with the Scripter. The listener
+    // emits its flanked-caption line to the Scripter's output pane
+    // (driven by the OutputCallback wired inside ScripterWindow)
+    // and ALSO hands the body text to set_subtitle() via this
+    // bridge — where the user's eyes are while watching Curvz drive
+    // itself is where the caption lands.
+    if (auto* lst = m_scripter->listener()) {
+      lst->set_subtitle_callback([this](const std::string& text) {
+        set_subtitle(text);
+      });
+
+      // s201 m3 / s219 m1 — `do <action.name>` dispatch. The
+      // script's user-driven verbs reach substrate widgets directly,
+      // but menu items and inline action-driven buttons fire Gio
+      // actions instead. This callback bridges that gap so scripts
+      // can do `do styles.create-empty` to open the style editor.
+      //
+      // Routing by prefix because GTK's activate_action walks UP
+      // from the originating widget looking for the action group —
+      // we have to call activate_action() on the widget that owns
+      // the group (the panel that inserted it), not on MainWindow.
+      //
+      // The prefix list grows as new action-driven UI surfaces want
+      // to be script-addressable. Today's roster:
+      //   styles.* — StylesPanel kebab + context menu actions
+      lst->set_action_callback(
+          [this](const std::string& action_name) -> bool {
+        const auto dot = action_name.find('.');
+        if (dot == std::string::npos) return false;
+        const std::string prefix = action_name.substr(0, dot);
+        if (prefix == "styles") {
+          return m_styles.activate_action(action_name);
+        }
+        return false;
+      });
+    }
+  }
+
+  // s219 m1 — wire the live pref subscription. AppPreferences fires
+  // signal_changed() for every preference write (it's a single
+  // parameterless signal across the whole prefs surface), so we just
+  // re-run apply_scripter_pref(). The function is idempotent and
+  // cheap (a visibility flip + an action-state set + a present-or-
+  // hide), so firing it on unrelated pref writes is harmless.
+  //
+  // The initial call right after subscription pulls every surface
+  // (headerbar button visibility, menu action state, scripter window
+  // present/hide) into agreement with the pref's current value —
+  // necessary because setup_headerbar() and setup_menu() built their
+  // controls in their default-off state without consulting the pref.
+  AppPreferences::instance().signal_changed().connect(
+      [this]() { apply_scripter_pref(); });
+  apply_scripter_pref();
 
   LOG_INFO("MainWindow created");
 }
 
-#ifdef CURVZ_DIAGNOSTIC
-// s216 m1 — out-of-line dtor. The header forward-declares
-// curvz::scripting::LayersScriptable; the unique_ptr in the header
-// needs the complete type at MainWindow destruction time, and that's
-// only visible in this TU (where we included the full header above).
-// Defaulted body is the right answer — every member has its own
-// destructor; we just need the complete type visible at the dtor's
-// point-of-emission.
-//
-// s218 m1 — the same out-of-line dtor also covers
-// curvz::scripting::GuidesScriptable (forward-declared in the header,
-// fully included above). One dtor, every fwd-declared scripting
-// member destroyed correctly. Future row-bound model Scriptables
-// (swatches, styles, themes, objects) ride on this same dtor without
-// further changes.
+// s216 m1 / s218 m1 / s219 m1 — out-of-line dtor. The header forward-declares
+// curvz::scripting::LayersScriptable and curvz::scripting::GuidesScriptable;
+// the unique_ptrs in the header need the complete types at MainWindow
+// destruction time, and they're only visible in this TU (where we
+// included the full headers above). Defaulted body is the right answer
+// — every member has its own destructor; we just need the complete
+// types visible at the dtor's point-of-emission. No longer gated as
+// of s219 m1.
 MainWindow::~MainWindow() = default;
-#endif
+
+// s219 m1 — apply scripter_enabled to every dependent surface.
+//
+// Called once at the end of MainWindow's ctor (after setup_headerbar
+// and setup_menu have built their controls) and again on every
+// AppPreferences::signal_changed emit. Idempotent.
+//
+// Surfaces:
+//   1. Headerbar Scripter toggle (m_scripter_btn): visible iff
+//      scripter_enabled. The button itself is always packed into
+//      the headerbar at construction (so its slot is reserved); we
+//      flip visibility only.
+//   2. Developer ▸ Scripting menu action (m_act_toggle_scripting):
+//      state mirrors the pref so the checkmark stays honest if the
+//      pref was changed via the inspector switch (or any future
+//      surface).
+//   3. The Scripter window itself: present() when enabling, hide
+//      when disabling. The Scripter is a MainWindow member
+//      (m_scripter, unique_ptr); it just hides instead of destroying
+//      on the X-button (set_hide_on_close(true) in its ctor).
+//
+// Defensive on every step — apply_scripter_pref() can be called at
+// any point in MainWindow's lifetime, including from a pref-changed
+// signal that arrives before construction has fully finished. Guards
+// against null m_scripter_btn (not yet packed), null
+// m_act_toggle_scripting (not yet created), and null m_scripter
+// (ctor not yet at the construction site).
+void MainWindow::apply_scripter_pref() {
+  const bool on = AppPreferences::instance().scripter_enabled();
+
+  // Headerbar button visibility. m_scripter_btn is a
+  // curvz::widgets::ToggleButton which IS-A Gtk::Widget, so the
+  // implicit upcast for set_visible() is fine now that the header
+  // is included in this TU.
+  if (m_scripter_btn != nullptr) {
+    m_scripter_btn->set_visible(on);
+  }
+
+  // Menu action state. Gio::SimpleAction's set_state takes a Variant;
+  // we wrap the bool and push it. The menu picks the new state up on
+  // its next render cycle.
+  if (m_act_toggle_scripting) {
+    m_act_toggle_scripting->set_state(Glib::Variant<bool>::create(on));
+  }
+
+  // Scripter window — hide if the pref is being turned off, otherwise
+  // do NOTHING (leave the window's current visibility alone).
+  //
+  // s219 m1 design rule: pref-on means "scripting is available" —
+  // the monkey button is visible and ready, and the Scripter window
+  // is reachable via that button. Pref-on does NOT mean "show the
+  // Scripter window right now." The user clicks the monkey to open
+  // the Scripter, the same way they'd click any window-open button.
+  //
+  // This separates two concerns the earlier (s190 / s219 m1 initial)
+  // design conflated:
+  //   - feature enablement (pref) — set by menu / inspector
+  //   - window visibility — controlled by monkey button + X
+  //
+  // So the show side here is empty by design. The hide side fires
+  // when the user disables scripting altogether: without hiding the
+  // window we'd leave it open with no way to dismiss it (the monkey
+  // button just disappeared along with the feature).
+  if (!on) {
+    show_scripter(false);
+  }
+}
+
+// s219 m1 — public entry for showing or hiding the Scripter window.
+// Called by:
+//   - the headerbar monkey-button's signal_toggled (in MainWindow_zones)
+//   - apply_scripter_pref() above (hide-only on pref-off transitions)
+//
+// The show path matches HelpWindow::show / ShortcutsDialog::show:
+// re-assert transient_for on every show so mutter keeps the window
+// relationship fresh, apply the motif class so theming sticks, then
+// present. ScripterWindow::show() encapsulates all three steps.
+//
+// The hide path is a plain set_visible(false). hide_on_close is
+// already set in ScripterWindow's ctor, so the X-button does the
+// same thing automatically.
+void MainWindow::show_scripter(bool visible) {
+  if (!m_scripter) return;  // defensive: ctor not finished yet
+  if (visible) {
+    m_scripter->show(*this);
+  } else {
+    m_scripter->set_visible(false);
+  }
+}
 
 void MainWindow::setup_project() {
   // s144 m2 — Reopen-last-project pref. When false, skip the

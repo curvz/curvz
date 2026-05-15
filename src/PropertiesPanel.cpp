@@ -2158,6 +2158,64 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
   // remains the source of truth for warp defaults — populated
   // from the Object ▸ Warp section of the most recently edited
   // Warp, with hard-coded initial values for first launch.
+
+  // ── Developer subsection (s219 m1) ─────────────────────────────────────────
+  // Power-user / contributor surfaces. First inhabitant: Scripting —
+  // the master toggle for Curvz's script-driven test harness (the
+  // Scripter window). The matching menu surface is Developer ▸
+  // Scripting in the hamburger menu; both write to the same pref
+  // (AppPreferences::scripter_enabled) and re-sync via
+  // signal_changed.
+  //
+  // The subsection sits last among the Application subsections
+  // because Developer features are opt-in / advanced and shouldn't
+  // be the first thing a casual user sees when expanding the
+  // Application group.
+  {
+    auto *body = add_collapsible("Developer", false, parent);
+
+    // ── Scripting toggle ───────────────────────────────────────────────────
+    // Flipping this switch enables Curvz's scripting surface — adds a
+    // floating Scripter window (run .curvzs scripts against the live
+    // application) and a quick-toggle button to the headerbar. Live
+    // — no relaunch needed.
+    {
+      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+      row->add_css_class("prop-row");
+      row->set_spacing(6);
+      row->set_margin_start(6);
+      row->set_margin_end(6);
+      row->set_margin_top(2);
+      row->set_margin_bottom(2);
+
+      auto *key = Gtk::make_managed<Gtk::Label>("Scripting");
+      key->add_css_class("prop-lbl");
+      key->set_xalign(0.0f);
+      key->set_hexpand(true);
+      row->append(*key);
+
+      auto *sw = Gtk::make_managed<CurvzSwitch>();
+      curvz::utils::set_name(sw, "ins_app_scripting",
+                             "inspector_app_scripter_enabled_switch");
+      sw->set_state(AppPreferences::instance().scripter_enabled());
+      sw->set_valign(Gtk::Align::CENTER);
+      sw->set_tooltip_text(
+          "Enable Curvz's scripting surface.\n"
+          "Adds a Scripter window for running .curvzs scripts against "
+          "the live application, plus a quick-toggle button in the "
+          "headerbar.\n"
+          "Takes effect immediately.");
+      row->append(*sw);
+      body->append(*row);
+
+      sw->signal_toggled().connect([this, sw, gen](bool on) {
+        if (m_build_gen != gen || m_loading)
+          return;
+        AppPreferences::instance().set_scripter_enabled(on);
+        LOG_INFO("PropertiesPanel: scripter_enabled → {}", on);
+      });
+    }
+  }
 }
 
 // ── Object ▸ Guides section (s179 m3) ───────────────────────────────────────

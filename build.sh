@@ -2,30 +2,27 @@
 # Curvz build script
 #
 # Usage:
-#   ./build.sh                  — production build
-#   ./build.sh --diagnostic     — diagnostic build (Scripter window opens at startup)
+#   ./build.sh        — production build
 #
-# s186 m2: --diagnostic adds -DCURVZ_DIAGNOSTIC=ON to the cmake configure,
-# which compiles in the script-driven test harness (curvz::scripting::
-# ScriptListener + ScripterWindow) and routes the Node-tool toolbar
-# button through curvz::widgets::ToggleButton so scripts can address
-# it as `tool.node`. Production builds drop all of this.
+# s219 m1: the --diagnostic flag and CURVZ_DIAGNOSTIC option are gone.
+# The Scripter window and all scripting TUs compile unconditionally;
+# whether the Scripter opens at runtime is the user preference
+# AppPreferences::scripter_enabled, surfaced as Developer ▸ Scripting
+# in the hamburger menu and Application ▸ Developer in the inspector.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
-CMAKE_OPTS=()
 for arg in "$@"; do
     case "$arg" in
-        --diagnostic)
-            CMAKE_OPTS+=(-DCURVZ_DIAGNOSTIC=ON)
-            echo "Build mode: DIAGNOSTIC (Scripter window will open at startup)"
-            ;;
         --help|-h)
-            echo "Usage: $0 [--diagnostic]"
-            echo "  --diagnostic    Build with CURVZ_DIAGNOSTIC=ON (Scripter window)"
+            echo "Usage: $0"
+            echo ""
+            echo "No build flags — Scripter is a runtime preference now"
+            echo "(toggle in Developer > Scripting from the hamburger menu, or"
+            echo "in the Application > Developer subsection of the inspector)."
             exit 0
             ;;
         *)
@@ -57,7 +54,7 @@ mkdir build
 cd build
 
 # ── Configure + build ─────────────────────────────────────────────────────────
-CXX=clang++ cmake .. "${CMAKE_OPTS[@]}"
+CXX=clang++ cmake ..
 cmake --build . -- -j"$(nproc)"
 
 echo ""

@@ -1,0 +1,40 @@
+# 28_s219_scripter_integration_smoke.curvzs
+#
+# s219 m1 acceptance smoke. Confirms the scripting surface is up and
+# the previously-CURVZ_DIAGNOSTIC-gated registrations all happened.
+# Run this with the Scripter visible (you already have to in order to
+# hit Run, so by definition scripter_enabled is true).
+
+# 1. The headerbar Scripter button is registered (substrate-routed).
+#    If this fails: the monkey button didn't construct, or didn't
+#    pack itself into the headerbar with its abbrev intact.
+assert mw_scripter visible == true
+
+# 2. Layers collection Scriptable is alive. Pre-s219 this lived behind
+#    the diagnostic gate. The `count` query is collection-tier and
+#    safe to call on any project (returns 0 on empty).
+assert layers count >= 0
+
+# 3. Guides collection Scriptable is alive (s218 m1 / s219 m1).
+assert guides count >= 0
+
+# 4. Styles panel Scriptable is alive (s202 m1 / s219 m1).
+#    section_open is a query the panel-Scriptable answers from its
+#    section_open_flag handle (set by MainWindow at setup_layout).
+#    The value itself doesn't matter; what matters is that the verb
+#    resolves without "unknown verb" errors.
+assert pnl_styles section_open == false || pnl_styles section_open == true
+
+# 5. Scripter's own controls. If the Scripter window isn't built and
+#    registered, none of these exist.
+assert scr_run visible == true
+assert scr_step visible == true
+assert scr_delay visible == true
+
+# 6. Toolbar widgets — these don't depend on s219 m1 but confirm the
+#    substrate layer is otherwise healthy. If everything above passes
+#    but these fail, the regression is somewhere else and isn't s219.
+assert tb_sel visible == true
+assert tb_nod visible == true
+
+#[sub] s219 m1 smoke complete — every gate dropped, every Scriptable alive
