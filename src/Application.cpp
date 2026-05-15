@@ -276,7 +276,7 @@ void Application::on_startup() {
 
   // App
   bind("win.show-help",       {"F1", "<Alt>question"});
-  bind("win.show-shortcuts",  {"question", "slash"});
+  bind("win.show-shortcuts",  {"question", "<Control>slash"});
   bind("win.quit",            {"<Control>q", "<Control>w"});
 
   LOG_INFO("Application::on_startup — registered menu accels");

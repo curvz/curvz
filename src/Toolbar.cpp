@@ -3413,7 +3413,7 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
   zoom_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
       "pop_tb_zom_spn", zoom_adj, 1.0, 0);
   curvz::utils::set_name(zoom_spin, "pop_tb_zom_spn", "popover_toolbar_zoom_pct_spn");
-  zoom_spin->set_numeric(true);
+  // s219: substrate default is set_numeric(false) for math input.
   zoom_spin->set_hexpand(true);
   zoom_spin->set_width_chars(6);
 
@@ -3696,7 +3696,7 @@ void Toolbar::Impl::build_ref_popover(Gtk::ToggleButton *ref_btn) {
   curvz::utils::set_name(x_spin, "pop_tb_ref_x", "popover_toolbar_ref_x_spn");
   x_spin->set_hexpand(true);
   x_spin->set_width_chars(12);
-  x_spin->set_numeric(true);
+  // s219: substrate default is set_numeric(false) for math input.
 
   x_row->append(*x_lbl);
   x_row->append(*x_spin);
@@ -3716,7 +3716,7 @@ void Toolbar::Impl::build_ref_popover(Gtk::ToggleButton *ref_btn) {
   curvz::utils::set_name(y_spin, "pop_tb_ref_y", "popover_toolbar_ref_y_spn");
   y_spin->set_hexpand(true);
   y_spin->set_width_chars(12);
-  y_spin->set_numeric(true);
+  // s219: substrate default is set_numeric(false) for math input.
 
   y_row->append(*y_lbl);
   y_row->append(*y_spin);
@@ -3828,7 +3828,7 @@ static Glib::RefPtr<Gtk::Adjustment> make_pop_row(Gtk::Box *outer,
       abbrev, adj, 0.000001, 6);
   spin->set_hexpand(true);
   spin->set_width_chars(10);
-  spin->set_numeric(true);
+  // s219: substrate default is set_numeric(false) for math input.
   row->append(*spin);
   outer->append(*row);
   if (out_spin) *out_spin = spin;

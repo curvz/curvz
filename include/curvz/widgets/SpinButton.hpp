@@ -4,11 +4,12 @@
 // during s187 m3.
 //
 // Note: Curvz has a larger custom subclass `Curvz::CurvzSpinButton`
-// (unit-aware, with fluent construction). That class is NOT this one —
-// see ARC.md for the open design fork on whether CurvzSpinButton should
-// absorb the script substrate via inheritance from ScriptableWidget,
-// or whether a parallel script wrapper is the right shape. This plain
-// wrapper is available as a building block in the meantime.
+// (unit-aware, with fluent construction). That class is NOT this one,
+// but as of s219 the two no longer differ on math input — both accept
+// arithmetic expressions in their entry buffer. The remaining open
+// design fork from s187 (whether CurvzSpinButton should inherit from
+// ScriptableWidget for script-addressability) is independent of the
+// math layer and tracked separately in ARC.md.
 //
 // Verbs:
 //   set <number>        → set_value, fires signal_value_changed
@@ -75,6 +76,12 @@ public:
 
 protected:
     void bind_canonical() override;
+
+private:
+    // s219 — wire signal_input parser + CAPTURE-phase keystroke filter.
+    // Called from each constructor after init_scriptable(). Pulls in
+    // UnitSystem::parse_expr for dimensionless math expressions.
+    void init_math();
 };
 
 } // namespace curvz::widgets

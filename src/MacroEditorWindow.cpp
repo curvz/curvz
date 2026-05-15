@@ -265,7 +265,7 @@ void MacroEditorWindow::rebuild_property_editor() {
                           curvz::scripting::unregistered,
                           adj, step_inc, digits);
         spin->set_hexpand(true);
-        spin->set_numeric(true);
+        // s219: substrate default is set_numeric(false) for math input.
         m_prop_grid.attach(*spin, 1, row);
 
         std::string f = field;

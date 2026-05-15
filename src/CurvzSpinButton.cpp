@@ -72,11 +72,15 @@ void CurvzSpinButton::init()
     m_adj = Gtk::Adjustment::create(0.0, -1e9, 1e9, 1.0, 10.0);
     set_adjustment(m_adj);
 
-    // Only distance-type fields (PositionX/Y, Width, Distance) accept
-    // math expressions and unit suffixes.  Dimensionless types (Angle,
-    // Percentage, Integer) keep GTK's plain numeric behaviour.
-    const bool parser_enabled = is_distance_type();
-    set_numeric(!parser_enabled);
+    // s219: all spin types accept math expressions. Dimensionless types
+    // (Angle, Percentage, Integer) route through the parser's unitless
+    // branch — type_allows_units() still returns false for them, so unit
+    // suffixes stay rejected; only +, -, *, /, (, ), ., comma, and digits
+    // get through is_char_allowed. Integer types get rounding in the
+    // parser block. The previous policy ("dimensionless types keep GTK's
+    // plain numeric behaviour") blocked legitimate math like "360/36" in
+    // a rotation field.
+    set_numeric(false);
 
     m_unit_label = Gtk::make_managed<Gtk::Label>("");
     m_unit_label->add_css_class("prop-width-unit");
@@ -87,7 +91,9 @@ void CurvzSpinButton::init()
     m_adj->signal_value_changed().connect(
         sigc::mem_fun(*this, &CurvzSpinButton::on_value_changed));
 
-    if (!parser_enabled) return; // Angle / Percentage / Integer — nothing else to wire.
+    // s219: previously an early-return here gated on parser_enabled
+    // skipped the input hook and keystroke filter for dimensionless
+    // types. Removed — every type now wires both.
 
     // ── GTK input hook — the canonical place to override SpinButton parsing.
     // Returning 1 means "I parsed it, use this value". Returning -1 means

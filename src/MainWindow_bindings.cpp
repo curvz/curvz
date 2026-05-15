@@ -1499,6 +1499,16 @@ void MainWindow::connect_signals() {
         // fail when get_focus() returns the inner GtkText with no gtkmm
         // wrapper).
         //
+        // s219: use the raw C gtk_window_get_focus() rather than gtkmm's
+        // Gtk::Window::get_focus(). When a SpinButton is being typed into,
+        // GTK4 puts focus on the SpinButton's internal GtkText child, which
+        // has no gtkmm wrapper — gtkmm's get_focus() returns null (or walks
+        // up to a non-editable container), so GTK_IS_EDITABLE on the result
+        // is false and bare-key shortcuts like '/' leak through into the
+        // spin's expression input. The raw C call returns the actual
+        // focused GtkWidget* (the inner GtkText) which DOES implement
+        // GtkEditable, so the interface check succeeds.
+        //
         // NOTE: this guard only protects against shortcuts wired here in
         // the CAPTURE controller. set_accels_for_action() dispatch in
         // Gio::Application runs AFTER this controller returns false, so
@@ -1506,8 +1516,8 @@ void MainWindow::connect_signals() {
         // input regardless of this guard. Bare-key accels for zoom etc.
         // were stripped in s157 from Application::on_startup for that
         // reason.
-        auto *focused = get_focus();
-        bool text_focused = focused && GTK_IS_EDITABLE(focused->gobj());
+        GtkWidget *focused = gtk_window_get_focus(GTK_WINDOW(this->gobj()));
+        bool text_focused = focused && GTK_IS_EDITABLE(focused);
 
         // Ctrl AND Alt shortcuts always fire regardless of focus. Alt was
         // added s181 — without it, plain-Alt shortcuts (only Alt+D currently)
@@ -1556,8 +1566,16 @@ void MainWindow::connect_signals() {
         }
 
         // ── Shortcuts dialog ─────────────────────────────────────────────
-        if (!ctrl && !shift && !alt &&
-            (kv == GDK_KEY_question || kv == GDK_KEY_slash)) {
+        // s219: bare '/' removed — was hijacking division in CurvzSpinButton
+        // math input ("360/36" in a rotation field opened the dialog instead
+        // of dividing). Bare '?' (which is Shift+/ on US layout) still
+        // works; Ctrl+/ added as a parallel for keyboards where '?' takes
+        // gymnastics to reach.
+        if (!ctrl && !shift && !alt && kv == GDK_KEY_question) {
+          m_shortcuts_dialog.show(*this);
+          return true;
+        }
+        if (ctrl && !shift && !alt && kv == GDK_KEY_slash) {
           m_shortcuts_dialog.show(*this);
           return true;
         }

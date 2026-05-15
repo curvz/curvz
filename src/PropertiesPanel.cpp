@@ -4631,6 +4631,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
         };
 
     auto do_rotate = [this, adj_r, apply_rotate]() mutable {
+      LOG_INFO("rotate: do_rotate fired, adj_r->get_value()={}",
+               adj_r->get_value());
       apply_rotate(adj_r->get_value());
       m_loading = true;
       adj_r->set_value(0.0);
@@ -4646,6 +4648,16 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     spin_r->add_css_class("prop-width-entry");
     spin_r->add_css_class("node-spin");
     block_scroll(spin_r, do_rotate);
+    // s219 debug: instrument the Enter / value-change / activate path on
+    // the rotate spin so we can see the actual ordering. After Scott
+    // types "360/36" and hits Enter, the math commits to the adjustment
+    // but the rotation doesn't fire until a second Enter.
+    spin_r->signal_activate().connect([this, adj_r]() {
+      LOG_INFO("rotate: signal_activate fired, adj_r={}", adj_r->get_value());
+    });
+    adj_r->signal_value_changed().connect([adj_r]() {
+      LOG_INFO("rotate: adj_r->value_changed -> {}", adj_r->get_value());
+    });
 
     auto *apply_lbl = Gtk::make_managed<curvz::widgets::Button>("ins_sel_ra");
     curvz::utils::set_name(apply_lbl, "ins_sel_ra",
