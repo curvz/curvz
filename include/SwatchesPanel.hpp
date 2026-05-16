@@ -113,6 +113,15 @@ private:
     // --- Header row --------------------------------------------------------
     Gtk::Box        m_header { Gtk::Orientation::HORIZONTAL };
     Gtk::Label      m_title;
+    // s229 m1: "+" create button. Restoring the affordance S83 m4h v8
+    // explicitly consolidated into the kebab — see the "moved into the
+    // hamburger menu" comment in SwatchesPanel.cpp's m_palette_actions
+    // setup. The consolidation was correct for unified action dispatch,
+    // but cost visibility for the most-common create gesture. Sibling
+    // Content panels (Layers, Library, Themes) all carry a "+" in their
+    // headers; adding one back here closes the consistency gap while
+    // leaving the kebab's "New swatch" item intact.
+    Gtk::Button     m_btn_new;
     // S83 m4h v8: hamburger MenuButton consolidating the previous
     // separate "+" button (swatch creation) AND the palette-options
     // kebab in the selector row. Single panel-level menu with

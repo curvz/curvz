@@ -1,6 +1,7 @@
 # 29_swatches_scriptable_smoke — third row-bound model Scriptable
-# end-to-end (s221 m1), modelled on 26_layers_scriptable_smoke and
-# 27_guides_scriptable_smoke. First LIBRARY-collection Scriptable;
+# end-to-end (s221 m1), modelled on 33_layers_scriptable_smoke and
+# 27_guides_scriptable_smoke (the layers smoke was renamed from slot
+# 26 in s229 m1). First LIBRARY-collection Scriptable;
 # layers and guides wrap SceneNode collections, this one wraps the
 # project's SwatchLibrary.
 #

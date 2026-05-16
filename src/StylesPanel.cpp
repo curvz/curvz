@@ -148,6 +148,20 @@ StylesPanel::StylesPanel()
     m_title.set_hexpand(true);
     // m_header.append(m_title);  // intentionally not appended in v13
 
+    // s229 m1: "+" create button. Direct affordance for "New style"
+    // (most-common kebab item), restoring symmetry with other Content
+    // panels (Layers, Library, Themes — each carries a "+"). Wires to
+    // action_create_empty(), same handler the kebab's "New style"
+    // dispatches to via the styles.create-empty action.
+    m_btn_new.set_icon_name("list-add-symbolic");
+    m_btn_new.set_has_frame(false);
+    m_btn_new.set_tooltip_text("New style");
+    m_btn_new.set_focus_on_click(false);
+    curvz::utils::set_name(m_btn_new, "st_new", "styles_panel_new_btn");
+    m_btn_new.signal_clicked().connect(
+        sigc::mem_fun(*this, &StylesPanel::action_create_empty));
+    m_header.append(m_btn_new);
+
     // S83 m4h v12: kebab menu items vary based on whether the active
     // category is read-only (app-tier) or user-editable, so the menu
     // is built per-refresh in rebuild_kebab_menu rather than once in
@@ -381,11 +395,17 @@ void StylesPanel::refresh() {
     // run yet at remove() time). Same discipline s208 m5 added to
     // SwatchesPanel for `sw_pal`. Third canonical instance of the
     // s199 m1 pump being used outside its PropertiesPanel home.
+    //
+    // s229 m1: m_btn_new (the "+") is also lifetime-resident — add to
+    // the skip set alongside m_btn_add. Without this, the refresh
+    // walk would force_unregister_subtree the "+" button and yank it
+    // from the header on every refresh.
     {
         auto* child = m_header.get_first_child();
         while (child) {
             auto* next = child->get_next_sibling();
-            if (child != static_cast<Gtk::Widget*>(&m_btn_add)) {
+            if (child != static_cast<Gtk::Widget*>(&m_btn_add) &&
+                child != static_cast<Gtk::Widget*>(&m_btn_new)) {
                 curvz::utils::force_unregister_subtree(child);
                 m_header.remove(*child);
             }

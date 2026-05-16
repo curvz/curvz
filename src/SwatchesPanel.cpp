@@ -76,6 +76,21 @@ SwatchesPanel::SwatchesPanel() : Gtk::Box(Gtk::Orientation::VERTICAL) {
     m_title.add_css_class("panel-title");
     // m_header.append(m_title);  // intentionally not appended in v13
 
+    // s229 m1: "+" create button. Direct affordance for "New swatch"
+    // (the most-common kebab item). S83 m4h v8 explicitly consolidated
+    // this into the kebab "so all panel-level actions share one entry
+    // point" — restoring the "+" closes the visibility regression
+    // while leaving the kebab's "New swatch" item intact, so both
+    // surfaces dispatch to the same on_add_clicked handler.
+    m_btn_new.set_icon_name("list-add-symbolic");
+    m_btn_new.set_has_frame(false);
+    m_btn_new.set_tooltip_text("New swatch");
+    m_btn_new.set_focus_on_click(false);
+    curvz::utils::set_name(m_btn_new, "sw_new", "swatches_panel_new_btn");
+    m_btn_new.signal_clicked().connect(
+        sigc::mem_fun(*this, &SwatchesPanel::on_add_clicked));
+    m_header.append(m_btn_new);
+
     // S83 m4h v10: kebab (view-more-symbolic) instead of hamburger
     // (open-menu-symbolic) — see StylesPanel for full rationale.
     // GNOME HIG reserves hamburger for app-level primary menus in
@@ -420,11 +435,16 @@ void SwatchesPanel::refresh() {
     // m_btn_add is the long-lived kebab; we skip it for unparent but
     // its substrate identity (if any) is not at risk of duplicate
     // registration because it isn't being reconstructed.
+    //
+    // s229 m1: m_btn_new (the "+") is also lifetime-resident — add to
+    // the skip set. Without this, the refresh walk would force_un-
+    // register and yank the "+" from the header on every refresh.
     {
         auto* child = m_header.get_first_child();
         while (child) {
             auto* next = child->get_next_sibling();
-            if (child != static_cast<Gtk::Widget*>(&m_btn_add)) {
+            if (child != static_cast<Gtk::Widget*>(&m_btn_add) &&
+                child != static_cast<Gtk::Widget*>(&m_btn_new)) {
                 curvz::utils::force_unregister_subtree(child);
                 m_header.remove(*child);
             }
@@ -855,9 +875,16 @@ void SwatchesPanel::on_add_clicked() {
     // s207 m1: ColorPickerPopover is the app-wide singleton; route
     // through shared(). The widget-anchor overload auto-attaches on
     // first call. last_committed_name() reads from the same instance.
+    //
+    // s229 m1: anchor on m_btn_new (the "+") rather than m_btn_add
+    // (the kebab). Both invocation paths — direct "+" click and the
+    // kebab's "New swatch" item, which both route here — pop the
+    // picker out of the "+" button, the visible affordance for the
+    // create gesture. m_btn_new is a header-lifetime member, always
+    // present and visible whenever m_btn_add is.
     auto& popover = ColorPickerPopover::shared();
     popover.open(
-        m_btn_add,
+        m_btn_new,
         color::Color::black(),
         /*with_alpha=*/false,
         // on_changed — first invocation creates the swatch + adds to
@@ -1697,9 +1724,12 @@ void SwatchesPanel::on_ctx_edit_color() {
     if (!m_library || m_ctx_swatch_id.empty()) return;
     // No per-chip anchor available here — the menu was closed already,
     // the chip widget may even have been rebuilt by refresh(). Anchor
-    // the edit popover to the panel's add-button instead. Visually
-    // acceptable and avoids chasing a widget pointer.
-    open_edit_popover_for(m_ctx_swatch_id, m_btn_add);
+    // the edit popover to the panel's "+" (create) button instead.
+    // s229 m1: re-anchored from m_btn_add (kebab) to m_btn_new (+) when
+    // the + was added; the edit popover is structurally identical to
+    // the create popover (colour + name) so they should share a visual
+    // origin.
+    open_edit_popover_for(m_ctx_swatch_id, m_btn_new);
 }
 
 void SwatchesPanel::on_ctx_rename_swatch() {

@@ -304,6 +304,14 @@ private:
     // re-plumbing the header. It's not appended in v13.
     Gtk::Box        m_header { Gtk::Orientation::HORIZONTAL };
     Gtk::Label      m_title;
+    // s229 m1: "+" create button. Direct affordance for the most-common
+    // create flow (was buried under the kebab's "New style" item as of
+    // S83 m4h v8 — see SwatchesPanel's parallel "moved into the hamburger
+    // menu" comment from the same era). Sibling Content panels (Layers,
+    // Library, Themes) all carry a "+" in their headers, so adding one
+    // here closes the consistency gap. Wires to action_create_empty(),
+    // same handler the kebab's "New style" item dispatches to.
+    Gtk::Button     m_btn_new;
     Gtk::MenuButton m_btn_add;
 
     // ── Body container ────────────────────────────────────────────────────

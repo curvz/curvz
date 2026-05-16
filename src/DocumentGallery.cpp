@@ -410,18 +410,46 @@ DocumentGallery::render_thumb(CurvzDocument *doc, int size) {
       BezierPath bp = BezierPath::from_path_data(*obj.path);
       bp.apply_to_cairo(cr);
 
-      if (obj.fill.type == FillStyle::Type::CurrentColor)
+      // s229 m2: capture the path's tight bbox via Cairo before the
+      // fill consumes the path. Required by build_gradient_pattern
+      // to lerp objectBoundingBox-fraction endpoints into doc-space.
+      // Pre-s229 m2 the thumbnail renderer only handled Solid +
+      // CurrentColor; gradient-filled / -stroked shapes left the
+      // cairo source at whatever was set previously (the artboard
+      // background paint from `cr->paint()` on the first object),
+      // so a gradient-filled shape on a same-coloured artboard
+      // rendered invisible — the reported bug.
+      double bx1 = 0, by1 = 0, bx2 = 0, by2 = 0;
+      cr->get_fill_extents(bx1, by1, bx2, by2);
+      const double bw = bx2 - bx1;
+      const double bh = by2 - by1;
+
+      // ── Fill ─────────────────────────────────────────────────────
+      if (obj.fill.type == FillStyle::Type::CurrentColor) {
         cr->set_source_rgb(cc, cc, cc);
-      else if (obj.fill.type == FillStyle::Type::Solid)
+      } else if (obj.fill.type == FillStyle::Type::Solid) {
         cr->set_source_rgb(obj.fill.r, obj.fill.g, obj.fill.b);
+      } else if (obj.fill.is_gradient()) {
+        auto pat = curvz::utils::build_gradient_pattern(
+            obj.fill, bx1, by1, bw, bh);
+        if (pat) cr->set_source(pat);
+        else     cr->set_source_rgba(0, 0, 0, 0);
+      }
       if (obj.fill.type != FillStyle::Type::None)
         cr->fill_preserve();
 
-      if (obj.stroke.paint.type == FillStyle::Type::CurrentColor)
+      // ── Stroke ───────────────────────────────────────────────────
+      if (obj.stroke.paint.type == FillStyle::Type::CurrentColor) {
         cr->set_source_rgb(cc, cc, cc);
-      else if (obj.stroke.paint.type == FillStyle::Type::Solid)
+      } else if (obj.stroke.paint.type == FillStyle::Type::Solid) {
         cr->set_source_rgb(obj.stroke.paint.r, obj.stroke.paint.g,
                            obj.stroke.paint.b);
+      } else if (obj.stroke.paint.is_gradient()) {
+        auto pat = curvz::utils::build_gradient_pattern(
+            obj.stroke.paint, bx1, by1, bw, bh);
+        if (pat) cr->set_source(pat);
+        else     cr->set_source_rgba(0, 0, 0, 0);
+      }
       if (obj.stroke.paint.type != FillStyle::Type::None) {
         cr->set_line_width(obj.stroke.width);
         cr->stroke();
@@ -450,20 +478,44 @@ DocumentGallery::render_thumb(CurvzDocument *doc, int size) {
         }
       }
 
-      if (fill.type == FillStyle::Type::CurrentColor)
+      // s229 m2: Compound gradient support — same bbox-from-Cairo
+      // pattern as the Path branch above. The combined-path bbox
+      // covers all subpaths, which is exactly what objectBoundingBox
+      // semantics want for a Compound's gradient (mirrors PrintManager
+      // line 1209-1214).
+      double cbx1 = 0, cby1 = 0, cbx2 = 0, cby2 = 0;
+      cr->get_fill_extents(cbx1, cby1, cbx2, cby2);
+      const double cbw = cbx2 - cbx1;
+      const double cbh = cby2 - cby1;
+
+      // ── Fill ─────────────────────────────────────────────────────
+      if (fill.type == FillStyle::Type::CurrentColor) {
         cr->set_source_rgb(cc, cc, cc);
-      else if (fill.type == FillStyle::Type::Solid)
+      } else if (fill.type == FillStyle::Type::Solid) {
         cr->set_source_rgb(fill.r, fill.g, fill.b);
+      } else if (fill.is_gradient()) {
+        auto pat = curvz::utils::build_gradient_pattern(
+            fill, cbx1, cby1, cbw, cbh);
+        if (pat) cr->set_source(pat);
+        else     cr->set_source_rgba(0, 0, 0, 0);
+      }
       if (fill.type != FillStyle::Type::None) {
         cr->set_fill_rule(Cairo::Context::FillRule::EVEN_ODD);
         cr->fill_preserve();
         cr->set_fill_rule(Cairo::Context::FillRule::WINDING);
       }
 
-      if (stroke.paint.type == FillStyle::Type::CurrentColor)
+      // ── Stroke ───────────────────────────────────────────────────
+      if (stroke.paint.type == FillStyle::Type::CurrentColor) {
         cr->set_source_rgb(cc, cc, cc);
-      else if (stroke.paint.type == FillStyle::Type::Solid)
+      } else if (stroke.paint.type == FillStyle::Type::Solid) {
         cr->set_source_rgb(stroke.paint.r, stroke.paint.g, stroke.paint.b);
+      } else if (stroke.paint.is_gradient()) {
+        auto pat = curvz::utils::build_gradient_pattern(
+            stroke.paint, cbx1, cby1, cbw, cbh);
+        if (pat) cr->set_source(pat);
+        else     cr->set_source_rgba(0, 0, 0, 0);
+      }
       if (stroke.paint.type != FillStyle::Type::None) {
         cr->set_line_width(stroke.width);
         cr->stroke();

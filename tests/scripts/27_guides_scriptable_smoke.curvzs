@@ -1,5 +1,6 @@
 # 27_guides_scriptable_smoke — second row-bound model Scriptable
-# end-to-end (s218 m1), modelled on 26_layers_scriptable_smoke.
+# end-to-end (s218 m1), modelled on 33_layers_scriptable_smoke
+# (the layers smoke, renamed from slot 26 in s229 m1).
 #
 # Validates the design banked in CANON's "Row-bound model Scriptables —
 # collection-as-router with transient per-instance proxies" entry, now
