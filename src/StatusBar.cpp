@@ -25,7 +25,16 @@ StatusBar::StatusBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL) {
   sep1->set_margin_start(8);
   sep1->set_margin_end(8);
 
-  m_zoom_label.set_text("1600%");
+  // s223 m2: placeholder is "--" rather than a real-looking number. The
+  // signal-driven set_zoom path (Canvas zoom-fit on first draw → connect_signals
+  // listener) is what populates this label with the truth; if for any
+  // reason that path hasn't fired yet, the user sees a benign dash
+  // rather than a stale-looking percentage. Pre-s223 the placeholder
+  // was "1600%" — which was specifically the user-visible symptom of
+  // the s217 backlog bug (the idle-callback in setup_layout was
+  // overwriting the freshly-correct fit zoom with m_project->zoom's
+  // default value of 16.0).
+  m_zoom_label.set_text("--");
   m_zoom_label.set_width_chars(8);
   m_zoom_label.set_xalign(0.0f);
   m_zoom_label.add_css_class("statusbar-label");

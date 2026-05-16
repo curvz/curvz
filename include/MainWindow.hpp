@@ -154,6 +154,7 @@ namespace curvz::scripting { class LayersScriptable; }
 namespace curvz::scripting { class GuidesScriptable; }
 namespace curvz::scripting { class SwatchesScriptable; }
 namespace curvz::scripting { class StylesScriptable; }
+namespace curvz::scripting { class ThemesScriptable; }
 namespace curvz::scripting { class InspectorScriptable; }
 namespace curvz::scripting { class ScripterWindow; }
 
@@ -164,10 +165,11 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
-    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
+    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
     // unique_ptr<curvz::scripting::GuidesScriptable>,
     // unique_ptr<curvz::scripting::SwatchesScriptable>,
-    // unique_ptr<curvz::scripting::StylesScriptable>, and
+    // unique_ptr<curvz::scripting::StylesScriptable>,
+    // unique_ptr<curvz::scripting::ThemesScriptable>, and
     // unique_ptr<curvz::scripting::InspectorScriptable> can hold incomplete
     // types at the header level. Implementation lives in MainWindow.cpp
     // alongside the construction. No longer gated as of s219 m1.
@@ -677,6 +679,28 @@ private:
     // add_to_palette) because the styles panel filters by panel
     // state (m_active_category), not by library state.
     std::unique_ptr<curvz::scripting::StylesScriptable> m_styles_scriptable;
+    // s223 m1 — `themes` collection Scriptable, fifth row-bound model
+    // Scriptable. Third library-collection variant (sibling of
+    // m_swatches_scriptable and m_styles_scriptable; all three wrap
+    // project-scoped libraries rather than per-doc SceneNode
+    // collections). Same lifetime / construction / destruction shape
+    // as the four above; transient per-instance `themes.<id>` proxies
+    // route through this object's `proxy_for`. history pointer is
+    // DEREFERENCED on every mutating verb — the S103 m2 commands
+    // (AddThemeCommand / UpdateThemeCommand / RemoveThemeCommand) cover
+    // every CRUD verb, exactly like the styles Scriptable rides the
+    // S81 m4c-3 style commands.
+    //
+    // No PanelGetter argument — see ThemesScriptable.hpp's "Panel
+    // visibility" block. ThemesPanel renders the full user-tier theme
+    // list as a flat vertical box and rebuilds on signal_theme_added /
+    // _changed / _removed; library-side mutation is sufficient for new
+    // rows to appear. Third application of the visibility canon entry
+    // (s221 swatches: library-side fix; s222 styles: panel-side fix;
+    // s223 themes: no fix needed because the panel doesn't filter).
+    // Construction surface is correspondingly two-arg (matches
+    // m_swatches_scriptable; differs from m_styles_scriptable's three).
+    std::unique_ptr<curvz::scripting::ThemesScriptable> m_themes_scriptable;
     // s222 m2 — `inspector` Scriptable, wraps the inspector-area
     // section open/close orchestration (collapse_all + open). NOT a
     // model-collection Scriptable (no proxy_for surface, no per-row

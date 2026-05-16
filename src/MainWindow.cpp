@@ -15,6 +15,7 @@
 #include "scripting/GuidesScriptable.hpp"  // s218 m1 — second model Scriptable
 #include "scripting/SwatchesScriptable.hpp"  // s221 m1 — third model Scriptable
 #include "scripting/StylesScriptable.hpp"  // s222 m1 — fourth model Scriptable
+#include "scripting/ThemesScriptable.hpp"  // s223 m1 — fifth model Scriptable
 #include "scripting/InspectorScriptable.hpp"  // s222 m2 — inspector area Scriptable
 #include "scripting/ScripterWindow.hpp"    // s219 m1 — apply_scripter_pref present/hide
 #include "curvz/widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
@@ -285,6 +286,31 @@ MainWindow::MainWindow(Application & /*app*/) {
           &m_history,
           [this]() -> StylesPanel* { return &m_styles; });
 
+  // s223 m1 — `themes` collection Scriptable. Third library-collection
+  // variant (sibling of m_swatches_scriptable and m_styles_scriptable;
+  // all three wrap project-scoped libraries — swatches wraps
+  // CurvzProject::swatches, styles wraps CurvzProject::styles, this
+  // one wraps CurvzProject::themes). Same construction shape:
+  // project-getter resolves m_project.get() fresh on every verb call,
+  // history pointer to the doc's CommandHistory.
+  //
+  // history is DEREFERENCED on every mutating verb — the S103 m2
+  // commands (AddThemeCommand / UpdateThemeCommand / RemoveThemeCommand)
+  // make every theme CRUD undoable from the panel, and the Scriptable
+  // rides exactly that plumbing.
+  //
+  // No PanelGetter — see ThemesScriptable.hpp's "Panel visibility"
+  // block. ThemesPanel renders the full user-tier theme list flat and
+  // rebuilds on signal_theme_added / _changed / _removed; the new row
+  // appears automatically after a scripted `new` or `duplicate`. Third
+  // application of the visibility canon entry; this time the answer is
+  // "no panel-side step needed because the panel doesn't filter."
+  // Construction is two-arg, matching m_swatches_scriptable.
+  m_themes_scriptable =
+      std::make_unique<curvz::scripting::ThemesScriptable>(
+          [this]() -> CurvzProject* { return m_project.get(); },
+          &m_history);
+
   // s222 m2 — `inspector` Scriptable. Flat verb surface (no proxy
   // routing) that delegates to MainWindow's existing collapse-all
   // and apply-section-open methods. Constructed last among the
@@ -292,7 +318,7 @@ MainWindow::MainWindow(Application & /*app*/) {
   // MainWindow itself rather than to a project sub-system, and only
   // makes sense once MainWindow's section state is initialised
   // (which happens elsewhere in the ctor before this point). Same
-  // unique_ptr / out-of-line dtor pattern as the four above.
+  // unique_ptr / out-of-line dtor pattern as the five above.
   m_inspector_scriptable =
       std::make_unique<curvz::scripting::InspectorScriptable>(this);
 

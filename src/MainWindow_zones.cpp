@@ -1891,9 +1891,25 @@ void MainWindow::setup_layout() {
   // append and its next size-allocate pass, attempting to snapshot an
   // unallocated widget. Deferring via signal_idle lets the current
   // frame cycle complete first. Same pattern as S48 DocTabBar fix.
+  //
+  // s223 m2: do NOT call m_statusbar.set_zoom(m_project->zoom * 100.0)
+  // here. m_project->zoom defaults to 16.0 (interpreted as scale factor,
+  // displays as "1600%"), and at idle time it has NOT been updated to
+  // reflect the deferred zoom-to-fit that Canvas runs on its first
+  // draw — zoom_fit only writes Canvas::m_zoom, never back to
+  // m_project->zoom. The idle callback therefore overwrote the
+  // correct fit value (which the signal-driven path had just
+  // delivered, or was about to deliver) with the stale 1600%. The
+  // signal-driven path (Canvas::m_sig_zoom → connect_signals listener
+  // → m_statusbar.set_zoom) is the authoritative way to populate
+  // this label; it fires on every zoom mutation including the
+  // first-draw zoom_fit. The placeholder in StatusBar::StatusBar is
+  // now "--" so any window-of-time between widget construction and
+  // first emit shows a benign dash rather than a wrong-looking
+  // percentage. See the s217 backlog item for the original bug
+  // report.
   Glib::signal_idle().connect_once([this]() {
     m_root.append(m_statusbar);
-    m_statusbar.set_zoom(m_project->zoom * 100.0);
     refresh_status_counts(); // s132 m2 — was set_counts(0, 0)
   });
 

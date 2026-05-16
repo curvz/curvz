@@ -1,0 +1,327 @@
+# 32_themes_scriptable_smoke — fifth row-bound model Scriptable
+# end-to-end (s223 m1), modelled on 30_styles_scriptable_smoke. Third
+# LIBRARY-collection Scriptable (sibling of swatches and styles; all
+# three wrap project-scoped libraries — layers and guides wrap SceneNode
+# collections).
+#
+# Two addressing surfaces, one router:
+#
+#   themes           — collection. ONE registry entry. Set verbs (new,
+#                      delete, duplicate, rename, category, find_by_name)
+#                      and set queries (count, all_ids, user_ids,
+#                      app_ids).
+#   themes.<id>      — per-instance proxy. NOT in the registry —
+#                      materialised on demand, destroyed at end-of-
+#                      statement. Element verbs (rename / category)
+#                      and element queries (name / category /
+#                      is_built_in / iid).
+#
+# ── Where themes differ from styles ────────────────────────────────────────
+#
+# ThemeLibrary uses the same "app" (built-in, read-only) / "user"
+# (per-project, editable) two-tier vocabulary as StyleLibrary. The
+# Scriptable follows the model's terms: `user_ids` / `app_ids` /
+# `is_built_in`, same as styles.
+#
+# v1 difference: NO app themes exist. m_app_themes is empty at
+# ThemeLibrary construction; app_theme_count() is always 0. The two-list
+# shape is in place for forward-compat (one-line edit to seed curated
+# app themes), and the is_built_in() predicate still gates writes. This
+# smoke verifies:
+#   * `app_ids` returns "" (always empty in v1)
+#   * `count` == `user_theme_count` (no app side)
+#   * the in-verb app-tier guard still works (exercised via the
+#     collection-level verb on a synthetic `app:fake_theme` id; the
+#     proxy-side path can't be reached because can_resolve rejects
+#     unaddressable ids before the proxy materialises)
+#
+# Themes also have a `category` field on the proxy — a string the
+# data-model carries but today's ThemesPanel doesn't render as a
+# grouped view. The smoke exercises proxy `category` (write) and the
+# corresponding read query, plus the collection-level `category` verb
+# with the "<id>" "<cat>" two-arg form. The verb is in place for parity
+# with StylesScriptable and for forward-compat with a future grouped
+# panel revision.
+#
+# ── No fix-1: third panel-visibility application ──────────────────────────
+#
+# Unlike the styles smoke (which asserts `pnl_styles active_category`
+# after each `new`/`duplicate` to verify the panel navigation fix-1),
+# this smoke has NO panel-state assertions. ThemesPanel renders the
+# full user-tier theme list flat — no category filter, no chip grid,
+# no chooser dropdown. signal_theme_added is wired directly to
+# refresh() → rebuild_library_list(), so a scripted `new` row appears
+# automatically with no panel-side step needed. Third application of
+# the "library-collection Scriptables drive panel visibility through
+# the panel's mechanism" canon entry; this time the answer is "the
+# panel's mechanism IS just-rebuild-the-flat-list, and the library
+# signal already drives it." See ThemesScriptable.hpp's "Panel
+# visibility" block for the full comparison with swatches (library-side
+# fix) and styles (panel-side fix).
+#
+# Visual evidence that visibility is working: after the BUILD UP phase
+# below, the ThemesPanel's library list should show three new rows
+# (smoke_test_a / smoke_test_b / smoke_test_c) plus any user themes
+# present before the script ran. After TEAR DOWN, those three rows
+# should be gone. Eyes-and-trace convergence: the assertions cover the
+# library state, but the panel rebuild is the visual half.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# Every theme this script creates is bound to a script-local variable
+# at creation time. Existing themes (none from app tier in v1; any user
+# themes in the project at script start) are NEVER renamed, deleted,
+# re-categorised. The teardown step at the bottom deletes only the
+# themes we created, by bound id.
+#
+# Same iid-binding pattern as the guides / swatches / styles smokes
+# (theme names aren't unique by construction; iid-binding is the right
+# choice).
+#
+# ── Undo coverage ─────────────────────────────────────────────────────────
+#
+# Every mutating verb pushes a command into the doc's CommandHistory.
+# The smoke can't directly assert "the stack grew by one" — there's no
+# script verb for undo today (commands ride a separate plane from the
+# script-level state). What the smoke DOES verify is the round-trip:
+# rename A then rename back, set category then revert, etc. If a verb
+# forgot to push a command, the round-trip still passes; manual Ctrl+Z
+# after the script finishes is the second half of the test — every
+# operation should be individually undoable.
+#
+# Note: apply (apply_theme_to_doc) is NOT undoable in v1 by design
+# (Theme.hpp top-of-file rationale). m1 doesn't expose an `apply` verb
+# at all — that's deferred to its own milestone. This smoke covers
+# library CRUD only, which IS undoable.
+#
+# ── Phases ────────────────────────────────────────────────────────────────
+#
+#   1. BUILD UP  — capture baseline counts, create three test themes
+#                  in a private category, bind each id to a variable
+#                  (a / b / c).
+#   2. VALIDATE  — exercise collection queries, app-tier guard via a
+#                  synthetic app:fake id, proxy verbs (rename /
+#                  category), proxy queries, find_by_name on each bound
+#                  theme, duplicate.
+#   3. TEAR DOWN — delete every test theme; verify count returns to
+#                  baseline.
+
+#[sub] === Phase 1: BUILD UP ===
+#[sub] Capture baseline so teardown can verify cleanup. count is an
+#[sub] integer, comparable in assert via simple equality. user_ids /
+#[sub] app_ids / all_ids are comma-separated strings — useful to print
+#[sub] for visual diff, but NOT comparable via `assert == var` because
+#[sub] variable substitution is bare-text (commas in the substituted
+#[sub] value would break the line tokeniser; this is the same
+#[sub] limitation the swatches and styles smokes document).
+
+get themes count
+set count_before to result
+get themes all_ids
+get themes user_ids
+get themes app_ids
+#[sub] v1: app_ids is always "" (no app themes). The visual `get` above
+#[sub] is the evidence; we don't assert against the empty-string return
+#[sub] because subsequent string-vs-variable comparison would trip the
+#[sub] same comma-substitution caveat.
+
+#[sub] Self-stage the inspector. The ThemesPanel lives inside the
+#[sub] Themes section (a child of the Content group). For the visual
+#[sub] half of convergence to fire — eyes on the panel watching rows
+#[sub] appear and disappear — the section needs to be open. Driven by
+#[sub] the s222 m2 inspector Scriptable + fix-2 ancestor walk, which
+#[sub] opens Content first then Themes.
+
+inspector open "Themes"
+
+#[sub] Create three test themes. Each lands in a private category
+#[sub] ("smoke_test") so any existing user-tier categories aren't
+#[sub] polluted. `themes new` returns the new id; `set X to result`
+#[sub] binds it. Empty name and empty category are both legal (a
+#[sub] default Theme is the "factory baseline" — applying it would
+#[sub] reset a doc to fresh-out-of-the-box settings) but we pass
+#[sub] explicit values so find_by_name and category-round-trip can
+#[sub] target our themes.
+
+themes new "smoke_test_a" "smoke_test"
+set a to result
+assert themes.a name == "smoke_test_a"
+assert themes.a category == "smoke_test"
+assert themes.a is_built_in == false
+
+themes new "smoke_test_b" "smoke_test"
+set b to result
+assert themes.b name == "smoke_test_b"
+assert themes.b category == "smoke_test"
+assert themes.b is_built_in == false
+
+themes new "smoke_test_c" "smoke_test"
+set c to result
+assert themes.c name == "smoke_test_c"
+assert themes.c category == "smoke_test"
+assert themes.c is_built_in == false
+
+#[sub] iid query — round-trips the binding key. A script can `get
+#[sub] themes.<var> iid` to verify it has the right handle (same
+#[sub] shape as SwatchProxy::iid / StyleProxy::iid). Returned value
+#[sub] equals the bound variable; we don't assert equality directly
+#[sub] (no string-comparison-against-variable form yet) but the
+#[sub] presence of the value proves the proxy resolved.
+
+get themes.a iid
+get themes.b iid
+get themes.c iid
+
+#[sub] === Phase 2: VALIDATE ===
+
+#[sub] Collection-level queries. count should be baseline + 3. all_ids,
+#[sub] user_ids, app_ids are printed for visual diff. app_ids must be
+#[sub] identical to the baseline (always "" in v1), and user_ids must
+#[sub] contain our three test ids plus whatever was already there.
+
+get themes count
+get themes all_ids
+get themes user_ids
+get themes app_ids
+
+#[sub] find_by_name — collection verb (parameterised query workaround,
+#[sub] same shape as SwatchesScriptable / StylesScriptable::find_by_name).
+#[sub] Invoke-shaped today because query() can't take args; the bare
+#[sub] form `themes find_by_name "X"` falls through to invoke and the
+#[sub] result lands in the result slot for capture. First-hit
+#[sub] semantics; our names are unique within the test so each returns
+#[sub] the bound id.
+
+themes find_by_name "smoke_test_a"
+set found_a to result
+themes find_by_name "smoke_test_b"
+set found_b to result
+themes find_by_name "smoke_test_c"
+set found_c to result
+# find_by_name miss returns "" — we don't bind it because empty-string
+# binds would round-trip as `themes.` (no suffix), which can_resolve
+# rejects. Operator can confirm visually that the result slot was
+# empty on the last find_by_name call.
+themes find_by_name "no_such_theme_in_any_tier"
+assert themes.found_a name == "smoke_test_a"
+assert themes.found_b name == "smoke_test_b"
+assert themes.found_c name == "smoke_test_c"
+
+#[sub] Proxy rename round-trip on `a`. UpdateThemeCommand carries
+#[sub] full before/after snapshots; only header.name differs. Skip-
+#[sub] no-op guard: rename to the same name doesn't push a command.
+
+themes.a rename "smoke_test_a_renamed"
+assert themes.a name == "smoke_test_a_renamed"
+themes.a rename "smoke_test_a"
+assert themes.a name == "smoke_test_a"
+
+#[sub] Collection-level rename round-trip on `b`. Same
+#[sub] UpdateThemeCommand, just accessed via the collection-with-id
+#[sub] form.
+
+themes rename b "smoke_test_b_renamed"
+assert themes.b name == "smoke_test_b_renamed"
+themes rename b "smoke_test_b"
+assert themes.b name == "smoke_test_b"
+
+#[sub] Proxy category round-trip on `c`. UpdateThemeCommand again,
+#[sub] this time with only header.category diffed. Empty category is
+#[sub] meaningful — it moves the theme to the uncategorised bucket
+#[sub] (metadata-only in v1 since ThemesPanel doesn't render
+#[sub] categories yet). The round-trip restores the test category.
+
+themes.c category "smoke_test_other"
+assert themes.c category == "smoke_test_other"
+themes.c category ""
+assert themes.c category == ""
+themes.c category "smoke_test"
+assert themes.c category == "smoke_test"
+
+#[sub] Collection-level category set — two-arg "<id>" "<cat>" form.
+#[sub] Same UpdateThemeCommand, just accessed by id instead of dotted
+#[sub] addressing.
+
+themes category a "smoke_test_other"
+assert themes.a category == "smoke_test_other"
+themes category a "smoke_test"
+assert themes.a category == "smoke_test"
+
+#[sub] Duplicate `a`. New id, fresh entry, " copy" appended to name,
+#[sub] category preserved verbatim from the source (so the duplicate
+#[sub] also lands in "smoke_test"). is_built_in is false — duplicates
+#[sub] always land in the user tier.
+
+themes duplicate a
+set a_dup to result
+assert themes.a_dup name == "smoke_test_a copy"
+assert themes.a_dup category == "smoke_test"
+assert themes.a_dup is_built_in == false
+
+#[sub] App-tier guard. Every mutating verb refuses on an app-tier id,
+#[sub] returning Null without pushing a command. v1 has no real app
+#[sub] themes, so we exercise the guard via a synthetic "app:fake"
+#[sub] id at the collection level — the guard fires before find_theme
+#[sub] is consulted, so the id doesn't need to actually exist for
+#[sub] the refusal path to run. (The proxy-side guard can't be reached
+#[sub] this way because can_resolve rejects unaddressable ids before
+#[sub] the proxy materialises; that branch is forward-compat only.)
+#[sub]
+#[sub] Library state should be unchanged across this sequence. count
+#[sub] visual-checked before and after.
+
+get themes count
+set count_pre_guard to result
+
+themes rename "app:fake_theme" "would_break_app_tier_if_this_worked"
+themes category "app:fake_theme" "would_move_app_tier_if_this_worked"
+themes delete "app:fake_theme"
+
+get themes count
+assert themes count == count_pre_guard
+
+#[sub] === Phase 3: TEAR DOWN ===
+#[sub] Delete every test theme we created. Each delete pushes a
+#[sub] RemoveThemeCommand which snapshots the full Theme for round-trip
+#[sub] undo (the snapshot is the whole Theme value — every sub-bundle,
+#[sub] not just the header).
+
+themes delete a
+themes delete b
+themes delete c
+themes delete a_dup
+
+#[sub] Verify cleanup. count should be back to baseline. Visual
+#[sub] inspection of the id lists below confirms no residue remains.
+#[sub] If count differs from baseline, the test left residue in the
+#[sub] project.
+
+get themes count
+assert themes count == count_before
+get themes user_ids
+get themes app_ids
+
+#[sub] Registry sanity — list at end. `themes` should appear exactly
+#[sub] once, alongside `layers` / `guides` / `swatches` / `styles` and
+#[sub] the other registered entries. No `themes.<id>` entries despite
+#[sub] the many transient proxies materialised across this run (one
+#[sub] per dotted addressing line above, every proxy destroyed at
+#[sub] end-of-statement).
+
+list
+
+#[sub] Tidy up the inspector. The script opened Themes in Phase 1 to
+#[sub] make rebuilds visible; collapse everything now so the inspector
+#[sub] is in a clean zero-state when the script ends.
+
+inspector collapse_all
+
+#[sub] s223 m1 smoke complete — collection verbs, proxy verbs, proxy
+#[sub] queries, app-tier guard (synthetic-id form), find_by_name, the
+#[sub] duplicate " copy"-naming, and category round-trips all
+#[sub] exercised. Every mutating verb pushed a command into history;
+#[sub] manual Ctrl+Z after this script finishes should walk the undo
+#[sub] stack back through every operation. Visual half of convergence:
+#[sub] watch the ThemesPanel — the BUILD UP phase should add three
+#[sub] rows, the duplicate should add a fourth, TEAR DOWN should
+#[sub] remove all four.
