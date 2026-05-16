@@ -1,0 +1,201 @@
+# 34_objects_scriptable_smoke — sixth row-bound model Scriptable
+# OPENING (s230 m1), modelled on 33_layers_scriptable_smoke
+# (renamed from slot 26 in s229 m1) and 27_guides_scriptable_smoke
+# (s218 m1).
+#
+# Validates the design banked in CANON's "Row-bound model Scriptables —
+# collection-as-router with transient per-instance proxies" entry,
+# applied for the sixth time to the active document's scene-content
+# surface. Largest of the row-bound Scriptables — wraps every "real
+# scene content" SceneNode (Path / Group / Compound / ClipGroup /
+# Blend / Warp / Text / Image / Ref / Measurement) across all layers
+# in the active document.
+#
+# Two addressing surfaces, one router:
+#
+#   objects         — collection. ONE registry entry. Set queries
+#                     (count, all_iids) and invoke-shaped reads
+#                     (find_by_name, find_by_type).
+#   objects.<iid>   — per-instance proxy. NOT in the registry —
+#                     materialised on demand, destroyed at end-of-
+#                     statement. Element queries (name, type,
+#                     visible, locked, parent_iid, child_count, iid).
+#
+# The shared `objects` prefix is load-bearing: the router splits a
+# dotted token on the first `.`, looks the prefix up in the registry,
+# and asks the matched object to resolve the suffix. Collection name
+# and proxy prefix MUST be the same string.
+#
+# ── Why this smoke is mostly trace-inspection ─────────────────────────────
+#
+# s230 m1 is the OPENING milestone of the multi-session `objects`
+# arc. It ships the addressing surface but NO mutating verbs — which
+# means the smoke fundamentally can't build up scene objects to
+# address (the pattern 33_layers and 27_guides use); `objects new`
+# is scheduled m5+ and rides verbs that don't exist yet.
+#
+# The DSL has only one assertion shape today:
+#   assert <object> <property> == <literal>
+#
+# That shape can't express "the previous line's `result` equals "".
+# Negative-side checks (find_by_type "layer" returns ""; objects
+# find_by_name "<sentinel>" returns "") therefore get exercised via
+# `get` lines and verified by trace inspection — the trace will show
+# `= ""` for each one. A human reading the trace confirms the scope-
+# boundary contract holds; the smoke's pass/fail/error tally only
+# counts the ONE assert at the cross-Scriptable boundary (Phase 4)
+# which uses the structurally-valid `assert <object> <property> ==
+# <literal>` shape.
+#
+# Pre-stated count: 1 pass / 0 fail / 0 error.
+#
+# Future iteration: when m2+ adds a way to land a known in-scope iid
+# (a mutating verb like `objects new`), the proxy round-trip can be
+# asserted directly: `assert objects.<bound_var> type == "path"`,
+# etc. — same idiom 33_layers and 27_guides use for their proxies.
+# The pass count grows; the smoke gains BUILD UP / VALIDATE / TEAR
+# DOWN structure.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# This smoke does NOT mutate the doc via `objects` (no mutating verbs
+# in m1). The only mutating step is the `layers new` / `layers
+# delete` bracket, which adds an empty test layer (zero scene-object
+# children, no objects-scope contribution) and removes it at
+# teardown — net document state at end-of-run is identical to start.
+# Side effect: two AddLayerCommand entries on the undo stack (same
+# chatty-for-undo property the other model Scriptables document).
+#
+# ── Phases ────────────────────────────────────────────────────────────────
+#
+#   1. REGISTRY    — list shows `objects` (visual).
+#   2. DISPATCH    — count, all_iids dispatch on the active doc
+#                    (visual: trace shows = <int>, = <string>).
+#   3. SCOPE-NEG   — find_by_type on out-of-scope tokens returns ""
+#                    (visual: trace shows = "" repeatedly).
+#   4. SCOPE-POS   — cross-Scriptable boundary asserts. Create an
+#                    empty test layer via `layers`; `layers
+#                    find_by_name` finds it (returns iid). The
+#                    bound iid round-trips: `assert layers.<var>
+#                    name == "<sentinel>"` PASSES. The
+#                    corresponding `objects find_by_name` returns ""
+#                    (visual: trace shows = ""). This is the
+#                    foundation assert.
+#   5. TEARDOWN    — delete the test layer.
+
+#[sub] === Phase 1: REGISTRY ===
+#[sub] `objects` should appear in the registry list. We don't assert
+#[sub] on the full list (surrounding entries depend on what else is
+#[sub] registered); the trace inspection is the check.
+
+list
+
+#[sub] === Phase 2: DISPATCH — collection queries ===
+#[sub] count returns an Int; all_iids returns a String. The dispatch
+#[sub] working IS the foundation check; the trace shows the values
+#[sub] for a human reader to sanity-check that the walk is producing
+#[sub] reasonable numbers for whatever doc is open.
+
+get objects count
+get objects all_iids
+
+#[sub] === Phase 3: SCOPE-NEG — out-of-scope type tokens return "" ===
+#[sub] These dispatches run the doc walk but find no in-scope match.
+#[sub] Each line emits `= ""` to the trace. Layer / Guide / special-
+#[sub] layer types are out of objects scope (option (ii) from the
+#[sub] s230 design fork: real scene contents only). An unknown token
+#[sub] also returns "" — the vocabulary is fixed.
+#[sub]
+#[sub] find_by_type is invoke-shaped (it takes a string arg) — not
+#[sub] expressible as `get objects find_by_type "..."` because get
+#[sub] expects <object> <property> with no args. The bare invoke
+#[sub] form `objects find_by_type "..."` lets the result land in the
+#[sub] slot via the `=` emit.
+
+objects find_by_type "layer"
+objects find_by_type "guide"
+objects find_by_type "guidelayer"
+objects find_by_type "reflayer"
+objects find_by_type "measurelayer"
+objects find_by_type "gridlayer"
+objects find_by_type "marginlayer"
+objects find_by_type "nonsense_type_token"
+
+#[sub] find_by_name on a sentinel string that almost certainly
+#[sub] doesn't match any user-named object returns "". If somehow
+#[sub] the user has an object named this exact string, the trace
+#[sub] would show its iid instead of "". (Vanishingly unlikely;
+#[sub] not a smoke failure path.)
+
+objects find_by_name "__s230_m1_sentinel_no_user_object_uses_this__"
+
+#[sub] === Phase 4: SCOPE-POS — cross-Scriptable boundary assert ===
+#[sub] Create an empty test layer. layers.new returns the new
+#[sub] layer's iid; bind it to `test_layer`. Rename it to a sentinel
+#[sub] so we can find it by name through the `layers` Scriptable.
+
+layers new
+set test_layer to result
+layers.test_layer rename "objects_smoke_test_layer_s230_m1"
+
+#[sub] `layers find_by_name` for the sentinel returns the test
+#[sub] layer's iid (the layers Scriptable owns layer-typed nodes).
+#[sub] Bind the result and round-trip it via the proxy — if the
+#[sub] find returned the right iid, `layers.<found> name` resolves
+#[sub] back to the sentinel. THIS is the smoke's foundation assert.
+
+layers find_by_name "objects_smoke_test_layer_s230_m1"
+set found_layer to result
+assert layers.found_layer name == "objects_smoke_test_layer_s230_m1"
+
+#[sub] `objects find_by_name` for the SAME sentinel returns ""
+#[sub] (layers are out of objects' scope). The trace shows `= ""`;
+#[sub] no assert because the result-equals-literal shape isn't
+#[sub] expressible in today's DSL. Visual confirmation of the scope
+#[sub] partition holding.
+
+objects find_by_name "objects_smoke_test_layer_s230_m1"
+
+#[sub] === Phase 5: TEARDOWN ===
+#[sub] Delete the test layer. Doc returns to pre-test structural
+#[sub] state. Undo stack carries an AddLayerCommand +
+#[sub] DeleteLayerCommand pair.
+
+layers delete test_layer
+
+#[sub] Final registry sanity — list at end, same shape as the
+#[sub] start. The `objects` collection is still registered; no
+#[sub] `objects.<iid>` entries appear despite the proxies
+#[sub] materialised across this run (they're unregistered by
+#[sub] construction). Per-instance `objects.<iid>` exercise on
+#[sub] valid in-scope iids is DEFERRED to m2+ when a mutating verb
+#[sub] exists to land a known iid for the proxy round-trip.
+
+list
+
+#[sub] Done. The s230 m1 foundation surface is validated to the
+#[sub] extent the read-side surface allows without any mutating
+#[sub] verbs on `objects`:
+#[sub]
+#[sub]   - `objects` is a registered Scriptable (Phase 1)
+#[sub]   - count / all_iids dispatch (Phase 2)
+#[sub]   - find_by_type out-of-scope tokens return "" (Phase 3,
+#[sub]     visual)
+#[sub]   - find_by_name sentinel returns "" (Phase 3, visual)
+#[sub]   - cross-Scriptable scope is partitioned: layers find_by_name
+#[sub]     finds a layer-named sentinel; objects find_by_name for
+#[sub]     the same string returns "" (Phase 4 — one assert + one
+#[sub]     visual)
+#[sub]
+#[sub] Pre-stated: 1 pass / 0 fail / 0 error.
+#[sub]
+#[sub] What's NOT covered by m1 (and that's by design):
+#[sub]   - Successful per-instance proxy round-trip via an in-scope
+#[sub]     iid (needs `objects new` or similar; m5+).
+#[sub]   - Mutating verbs (toggle_visible, set_visible, set_locked,
+#[sub]     rename, move, reparent, delete, duplicate, new, group,
+#[sub]     ungroup). Scheduled m3+ / m4+ / m5+.
+#[sub]
+#[sub] When m2+ lands proxy-write verbs and a way to mint test
+#[sub] objects, this smoke gains BUILD UP / VALIDATE / TEAR DOWN
+#[sub] phase structure matching 33_layers / 27_guides.

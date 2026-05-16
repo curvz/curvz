@@ -463,19 +463,24 @@ set(SOURCES
     # abbrev "pnl_styles".
     src/scripting/StylesPanelScriptable.cpp
     # Row-bound model Scriptables. Wrap the project's layer / guide /
-    # swatch / style / theme collections under abbrevs "layers" /
-    # "guides" / "swatches" / "styles" / "themes" with transient
-    # per-instance proxies (`layer.<iid>`, `guides.<iid>`,
-    # `swatches.<id>`, `styles.<id>`, `themes.<id>`) routed through the
-    # Scriptable::can_resolve / proxy_for hooks. The swatches one
-    # (s221 m1) is the first library-collection Scriptable, styles
-    # (s222 m1) is the second, themes (s223 m1) is the third; the
-    # first two wrap SceneNode collections.
+    # swatch / style / theme / objects collections under abbrevs
+    # "layers" / "guides" / "swatches" / "styles" / "themes" /
+    # "objects" with transient per-instance proxies (`layer.<iid>`,
+    # `guides.<iid>`, `swatches.<id>`, `styles.<id>`, `themes.<id>`,
+    # `objects.<iid>`) routed through the Scriptable::can_resolve /
+    # proxy_for hooks. The swatches one (s221 m1) is the first
+    # library-collection Scriptable, styles (s222 m1) is the second,
+    # themes (s223 m1) is the third; the first two wrap SceneNode
+    # collections of top-level layer-like slots. The objects one
+    # (s230 m1) is the largest, wrapping every "real scene content"
+    # SceneNode (Path / Group / Compound / ClipGroup / Blend / Warp /
+    # Text / Image / Ref / Measurement) via a recursive tree walk.
     src/scripting/LayersScriptable.cpp
     src/scripting/GuidesScriptable.cpp
     src/scripting/SwatchesScriptable.cpp
     src/scripting/StylesScriptable.cpp
     src/scripting/ThemesScriptable.cpp
+    src/scripting/ObjectsScriptable.cpp
     # s222 m2 — inspector area Scriptable. Flat verb surface (no proxy
     # routing) that delegates to MainWindow's collapse-all and
     # apply-section-open methods. Sibling of the model Scriptables but

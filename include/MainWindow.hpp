@@ -155,6 +155,7 @@ namespace curvz::scripting { class GuidesScriptable; }
 namespace curvz::scripting { class SwatchesScriptable; }
 namespace curvz::scripting { class StylesScriptable; }
 namespace curvz::scripting { class ThemesScriptable; }
+namespace curvz::scripting { class ObjectsScriptable; }
 namespace curvz::scripting { class InspectorScriptable; }
 namespace curvz::scripting { class ScripterWindow; }
 
@@ -165,11 +166,12 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
-    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
+    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
     // unique_ptr<curvz::scripting::GuidesScriptable>,
     // unique_ptr<curvz::scripting::SwatchesScriptable>,
     // unique_ptr<curvz::scripting::StylesScriptable>,
-    // unique_ptr<curvz::scripting::ThemesScriptable>, and
+    // unique_ptr<curvz::scripting::ThemesScriptable>,
+    // unique_ptr<curvz::scripting::ObjectsScriptable>, and
     // unique_ptr<curvz::scripting::InspectorScriptable> can hold incomplete
     // types at the header level. Implementation lives in MainWindow.cpp
     // alongside the construction. No longer gated as of s219 m1.
@@ -701,6 +703,31 @@ private:
     // Construction surface is correspondingly two-arg (matches
     // m_swatches_scriptable; differs from m_styles_scriptable's three).
     std::unique_ptr<curvz::scripting::ThemesScriptable> m_themes_scriptable;
+    // s230 m1 — `objects` collection Scriptable, sixth row-bound model
+    // Scriptable. OPENS the multi-session `objects` arc — the remaining
+    // row-bound Tier 3 type for the SceneNode tree at document level.
+    // Wraps every "real scene content" SceneNode (Path / Group /
+    // Compound / ClipGroup / Blend / Warp / Text / Image / Ref /
+    // Measurement) across all layers in the active document via a
+    // recursive tree walk. Layers / guides / special-layer types are
+    // explicitly out of scope (they have their own Scriptables); see
+    // ObjectsScriptable.hpp's scope discussion.
+    //
+    // Same lifetime / construction / destruction shape as the five
+    // above; transient per-instance `objects.<iid>` proxies route
+    // through this object's `proxy_for`. m1 ships READ-SIDE only —
+    // collection queries (count, all_iids) plus invoke-shaped reads
+    // (find_by_name, find_by_type), per-instance proxy queries (name,
+    // type, visible, locked, parent_iid, child_count, iid). No
+    // mutating verbs anywhere yet; those land in m3+ riding the
+    // EditObjectCommand surfaces that already exist for the inspector
+    // and canvas drivers.
+    //
+    // history pointer is captured but UNUSED in m1 (no mutating verb
+    // pushes a command). Construction is two-arg, matching
+    // m_swatches_scriptable / m_themes_scriptable. The history wiring
+    // is in place for m3+ — no ctor signature churn when verbs land.
+    std::unique_ptr<curvz::scripting::ObjectsScriptable> m_objects_scriptable;
     // s222 m2 — `inspector` Scriptable, wraps the inspector-area
     // section open/close orchestration (collapse_all + open). NOT a
     // model-collection Scriptable (no proxy_for surface, no per-row

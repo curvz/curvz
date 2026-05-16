@@ -16,6 +16,7 @@
 #include "scripting/SwatchesScriptable.hpp"  // s221 m1 — third model Scriptable
 #include "scripting/StylesScriptable.hpp"  // s222 m1 — fourth model Scriptable
 #include "scripting/ThemesScriptable.hpp"  // s223 m1 — fifth model Scriptable
+#include "scripting/ObjectsScriptable.hpp"  // s230 m1 — sixth model Scriptable
 #include "scripting/InspectorScriptable.hpp"  // s222 m2 — inspector area Scriptable
 #include "scripting/ScripterWindow.hpp"    // s219 m1 — apply_scripter_pref present/hide
 #include "curvz/widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
@@ -311,6 +312,37 @@ MainWindow::MainWindow(Application & /*app*/) {
           [this]() -> CurvzProject* { return m_project.get(); },
           &m_history);
 
+  // s230 m1 — `objects` collection Scriptable. Sixth row-bound model
+  // Scriptable, OPENS the multi-session `objects` arc. Wraps every
+  // "real scene content" SceneNode (Path / Group / Compound /
+  // ClipGroup / Blend / Warp / Text / Image / Ref / Measurement)
+  // across all layers in the active document via a recursive tree
+  // walk. Layer / Guide / special-layer types are explicitly out of
+  // scope — they have their own Scriptables (`layers`, `guides`).
+  //
+  // Same construction shape as the five model Scriptables above:
+  // project-getter resolves m_project.get() fresh on every verb call,
+  // history pointer to the doc's CommandHistory.
+  //
+  // m1 ships READ-SIDE only — collection queries, invoke-shaped
+  // reads (find_by_name / find_by_type), per-instance proxy queries.
+  // No mutating verbs anywhere yet. m3+ adds toggle_visible /
+  // set_visible / set_locked / rename riding EditObjectCommand;
+  // m4+ adds structural verbs (move / reparent / delete / duplicate);
+  // m5+ adds collection-level structural verbs (new / group /
+  // ungroup). history is CAPTURED-BUT-UNUSED in m1 — wiring is in
+  // place for whenever m3+ lands so no ctor signature churn.
+  //
+  // See ObjectsScriptable.hpp for the full verb/query surface, the
+  // scope-choice discussion (real scene contents only — option (ii)
+  // from the s230 handoff's design fork), and why selected_iids is
+  // NOT on `objects` (selection is canvas-side state; it gets its
+  // own future Scriptable).
+  m_objects_scriptable =
+      std::make_unique<curvz::scripting::ObjectsScriptable>(
+          [this]() -> CurvzProject* { return m_project.get(); },
+          &m_history);
+
   // s222 m2 — `inspector` Scriptable. Flat verb surface (no proxy
   // routing) that delegates to MainWindow's existing collapse-all
   // and apply-section-open methods. Constructed last among the
@@ -408,9 +440,10 @@ MainWindow::MainWindow(Application & /*app*/) {
   LOG_INFO("MainWindow created");
 }
 
-// s216 m1 / s218 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 — out-of-line dtor. The header forward-declares
+// s216 m1 / s218 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 — out-of-line dtor. The header forward-declares
 // curvz::scripting::LayersScriptable, curvz::scripting::GuidesScriptable,
 // curvz::scripting::SwatchesScriptable, curvz::scripting::StylesScriptable,
+// curvz::scripting::ThemesScriptable, curvz::scripting::ObjectsScriptable,
 // and curvz::scripting::InspectorScriptable; the unique_ptrs in the header
 // need the complete types at MainWindow destruction time, and they're
 // only visible in this TU (where we included the full headers above).
