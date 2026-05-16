@@ -1,8 +1,8 @@
 # 30_styles_scriptable_smoke — fourth row-bound model Scriptable
-# end-to-end (s222 m1 + fix-1), modelled on
-# 29_swatches_scriptable_smoke. Second LIBRARY-collection Scriptable;
-# layers and guides wrap SceneNode collections, swatches and styles
-# wrap project-scoped libraries.
+# end-to-end (s222 m1 + fix-1; appearance fields added s225 m1),
+# modelled on 29_swatches_scriptable_smoke. Second LIBRARY-collection
+# Scriptable; layers and guides wrap SceneNode collections, swatches
+# and styles wrap project-scoped libraries.
 #
 # Two addressing surfaces, one router:
 #
@@ -12,9 +12,11 @@
 #                      app_ids).
 #   styles.<id>      — per-instance proxy. NOT in the registry —
 #                      materialised on demand, destroyed at end-of-
-#                      statement. Element verbs (rename / category)
-#                      and element queries (name / category /
-#                      is_built_in / iid).
+#                      statement. Element verbs (rename / category /
+#                      fill / stroke_paint / stroke_width / stroke_cap /
+#                      stroke_join / stroke_miter_limit / shadow_enabled /
+#                      shadow_dx / shadow_dy / shadow_blur / shadow_color /
+#                      shadow_opacity) and matching element queries.
 #
 # ── Where styles differ from swatches ─────────────────────────────────────
 #
@@ -43,6 +45,23 @@
 # `new`/`duplicate`. The verb itself returns the new style's id (as
 # before); the navigation is a side-effect on the panel.
 #
+# ── s225 m1: appearance fields (Phase 2b) ─────────────────────────────────
+#
+# The s222 m1 first-cut deferred appearance fields (fill / stroke /
+# shadow) as backlog. s225 m1 closes that backlog. Proxy-only surface:
+# fields are inspector-edit shapes, not chip-context-menu actions, so
+# there's no collection-form equivalent. The natural script flow is:
+#
+#   styles new "outline" "default"
+#   set s to result
+#   styles.s stroke_width 2.5
+#   styles.s shadow_enabled true
+#
+# Paint uses a discriminating string ("none" / "currentcolor" /
+# "#rrggbb[aa]" / "swatch:<id>"); cap and join use lowercase enum
+# vocabulary ("butt|round|square" / "miter|round|bevel"). Phase 2b
+# exercises every new setter+reader pair plus the app-tier guard.
+#
 # ── Test isolation ────────────────────────────────────────────────────────
 #
 # Every style this script creates is bound to a script-local variable
@@ -65,7 +84,9 @@
 # rename A then rename back, set category then revert, etc. If a verb
 # forgot to push a command, the round-trip still passes; manual Ctrl+Z
 # after the script finishes is the second half of the test — every
-# operation should be individually undoable.
+# operation should be individually undoable. This applies equally to
+# the s225 m1 appearance fields, which use the same UpdateStyleCommand
+# plumbing as rename / category.
 #
 # ── Phases ────────────────────────────────────────────────────────────────
 #
@@ -76,6 +97,11 @@
 #                  app:default, proxy verbs (rename / category),
 #                  proxy queries, find_by_name on each bound style,
 #                  duplicate.
+#   2b. APPEARANCE — (s225 m1) exercise every per-field setter / reader
+#                  on style b: fill (all four addressable Paint
+#                  variants), stroke_paint / stroke_width / stroke_cap /
+#                  stroke_join / stroke_miter_limit, every shadow_*
+#                  field. App-tier guard for appearance verbs.
 #   3. TEAR DOWN — delete every test style; verify count returns to
 #                  baseline.
 
@@ -246,6 +272,188 @@ assert styles.a_dup is_built_in == false
 #[sub] leaves the panel on "smoke_test" (no-op switch — already there).
 assert pnl_styles active_category == "smoke_test"
 
+#[sub] === Phase 2b: APPEARANCE FIELDS (s225 m1) ===
+#[sub]
+#[sub] Per-field setters for the fill / stroke / shadow surface. Every
+#[sub] verb pushes UpdateStyleCommand via push_field_edit; round-trip
+#[sub] reads through the proxy queries above. Skip-no-op guard fires
+#[sub] when the value didn't change (same shape as rename/category).
+#[sub]
+#[sub] We exercise on style `b` since `a` is already the rename/category
+#[sub] round-trip subject above. Initial values come from the freshly-
+#[sub] minted Style defaults: fill = Paint::None, stroke = default
+#[sub] StrokeAppearance (Solid black, width 1.0, butt cap, miter join,
+#[sub] miter_limit 4.0), shadow = disabled with sensible defaults.
+
+#[sub] Defaults — the post-`new` baseline. Confirm we know the starting
+#[sub] shape before mutating.
+assert styles.b fill == "none"
+assert styles.b stroke_width == 1.0
+assert styles.b stroke_cap == "butt"
+assert styles.b stroke_join == "miter"
+assert styles.b stroke_miter_limit == 4.0
+assert styles.b shadow_enabled == false
+assert styles.b shadow_blur == 0.5
+assert styles.b shadow_opacity == 0.5
+
+#[sub] Fill — discriminator round-trip across all addressable variants.
+#[sub] Gradient is intentionally not in this surface (decode_paint
+#[sub] returns nullopt for any spec that doesn't match none /
+#[sub] currentcolor / hex / swatch: prefix); attempting to write a
+#[sub] gradient is a no-op.
+
+styles.b fill "#ff8040"
+assert styles.b fill == "#ff8040"
+styles.b fill "currentcolor"
+assert styles.b fill == "currentcolor"
+styles.b fill "none"
+assert styles.b fill == "none"
+#[sub] Solid with alpha — `to_hex` emits the `#rrggbbaa` form only when
+#[sub] alpha < 1.0; full-opacity round-trips as `#rrggbb`. Note that
+#[sub] hex parsing tolerates uppercase; the read returns lowercase.
+styles.b fill "#80c0ff80"
+assert styles.b fill == "#80c0ff80"
+#[sub] Malformed hex is silent no-op (decode_paint returns nullopt).
+#[sub] The fill below stays at the previous value; we don't bind to a
+#[sub] variable, just visual-check via the assert after.
+styles.b fill "not-a-color"
+assert styles.b fill == "#80c0ff80"
+#[sub] Restore to default so the rest of the test starts from a known
+#[sub] state.
+styles.b fill "none"
+assert styles.b fill == "none"
+
+#[sub] Stroke paint — same discriminator as fill. Default is Solid
+#[sub] black; we round-trip through hex / none / currentcolor.
+styles.b stroke_paint "#ff0000"
+assert styles.b stroke_paint == "#ff0000"
+styles.b stroke_paint "none"
+assert styles.b stroke_paint == "none"
+styles.b stroke_paint "currentcolor"
+assert styles.b stroke_paint == "currentcolor"
+styles.b stroke_paint "#000000"
+assert styles.b stroke_paint == "#000000"
+
+#[sub] Stroke scalars — width, miter_limit. The model accepts negatives
+#[sub] without UB (header note: no clamp; inspector clamps at UI layer).
+#[sub] We don't probe negatives here — the round-trip on a sane value
+#[sub] is what's interesting for the smoke.
+styles.b stroke_width 3.5
+assert styles.b stroke_width == 3.5
+styles.b stroke_width 1.0
+assert styles.b stroke_width == 1.0
+styles.b stroke_miter_limit 10.0
+assert styles.b stroke_miter_limit == 10.0
+styles.b stroke_miter_limit 4.0
+assert styles.b stroke_miter_limit == 4.0
+
+#[sub] Stroke enums — cap and join. Lowercase vocabulary; unknown
+#[sub] strings are no-op (decode_cap / decode_join return nullopt).
+styles.b stroke_cap "round"
+assert styles.b stroke_cap == "round"
+styles.b stroke_cap "square"
+assert styles.b stroke_cap == "square"
+styles.b stroke_cap "butt"
+assert styles.b stroke_cap == "butt"
+#[sub] Unknown vocab is no-op — cap stays at butt.
+styles.b stroke_cap "Round"
+assert styles.b stroke_cap == "butt"
+styles.b stroke_cap "ROUND"
+assert styles.b stroke_cap == "butt"
+
+styles.b stroke_join "round"
+assert styles.b stroke_join == "round"
+styles.b stroke_join "bevel"
+assert styles.b stroke_join == "bevel"
+styles.b stroke_join "miter"
+assert styles.b stroke_join == "miter"
+styles.b stroke_join "Bevel"
+assert styles.b stroke_join == "miter"
+
+#[sub] Shadow — gated by `enabled`. We exercise every shadow field
+#[sub] regardless of enabled state (the model writes the field
+#[sub] unconditionally; only the renderer respects the gate).
+styles.b shadow_enabled true
+assert styles.b shadow_enabled == true
+styles.b shadow_dx 2.0
+assert styles.b shadow_dx == 2.0
+styles.b shadow_dy 3.0
+assert styles.b shadow_dy == 3.0
+styles.b shadow_blur 1.5
+assert styles.b shadow_blur == 1.5
+styles.b shadow_color "#102030"
+assert styles.b shadow_color == "#102030"
+#[sub] Alpha suffix round-trips when present.
+styles.b shadow_color "#10203040"
+assert styles.b shadow_color == "#10203040"
+styles.b shadow_opacity 0.75
+assert styles.b shadow_opacity == 0.75
+#[sub] shadow_opacity is the SEPARATE dial — not the colour's own alpha
+#[sub] channel. Setting shadow_color "#xxxxxx80" writes color_a = 0.5;
+#[sub] setting shadow_opacity 0.75 writes the multiplier; these are
+#[sub] independent. The renderer multiplies them at draw time.
+#[sub]
+#[sub] Restore defaults so teardown leaves clean state.
+styles.b shadow_enabled false
+styles.b shadow_dx 0.0
+styles.b shadow_dy 0.5
+styles.b shadow_blur 0.5
+styles.b shadow_color "#000000"
+styles.b shadow_opacity 0.5
+assert styles.b shadow_enabled == false
+assert styles.b shadow_dx == 0.0
+assert styles.b shadow_dy == 0.5
+assert styles.b shadow_blur == 0.5
+assert styles.b shadow_color == "#000000"
+assert styles.b shadow_opacity == 0.5
+
+#[sub] Swatch ref — uses the `swatch:` prefix discriminator. The wire
+#[sub] format round-trips: we write a swatch id, we read back the same
+#[sub] id (with the `swatch:` prefix). The fallback Colour that
+#[sub] decode_paint resolves from the live SwatchLibrary is internal
+#[sub] machinery — it affects what `resolve_paint` returns at render
+#[sub] time, but not what the read query returns through the wire
+#[sub] format. So the smoke verifies the wire-format round-trip
+#[sub] (essential) without depending on any specific swatch id being
+#[sub] present in the project's defaults pool (which load_app_defaults
+#[sub] populates from ~/.config/curvz/swatches.json, a file pre-1.0
+#[sub] users may not have authored).
+#[sub]
+#[sub] Dead-ref tolerance is also verified — `decode_paint` accepts
+#[sub] any non-empty id after the prefix and produces a SwatchRef with
+#[sub] the cached fallback at its default (transparent), matching
+#[sub] resolve_paint's graceful-degradation path.
+styles.b fill "swatch:smoke_test_synthetic_id"
+assert styles.b fill == "swatch:smoke_test_synthetic_id"
+#[sub] Empty swatch id IS malformed (decode_paint returns nullopt) —
+#[sub] no-op, fill stays at the previous value.
+styles.b fill "swatch:"
+assert styles.b fill == "swatch:smoke_test_synthetic_id"
+#[sub] Restore.
+styles.b fill "none"
+assert styles.b fill == "none"
+
+#[sub] App-tier guard on appearance verbs — same posture as rename /
+#[sub] category. Attempting to set a fill on app:default returns Null
+#[sub] without pushing a command. The proxy's `is_built_in(m_id)` guard
+#[sub] at the head of invoke() refuses every appearance verb on the
+#[sub] same path as the existing rename/category refusal.
+#[sub]
+#[sub] We can't `assert styles.app:default fill == <expected>` directly
+#[sub] because we don't know what shape the StyleLibrary's hardcoded
+#[sub] stub ships with. Visual `get` before and after the mutate
+#[sub] attempt is the evidence — both lines should show the same
+#[sub] value. If the guard fails (the verb pushed a write), the
+#[sub] second get would differ from the first.
+
+get styles.app:default fill
+styles.app:default fill "#ff00ff"
+styles.app:default stroke_width 99.0
+styles.app:default shadow_enabled true
+get styles.app:default fill
+
+#[sub] === End Phase 2b ===
+
 #[sub] App-tier guard. Every mutating verb refuses on an app-tier id,
 #[sub] returning Null without pushing a command. Exercise each mutating
 #[sub] verb against `app:default`; the style is unchanged across the
@@ -327,9 +535,10 @@ get styles app_ids
 
 list
 
-#[sub] s222 m1 smoke complete — collection verbs, proxy verbs, proxy
-#[sub] queries, app-tier guard, find_by_name, the duplicate " copy"-
-#[sub] naming, and category round-trips all exercised. Every mutating
-#[sub] verb pushed a command into history; manual Ctrl+Z after this
-#[sub] script finishes should walk the undo stack back through every
-#[sub] operation.
+#[sub] s222 m1 + s225 m1 smoke complete — collection verbs, proxy
+#[sub] verbs (rename / category), s225 m1 appearance setters (fill /
+#[sub] stroke_* / shadow_*), proxy queries, app-tier guard,
+#[sub] find_by_name, the duplicate " copy"-naming, and category
+#[sub] round-trips all exercised. Every mutating verb pushed a command
+#[sub] into history; manual Ctrl+Z after this script finishes should
+#[sub] walk the undo stack back through every operation.

@@ -338,6 +338,62 @@
 //                                          uncategorised bucket. Skip-
 //                                          no-op when category didn't
 //                                          change.
+//   fill "<spec>"                        — s225 m1. Write style.fill.
+//                                          Discriminator string: "none",
+//                                          "currentcolor", "#rrggbb[aa]",
+//                                          or "swatch:<sw_id>". Unknown
+//                                          spec is no-op. Refuses on
+//                                          app-tier. Pushes
+//                                          UpdateStyleCommand.
+//   stroke_paint "<spec>"                — s225 m1. Same discriminator as
+//                                          `fill`, writes style.stroke.paint.
+//   stroke_width <double>                — s225 m1. Write
+//                                          style.stroke.width. No clamp
+//                                          (the inspector's spinner
+//                                          enforces >= 0, but the model
+//                                          accepts negatives without
+//                                          UB; script users can do what
+//                                          they want — same posture as
+//                                          layers.<iid> opacity).
+//   stroke_cap "<butt|round|square>"     — s225 m1. Write style.stroke.cap.
+//                                          Unknown vocabulary is no-op.
+//   stroke_join "<miter|round|bevel>"    — s225 m1. Write style.stroke.join.
+//                                          Unknown vocabulary is no-op.
+//   stroke_miter_limit <double>          — s225 m1. Write
+//                                          style.stroke.miter_limit.
+//                                          Cairo ignores when join !=
+//                                          Miter; the field still
+//                                          round-trips.
+//   shadow_enabled <bool>                — s225 m1. Write
+//                                          style.shadow.enabled. The
+//                                          gate that determines whether
+//                                          shadow renders at all.
+//   shadow_dx <double>                   — s225 m1. Write
+//                                          style.shadow.dx. Doc-space
+//                                          units; positive = right.
+//   shadow_dy <double>                   — s225 m1. Write
+//                                          style.shadow.dy. Doc-space
+//                                          units; positive = below
+//                                          (y-down convention, matches
+//                                          SceneNode + SVG <feOffset>).
+//   shadow_blur <double>                 — s225 m1. Write
+//                                          style.shadow.blur. Gaussian
+//                                          stddev in doc units; 0 =
+//                                          sharp offset.
+//   shadow_color "<#rrggbb[aa]>"         — s225 m1. Write the RGBA
+//                                          bundle (color_r / color_g /
+//                                          color_b / color_a). NOT the
+//                                          opacity dial — that's a
+//                                          separate `shadow_opacity`
+//                                          verb. Invalid hex is no-op.
+//   shadow_opacity <double>              — s225 m1. Write
+//                                          style.shadow.opacity, the
+//                                          final-multiplier alpha
+//                                          dial (after the colour's
+//                                          own alpha). Range 0..1
+//                                          by convention; the model
+//                                          accepts out-of-range, the
+//                                          renderer clamps.
 //
 // ELEMENT QUERIES (on `styles.<id>`):
 //   name           — string       style.header.name
@@ -359,24 +415,97 @@
 //                                  LayerProxy / GuideProxy / SwatchProxy
 //                                  — every per-instance proxy returns
 //                                  its addressing key under `iid`.
+//   fill           — string       s225 m1. Discriminator-shape return:
+//                                  "none" / "currentcolor" /
+//                                  "#rrggbb[aa]" (solid) /
+//                                  "swatch:<id>" (swatchref). Empty
+//                                  string for Gradient (not
+//                                  addressable through this surface).
+//   stroke_paint   — string       s225 m1. Same shape as `fill`.
+//   stroke_width   — double       s225 m1.
+//   stroke_cap     — string       s225 m1. Lowercase enum vocabulary.
+//   stroke_join    — string       s225 m1. Lowercase enum vocabulary.
+//   stroke_miter_limit — double   s225 m1.
+//   shadow_enabled — bool         s225 m1.
+//   shadow_dx      — double       s225 m1.
+//   shadow_dy      — double       s225 m1.
+//   shadow_blur    — double       s225 m1.
+//   shadow_color   — string       s225 m1. Hex form ("#rrggbb" if a
+//                                  == 1.0, else "#rrggbbaa"); same
+//                                  to_hex shape SwatchesScriptable
+//                                  uses for swatch colour reads.
+//   shadow_opacity — double       s225 m1. The separate dial; NOT
+//                                  the colour's alpha channel.
 //
-// ── Out of scope for s222 m1 ────────────────────────────────────────────────
+// ── Appearance fields — added in s225 m1 ───────────────────────────────────
 //
-// **Appearance fields** — Style carries a Paint fill, a StrokeAppearance
-// (paint + width + cap + join + miter), and a ShadowAppearance (enabled
-// + dx + dy + blur + colour + opacity). The proxy surface in m1 covers
-// only the header fields (name, category). Per-field verbs for fill /
-// stroke / shadow can come in s223 or later; the pattern is established
-// and adding `stroke_width`, `shadow_enabled`, etc. is mechanical once
-// the scope is opened. The handoff for s221 → s222 explicitly named a
-// header-only first cut as acceptable.
+// The s222 m1 header-only first cut deferred the appearance fields (fill /
+// stroke / shadow) as backlog. s225 m1 closes that backlog. The surface
+// is proxy-only — the chip-context-menu fork that justifies collection-
+// level `rename` / `category` doesn't extend to inspector edits like
+// stroke width or shadow blur. Scripts that have an id in hand and want
+// to set fields use the dotted form:
 //
-// The first place a richer surface would matter is for scripts that
-// programmatically construct styles from data (e.g. import a palette
-// definition file and create one style per entry). Today such a script
-// would create the style then bind it to an object and use the
-// inspector/UI to set the appearance — clunky but workable; the
-// follow-up Scriptable extension closes that gap.
+//   styles new "outline" "default"
+//   set s to result
+//   styles.s stroke_width 2.5
+//   styles.s shadow_enabled true
+//
+// Every field write mirrors the proxy `rename`/`category` shape — full
+// before/after Style snapshots into UpdateStyleCommand, skip-no-op when
+// the value didn't change, app-tier guard at the head. The same
+// UpdateStyleCommand fires the cross-doc walk that's been there since
+// S81 m3d, so script-driven field edits ripple to bound SceneNodes in
+// every open document.
+//
+// **Paint discriminator.** The fill and stroke paint slots each take
+// one Paint variant (None / CurrentColor / Solid / SwatchRef / Gradient).
+// Rather than forking into a verb-per-variant surface, the Scriptable
+// exposes a single string-shaped verb per slot that auto-discriminates:
+//
+//   styles.s fill "none"              -> Paint::None
+//   styles.s fill "currentcolor"      -> Paint::CurrentColor
+//   styles.s fill "#ff8040"           -> Paint::Solid (alpha 1.0)
+//   styles.s fill "#ff8040c0"         -> Paint::Solid (alpha 0.75)
+//   styles.s fill "swatch:sw_abc123"  -> Paint::SwatchRef (fallback
+//                                        resolved from project's
+//                                        SwatchLibrary at set-time)
+//
+// Gradient is intentionally not addressable from script — the geometry +
+// stops + endpoint-source surface is too rich for a string discriminator
+// and would need its own design block. Scripts that want a gradient set
+// it through the panel or build a Style with a gradient outside this
+// surface (e.g. a future JSON round-trip path) and `duplicate` from it.
+//
+// The read query for `fill` / `stroke_paint` mirrors the discriminator
+// shape — returns one of "none", "currentcolor", "#rrggbb[aa]", or
+// "swatch:<id>". An unaddressable variant (e.g. Gradient) returns the
+// empty string; the caller can detect this and route around.
+//
+// **Swatch fallback resolution.** When `fill "swatch:<id>"` resolves to
+// a live swatch in the project's SwatchLibrary, the Scriptable reads
+// the swatch's colour and stores it in the SwatchRef's `fallback`
+// field — same lockstep the inspector's swatch-picker maintains. If
+// the swatch id doesn't resolve, the verb still succeeds (writes a
+// SwatchRef with default-Color fallback); resolve_paint's dead-ref
+// degradation handles the render-side, and a subsequent swatch-add
+// with the same id would heal it on the next set_paint round-trip.
+// This matches the panel's tolerance — picking a swatch that's
+// later deleted leaves a dead ref that renders as the cached
+// fallback, not a hard error.
+//
+// **Cap / join string enums.** The C++ enums LineCap / LineJoin are
+// surfaced as lowercase strings: "butt" / "round" / "square" for cap,
+// "miter" / "round" / "bevel" for join. Unknown strings are no-op
+// (same shape as an invalid hex). Read returns the same lowercase
+// vocabulary; numeric or capitalised input doesn't round-trip.
+//
+// **Shadow colour vs opacity.** ShadowAppearance carries an RGBA Color
+// (r/g/b/a) AND a separate `opacity` dial that multiplies in at render
+// time. The Scriptable preserves both: `shadow_color "<hex>"` writes
+// the RGBA bundle, and `shadow_opacity <double>` writes the separate
+// dial. Reading `shadow_color` returns hex (potentially with alpha
+// suffix if a < 1.0); `shadow_opacity` returns the double dial value.
 //
 // **Bindings** — SceneNode::bound_style ties scene-tree objects to
 // library styles; that's a SceneNode-level concern, not a library-level

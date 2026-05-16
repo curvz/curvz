@@ -55,29 +55,201 @@
 #include "CommandHistory.hpp"
 #include "CurvzProject.hpp"
 #include "StylesPanel.hpp"     // s222 m1 fix-1 — set_active_category
+#include "color/Color.hpp"     // s225 m1 — from_hex / to_hex for paint + shadow
+#include "color/Paint.hpp"     // s225 m1 — Paint variant for fill/stroke setters
+#include "color/SwatchLibrary.hpp" // s225 m1 — swatch fallback resolution
 #include "style/Style.hpp"
 #include "style/StyleLibrary.hpp"
 
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace curvz::scripting {
 
 namespace {
 
-// ── Argument coercion helper ───────────────────────────────────────────────
+// ── Argument coercion helpers ──────────────────────────────────────────────
 //
 // Same shape as the equivalent block in SwatchesScriptable.cpp /
 // LayersScriptable.cpp / GuidesScriptable.cpp. Kept duplicated rather
 // than hoisted because the coercion is small, file-local, and folding
 // it to a shared site would add a header dependency for what amounts
 // to a two-line helper.
+//
+// s225 m1: extended with arg_as_bool and arg_as_double (lifted in shape
+// from GuidesScriptable / LayersScriptable) for the per-field setter
+// surface. Same fallback contract as the layer/guide helpers — accept
+// the native ScriptValue kind, fall back to the supplied default for
+// anything else (no exceptions, no logging; mismatched arg = silent
+// no-op from the caller's perspective).
 std::string arg_as_string(const ScriptValue& v) {
     if (v.kind == ValueKind::String) return v.s;
     return {};
+}
+
+bool arg_as_bool(const ScriptValue& v, bool fallback) {
+    if (v.kind == ValueKind::Bool) return v.b;
+    if (v.kind == ValueKind::String) {
+        if (v.s == "true")  return true;
+        if (v.s == "false") return false;
+    }
+    return fallback;
+}
+
+double arg_as_double(const ScriptValue& v, double fallback) {
+    switch (v.kind) {
+        case ValueKind::Double: return v.d;
+        case ValueKind::Int:    return static_cast<double>(v.i);
+        default:                return fallback;
+    }
+}
+
+// ── Paint discriminator ────────────────────────────────────────────────────
+//
+// s225 m1. Encode/decode a Paint variant to/from the script's string-
+// shaped wire format:
+//
+//   "none"             ↔ Paint::None
+//   "currentcolor"     ↔ Paint::CurrentColor
+//   "#rrggbb[aa]"      ↔ Paint::Solid (alpha defaults to opaque if 6-hex)
+//   "swatch:<id>"      ↔ Paint::SwatchRef
+//
+// Gradient is unaddressable through this surface — encode returns ""
+// for it (the caller's read query produces an empty string, which is
+// distinguishable from any valid spec because every valid spec is
+// non-empty). The same "" return covers any future variant we add
+// without an encoder update; the right thing is to extend this site
+// rather than route around it.
+//
+// Both pumps live next to each other in the same file (curvz utils
+// rule: round-trippable encoders go in pairs). Adding a sixth Paint
+// variant means editing this block — std::visit's exhaustive-match
+// requirement makes that visible at compile time.
+//
+// Why no `app:`-style strict-prefix check on swatch ids: the swatch
+// library mints both "default_*" (system) and "sw_*" (user) ids, and
+// future tier discriminators may add more. The Scriptable accepts
+// anything after "swatch:" as a candidate id; SwatchLibrary::find_swatch
+// returns nullptr on miss, the fallback stays at its default Color{}
+// value (transparent), and resolve_paint's dead-ref graceful-degradation
+// path renders the default. This matches how the panel's swatch picker
+// behaves when a referenced swatch is later deleted — the ref persists
+// in the Paint, the visible result degrades to the cached fallback.
+constexpr std::string_view kSwatchPrefix = "swatch:";
+
+std::string encode_paint(const Curvz::color::Paint& p) {
+    return std::visit(Curvz::color::Overloaded{
+        [](const Curvz::color::None&)         -> std::string { return "none"; },
+        [](const Curvz::color::CurrentColor&) -> std::string { return "currentcolor"; },
+        [](const Curvz::color::Solid& s)      -> std::string { return Curvz::color::to_hex(s.color); },
+        [](const Curvz::color::SwatchRef& r)  -> std::string { return std::string(kSwatchPrefix) + r.id; },
+        [](const Curvz::color::Gradient&)     -> std::string { return ""; },
+    }, p);
+}
+
+// Parse a paint spec. Returns nullopt for unknown / malformed input
+// (caller treats it as no-op, same as an invalid hex on `shadow_color`).
+// `swatch_lib` is consulted for SwatchRef fallback resolution; nullptr
+// is tolerated (test-harness path) — the SwatchRef writes through with
+// a default-Color fallback, matching the "dead ref" degradation path
+// resolve_paint already handles.
+std::optional<Curvz::color::Paint>
+decode_paint(const std::string& spec,
+             const Curvz::color::SwatchLibrary* swatch_lib) {
+    if (spec == "none")          return Curvz::color::Paint{Curvz::color::None{}};
+    if (spec == "currentcolor")  return Curvz::color::Paint{Curvz::color::CurrentColor{}};
+
+    // "#rrggbb" or "#rrggbbaa" — Color::from_hex handles both, plus the
+    // shorthand "#rgb" / "#rgba" cases. We accept anything from_hex
+    // accepts; the Scriptable doesn't gatekeep stricter than the
+    // colour atom does.
+    if (!spec.empty() && spec.front() == '#') {
+        auto parsed = Curvz::color::from_hex(spec);
+        if (!parsed) return std::nullopt;
+        return Curvz::color::Paint{Curvz::color::Solid{*parsed}};
+    }
+
+    if (spec.rfind(kSwatchPrefix, 0) == 0) {
+        std::string sw_id = spec.substr(kSwatchPrefix.size());
+        if (sw_id.empty()) return std::nullopt;
+        Curvz::color::SwatchRef ref{sw_id};
+        // Resolve the fallback colour from the live swatch if we can.
+        // Same lockstep the inspector's picker maintains — set_paint
+        // captures the resolved colour at the moment of setting; the
+        // fallback diverges from "live" only when the swatch is later
+        // edited or deleted. For the script-driven path the verb runs
+        // once at set-time; live re-resolution is the swatch-edit
+        // signal's job, not ours.
+        if (swatch_lib) {
+            if (const auto* sw = swatch_lib->find_swatch(sw_id)) {
+                if (const auto* solid =
+                        std::get_if<Curvz::color::SolidSwatch>(sw)) {
+                    ref.fallback = solid->color;
+                }
+                // Future swatch variants (GradientSwatch / PathBlendSwatch):
+                // fallback stays default Color{} (transparent). Same
+                // shape as the panel's behaviour — the swatch is a
+                // reference, the Paint side carries a fallback colour,
+                // and non-solid swatches don't project cleanly to a
+                // single colour. This is academic in v1 (SolidSwatch
+                // is the only variant), but the right shape is in
+                // place for forward-compat.
+            }
+        }
+        return Curvz::color::Paint{std::move(ref)};
+    }
+
+    return std::nullopt;
+}
+
+// ── LineCap / LineJoin string enums ────────────────────────────────────────
+//
+// s225 m1. The C++ enums are surfaced as lowercase strings:
+//   LineCap : "butt" / "round" / "square"
+//   LineJoin: "miter" / "round" / "bevel"
+//
+// Encode is total (every enum value maps); decode returns nullopt for
+// unknown / mis-cased input. The verb-side treats nullopt as no-op,
+// matching the "unknown spec is silent" posture of the paint discriminator.
+//
+// Why lowercase: matches SVG attribute conventions and is consistent
+// with how `cap`/`join` would round-trip through SVG export. No
+// translation table needed at the export seam.
+const char* encode_cap(Curvz::LineCap c) {
+    switch (c) {
+        case Curvz::LineCap::Butt:   return "butt";
+        case Curvz::LineCap::Round:  return "round";
+        case Curvz::LineCap::Square: return "square";
+    }
+    return "butt";  // unreachable; satisfies the compiler
+}
+
+std::optional<Curvz::LineCap> decode_cap(const std::string& s) {
+    if (s == "butt")   return Curvz::LineCap::Butt;
+    if (s == "round")  return Curvz::LineCap::Round;
+    if (s == "square") return Curvz::LineCap::Square;
+    return std::nullopt;
+}
+
+const char* encode_join(Curvz::LineJoin j) {
+    switch (j) {
+        case Curvz::LineJoin::Miter: return "miter";
+        case Curvz::LineJoin::Round: return "round";
+        case Curvz::LineJoin::Bevel: return "bevel";
+    }
+    return "miter";  // unreachable
+}
+
+std::optional<Curvz::LineJoin> decode_join(const std::string& s) {
+    if (s == "miter") return Curvz::LineJoin::Miter;
+    if (s == "round") return Curvz::LineJoin::Round;
+    if (s == "bevel") return Curvz::LineJoin::Bevel;
+    return std::nullopt;
 }
 
 // ── Flat id iteration over a StyleLibrary ──────────────────────────────────
@@ -175,6 +347,51 @@ private:
         return proj ? &proj->styles : nullptr;
     }
 
+    // s225 m1 — swatch library accessor. Needed by `fill` / `stroke_paint`
+    // when the spec is "swatch:<id>"; we resolve the fallback colour
+    // through the project's SwatchLibrary at set-time, matching the
+    // panel's picker behaviour. Returns nullptr if the project is
+    // missing — the SwatchRef still writes through with a default
+    // Color{} fallback (transparent), and resolve_paint's dead-ref
+    // path handles the render-side degradation.
+    const Curvz::color::SwatchLibrary* swatch_library() const {
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        return proj ? &proj->swatches : nullptr;
+    }
+
+    // s225 m1 — common shape for every appearance-field setter. Takes a
+    // mutator lambda that writes the new value into the `after` Style;
+    // builds the before/after pair, applies the m_history-or-direct
+    // dispatch, pushes UpdateStyleCommand with the supplied description.
+    // Caller is responsible for the no-op skip BEFORE calling this
+    // (since the skip predicate is field-specific and the lambda is
+    // post-decision).
+    //
+    // Returns Null on success, Null on failure — same shape as the
+    // existing rename/category proxy verbs (their return value isn't
+    // meaningful; the result slot from the listener doesn't capture
+    // void).
+    template <typename Mutator>
+    ScriptValue push_field_edit(Curvz::style::StyleLibrary* lib,
+                                const Curvz::style::Style& live,
+                                std::string desc,
+                                Mutator&& mutate) {
+        Curvz::style::Style before = live;
+        Curvz::style::Style after  = before;
+        mutate(after);
+
+        if (!m_history) {
+            after.header.id = m_id;
+            lib->update_style(m_id, std::move(after));
+            return ScriptValue::null();
+        }
+        auto cmd = std::make_unique<Curvz::UpdateStyleCommand>(
+            lib, m_id, std::move(before), std::move(after), std::move(desc));
+        cmd->execute();
+        m_history->push(std::move(cmd));
+        return ScriptValue::null();
+    }
+
     StylesScriptable::ProjectGetter m_get_project;
     Curvz::CommandHistory*          m_history;   // non-owning; outlives us;
                                                  // DEREFERENCED for every
@@ -263,6 +480,140 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         return ScriptValue::null();
     }
 
+    // ── s225 m1 appearance fields ──────────────────────────────────────────
+    //
+    // Per-field setters for fill / stroke / shadow. Same shape as
+    // rename / category above — full before/after Style snapshots into
+    // UpdateStyleCommand via push_field_edit. The skip-no-op guard
+    // lives before the helper call so we don't push commands for
+    // value-unchanged writes (matches the inspector's "skip unchanged
+    // commit" predicate, S98 lesson).
+    //
+    // The fields are grouped (fill, then stroke_*, then shadow_*) to
+    // keep related setters together in the file. The decode helpers
+    // in the anon namespace handle the spec-string parsing; the
+    // verbs themselves are short.
+
+    if (verb == "fill") {
+        // s225 m1. Discriminating string for the fill Paint. See the
+        // `decode_paint` header comment for the spec format.
+        if (args.empty()) return ScriptValue::null();
+        std::string spec = arg_as_string(args[0]);
+        auto parsed = decode_paint(spec, swatch_library());
+        if (!parsed) return ScriptValue::null();  // unknown / malformed
+        if (*parsed == live->fill) return ScriptValue::null();  // no-op
+        return push_field_edit(lib, *live, "Set style fill (script)",
+            [&](Curvz::style::Style& after) { after.fill = std::move(*parsed); });
+    }
+
+    if (verb == "stroke_paint") {
+        if (args.empty()) return ScriptValue::null();
+        std::string spec = arg_as_string(args[0]);
+        auto parsed = decode_paint(spec, swatch_library());
+        if (!parsed) return ScriptValue::null();
+        if (*parsed == live->stroke.paint) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style stroke paint (script)",
+            [&](Curvz::style::Style& after) { after.stroke.paint = std::move(*parsed); });
+    }
+
+    if (verb == "stroke_width") {
+        // No clamp — see header verb-table comment. Inspector clamps at
+        // its UI layer; the model accepts whatever the script supplies.
+        if (args.empty()) return ScriptValue::null();
+        double v = arg_as_double(args[0], live->stroke.width);
+        if (v == live->stroke.width) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style stroke width (script)",
+            [&](Curvz::style::Style& after) { after.stroke.width = v; });
+    }
+
+    if (verb == "stroke_cap") {
+        if (args.empty()) return ScriptValue::null();
+        auto parsed = decode_cap(arg_as_string(args[0]));
+        if (!parsed) return ScriptValue::null();  // unknown vocab
+        if (*parsed == live->stroke.cap) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style stroke cap (script)",
+            [&](Curvz::style::Style& after) { after.stroke.cap = *parsed; });
+    }
+
+    if (verb == "stroke_join") {
+        if (args.empty()) return ScriptValue::null();
+        auto parsed = decode_join(arg_as_string(args[0]));
+        if (!parsed) return ScriptValue::null();
+        if (*parsed == live->stroke.join) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style stroke join (script)",
+            [&](Curvz::style::Style& after) { after.stroke.join = *parsed; });
+    }
+
+    if (verb == "stroke_miter_limit") {
+        if (args.empty()) return ScriptValue::null();
+        double v = arg_as_double(args[0], live->stroke.miter_limit);
+        if (v == live->stroke.miter_limit) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style stroke miter (script)",
+            [&](Curvz::style::Style& after) { after.stroke.miter_limit = v; });
+    }
+
+    if (verb == "shadow_enabled") {
+        if (args.empty()) return ScriptValue::null();
+        bool v = arg_as_bool(args[0], live->shadow.enabled);
+        if (v == live->shadow.enabled) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style shadow enabled (script)",
+            [&](Curvz::style::Style& after) { after.shadow.enabled = v; });
+    }
+
+    if (verb == "shadow_dx") {
+        if (args.empty()) return ScriptValue::null();
+        double v = arg_as_double(args[0], live->shadow.dx);
+        if (v == live->shadow.dx) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style shadow dx (script)",
+            [&](Curvz::style::Style& after) { after.shadow.dx = v; });
+    }
+
+    if (verb == "shadow_dy") {
+        if (args.empty()) return ScriptValue::null();
+        double v = arg_as_double(args[0], live->shadow.dy);
+        if (v == live->shadow.dy) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style shadow dy (script)",
+            [&](Curvz::style::Style& after) { after.shadow.dy = v; });
+    }
+
+    if (verb == "shadow_blur") {
+        if (args.empty()) return ScriptValue::null();
+        double v = arg_as_double(args[0], live->shadow.blur);
+        if (v == live->shadow.blur) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style shadow blur (script)",
+            [&](Curvz::style::Style& after) { after.shadow.blur = v; });
+    }
+
+    if (verb == "shadow_color") {
+        // Writes the RGBA bundle (color_r/g/b/a). NOT the separate
+        // opacity dial — that's `shadow_opacity` below. Hex parse
+        // failure is silent no-op (mirror of `fill`'s parse failure
+        // behaviour).
+        if (args.empty()) return ScriptValue::null();
+        auto parsed = Curvz::color::from_hex(arg_as_string(args[0]));
+        if (!parsed) return ScriptValue::null();
+        // Equality at 8-bit hex granularity (Color::operator==).
+        Curvz::color::Color current{
+            live->shadow.color_r, live->shadow.color_g,
+            live->shadow.color_b, live->shadow.color_a};
+        if (*parsed == current) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style shadow color (script)",
+            [&](Curvz::style::Style& after) {
+                after.shadow.color_r = parsed->r;
+                after.shadow.color_g = parsed->g;
+                after.shadow.color_b = parsed->b;
+                after.shadow.color_a = parsed->a;
+            });
+    }
+
+    if (verb == "shadow_opacity") {
+        if (args.empty()) return ScriptValue::null();
+        double v = arg_as_double(args[0], live->shadow.opacity);
+        if (v == live->shadow.opacity) return ScriptValue::null();
+        return push_field_edit(lib, *live, "Set style shadow opacity (script)",
+            [&](Curvz::style::Style& after) { after.shadow.opacity = v; });
+    }
+
     return ScriptValue::null();
 }
 
@@ -290,6 +641,57 @@ ScriptValue StyleProxy::query(std::string_view property) const {
         // every panel guard uses.
         return ScriptValue::boolean(Curvz::style::is_built_in(m_id));
     }
+
+    // ── s225 m1 appearance reads ───────────────────────────────────────
+    //
+    // Mirror the setter shape — every property here corresponds to a
+    // verb above. Empty return on Gradient (encode_paint maps it to "")
+    // is intentional; see encode_paint header comment for rationale.
+
+    if (property == "fill") {
+        return ScriptValue::text(encode_paint(live->fill));
+    }
+    if (property == "stroke_paint") {
+        return ScriptValue::text(encode_paint(live->stroke.paint));
+    }
+    if (property == "stroke_width") {
+        return ScriptValue::real(live->stroke.width);
+    }
+    if (property == "stroke_cap") {
+        return ScriptValue::text(encode_cap(live->stroke.cap));
+    }
+    if (property == "stroke_join") {
+        return ScriptValue::text(encode_join(live->stroke.join));
+    }
+    if (property == "stroke_miter_limit") {
+        return ScriptValue::real(live->stroke.miter_limit);
+    }
+    if (property == "shadow_enabled") {
+        return ScriptValue::boolean(live->shadow.enabled);
+    }
+    if (property == "shadow_dx") {
+        return ScriptValue::real(live->shadow.dx);
+    }
+    if (property == "shadow_dy") {
+        return ScriptValue::real(live->shadow.dy);
+    }
+    if (property == "shadow_blur") {
+        return ScriptValue::real(live->shadow.blur);
+    }
+    if (property == "shadow_color") {
+        // Reconstruct a Color from the four channel doubles and
+        // route through to_hex — same shape SwatchesScriptable uses
+        // for swatch colour reads (lowercase, alpha suffix when
+        // a < 1.0).
+        Curvz::color::Color c{
+            live->shadow.color_r, live->shadow.color_g,
+            live->shadow.color_b, live->shadow.color_a};
+        return ScriptValue::text(Curvz::color::to_hex(c));
+    }
+    if (property == "shadow_opacity") {
+        return ScriptValue::real(live->shadow.opacity);
+    }
+
     return ScriptValue::null();
 }
 
@@ -297,12 +699,38 @@ std::vector<std::string> StyleProxy::verbs() const {
     return {
         "rename",
         "category",
+        // s225 m1 — per-field setters
+        "fill",
+        "stroke_paint",
+        "stroke_width",
+        "stroke_cap",
+        "stroke_join",
+        "stroke_miter_limit",
+        "shadow_enabled",
+        "shadow_dx",
+        "shadow_dy",
+        "shadow_blur",
+        "shadow_color",
+        "shadow_opacity",
     };
 }
 
 std::vector<std::string> StyleProxy::properties() const {
     return {
         "name", "category", "is_built_in", "iid",
+        // s225 m1 — per-field reads (mirror the verb list)
+        "fill",
+        "stroke_paint",
+        "stroke_width",
+        "stroke_cap",
+        "stroke_join",
+        "stroke_miter_limit",
+        "shadow_enabled",
+        "shadow_dx",
+        "shadow_dy",
+        "shadow_blur",
+        "shadow_color",
+        "shadow_opacity",
     };
 }
 
