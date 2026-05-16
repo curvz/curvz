@@ -71,6 +71,7 @@
 
 #include "scripting/ThemesScriptable.hpp"
 #include "scripting/Scriptable.hpp"
+#include "scripting/proxy_helpers.hpp"   // s228 m1 — shared push_field_edit
 
 #include "CommandHistory.hpp"
 #include "CurvzProject.hpp"
@@ -405,39 +406,13 @@ private:
         return proj ? &proj->themes : nullptr;
     }
 
-    // s226 m1 — common shape for every sub-bundle-field setter. Takes
-    // a mutator lambda that writes the new value into the `after`
-    // Theme; builds the before/after pair, applies the m_history-or-
-    // direct dispatch, pushes UpdateThemeCommand with the supplied
-    // description. Caller is responsible for the no-op skip BEFORE
-    // calling this (since the skip predicate is field-specific and
-    // the lambda is post-decision).
-    //
-    // Returns Null on success, Null on failure — same shape as the
-    // existing rename/category proxy verbs (their return value isn't
-    // meaningful; the result slot from the listener doesn't capture
-    // void). Identical shape to StyleProxy::push_field_edit s225 m1,
-    // just on Theme instead of Style.
-    template <typename Mutator>
-    ScriptValue push_field_edit(Curvz::theme::ThemeLibrary* lib,
-                                const Curvz::theme::Theme& live,
-                                std::string desc,
-                                Mutator&& mutate) {
-        Curvz::theme::Theme before = live;
-        Curvz::theme::Theme after  = before;
-        mutate(after);
-
-        if (!m_history) {
-            after.header.id = m_id;
-            lib->update_theme(m_id, std::move(after));
-            return ScriptValue::null();
-        }
-        auto cmd = std::make_unique<Curvz::UpdateThemeCommand>(
-            lib, m_id, std::move(before), std::move(after), std::move(desc));
-        cmd->execute();
-        m_history->push(std::move(cmd));
-        return ScriptValue::null();
-    }
+    // s228 m1 — the s226 m1 `push_field_edit` template member lifted to
+    // include/scripting/proxy_helpers.hpp as a free function. Call sites
+    // below now read:
+    //   push_field_edit<Curvz::UpdateThemeCommand>(
+    //       lib, m_history, m_id, *live, "...", [&](Theme& after){...});
+    // See proxy_helpers.hpp for the design rationale (Rule of Three:
+    // styles + themes + themes apply/capture all rode the same shape).
 
     ThemesScriptable::ProjectGetter m_get_project;
     Curvz::CommandHistory*          m_history;   // non-owning; outlives us;
@@ -589,7 +564,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         auto parsed = decode_unit(arg_as_string(args[0]));
         if (!parsed) return ScriptValue::null();
         if (*parsed == live->units.display_unit) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme unit (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme unit (script)",
             [&](Curvz::theme::Theme& after) { after.units.display_unit = *parsed; });
     }
 
@@ -612,7 +588,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
             live->motif.dark_artboard_b, 1.0};
         Curvz::color::Color incoming{(*parsed)[0], (*parsed)[1], (*parsed)[2], 1.0};
         if (incoming == current) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme motif dark artboard (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme motif dark artboard (script)",
             [&](Curvz::theme::Theme& after) {
                 after.motif.dark_artboard_r = (*parsed)[0];
                 after.motif.dark_artboard_g = (*parsed)[1];
@@ -630,7 +607,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
             live->motif.dark_workspace_b, 1.0};
         Curvz::color::Color incoming{(*parsed)[0], (*parsed)[1], (*parsed)[2], 1.0};
         if (incoming == current) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme motif dark workspace (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme motif dark workspace (script)",
             [&](Curvz::theme::Theme& after) {
                 after.motif.dark_workspace_r = (*parsed)[0];
                 after.motif.dark_workspace_g = (*parsed)[1];
@@ -648,7 +626,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
             live->motif.dark_creation_b, 1.0};
         Curvz::color::Color incoming{(*parsed)[0], (*parsed)[1], (*parsed)[2], 1.0};
         if (incoming == current) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme motif dark creation (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme motif dark creation (script)",
             [&](Curvz::theme::Theme& after) {
                 after.motif.dark_creation_r = (*parsed)[0];
                 after.motif.dark_creation_g = (*parsed)[1];
@@ -666,7 +645,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
             live->motif.light_artboard_b, 1.0};
         Curvz::color::Color incoming{(*parsed)[0], (*parsed)[1], (*parsed)[2], 1.0};
         if (incoming == current) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme motif light artboard (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme motif light artboard (script)",
             [&](Curvz::theme::Theme& after) {
                 after.motif.light_artboard_r = (*parsed)[0];
                 after.motif.light_artboard_g = (*parsed)[1];
@@ -684,7 +664,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
             live->motif.light_workspace_b, 1.0};
         Curvz::color::Color incoming{(*parsed)[0], (*parsed)[1], (*parsed)[2], 1.0};
         if (incoming == current) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme motif light workspace (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme motif light workspace (script)",
             [&](Curvz::theme::Theme& after) {
                 after.motif.light_workspace_r = (*parsed)[0];
                 after.motif.light_workspace_g = (*parsed)[1];
@@ -702,7 +683,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
             live->motif.light_creation_b, 1.0};
         Curvz::color::Color incoming{(*parsed)[0], (*parsed)[1], (*parsed)[2], 1.0};
         if (incoming == current) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme motif light creation (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme motif light creation (script)",
             [&](Curvz::theme::Theme& after) {
                 after.motif.light_creation_r = (*parsed)[0];
                 after.motif.light_creation_g = (*parsed)[1];
@@ -720,7 +702,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
             live->guides.color_r, live->guides.color_g, live->guides.color_b, 1.0};
         Curvz::color::Color incoming{(*parsed)[0], (*parsed)[1], (*parsed)[2], 1.0};
         if (incoming == current) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme guide color (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme guide color (script)",
             [&](Curvz::theme::Theme& after) {
                 after.guides.color_r = (*parsed)[0];
                 after.guides.color_g = (*parsed)[1];
@@ -732,7 +715,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->guides.visible);
         if (v == live->guides.visible) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme guide visible (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme guide visible (script)",
             [&](Curvz::theme::Theme& after) { after.guides.visible = v; });
     }
 
@@ -747,7 +731,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->grid.enabled);
         if (v == live->grid.enabled) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme grid enabled (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme grid enabled (script)",
             [&](Curvz::theme::Theme& after) { after.grid.enabled = v; });
     }
 
@@ -755,7 +740,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->grid.visible);
         if (v == live->grid.visible) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme grid visible (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme grid visible (script)",
             [&](Curvz::theme::Theme& after) { after.grid.visible = v; });
     }
 
@@ -763,7 +749,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->grid.spacing_x);
         if (v == live->grid.spacing_x) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme grid spacing x (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme grid spacing x (script)",
             [&](Curvz::theme::Theme& after) { after.grid.spacing_x = v; });
     }
 
@@ -771,7 +758,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->grid.spacing_y);
         if (v == live->grid.spacing_y) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme grid spacing y (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme grid spacing y (script)",
             [&](Curvz::theme::Theme& after) { after.grid.spacing_y = v; });
     }
 
@@ -779,7 +767,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->grid.offset_x);
         if (v == live->grid.offset_x) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme grid offset x (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme grid offset x (script)",
             [&](Curvz::theme::Theme& after) { after.grid.offset_x = v; });
     }
 
@@ -787,7 +776,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->grid.offset_y);
         if (v == live->grid.offset_y) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme grid offset y (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme grid offset y (script)",
             [&](Curvz::theme::Theme& after) { after.grid.offset_y = v; });
     }
 
@@ -803,7 +793,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         Curvz::color::Color incoming{(*parsed)[0], (*parsed)[1],
                                      (*parsed)[2], (*parsed)[3]};
         if (incoming == current) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme grid color (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme grid color (script)",
             [&](Curvz::theme::Theme& after) {
                 after.grid.color_r = (*parsed)[0];
                 after.grid.color_g = (*parsed)[1];
@@ -818,7 +809,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->grid.dots);
         if (v == live->grid.dots) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme grid dots (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme grid dots (script)",
             [&](Curvz::theme::Theme& after) { after.grid.dots = v; });
     }
 
@@ -828,7 +820,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->margins.enabled);
         if (v == live->margins.enabled) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin enabled (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin enabled (script)",
             [&](Curvz::theme::Theme& after) { after.margins.enabled = v; });
     }
 
@@ -836,7 +829,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->margins.visible);
         if (v == live->margins.visible) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin visible (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin visible (script)",
             [&](Curvz::theme::Theme& after) { after.margins.visible = v; });
     }
 
@@ -844,7 +838,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->margins.top);
         if (v == live->margins.top) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin top (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin top (script)",
             [&](Curvz::theme::Theme& after) { after.margins.top = v; });
     }
 
@@ -852,7 +847,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->margins.bottom);
         if (v == live->margins.bottom) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin bottom (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin bottom (script)",
             [&](Curvz::theme::Theme& after) { after.margins.bottom = v; });
     }
 
@@ -860,7 +856,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->margins.left);
         if (v == live->margins.left) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin left (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin left (script)",
             [&](Curvz::theme::Theme& after) { after.margins.left = v; });
     }
 
@@ -868,7 +865,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->margins.right);
         if (v == live->margins.right) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin right (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin right (script)",
             [&](Curvz::theme::Theme& after) { after.margins.right = v; });
     }
 
@@ -878,7 +876,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         int v = static_cast<int>(arg_as_int(args[0], live->margins.columns));
         if (v == live->margins.columns) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin columns (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin columns (script)",
             [&](Curvz::theme::Theme& after) { after.margins.columns = v; });
     }
 
@@ -886,7 +885,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->margins.col_gap);
         if (v == live->margins.col_gap) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin col gap (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin col gap (script)",
             [&](Curvz::theme::Theme& after) { after.margins.col_gap = v; });
     }
 
@@ -894,7 +894,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         int v = static_cast<int>(arg_as_int(args[0], live->margins.rows));
         if (v == live->margins.rows) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin rows (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin rows (script)",
             [&](Curvz::theme::Theme& after) { after.margins.rows = v; });
     }
 
@@ -902,7 +903,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->margins.row_gap);
         if (v == live->margins.row_gap) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin row gap (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin row gap (script)",
             [&](Curvz::theme::Theme& after) { after.margins.row_gap = v; });
     }
 
@@ -917,7 +919,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         Curvz::color::Color incoming{(*parsed)[0], (*parsed)[1],
                                      (*parsed)[2], (*parsed)[3]};
         if (incoming == current) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme margin color (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme margin color (script)",
             [&](Curvz::theme::Theme& after) {
                 after.margins.color_r = (*parsed)[0];
                 after.margins.color_g = (*parsed)[1];
@@ -939,7 +942,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->snap.enabled);
         if (v == live->snap.enabled) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme snap enabled (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme snap enabled (script)",
             [&](Curvz::theme::Theme& after) { after.snap.enabled = v; });
     }
 
@@ -947,7 +951,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->snap.snap_guides);
         if (v == live->snap.snap_guides) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme snap guides (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme snap guides (script)",
             [&](Curvz::theme::Theme& after) { after.snap.snap_guides = v; });
     }
 
@@ -955,7 +960,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->snap.snap_grid);
         if (v == live->snap.snap_grid) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme snap grid (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme snap grid (script)",
             [&](Curvz::theme::Theme& after) { after.snap.snap_grid = v; });
     }
 
@@ -963,7 +969,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->snap.snap_margins);
         if (v == live->snap.snap_margins) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme snap margins (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme snap margins (script)",
             [&](Curvz::theme::Theme& after) { after.snap.snap_margins = v; });
     }
 
@@ -971,7 +978,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->snap.snap_nodes);
         if (v == live->snap.snap_nodes) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme snap nodes (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme snap nodes (script)",
             [&](Curvz::theme::Theme& after) { after.snap.snap_nodes = v; });
     }
 
@@ -979,7 +987,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->snap.snap_edges);
         if (v == live->snap.snap_edges) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme snap edges (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme snap edges (script)",
             [&](Curvz::theme::Theme& after) { after.snap.snap_edges = v; });
     }
 
@@ -987,7 +996,8 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->snap.snap_centers);
         if (v == live->snap.snap_centers) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set theme snap centers (script)",
+        return push_field_edit<Curvz::UpdateThemeCommand>(
+            lib, m_history, m_id, *live, "Set theme snap centers (script)",
             [&](Curvz::theme::Theme& after) { after.snap.snap_centers = v; });
     }
 

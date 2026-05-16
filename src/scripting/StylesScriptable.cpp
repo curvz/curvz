@@ -51,6 +51,7 @@
 
 #include "scripting/StylesScriptable.hpp"
 #include "scripting/Scriptable.hpp"
+#include "scripting/proxy_helpers.hpp"   // s228 m1 — shared push_field_edit
 
 #include "CommandHistory.hpp"
 #include "CurvzProject.hpp"
@@ -359,38 +360,13 @@ private:
         return proj ? &proj->swatches : nullptr;
     }
 
-    // s225 m1 — common shape for every appearance-field setter. Takes a
-    // mutator lambda that writes the new value into the `after` Style;
-    // builds the before/after pair, applies the m_history-or-direct
-    // dispatch, pushes UpdateStyleCommand with the supplied description.
-    // Caller is responsible for the no-op skip BEFORE calling this
-    // (since the skip predicate is field-specific and the lambda is
-    // post-decision).
-    //
-    // Returns Null on success, Null on failure — same shape as the
-    // existing rename/category proxy verbs (their return value isn't
-    // meaningful; the result slot from the listener doesn't capture
-    // void).
-    template <typename Mutator>
-    ScriptValue push_field_edit(Curvz::style::StyleLibrary* lib,
-                                const Curvz::style::Style& live,
-                                std::string desc,
-                                Mutator&& mutate) {
-        Curvz::style::Style before = live;
-        Curvz::style::Style after  = before;
-        mutate(after);
-
-        if (!m_history) {
-            after.header.id = m_id;
-            lib->update_style(m_id, std::move(after));
-            return ScriptValue::null();
-        }
-        auto cmd = std::make_unique<Curvz::UpdateStyleCommand>(
-            lib, m_id, std::move(before), std::move(after), std::move(desc));
-        cmd->execute();
-        m_history->push(std::move(cmd));
-        return ScriptValue::null();
-    }
+    // s228 m1 — the s225 m1 `push_field_edit` template member lifted to
+    // include/scripting/proxy_helpers.hpp as a free function. Call sites
+    // below now read:
+    //   push_field_edit<Curvz::UpdateStyleCommand>(
+    //       lib, m_history, m_id, *live, "...", [&](Style& after){...});
+    // See proxy_helpers.hpp for the design rationale (Rule of Three:
+    // styles + themes + themes apply/capture all rode the same shape).
 
     StylesScriptable::ProjectGetter m_get_project;
     Curvz::CommandHistory*          m_history;   // non-owning; outlives us;
@@ -502,7 +478,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         auto parsed = decode_paint(spec, swatch_library());
         if (!parsed) return ScriptValue::null();  // unknown / malformed
         if (*parsed == live->fill) return ScriptValue::null();  // no-op
-        return push_field_edit(lib, *live, "Set style fill (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style fill (script)",
             [&](Curvz::style::Style& after) { after.fill = std::move(*parsed); });
     }
 
@@ -512,7 +489,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         auto parsed = decode_paint(spec, swatch_library());
         if (!parsed) return ScriptValue::null();
         if (*parsed == live->stroke.paint) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style stroke paint (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style stroke paint (script)",
             [&](Curvz::style::Style& after) { after.stroke.paint = std::move(*parsed); });
     }
 
@@ -522,7 +500,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->stroke.width);
         if (v == live->stroke.width) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style stroke width (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style stroke width (script)",
             [&](Curvz::style::Style& after) { after.stroke.width = v; });
     }
 
@@ -531,7 +510,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         auto parsed = decode_cap(arg_as_string(args[0]));
         if (!parsed) return ScriptValue::null();  // unknown vocab
         if (*parsed == live->stroke.cap) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style stroke cap (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style stroke cap (script)",
             [&](Curvz::style::Style& after) { after.stroke.cap = *parsed; });
     }
 
@@ -540,7 +520,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         auto parsed = decode_join(arg_as_string(args[0]));
         if (!parsed) return ScriptValue::null();
         if (*parsed == live->stroke.join) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style stroke join (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style stroke join (script)",
             [&](Curvz::style::Style& after) { after.stroke.join = *parsed; });
     }
 
@@ -548,7 +529,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->stroke.miter_limit);
         if (v == live->stroke.miter_limit) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style stroke miter (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style stroke miter (script)",
             [&](Curvz::style::Style& after) { after.stroke.miter_limit = v; });
     }
 
@@ -556,7 +538,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         bool v = arg_as_bool(args[0], live->shadow.enabled);
         if (v == live->shadow.enabled) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style shadow enabled (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style shadow enabled (script)",
             [&](Curvz::style::Style& after) { after.shadow.enabled = v; });
     }
 
@@ -564,7 +547,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->shadow.dx);
         if (v == live->shadow.dx) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style shadow dx (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style shadow dx (script)",
             [&](Curvz::style::Style& after) { after.shadow.dx = v; });
     }
 
@@ -572,7 +556,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->shadow.dy);
         if (v == live->shadow.dy) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style shadow dy (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style shadow dy (script)",
             [&](Curvz::style::Style& after) { after.shadow.dy = v; });
     }
 
@@ -580,7 +565,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->shadow.blur);
         if (v == live->shadow.blur) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style shadow blur (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style shadow blur (script)",
             [&](Curvz::style::Style& after) { after.shadow.blur = v; });
     }
 
@@ -597,7 +583,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
             live->shadow.color_r, live->shadow.color_g,
             live->shadow.color_b, live->shadow.color_a};
         if (*parsed == current) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style shadow color (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style shadow color (script)",
             [&](Curvz::style::Style& after) {
                 after.shadow.color_r = parsed->r;
                 after.shadow.color_g = parsed->g;
@@ -610,7 +597,8 @@ ScriptValue StyleProxy::invoke(std::string_view verb,
         if (args.empty()) return ScriptValue::null();
         double v = arg_as_double(args[0], live->shadow.opacity);
         if (v == live->shadow.opacity) return ScriptValue::null();
-        return push_field_edit(lib, *live, "Set style shadow opacity (script)",
+        return push_field_edit<Curvz::UpdateStyleCommand>(
+            lib, m_history, m_id, *live, "Set style shadow opacity (script)",
             [&](Curvz::style::Style& after) { after.shadow.opacity = v; });
     }
 
