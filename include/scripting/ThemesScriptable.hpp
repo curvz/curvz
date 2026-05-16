@@ -6,6 +6,17 @@
 // S103 m2 (AddThemeCommand / UpdateThemeCommand / RemoveThemeCommand)
 // and are used by ThemesPanel today.
 //
+// s226 m1 — per-field setter surface added. The s223 m1 header-only
+// first cut deferred every sub-bundle field as backlog; s226 m1 closes
+// that backlog. 35 new proxy verbs covering all six sub-bundles
+// (UnitSettings, MotifSettings, GuideSettings, GridSettings,
+// MarginSettings, ThemeSnapSettings), paired 1:1 with 35 reads. Direct
+// application of the s225 m1 push_field_edit template helper — same
+// shape, no new mechanisms. See "Appearance fields — added in s226 m1"
+// block below for the full design rationale (hex-string composite
+// shape for colours, lowercase enum vocabulary for unit, snap as bool
+// toggles).
+//
 // Wraps the active project's `ThemeLibrary` as a collection Scriptable
 // under abbrev `themes`, materialising transient `themes.<id>` proxies
 // for per-instance operations via the s216 m1 router hooks
@@ -126,10 +137,11 @@
 //
 //   themes.<id>             — per-instance proxy, materialised on demand
 //                             by the collection. Reads / writes the
-//                             specific theme's name / category through
-//                             the project's ThemeLibrary. NOT registered
-//                             — the registry only knows about `themes`.
-//                             A `list` from the Scripter shows `themes`
+//                             specific theme's name / category / sub-
+//                             bundle fields through the project's
+//                             ThemeLibrary. NOT registered — the
+//                             registry only knows about `themes`. A
+//                             `list` from the Scripter shows `themes`
 //                             but never shows `themes.<id>` entries
 //                             (same pilot success condition as
 //                             layers / guides / swatches / styles).
@@ -163,6 +175,11 @@
 //                        only header.name diffed
 //   category (proxy)   → UpdateThemeCommand carrying before/after with
 //                        only header.category diffed
+//   sub-bundle field   → UpdateThemeCommand carrying before/after with
+//   (s226 m1)            only that field diffed. Same execute-then-push
+//                        shape via the `push_field_edit` template helper
+//                        (lifted from StyleProxy s225 m1 — see Appearance
+//                        fields block below).
 //
 // The push pattern is `cmd->execute(); m_history->push(std::move(cmd))`,
 // matching ThemesPanel::on_save_current_as_theme / on_rename_theme /
@@ -189,8 +206,8 @@
 // app themes land (one-line edit to ThemeLibrary's constructor).
 //
 // Read queries work on both tiers: `count`, `all_ids`, `find_by_name`,
-// proxy `name`/`category`/`is_built_in`/`iid` all resolve through
-// ThemeLibrary::find_theme (user first, then app).
+// proxy `name`/`category`/`is_built_in`/`iid`/<sub-bundle reads> all
+// resolve through ThemeLibrary::find_theme (user first, then app).
 //
 // App-vs-user partition is exposed through two parallel set queries:
 // `user_ids` and `app_ids`. Scripts that want to iterate only the
@@ -206,6 +223,17 @@
 // carries the field for symmetry with Style even though no UI surfaces
 // it yet). Same "verbs come from the application's UI vocabulary, not
 // API conventions" rule established in s217 m2.
+//
+// Sub-bundle field verbs (s226 m1) follow `<bundle>_<field>` naming:
+// `motif_dark_artboard`, `grid_spacing_x`, `snap_guides`, etc. The
+// header.category verb keeps its bare name (no `header_` prefix) —
+// "verbs come from the application's UI vocabulary" applied: `category`
+// is the panel's term, not `header_category`. Sub-bundle fields don't
+// have a comparable UI shortcut, so the bundle-qualified naming is the
+// right shape for disambiguating (snap_enabled vs grid_enabled vs
+// margin_enabled would all be three different "enabled" verbs otherwise).
+// Same naming policy as the s225 m1 styles surface: shadow_dx is
+// "shadow's dx field," not "shadow_dx" the unbroken token.
 //
 // COLLECTION VERBS (on `themes`):
 //   new                                  — create a new user-tier theme.
@@ -343,6 +371,108 @@
 //                                          Skip-no-op when category
 //                                          didn't change.
 //
+//   ── s226 m1 sub-bundle field setters ──
+//   Every setter below pushes UpdateThemeCommand via push_field_edit
+//   with the bundle-and-field-scoped description string ("Set theme
+//   grid spacing x (script)", etc.). Skip-no-op guard fires before
+//   the push. App-tier guard at head of invoke() refuses every field
+//   setter on the same path as rename/category. Invalid input (bad
+//   hex / unknown unit string) is silent no-op (mirror of styles
+//   fill's malformed-spec behaviour).
+//
+//   UnitSettings:
+//   unit "<px|in|mm|pt>"                 — s226 m1. Write
+//                                          theme.units.display_unit.
+//                                          Lowercase enum vocabulary
+//                                          matching UnitSystem::label()
+//                                          and Inspector's unit dropdown.
+//                                          Unknown vocab is no-op.
+//                                          Verb name drops the
+//                                          `display_` prefix the model
+//                                          field carries — same way
+//                                          `category` verb drops
+//                                          `header.`.
+//
+//   MotifSettings (six hex-string verbs, one per dark/light × region):
+//   motif_dark_artboard "<#rrggbb>"      — s226 m1. RGB only (model has
+//                                          no alpha channel for motif
+//                                          colours); the parser accepts
+//                                          rrggbbaa hex but the alpha
+//                                          is discarded on write.
+//   motif_dark_workspace "<#rrggbb>"     — s226 m1.
+//   motif_dark_creation  "<#rrggbb>"     — s226 m1.
+//   motif_light_artboard  "<#rrggbb>"    — s226 m1.
+//   motif_light_workspace "<#rrggbb>"    — s226 m1.
+//   motif_light_creation  "<#rrggbb>"    — s226 m1.
+//
+//   GuideSettings:
+//   guide_color   "<#rrggbb>"            — s226 m1. RGB only (no alpha
+//                                          channel on guide colour);
+//                                          parser tolerates alpha,
+//                                          discards on write.
+//   guide_visible <bool>                 — s226 m1. Write
+//                                          theme.guides.visible. This
+//                                          is the SceneNode::visible
+//                                          on the GuideLayer that apply
+//                                          writes through; theme-level
+//                                          gate.
+//
+//   GridSettings:
+//   grid_enabled  <bool>                 — s226 m1. Write
+//                                          theme.grid.enabled. Layer-
+//                                          presence gate (apply uses
+//                                          this to ensure / remove the
+//                                          GridLayer).
+//   grid_visible  <bool>                 — s226 m1. Write
+//                                          theme.grid.visible.
+//   grid_spacing_x <double>              — s226 m1.
+//   grid_spacing_y <double>              — s226 m1.
+//   grid_offset_x  <double>              — s226 m1.
+//   grid_offset_y  <double>              — s226 m1.
+//   grid_color    "<#rrggbb[aa]>"        — s226 m1. RGBA composite —
+//                                          grid is the first sub-bundle
+//                                          colour with an alpha channel.
+//                                          Hex shape matches s225 m1
+//                                          shadow_color.
+//   grid_dots     <bool>                 — s226 m1. Write
+//                                          theme.grid.dots. false=lines,
+//                                          true=dots at intersections.
+//
+//   MarginSettings:
+//   margin_enabled <bool>                — s226 m1. Layer-presence gate
+//                                          (apply uses this to ensure /
+//                                          remove the MarginLayer).
+//   margin_visible <bool>                — s226 m1.
+//   margin_top     <double>              — s226 m1.
+//   margin_bottom  <double>              — s226 m1.
+//   margin_left    <double>              — s226 m1.
+//   margin_right   <double>              — s226 m1.
+//   margin_columns <int>                 — s226 m1. The model field is
+//                                          int (not double); the
+//                                          Scriptable accepts Int / Double
+//                                          via arg_as_int and rounds
+//                                          toward zero. No clamp (the
+//                                          inspector spinner enforces
+//                                          >= 1 but the model accepts
+//                                          0 / negative without UB —
+//                                          same posture as styles
+//                                          stroke_width).
+//   margin_col_gap <double>              — s226 m1.
+//   margin_rows    <int>                 — s226 m1.
+//   margin_row_gap <double>              — s226 m1.
+//   margin_color  "<#rrggbb[aa]>"        — s226 m1. RGBA composite,
+//                                          same shape as grid_color.
+//
+//   ThemeSnapSettings (alias to CurvzDocument's SnapSettings):
+//   snap_enabled  <bool>                 — s226 m1. The overall snap
+//                                          gate (snap on/off as a whole).
+//   snap_guides   <bool>                 — s226 m1.
+//   snap_grid     <bool>                 — s226 m1.
+//   snap_margins  <bool>                 — s226 m1.
+//   snap_nodes    <bool>                 — s226 m1.
+//   snap_edges    <bool>                 — s226 m1.
+//   snap_centers  <bool>                 — s226 m1.
+//
 // ELEMENT QUERIES (on `themes.<id>`):
 //   name           — string       theme.header.name
 //   category       — string       theme.header.category (empty string
@@ -365,17 +495,117 @@
 //                                  proxy returns its addressing key
 //                                  under `iid`.
 //
-// ── Out of scope for s223 m1 ───────────────────────────────────────────────
+//   ── s226 m1 sub-bundle field reads ──
+//   Every setter has a paired reader of the same name; the reader
+//   returns the same shape the setter accepts (round-trippable). Hex
+//   reads always emit lowercase ("#rrggbb" or "#rrggbbaa"); unit
+//   reads emit lowercase ("px" / "in" / "mm" / "pt").
 //
-// **Sub-bundle fields** — Theme carries six sub-bundles (UnitSettings,
-// MotifSettings, GuideSettings, GridSettings, MarginSettings,
-// ThemeSnapSettings). The proxy surface in m1 covers only the header
-// fields (name, category). Per-field verbs for unit / motif colours /
-// grid spacing / margin top / snap toggles etc. can come later; the
-// pattern is established and adding `set_unit`, `grid_enabled`,
-// `motif_dark_artboard_r`, etc. is mechanical once the scope is opened.
-// Same precedent as StylesScriptable's deferred fill/stroke/shadow —
-// header-only first cut is the s222 m1 shape and a fine s223 m1 shape.
+//   unit                            — string  "<px|in|mm|pt>"
+//   motif_dark_artboard             — string  "#rrggbb" (alpha = 1.0,
+//                                              hex output omits suffix)
+//   motif_dark_workspace            — string  "#rrggbb"
+//   motif_dark_creation             — string  "#rrggbb"
+//   motif_light_artboard            — string  "#rrggbb"
+//   motif_light_workspace           — string  "#rrggbb"
+//   motif_light_creation            — string  "#rrggbb"
+//   guide_color                     — string  "#rrggbb"
+//   guide_visible                   — bool
+//   grid_enabled                    — bool
+//   grid_visible                    — bool
+//   grid_spacing_x                  — double
+//   grid_spacing_y                  — double
+//   grid_offset_x                   — double
+//   grid_offset_y                   — double
+//   grid_color                      — string  "#rrggbb[aa]"
+//   grid_dots                       — bool
+//   margin_enabled                  — bool
+//   margin_visible                  — bool
+//   margin_top                      — double
+//   margin_bottom                   — double
+//   margin_left                     — double
+//   margin_right                    — double
+//   margin_columns                  — int
+//   margin_col_gap                  — double
+//   margin_rows                     — int
+//   margin_row_gap                  — double
+//   margin_color                    — string  "#rrggbb[aa]"
+//   snap_enabled                    — bool
+//   snap_guides                     — bool
+//   snap_grid                       — bool
+//   snap_margins                    — bool
+//   snap_nodes                      — bool
+//   snap_edges                      — bool
+//   snap_centers                    — bool
+//
+// ── Appearance fields — added in s226 m1 ───────────────────────────────────
+//
+// The s223 m1 header-only first cut deferred every sub-bundle field as
+// backlog. s226 m1 closes that backlog with 35 proxy verbs covering all
+// six sub-bundles. The surface is proxy-only — the chip-context-menu
+// fork that justifies collection-level `rename` / `category` doesn't
+// extend to inspector edits like grid spacing or snap toggles. Scripts
+// that have an id in hand and want to set fields use the dotted form:
+//
+//   themes new "Print Setup" "Workflow"
+//   set t to result
+//   themes.t unit "in"
+//   themes.t grid_enabled true
+//   themes.t grid_spacing_x 36.0
+//   themes.t snap_guides false
+//
+// Every field write mirrors the proxy `rename`/`category` shape — full
+// before/after Theme snapshots into UpdateThemeCommand via the
+// push_field_edit template helper (lifted from StyleProxy s225 m1),
+// skip-no-op when the value didn't change, app-tier guard at the head
+// of invoke().
+//
+// **Hex composite shape for colours.** The six MotifSettings RGB
+// triples, GuideSettings RGB, GridSettings RGBA, and MarginSettings
+// RGBA all surface as hex strings rather than per-channel scalars.
+// Trade-off:
+//   * Pro: 9 colour verbs instead of 30 channel verbs. Symmetry with
+//          s225 m1 `shadow_color`. Hex is what a designer typing into
+//          a script will already have in their colour-picker workflow.
+//   * Con: Can't say "leave the colour alone, just bump the alpha."
+//          Neither could s225's shadow_color, and that's been fine.
+//          A follow-up `*_alpha` companion verb could land if a use
+//          case surfaces.
+//
+// RGB-only fields (motif × 6, guide) discard any alpha channel on
+// write — the parser accepts "#rrggbbaa" but only the rgb part is
+// stored. Reads always emit the no-alpha form. RGBA fields (grid,
+// margin) round-trip the alpha; the read form includes the alpha
+// suffix iff a < 1.0 (same to_hex shape as styles' shadow_color).
+//
+// **Cross-doc walk: trivially academic for v1.** Style-driven appearance
+// edits ripple to bound SceneNodes via signal_style_changed since
+// S81 m3d. Theme commands also fire signal_theme_changed, but themes
+// don't bind (`apply_theme_to_doc` is one-shot — see Theme.hpp top of
+// file). signal_theme_changed → ThemesPanel::refresh which rebuilds
+// the panel's row list, and is also visible to anyone listening for
+// theme library changes externally (none in v1). Script-driven
+// theme edits update the library; apply-to-doc happens separately
+// when the user (or a future apply verb) drives it.
+//
+// **Visual half of convergence — narrower than styles.** For s225 m1
+// styles, Scott had the Style Editor open on a test style and saw
+// every field update visibly per line — the StylesPanel's chip
+// thumbnail re-renders on signal_style_changed and the editor's
+// surrounding panel stays in sync. For themes, ThemesPanel's per-
+// theme row only displays the theme name + edit/dup/del buttons,
+// NOT the sub-bundle values. ThemeEditDialog DOES display them but
+// doesn't observe signal_theme_changed (it's a buffer-then-commit
+// dialog; live observation would conflict with its working buffer
+// model). Consequence: scripted field edits ARE reflected in the
+// library and ARE round-trip-readable via `get`, but a dialog open on
+// the same theme during the script will NOT update its widgets live.
+// The eyes-half check is "open the dialog AFTER the script, on the
+// edited theme, and see the values reflected" — not "watch the dialog
+// update line-by-line." See smoke test top comment for the operator's
+// workflow.
+//
+// ── Out of scope for s226 m1 ───────────────────────────────────────────────
 //
 // **Apply** — `apply_theme_to_doc(theme, doc, motif)` writes a theme's
 // sub-bundle values into a document's current settings. It is NOT
@@ -394,10 +624,10 @@
 //
 // **Theme editor dialog** — ThemesPanel::on_edit_theme emits a signal
 // that opens a full ThemeEditDialog. That's a panel-side concern;
-// the Scriptable's surface is library CRUD, not editor-dialog
-// invocation. If a script needs to drive sub-bundle field edits, the
-// per-field setter milestone (above) is the place for those, not a
-// "show the dialog" verb.
+// the Scriptable's surface is library CRUD + sub-bundle field edits,
+// not editor-dialog invocation. If a script needs to drive the
+// dialog open/close, that's an inspector-tier verb on a future
+// theme-editor Scriptable, not on the library Scriptable.
 //
 // **Import / export** — the panel has a kebab menu for "Import themes…"
 // / "Export themes…" calling `themes_io::import_themes` and
@@ -405,6 +635,12 @@
 // have file-picker UX. Scripted file IO is a separate surface (already
 // at design discussion for other libraries); not a ThemesScriptable
 // concern.
+//
+// **Per-channel companion verbs** — see the hex-vs-channels trade-off
+// in the Appearance fields block above. If a use case surfaces for
+// "bump just the alpha" / "set just the green channel," follow-up
+// `*_alpha` / `*_r` / `*_g` / `*_b` companion verbs could land. Today
+// the hex composite is the only surface.
 //
 // ── On active-project scope ────────────────────────────────────────────────
 //
