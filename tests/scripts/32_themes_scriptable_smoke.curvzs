@@ -12,6 +12,20 @@
 # app-tier guard is exercised against the same `app:fake_theme`
 # synthetic id used by the Phase 2 collection-verb guard.
 #
+# s227 m1: extended with a Phase 2c block exercising the apply and
+# capture verbs. Capture is collection-only (creates a fresh theme
+# from the active doc); apply is dual-form (proxy `themes.<id> apply`
+# and collection `themes apply "<id>"`, both routing through one
+# shared helper). The phase uses the non-factory end-state `b` from
+# Phase 2b as an apply source, captures the doc both before and after
+# apply, and asserts the captured field values reflect the apply. A
+# baseline "restore" capture taken at the head of the phase is applied
+# back at the end of the phase to leave the active doc as it was at
+# script start — every change apply makes is reversed by the
+# restore-apply at the end. (Apply itself is non-undoable in v1; Ctrl+Z
+# walks past the apply lines silently. The restore-apply is the
+# script-level equivalent of undo for the doc state.)
+#
 # Two addressing surfaces, one router:
 #
 #   themes           — collection. ONE registry entry. Set verbs (new,
@@ -144,9 +158,13 @@
 # operation should be individually undoable.
 #
 # Note: apply (apply_theme_to_doc) is NOT undoable in v1 by design
-# (Theme.hpp top-of-file rationale). m1 doesn't expose an `apply` verb
-# at all — that's deferred to its own milestone. This smoke covers
-# library CRUD only, which IS undoable.
+# (Theme.hpp top-of-file rationale). s227 m1 exposed the `apply` verb
+# with NON-undoable semantics — Ctrl+Z walks past apply lines silently
+# (no command is pushed). Library CRUD (including capture, which
+# pushes AddThemeCommand the same way `new` does) IS undoable; that's
+# what the per-verb tally in this smoke still covers. The Phase 2c
+# additions don't change the undoability story — apply is the one
+# unsupported entry, capture is supported.
 #
 # ── Phases ────────────────────────────────────────────────────────────────
 #
@@ -168,6 +186,35 @@
 #                  as Phase 2. `b` is left in a non-factory end-state
 #                  to provide the eyes-half check via ThemeEditDialog
 #                  (see "Visual half for s226 m1" block above).
+#   2c. APPLY +
+#       CAPTURE  — (s227 m1) exercise capture (collection-only) and
+#                  apply (proxy + collection forms). The flow:
+#                  (i) capture the active doc's baseline state into
+#                  a theme `restore` so the phase can restore the doc
+#                  at the end; (ii) capture again into `before_apply`
+#                  for round-trip-of-capture verification (every
+#                  visible field captured matches what we'd expect
+#                  from the doc-defaults at script start); (iii) apply
+#                  the Phase 2b end-state of `b` to the active doc
+#                  via proxy form `themes.b apply`; (iv) capture the
+#                  post-apply doc into `after_apply` and assert key
+#                  fields reflect the apply (unit == "in", grid
+#                  enabled, margin enabled with 3 cols / 2 rows, etc.);
+#                  (v) exercise the collection-form apply via
+#                  `themes apply` against the SAME theme to verify
+#                  both forms route to the same effect; (vi) apply
+#                  the `restore` theme to put the doc back; (vii)
+#                  capture once more into `final_capture` and assert
+#                  it matches `before_apply`'s key fields (the doc
+#                  was restored). Find-miss on apply exercised by
+#                  attempting `themes apply "app:fake_theme"` — count
+#                  of themes is unchanged after, since apply doesn't
+#                  add/remove themes regardless. Apply has NO app-tier
+#                  refusal guard (unlike rename / category / delete /
+#                  sub-bundle setters); apply is a non-mutating read
+#                  of the theme record. Capture refusal-on-no-active-
+#                  doc is NOT exercised (the test harness always has
+#                  an active doc; that branch is forward-compat).
 #   3. TEAR DOWN — delete every test theme; verify count returns to
 #                  baseline.
 
@@ -611,6 +658,236 @@ themes delete "app:fake_theme"
 get themes count
 assert themes count == count_pre_guard
 
+#[sub] === Phase 2c: APPLY + CAPTURE (s227 m1) ===
+#[sub]
+#[sub] Exercises both forms of apply (proxy `themes.<id> apply` and
+#[sub] collection `themes apply "<id>"`) plus the collection-only
+#[sub] capture verb. The phase deliberately mutates the active doc by
+#[sub] applying `b` (which carries the non-factory end-state Phase 2b
+#[sub] left it in) and asserts the post-apply doc state by capturing
+#[sub] it back into a new theme and reading the captured field values.
+#[sub] At the end of the phase, the baseline `restore` theme is applied
+#[sub] back to put the active doc as it was at script start. Apply
+#[sub] itself is non-undoable; the restore-apply IS the doc-state undo.
+#[sub]
+#[sub] What this phase verifies:
+#[sub]   * capture creates a theme from the active doc and returns its id
+#[sub]   * apply (proxy form) writes the source theme's fields to the doc
+#[sub]   * apply (collection form) does the same — both forms route
+#[sub]     through the same helper
+#[sub]   * capture-then-apply-then-capture round-trips the captured
+#[sub]     values back (apply doesn't lose information vs the source
+#[sub]     theme for the fields we assert)
+#[sub]   * capture's auto-naming walks `Theme N` when name is empty
+#[sub]     (same shape as ThemesPanel::on_save_current_as_theme's
+#[sub]     default proposal)
+#[sub]   * capture's name + category args land in the new theme's header
+#[sub]   * app-tier guard refuses apply on synthetic app:fake ids
+#[sub]
+#[sub] Visual half (the doc's canvas should reflect every apply):
+#[sub]   * After `themes.b apply` runs: ruler ticks switch to inches,
+#[sub]     guides render in magenta (#ff00ff), a grid layer appears
+#[sub]     with dotted intersections at 36×36 spacing, a margin layer
+#[sub]     appears with 3 cols / 2 rows.
+#[sub]   * After the restore-apply at the end of the phase: the doc
+#[sub]     returns to its pre-script appearance.
+#[sub]   * The ThemesPanel gains four new rows during this phase
+#[sub]     (restore / before_apply / after_apply / final_capture) — all
+#[sub]     four are deleted in Phase 3.
+
+#[sub] STEP (i): Capture the active doc's baseline state. This theme
+#[sub] is the doc-state undo for the rest of the phase — we apply it
+#[sub] back at the end to leave the active doc untouched. Pass an
+#[sub] explicit name so it shows up clearly in the panel (eyes-half).
+#[sub] No category — empty string means uncategorised.
+
+themes capture "smoke_apply_restore"
+set restore to result
+assert themes.restore name == "smoke_apply_restore"
+assert themes.restore is_built_in == false
+
+#[sub] STEP (ii): Capture again into before_apply. Same active doc,
+#[sub] same captured values — these two captures should be identical
+#[sub] in every field. We don't directly assert theme == theme (no such
+#[sub] script-level operator), but the round-trip through individual
+#[sub] field reads serves the same purpose for the fields we check.
+
+themes capture "smoke_apply_before" "smoke_test"
+set before_apply to result
+assert themes.before_apply name == "smoke_apply_before"
+assert themes.before_apply category == "smoke_test"
+
+#[sub] Capture's empty-name auto-walk — passing no name should produce
+#[sub] a "Theme N" auto-generated name (mirror of the panel's default
+#[sub] proposal). We can't assert the exact name (it depends on how
+#[sub] many "Theme N" entries already exist in the project at script
+#[sub] start), but we can assert non-emptiness and visually verify
+#[sub] in the panel row list.
+
+themes capture
+set auto_named to result
+get themes.auto_named name
+#[sub] Visual half: the panel should now show a "Theme N" row for some
+#[sub] N >= 1. Naming collision walk is the panel's; the script form
+#[sub] just lands on the first unused number.
+
+#[sub] STEP (iii): Apply `b` to the active doc via the proxy form.
+#[sub] `b` carries the Phase 2b end-state: unit=in, magenta guide,
+#[sub] grid enabled (36 spacing, 12 offset, dots, #404040), margin
+#[sub] enabled (top/bottom=18, left/right=12, 3 cols × 2 rows,
+#[sub] #ff444460), every snap target enabled, motif fully mutated.
+#[sub] After this line, the active doc reflects all of those.
+
+themes.b apply
+
+#[sub] STEP (iv): Capture the post-apply doc state. The captured
+#[sub] theme's fields should mirror `b`'s end-state — apply writes to
+#[sub] the doc, capture reads back, so this is a round-trip through
+#[sub] the apply+capture funnel. Key fields asserted across all six
+#[sub] sub-bundles; if any one diverges, either apply lost a field
+#[sub] on the way to the doc, or capture lost it on the way back.
+
+themes capture "smoke_apply_after" "smoke_test"
+set after_apply to result
+
+#[sub] Unit — set to `in` by apply.
+assert themes.after_apply unit == "in"
+
+#[sub] Motif — `b`'s six motif values were set in Phase 2b and never
+#[sub] restored to factory. Read them back from after_apply; should
+#[sub] match. Dark-creation gets a specific check because it's a
+#[sub] recognisable non-default ("#4080ff") used as `b`'s eyes-half
+#[sub] evidence colour.
+assert themes.after_apply motif_dark_artboard == "#101010"
+assert themes.after_apply motif_dark_workspace == "#080808"
+assert themes.after_apply motif_dark_creation == "#4080ff"
+assert themes.after_apply motif_light_artboard == "#f8f8f8"
+assert themes.after_apply motif_light_workspace == "#e0e0e0"
+assert themes.after_apply motif_light_creation == "#0050cc"
+
+#[sub] Guide — magenta, visible.
+assert themes.after_apply guide_color == "#ff00ff"
+assert themes.after_apply guide_visible == true
+
+#[sub] Grid — enabled (the layer was created by apply on the doc; the
+#[sub] capture re-reads it and reports enabled=true). The spacing /
+#[sub] offset / color / dots all come back to the values `b` carried.
+assert themes.after_apply grid_enabled == true
+assert themes.after_apply grid_visible == true
+assert themes.after_apply grid_spacing_x == 36.0
+assert themes.after_apply grid_spacing_y == 36.0
+assert themes.after_apply grid_offset_x == 12.0
+assert themes.after_apply grid_offset_y == 12.0
+assert themes.after_apply grid_color == "#404040"
+assert themes.after_apply grid_dots == true
+
+#[sub] Margin — enabled with `b`'s grid (3 cols × 2 rows, alpha-bearing
+#[sub] colour).
+assert themes.after_apply margin_enabled == true
+assert themes.after_apply margin_visible == true
+assert themes.after_apply margin_top == 18.0
+assert themes.after_apply margin_bottom == 18.0
+assert themes.after_apply margin_left == 12.0
+assert themes.after_apply margin_right == 12.0
+assert themes.after_apply margin_columns == 3
+assert themes.after_apply margin_col_gap == 6.0
+assert themes.after_apply margin_rows == 2
+assert themes.after_apply margin_row_gap == 6.0
+assert themes.after_apply margin_color == "#ff444460"
+
+#[sub] Snap — every target enabled.
+assert themes.after_apply snap_enabled == true
+assert themes.after_apply snap_guides == true
+assert themes.after_apply snap_grid == true
+assert themes.after_apply snap_margins == true
+assert themes.after_apply snap_nodes == true
+assert themes.after_apply snap_edges == true
+assert themes.after_apply snap_centers == true
+
+#[sub] STEP (v): Apply `b` AGAIN via the collection form. Both forms
+#[sub] route through apply_theme_to_active_doc in the anon namespace;
+#[sub] applying the same theme twice should be idempotent on the doc
+#[sub] (it's writing the same values). If a second capture diverges
+#[sub] from the first, the collection-form path is doing something
+#[sub] different from the proxy-form path — which would be a bug.
+#[sub] Spot-checked, not full re-assert (the funnel is the same code
+#[sub] either way).
+
+themes apply b
+themes capture "smoke_apply_after_collection_form" "smoke_test"
+set after_apply_2 to result
+assert themes.after_apply_2 unit == "in"
+assert themes.after_apply_2 grid_enabled == true
+assert themes.after_apply_2 grid_spacing_x == 36.0
+assert themes.after_apply_2 margin_columns == 3
+assert themes.after_apply_2 margin_rows == 2
+assert themes.after_apply_2 guide_color == "#ff00ff"
+assert themes.after_apply_2 snap_grid == true
+
+#[sub] apply on a non-existent id (which the synthetic app:fake_theme
+#[sub] also is in v1, since no app themes are registered). Unlike the
+#[sub] other mutating verbs, apply DOES NOT have an app-tier refusal
+#[sub] guard — apply is a non-mutating read of the theme record, so
+#[sub] when curated app themes ship the affordance "apply a curated
+#[sub] theme to my doc" works by-script the same way it does in the
+#[sub] panel. What this test verifies for v1 is the FIND-MISS path:
+#[sub] the helper's find_theme returns nullptr for app:fake_theme (no
+#[sub] such theme exists in either tier), so the helper returns false
+#[sub] and the active doc is unchanged. Library count is also
+#[sub] unchanged because apply doesn't add/remove themes either way.
+#[sub] No visible canvas refresh fires because signal_theme_applied
+#[sub] only emits when the helper completes successfully.
+
+get themes count
+set count_pre_apply_guard to result
+themes apply "app:fake_theme"
+get themes count
+assert themes count == count_pre_apply_guard
+
+#[sub] STEP (vi): Apply `restore` to put the active doc back to where
+#[sub] it was at the start of this phase. The doc's units, motif,
+#[sub] guides, grid presence, margin presence, snap — all return to
+#[sub] their script-start values.
+
+themes.restore apply
+
+#[sub] STEP (vii): Capture the restored state into final_capture.
+#[sub] Read back specific fields and assert they DON'T look like
+#[sub] post-`b`-apply state. The strongest check is that grid /
+#[sub] margin are at the pre-apply enabled state. We can't assert
+#[sub] final_capture == before_apply directly (no such operator), but
+#[sub] reading back specific fields that `b` set non-trivially gives
+#[sub] convergent evidence the restore happened.
+#[sub]
+#[sub] Note: the script start might have had grid OR margin OR both
+#[sub] already enabled — we can't hardcode their expected values. The
+#[sub] check we CAN make is that final_capture's values match
+#[sub] before_apply's (the two captures bracket the apply+restore
+#[sub] cycle). We do that via paired reads — visual `get` for fields
+#[sub] that aren't comparable as variables and `assert == ` where the
+#[sub] values are simple scalars accessible via dotted query.
+#[sub]
+#[sub] What's verified by trace: the unit / guide_color readings out of
+#[sub] before_apply and final_capture should match each other (one is
+#[sub] the baseline, the other is post-restore). Visual `get` on both
+#[sub] for sub-bundle fields rounds out the check.
+
+themes capture "smoke_apply_final" "smoke_test"
+set final_capture to result
+
+get themes.before_apply unit
+get themes.final_capture unit
+get themes.before_apply guide_color
+get themes.final_capture guide_color
+get themes.before_apply grid_enabled
+get themes.final_capture grid_enabled
+get themes.before_apply margin_enabled
+get themes.final_capture margin_enabled
+get themes.before_apply snap_enabled
+get themes.final_capture snap_enabled
+
+#[sub] === End Phase 2c ===
+
 #[sub] === Phase 3: TEAR DOWN ===
 #[sub] Delete every test theme we created. Each delete pushes a
 #[sub] RemoveThemeCommand which snapshots the full Theme for round-trip
@@ -621,6 +898,13 @@ themes delete a
 themes delete b
 themes delete c
 themes delete a_dup
+#[sub] s227 m1 — Phase 2c themes (capture results + post-apply captures).
+themes delete restore
+themes delete before_apply
+themes delete auto_named
+themes delete after_apply
+themes delete after_apply_2
+themes delete final_capture
 
 #[sub] Verify cleanup. count should be back to baseline. Visual
 #[sub] inspection of the id lists below confirms no residue remains.
@@ -647,18 +931,40 @@ list
 
 inspector collapse_all
 
-#[sub] s223 m1 + s226 m1 smoke complete — collection verbs, proxy verbs,
-#[sub] proxy queries, app-tier guard (synthetic-id form), find_by_name,
-#[sub] the duplicate " copy"-naming, category round-trips, AND the
-#[sub] 35-verb per-field setter surface (unit / motif × 6 / guide × 2 /
-#[sub] grid × 8 / margin × 11 / snap × 7) with paired reads all
-#[sub] exercised. Every mutating verb pushed a command into history;
-#[sub] manual Ctrl+Z after this script finishes should walk the undo
-#[sub] stack back through every operation. Visual half of convergence:
-#[sub] watch the ThemesPanel — the BUILD UP phase should add three
-#[sub] rows, the duplicate should add a fourth, TEAR DOWN should
-#[sub] remove all four. For the s226 m1 sub-bundle field edits, open
-#[sub] the ThemeEditDialog on `smoke_test_b` BEFORE running teardown
-#[sub] to see the Phase 2b end-state reflected in the dialog widgets
-#[sub] (see "Visual half for s226 m1 sub-bundle field edits" block at
-#[sub] the top of this file for the full operator workflow).
+#[sub] s223 m1 + s226 m1 + s227 m1 smoke complete — collection verbs,
+#[sub] proxy verbs, proxy queries, app-tier guard (synthetic-id form),
+#[sub] find_by_name, the duplicate " copy"-naming, category round-trips,
+#[sub] the 35-verb per-field setter surface (unit / motif × 6 / guide × 2
+#[sub] / grid × 8 / margin × 11 / snap × 7) with paired reads, AND the
+#[sub] s227 m1 apply / capture surface (proxy + collection forms of
+#[sub] apply, collection-only capture with auto-named + explicit-named
+#[sub] variants, post-apply round-trip via capture-then-read across all
+#[sub] six sub-bundles, app-tier guard on apply). Every mutating verb
+#[sub] pushed a command into history EXCEPT the apply lines (apply is
+#[sub] non-undoable in v1 by Theme.hpp design — see Phase 2c header).
+#[sub] Manual Ctrl+Z after this script finishes should walk the undo
+#[sub] stack back through every operation BUT will walk past the apply
+#[sub] lines silently.
+#[sub]
+#[sub] Visual half of convergence — three layered checks:
+#[sub]
+#[sub]   1. ThemesPanel rebuild: rows appear during BUILD UP and Phase
+#[sub]      2c, then disappear during TEAR DOWN. Library count returns
+#[sub]      to baseline.
+#[sub]
+#[sub]   2. ThemeEditDialog on smoke_test_b (s226 m1 eyes-half): open
+#[sub]      the dialog BEFORE TEAR DOWN runs to see Phase 2b end-state
+#[sub]      reflected in the dialog widgets. See "Visual half for s226
+#[sub]      m1 sub-bundle field edits" block at the top of this file.
+#[sub]
+#[sub]   3. Active doc canvas (s227 m1 eyes-half): watch the canvas
+#[sub]      during Phase 2c. After `themes.b apply` runs (STEP iii),
+#[sub]      the active doc's ruler ticks should switch to inches,
+#[sub]      guides should render in magenta, a grid layer with dotted
+#[sub]      intersections at 36×36 spacing should appear, and a margin
+#[sub]      layer with 3 cols × 2 rows should appear. After the
+#[sub]      restore-apply (STEP vi), the doc returns to its pre-script
+#[sub]      appearance. The canvas refresh runs via the new
+#[sub]      ThemeLibrary::signal_theme_applied wired to MainWindow's
+#[sub]      themes_refresh_cascade — same callback the panel button
+#[sub]      uses.

@@ -19,7 +19,7 @@
 //   * Two-list shape, app + user.
 //   * CRUD on user only; built-in writes rejected.
 //   * UUID-prefixed user ids (thm_<uuid>).
-//   * Signal trio (added / changed / removed).
+//   * Signal trio (added / changed / removed) for library state.
 //   * JSON round-trip pumps (to_user_json / from_user_json) at
 //     namespace scope so the m2 import/export bridge can reuse them.
 //
@@ -31,6 +31,13 @@
 //     instead of editing-in-place with a propagation), and signal_changed
 //     is consumed only by the dialog itself for refreshing its library
 //     list.
+//   * A FOURTH signal beyond the StyleLibrary trio (s227 m1):
+//     signal_theme_applied. Fired by apply drivers (ThemesPanel,
+//     ThemesScriptable), NOT by the library itself. Exists because
+//     apply doesn't mutate the library — the other three signals never
+//     fire for apply — but scripted callers need a hook to drive the
+//     canvas refresh cascade that the panel does directly. See the
+//     Signals block below for the driver / listener contract.
 //
 // Thread-safety: none. Main-thread only, mutated on the GTK main loop.
 //
@@ -181,17 +188,50 @@ public:
 
     // --- Signals ----------------------------------------------------------
     //
-    // Three fine-grained signals, mirroring StyleLibrary's pattern.
+    // Four fine-grained signals. The first three mirror StyleLibrary's
+    // pattern (added / changed / removed); the fourth (s227 m1) is
+    // theme-specific: there's no "applied a style to a SceneNode" event
+    // in the style world (style binds via bound_style, so apply IS
+    // signal_style_changed for the SceneNode side), but for themes apply
+    // IS a distinct concern because themes don't bind — apply_theme_to_doc
+    // writes doc fields directly with no library mutation, so no other
+    // signal fires.
+    //
     // Renames don't fire signal_theme_changed independently of update
     // — rename goes through update_theme with a new header.name on the
     // same id, so signal_theme_changed fires for any update including
     // rename-only.
-
+    //
+    // signal_theme_applied (s227 m1) is fired by APPLY DRIVERS, NOT by
+    // the library itself or by apply_theme_to_doc. The library doesn't
+    // see apply at all (apply touches the doc, not the library); the
+    // funnel is pure and has no project pointer for snap-mirror or
+    // canvas-refresh anyway. The two known drivers today:
+    //
+    //   * ThemesPanel::on_apply_clicked — panel calls the funnel then
+    //     m_on_changed (canvas refresh + inspector + schedule_save), then
+    //     fires this signal so any out-of-band listener (the macro
+    //     recorder, scripting log, etc.) sees the event. v1 has no such
+    //     listener wired in the panel path; the signal exists for the
+    //     symmetry below.
+    //
+    //   * ThemesScriptable's apply verb (s227 m1) — the Scriptable has
+    //     no MainWindow pointer and so can't run the canvas-refresh
+    //     cascade directly. It fires signal_theme_applied; MainWindow's
+    //     zone wiring connects this signal to the same callback body
+    //     `m_themes.set_on_changed` installs. That makes scripted apply
+    //     refresh the canvas / inspector / save mark, matching panel
+    //     apply's visible effect.
+    //
+    // Same ThemeIdSignal shape as the other three; carries the applied
+    // theme's id. Listeners that don't care about the id (refresh-only
+    // listeners) take the arg and ignore it.
     using ThemeIdSignal = sigc::signal<void(ThemeId)>;
 
     ThemeIdSignal& signal_theme_added()   { return m_sig_added; }
     ThemeIdSignal& signal_theme_changed() { return m_sig_changed; }
     ThemeIdSignal& signal_theme_removed() { return m_sig_removed; }
+    ThemeIdSignal& signal_theme_applied() { return m_sig_applied; }   // s227 m1
 
 private:
     // Generate a fresh "thm_<uuid>" id that doesn't collide with anything
@@ -211,6 +251,8 @@ private:
     ThemeIdSignal m_sig_added;
     ThemeIdSignal m_sig_changed;
     ThemeIdSignal m_sig_removed;
+    ThemeIdSignal m_sig_applied;   // s227 m1 — fired by apply drivers,
+                                   // not by the library itself.
 };
 
 } // namespace theme

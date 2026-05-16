@@ -1777,24 +1777,59 @@ void MainWindow::setup_layout() {
   // order matters: history first (stable address), project last (which
   // also runs the initial refresh via set_project's body).
   m_themes.set_history(&m_history);
-  m_themes.set_on_changed([this]() {
-    // s147 m3 fix8: themes can mutate scene structure (grid/margin
-    // layers added or removed by apply_theme_to_doc) and shift fields
-    // the canvas reads live (guide colors, snap settings). queue_draw
-    // alone repaints, but doesn't run the structural cascade — the
-    // layers panel, status counts, ruler ticks, etc. need
-    // notify_document_changed to refresh. Without it, the active
-    // doc's canvas keeps showing pre-apply state until the user
-    // switches docs or makes an unrelated edit. Same fix the dialog
-    // version probably needed too — Scott reports it surfaced once
-    // themes moved to a panel where the user stays on the same doc
-    // through apply.
+
+  // s227 m1 — Factor the on-themes-changed body into a named local
+  // so it can be installed in two places: (a) the existing
+  // m_themes.set_on_changed slot (called by ThemesPanel when its
+  // library mutations or apply-clicked complete), and (b) the new
+  // ThemeLibrary::signal_theme_applied signal (fired by the scripted
+  // apply verb in ThemesScriptable). Both code paths need the same
+  // canvas refresh cascade — the panel goes through its callback, the
+  // script goes through the library signal because it has no panel
+  // pointer.
+  //
+  // s147 m3 fix8 (preserved): themes can mutate scene structure
+  // (grid/margin layers added or removed by apply_theme_to_doc) and
+  // shift fields the canvas reads live (guide colors, snap settings).
+  // queue_draw alone repaints, but doesn't run the structural cascade
+  // — the layers panel, status counts, ruler ticks, etc. need
+  // notify_document_changed to refresh. Without it, the active doc's
+  // canvas keeps showing pre-apply state until the user switches docs
+  // or makes an unrelated edit.
+  auto themes_refresh_cascade = [this]() {
     m_canvas.queue_draw();
     m_canvas.notify_document_changed();
     refresh_inspector();
     schedule_save();
-  });
+  };
+  m_themes.set_on_changed(themes_refresh_cascade);
   m_themes.set_project(m_project.get());
+
+  // s227 m1 — wire scripted apply into the same refresh cascade. The
+  // ThemesScriptable's apply verb fires signal_theme_applied after
+  // calling apply_theme_to_doc + project->snap mirror; we connect it
+  // to the exact same callback the panel's set_on_changed uses, so
+  // canvas refresh + inspector + schedule_save run identically
+  // whether apply was driven by the panel button or by a script
+  // line. The signal carries the theme id; the refresh cascade
+  // doesn't need it (refresh is broad, not theme-specific), so the
+  // wrapper ignores the arg.
+  //
+  // Connection must run AFTER set_project (which is where ThemeLibrary
+  // becomes addressable through m_project->themes). If the project
+  // changes mid-session (close + reopen), the new project's
+  // ThemeLibrary needs reconnecting; the current architecture
+  // doesn't formally support project swap with signal re-wiring
+  // (sister panels have the same property), so this connection is
+  // effectively for-the-lifetime-of-the-window with the project's
+  // identity stable across the use. Same lifetime story as the
+  // theme-editor signal_request_theme_editor wiring below.
+  if (m_project) {
+    m_project->themes.signal_theme_applied().connect(
+        [themes_refresh_cascade](theme::ThemeId /*id*/) {
+          themes_refresh_cascade();
+        });
+  }
 
   // s183 m2 — Edit-theme dialog wiring. Mirrors the StyleEditorDialog
   // request handler above. The panel emits when its row Edit (✎)

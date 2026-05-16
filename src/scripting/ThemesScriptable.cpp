@@ -14,6 +14,24 @@
 // (hex composite shape for colours, lowercase enum vocabulary for unit,
 // snap as bool toggles).
 //
+// s227 m1 — apply / capture verbs added. Two verbs that bridge the
+// library and the active document, closing the last two
+// ThemesScriptable backlog items. Apply is proxy-AND-collection
+// (`themes.<id> apply` and `themes apply "<id>"` — same shape as
+// rename/category, both shapes route through one helper). Capture is
+// collection-only — it CREATES a new theme so there's no proxy id to
+// address (`themes capture` / `themes capture "<name>"` /
+// `themes capture "<name>" "<category>"`). See "Apply and capture —
+// added in s227 m1" block in the header for the full design rationale.
+//
+// Both verbs need active_doc; both refuse silently when there's no
+// active doc (mirror of the panel's "no active doc" path in
+// on_save_current_as_theme). Apply additionally syncs m_project->snap
+// back from the active doc post-apply (panel does the same in
+// on_apply_clicked's do_apply lambda) and fires the new
+// ThemeLibrary::signal_theme_applied signal so MainWindow's
+// canvas-refresh cascade runs.
+//
 // ── Why execute-then-push, not mutate-then-push ────────────────────────────
 //
 // LayersScriptable follows the panel's "mutate first, push command with
@@ -260,6 +278,88 @@ std::string join_csv(const std::vector<Curvz::theme::ThemeId>& ids) {
     return os.str();
 }
 
+// ── apply helper (s227 m1) ─────────────────────────────────────────────────
+//
+// Shared body for the proxy form (`themes.<id> apply`) and the
+// collection form (`themes apply "<id>"`). Both call this with the
+// resolved theme id; the body handles everything else:
+//
+//   1. Resolve the theme by id (caller has the id but not the value;
+//      this is the seam that lets the caller skip a duplicate find_theme
+//      call).
+//   2. Resolve the active doc.
+//   3. Refuse if either is missing (returns false; caller returns Null).
+//   4. Snapshot the theme value before the funnel call so a concurrent
+//      library mutation can't pull the value out from under us mid-
+//      apply (defensive; same pattern as the panel's src_snapshot in
+//      on_apply_clicked).
+//   5. Call apply_theme_to_doc.
+//   6. Mirror active_doc->snap back into project->snap (the funnel
+//      doesn't have a project pointer; the panel does this manually
+//      in its do_apply lambda for the same reason).
+//   7. Fire ThemeLibrary::signal_theme_applied with the theme id.
+//      MainWindow's zone wiring connects this to the canvas-refresh
+//      cascade. Library-internal listeners (the panel's library-list
+//      refresh path) won't fire on signal_theme_applied — the library
+//      ITSELF didn't mutate; only the doc did.
+//
+// Returns true iff the apply ran. False on missing-precondition or
+// theme-not-found. Callers translate true → ScriptValue::null() and
+// false → ScriptValue::null() too (same shape — Null is the universal
+// "no value to return" for verb invocations whose meaningful side
+// effect is elsewhere); the boolean is for internal flow, not the
+// caller's return value.
+//
+// No app-tier guard anywhere on the apply path — neither here nor at
+// the caller. Apply is a non-mutating READ of the theme record; the
+// tier guard that protects mutating verbs (rename / category / delete /
+// sub-bundle setters) doesn't apply. Forward-compat for when curated
+// app themes ship: the panel's apply button doesn't tier-check the
+// source, so neither does the script form. v1 has no app themes so
+// the find_theme call returns nullptr for any "app:" id passed in
+// (no library entry), and the helper exits with false.
+bool apply_theme_to_active_doc(Curvz::CurvzProject* proj,
+                               const Curvz::theme::ThemeId& id) {
+    if (!proj) return false;
+    auto* doc = proj->active_doc();
+    if (!doc) return false;
+    const Curvz::theme::Theme* live = proj->themes.find_theme(id);
+    if (!live) return false;
+
+    // Defensive snapshot — panel does the same in on_apply_clicked.
+    // Cheap (Theme is value-typed with sub-bundles of POD-ish fields)
+    // and protects against mid-flight library mutations even though
+    // we're single-threaded.
+    Curvz::theme::Theme snapshot = *live;
+
+    // s183 m5a: m_project->motif is cosmetic for this call (funnel
+    // writes both dark and light pairs regardless). Pass it for API
+    // stability — when current_motif eventually gets dropped from the
+    // funnel signature, this site changes alongside the panel's site.
+    Curvz::theme::apply_theme_to_doc(snapshot, *doc, proj->motif);
+
+    // Sync the project's snap mirror from the (now-updated) active
+    // doc. The Toolbar's snap popover is the canonical writer for
+    // m_project->snap, so any doc-side write that didn't go through
+    // the toolbar leaves the project mirror stale. The panel does
+    // exactly this in its do_apply lambda; we do the same here. No
+    // active-was-target check needed — we always apply to active.
+    proj->snap = doc->snap;
+
+    // Fire the s227 m1 signal. MainWindow's zone wiring picks this
+    // up and runs the same canvas-refresh cascade the panel's
+    // on_apply_clicked uses (via m_themes.set_on_changed). The
+    // library itself doesn't see apply at all; this signal is the
+    // out-of-band hook for non-library listeners.
+    proj->themes.signal_theme_applied().emit(id);
+    return true;
+}
+
+// (Helper kept const-friendly — find_theme returns const* and the
+// snapshot copy is enough for the funnel. If a future apply mutates
+// the source theme through the library, this site grows a non-const
+// alternative path.)
+
 } // anon namespace
 
 // ── ThemeProxy — transient per-instance Scriptable ─────────────────────────
@@ -355,11 +455,46 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
     const Curvz::theme::Theme* live = resolve();
     if (!live) return ScriptValue::null();
 
-    // App-tier guard. Every mutating verb refuses on a built-in theme —
+    // ── s227 m1: apply (BEFORE the app-tier guard) ─────────────────────────
+    //
+    // Apply this theme to the project's active doc. Placed BEFORE the
+    // app-tier guard below because apply is a non-mutating READ of the
+    // theme — it doesn't edit the theme record, just reads it and writes
+    // the values into the doc. Forward-compat: when curated app themes
+    // ship, the affordance "apply a curated theme to my doc" should work
+    // by-script the same way it works in the panel (where on_apply_clicked
+    // doesn't tier-check the source). v1 has no app themes so this
+    // ordering distinction is academic, but the placement records the
+    // intent.
+    //
+    // The shared helper does the work — see apply_theme_to_active_doc
+    // in the anon namespace at the top of the file. Steps:
+    //
+    //   1. Resolve project + active doc (helper does both; returns
+    //      false if either is missing).
+    //   2. Snapshot the theme value, call apply_theme_to_doc, mirror
+    //      doc->snap into project->snap, fire signal_theme_applied.
+    //   3. Return Null. apply has no meaningful return value (no id
+    //      to mint, no count to report); the visible effect is on the
+    //      doc, observable via the active doc's queries through
+    //      whatever doc Scriptable lands.
+    //
+    // NOT undoable. No command pushed. From the script's perspective the
+    // result slot is Null whether the helper ran or refused (helper's
+    // bool indicates internal flow only; see helper docs).
+    if (verb == "apply") {
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        apply_theme_to_active_doc(proj, m_id);
+        return ScriptValue::null();
+    }
+
+    // App-tier guard. Every MUTATING verb refuses on a built-in theme —
     // the Scriptable provides no "edit the app theme" path; the
     // collection-level `duplicate` verb is the affordance. v1 has no
     // app themes so this branch is unreachable in practice; the guard
-    // is forward-compat.
+    // is forward-compat. Apply was handled above the guard because it's
+    // a read of the theme record (s227 m1); every verb below is a
+    // mutation of the library and refuses on app-tier.
     if (Curvz::theme::is_built_in(m_id)) return ScriptValue::null();
 
     if (verb == "rename") {
@@ -856,6 +991,9 @@ ScriptValue ThemeProxy::invoke(std::string_view verb,
             [&](Curvz::theme::Theme& after) { after.snap.snap_centers = v; });
     }
 
+    // (s227 m1 apply branch is at the head of this function, before the
+    // app-tier guard — apply is a non-mutating read of the theme.)
+
     return ScriptValue::null();
 }
 
@@ -1074,6 +1212,9 @@ std::vector<std::string> ThemeProxy::verbs() const {
         "snap_nodes",
         "snap_edges",
         "snap_centers",
+        // s227 m1 — apply (no proxy capture form: capture is collection-
+        // only since it creates a new theme, see header)
+        "apply",
     };
 }
 
@@ -1397,6 +1538,112 @@ ScriptValue ThemesScriptable::invoke(std::string_view verb,
         return ScriptValue::text("");
     }
 
+    // ── s227 m1: apply (collection form) ───────────────────────────────────
+    //
+    // `themes apply "<id>"` — by-id form. Same shape as collection-level
+    // `rename` / `category` — both shapes (proxy and collection) exist
+    // for ergonomic parity, both route through the same helper.
+    //
+    // No is_built_in guard. Apply is a non-mutating READ of the theme
+    // record (it writes to the doc, not the library), so the
+    // "refuse on app-tier" rule that protects every MUTATING verb in
+    // this Scriptable doesn't apply. Forward-compat: when curated app
+    // themes ship, the affordance "apply this curated theme to my doc"
+    // works by-script the same way it works in the panel (where
+    // on_apply_clicked doesn't tier-check the source). v1 has no app
+    // themes so the practical behaviour is unchanged; the absence of
+    // the guard records the design intent. Mirrors the proxy form's
+    // placement above the head-of-invoke app-tier guard.
+    //
+    // The helper handles project/doc resolution, the funnel call,
+    // the project->snap mirror, and signal_theme_applied. Returns
+    // Null regardless of helper success (see proxy form's matching
+    // rationale).
+    if (verb == "apply") {
+        if (args.empty()) return ScriptValue::null();
+        std::string id = arg_as_string(args[0]);
+        if (id.empty()) return ScriptValue::null();
+        apply_theme_to_active_doc(proj, id);
+        return ScriptValue::null();
+    }
+
+    // ── s227 m1: capture ───────────────────────────────────────────────────
+    //
+    // `themes capture` / `themes capture "<name>"` /
+    // `themes capture "<name>" "<category>"` — capture the active doc
+    // into a new user-tier theme. Collection-only (no proxy form —
+    // capture creates, doesn't edit an existing theme; the proxy id
+    // wouldn't be meaningful).
+    //
+    // Steps:
+    //   1. Refuse if no project or no active doc (returns "" — same
+    //      sentinel as failed `new` / failed `duplicate`).
+    //   2. Capture the doc via capture_theme_from_doc. The current_motif
+    //      arg is no longer load-bearing (s183 m5a); capture writes both
+    //      dark and light pairs from the doc directly. We pass
+    //      proj->motif for API stability.
+    //   3. Resolve the name. If args[0] is provided and non-empty, use
+    //      it verbatim (no auto-dedupe — the library doesn't enforce
+    //      name uniqueness; the panel does that as UX polish at the
+    //      modal prompt). If args[0] is missing or empty, walk
+    //      `Theme N` from N=1 via has_user_name (mirror of
+    //      ThemesPanel::on_save_current_as_theme's proposal walk —
+    //      same default the panel offers in its name entry).
+    //   4. Resolve the category. args[1] if provided; empty otherwise.
+    //   5. Push AddThemeCommand. Library mints the id; we capture
+    //      m_assigned_id and return it.
+    //
+    // Pushes a command — capture IS undoable (Ctrl+Z removes the
+    // captured theme, restoring the library to its pre-capture state).
+    // The active doc isn't touched in any way; this is pure read of
+    // the doc + library mutation.
+    //
+    // Visual half: the new row appears in ThemesPanel via
+    // signal_theme_added → refresh() → rebuild_library_list(). Same
+    // path as `new`.
+    if (verb == "capture") {
+        auto* doc = proj->active_doc();
+        if (!doc) return ScriptValue::text("");
+
+        Curvz::theme::Theme captured =
+            Curvz::theme::capture_theme_from_doc(*doc, proj->motif);
+
+        // Name resolution. args[0] takes precedence; empty / missing
+        // falls back to the panel's "Theme N" walk. Walk caps at
+        // 10000 attempts (defensive — matches the panel's cap; in
+        // practice the loop hits an unused name within a few iterations).
+        std::string name = args.size() >= 1 ? arg_as_string(args[0])
+                                            : std::string{};
+        if (name.empty()) {
+            std::string proposed = "Theme 1";
+            for (int n = 1; n < 10000; ++n) {
+                std::string candidate = "Theme " + std::to_string(n);
+                if (!lib.has_user_name(candidate)) {
+                    proposed = candidate;
+                    break;
+                }
+            }
+            name = proposed;
+        }
+        std::string category = args.size() >= 2 ? arg_as_string(args[1])
+                                                : std::string{};
+
+        captured.header.id.clear();  // library mints
+        captured.header.name = name;
+        captured.header.category = category;
+
+        if (!m_history) {
+            return ScriptValue::text(lib.add_theme(std::move(captured)));
+        }
+        auto cmd = std::make_unique<Curvz::AddThemeCommand>(
+            &lib, std::move(captured),
+            std::string("Capture theme (script)"));
+        cmd->execute();
+        Curvz::theme::ThemeId new_id = cmd->m_assigned_id;
+        m_history->push(std::move(cmd));
+        return ScriptValue::text(new_id);
+    }
+
     return ScriptValue::null();
 }
 
@@ -1458,6 +1705,11 @@ std::vector<std::string> ThemesScriptable::verbs() const {
         // `get themes find_by_name "<name>"` form once query-args
         // grammar lands.
         "find_by_name",
+        // s227 m1 — apply / capture. apply has a proxy form too
+        // (`themes.<id> apply`); capture is collection-only (creates,
+        // doesn't edit — see header).
+        "apply",
+        "capture",
     };
 }
 

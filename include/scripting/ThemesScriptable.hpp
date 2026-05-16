@@ -17,6 +17,19 @@
 // shape for colours, lowercase enum vocabulary for unit, snap as bool
 // toggles).
 //
+// s227 m1 — apply / capture verbs added. Last two pieces of the
+// ThemesScriptable backlog (s223 m1 forward). Both operate on the
+// active doc only in v1 (multi-doc targeting deferred until doc
+// Scriptables exist). Apply is NOT undoable (preserves the
+// Theme.hpp v1 design); capture pushes AddThemeCommand and IS
+// undoable. Both refresh the canvas through a new
+// ThemeLibrary::signal_theme_applied (apply) / the existing
+// signal_theme_added (capture). See "Apply and capture — added in
+// s227 m1" block below for the design rationale and the two open
+// questions that collapsed (motif arg is no longer load-bearing
+// after s183 m5a; doc-targeting is active-only with forward-compat
+// for multi-doc args).
+//
 // Wraps the active project's `ThemeLibrary` as a collection Scriptable
 // under abbrev `themes`, materialising transient `themes.<id>` proxies
 // for per-instance operations via the s216 m1 router hooks
@@ -167,6 +180,10 @@
 //
 //   new / duplicate    → AddThemeCommand (standard ctor, library mints
 //                        the id; m_assigned_id captures it)
+//   capture (s227 m1)  → AddThemeCommand (same as new, but the inserted
+//                        Theme is capture_theme_from_doc(active) with the
+//                        name/category set from args. The library mints
+//                        the id same way.)
 //   delete             → RemoveThemeCommand (full Theme snapshot — same
 //                        shape as RemoveStyleCommand, the snapshot is
 //                        the whole Theme value so undo can re-add the
@@ -192,10 +209,13 @@
 // Scriptable (CommandHistory is a value member of MainWindow). Same
 // non-owning lifetime story as the other model scriptables.
 //
-// What's NOT undoable through this Scriptable — `apply`. Themes don't
-// bind; apply is one-shot and non-undoable in v1 (Theme.hpp top-of-file
-// rationale). m1 doesn't expose an `apply` verb at all (out of scope).
-// Library CRUD IS undoable; that's what this Scriptable covers.
+// What's NOT undoable through this Scriptable — `apply` (s227 m1).
+// Themes don't bind; apply is one-shot and non-undoable in v1
+// (Theme.hpp top-of-file rationale). The script form skips command
+// generation entirely — `themes.t apply` runs apply_theme_to_doc with
+// no push. A Ctrl+Z over a script that includes apply will walk past
+// the apply line silently. Script authors who need apply-with-undo
+// will wait for the (out-of-m1-scope) EditDocStateCommand path.
 //
 // ── App-tier guard ─────────────────────────────────────────────────────────
 //
@@ -248,12 +268,63 @@
 //                                          at their struct defaults (the
 //                                          "factory baseline" — applying
 //                                          it would reset a doc to fresh-
-//                                          out-of-the-box). Capture-from-
-//                                          doc (the panel's [+] button
-//                                          flow) is OUT of m1 scope; if
-//                                          a script wants a theme that
-//                                          mirrors a doc's current state,
-//                                          that's a future `capture` verb.
+//                                          out-of-the-box). For a theme
+//                                          that mirrors the active doc's
+//                                          current state, use `capture`
+//                                          instead (s227 m1).
+//   capture                              — s227 m1. Capture the active
+//   capture "<name>"                       doc's settings into a new
+//   capture "<name>" "<cat>"               user-tier theme. Optional
+//                                          args:
+//                                            args[0] = name (string,
+//                                                      empty → auto-
+//                                                      generated "Theme N"
+//                                                      via has_user_name
+//                                                      walk, mirror of
+//                                                      ThemesPanel
+//                                                      on_save_current_as_theme)
+//                                            args[1] = category (string,
+//                                                      empty = uncategorised)
+//                                          Returns the new id, or "" on
+//                                          failure. Refuses (returns "")
+//                                          if no project or no active doc.
+//                                          Pushes AddThemeCommand —
+//                                          undoable. See "Apply and
+//                                          capture — added in s227 m1"
+//                                          block below for the design
+//                                          rationale (collection-only —
+//                                          no proxy form; captures
+//                                          dark-and-light pairs regardless
+//                                          of current motif since s183 m5a
+//                                          made the motif arg cosmetic).
+//   apply "<id>"                         — s227 m1. Apply the named
+//                                          theme to the project's active
+//                                          doc. Refuses (returns Null)
+//                                          on missing project, missing
+//                                          active doc, or unknown id.
+//                                          NO app-tier refusal — apply
+//                                          is a non-mutating read of the
+//                                          theme record (writes to the
+//                                          doc, not the library), so the
+//                                          tier guard that protects every
+//                                          MUTATING verb doesn't apply.
+//                                          NOT undoable in v1 by
+//                                          Theme.hpp design; no command
+//                                          is pushed. After apply: syncs
+//                                          m_project->snap from the
+//                                          active doc, then fires
+//                                          ThemeLibrary::signal_theme_applied
+//                                          which MainWindow's zone wiring
+//                                          handles for canvas refresh +
+//                                          inspector + schedule_save. The
+//                                          proxy alternative
+//                                          `themes.<id> apply` is also
+//                                          available — both forms route
+//                                          through the same shared code
+//                                          path. See "Apply and capture
+//                                          — added in s227 m1" block
+//                                          below for the full design
+//                                          rationale.
 //   delete "<id>"                        — remove a user-tier theme.
 //                                          Refuses on app-tier ids
 //                                          (returns Null without
@@ -370,6 +441,39 @@
 //                                          to the uncategorised bucket.
 //                                          Skip-no-op when category
 //                                          didn't change.
+//
+//   apply                                — s227 m1. Apply this theme
+//                                          to the project's active doc.
+//                                          No args. Refuses (returns
+//                                          Null) on missing project or
+//                                          missing active doc. NOT
+//                                          subject to the head-of-invoke
+//                                          app-tier guard — apply is a
+//                                          non-mutating read of the
+//                                          theme record (writes to the
+//                                          doc, not the library), so it
+//                                          sits BEFORE the guard in
+//                                          invoke()'s dispatch order.
+//                                          Forward-compat: when curated
+//                                          app themes ship, applying
+//                                          them via script works the
+//                                          same way the panel's apply
+//                                          button does (which doesn't
+//                                          tier-check the source).
+//                                          NOT undoable in v1
+//                                          (Theme.hpp design); no
+//                                          command is pushed. After
+//                                          apply: syncs m_project->snap
+//                                          from the active doc, then
+//                                          fires
+//                                          ThemeLibrary::signal_theme_applied
+//                                          for the canvas refresh
+//                                          cascade. Equivalent to the
+//                                          collection form
+//                                          `themes apply "<id>"`; both
+//                                          share a helper. See "Apply
+//                                          and capture — added in s227
+//                                          m1" block below.
 //
 //   ── s226 m1 sub-bundle field setters ──
 //   Every setter below pushes UpdateThemeCommand via push_field_edit
@@ -605,22 +709,42 @@
 // update line-by-line." See smoke test top comment for the operator's
 // workflow.
 //
-// ── Out of scope for s226 m1 ───────────────────────────────────────────────
+// ── Out of scope for s226 m1 (CLOSED in s227 m1 — see below) ───────────────
 //
-// **Apply** — `apply_theme_to_doc(theme, doc, motif)` writes a theme's
-// sub-bundle values into a document's current settings. It is NOT
-// undoable in v1 by explicit design (Theme.hpp). Exposing it as a
-// script verb means deciding (a) the doc-targeting model (active doc?
-// all docs? a named-doc list?), (b) confirmation skip (panel pops a
-// modal; scripts probably shouldn't), and (c) interaction with the
-// undo stack (a non-undoable verb in a chain of undoable verbs is a
-// trap). Deferred — its own milestone.
+// **Apply** — CLOSED in s227 m1. `apply_theme_to_doc(theme, doc, motif)`
+// writes a theme's sub-bundle values into a document's current settings.
+// It is NOT undoable in v1 by explicit design (Theme.hpp). The s226 m1
+// header listed three open design questions; s227 m1 resolved them:
 //
-// **Capture from doc** — the panel's `on_save_current_as_theme` flow
-// reads `capture_theme_from_doc(active, motif)`, prompts for a name,
-// pushes AddThemeCommand. A scripted equivalent would be a `capture`
-// verb taking an optional doc-targeting arg. Same out-of-scope
-// reasoning as apply — its own design call.
+//   (a) Doc-targeting model: active doc only in v1. No args. Multi-doc
+//       targeting (`themes.<id> apply "doc1,doc2"`) deferred until doc
+//       Scriptables exist; the verb signature accepts no targets today
+//       so a future args form extends forward-compatibly.
+//
+//   (b) Confirmation skip: scripts skip the panel's confirmation modal
+//       (no question). Scripts run unattended.
+//
+//   (c) Motif disambiguation: DISSOLVED by s183 m5a. The funnel's
+//       `current_motif` arg is no longer load-bearing — capture writes
+//       both dark and light pairs from the doc directly, apply writes
+//       both pairs back. The Scriptable still passes m_project->motif
+//       for API stability, but the value doesn't affect output.
+//
+//   (d) Non-undoable-in-an-undoable-chain: accepted as documented
+//       script-author-beware behaviour. Ctrl+Z over a chain that
+//       includes apply will skip the apply line (no command to undo)
+//       and undo the surrounding lines — same behaviour an inline
+//       file-system operation would have. The cleaner alternative
+//       (EditDocStateCommand pushing a doc-snapshot pair) remains an
+//       independent backlog item, not blocking apply's first ship.
+//
+// **Capture from doc** — CLOSED in s227 m1. The panel's
+// `on_save_current_as_theme` flow reads `capture_theme_from_doc(active,
+// motif)` then prompts for a name. The scripted equivalent is the
+// collection-level `themes capture` verb: same funnel, no name prompt
+// (the script passes the name as an arg or accepts the auto-generated
+// `Theme N` default that mirrors the panel's `has_user_name` walk).
+// IS undoable — pushes AddThemeCommand the same way `themes new` does.
 //
 // **Theme editor dialog** — ThemesPanel::on_edit_theme emits a signal
 // that opens a full ThemeEditDialog. That's a panel-side concern;
@@ -641,6 +765,139 @@
 // "bump just the alpha" / "set just the green channel," follow-up
 // `*_alpha` / `*_r` / `*_g` / `*_b` companion verbs could land. Today
 // the hex composite is the only surface.
+//
+// ── Apply and capture — added in s227 m1 ───────────────────────────────────
+//
+// Two verbs that bridge the library and the active document, closing the
+// last two ThemesScriptable backlog items (s223 m1 forward).
+//
+// **apply** — proxy form `themes.<id> apply` and collection form
+// `themes apply "<id>"`. Both target the project's active doc; no
+// multi-doc args in v1.
+//
+// What it does:
+//   1. Refuses if no project or no active doc (returns Null, no side
+//      effect — same defensive pattern as every other verb's "missing
+//      preconditions" branch).
+//   2. Allows app-tier ids. Apply is a non-mutating read of the theme
+//      record (it writes to the doc, not to the library), so the
+//      tier guard that protects every MUTATING verb in this Scriptable
+//      doesn't apply. In the proxy form, the `apply` branch sits
+//      ABOVE the head-of-invoke app-tier guard; in the collection
+//      form, the `apply` branch simply doesn't check is_built_in.
+//      v1 has no app themes so the practical behaviour is unchanged;
+//      the explicit non-refusal records the design intent. Forward-
+//      compat: when curated app themes ship, applying them by-script
+//      works the same way the panel's apply button does.
+//   3. Calls apply_theme_to_doc(theme, *active_doc, m_project->motif).
+//      The motif arg is no longer load-bearing (s183 m5a moved doc to
+//      dual-pair motif storage; the funnel writes both pairs regardless).
+//      Passing m_project->motif preserves the funnel's API stability;
+//      the value doesn't affect the result.
+//   4. Mirrors active_doc->snap back into m_project->snap. The funnel
+//      doesn't have a project pointer so it can't do this itself; this
+//      is the same post-apply step ThemesPanel::on_apply_clicked's
+//      do_apply lambda performs after walking its targets list. Required
+//      for the snap state to round-trip through save (the Toolbar's
+//      snap popover writes to m_project->snap as canonical; we have to
+//      keep it in sync after a doc-side write).
+//   5. Fires ThemeLibrary::signal_theme_applied(id). The library
+//      doesn't actually mutate (apply touches the doc, not the
+//      library), but the signal is the seam where MainWindow's
+//      canvas-refresh cascade hooks in. See ThemeLibrary.hpp signals
+//      block — the signal exists specifically to let drivers OTHER
+//      than the panel (i.e. the script) hand off to the same refresh
+//      callback the panel's set_on_changed installed.
+//
+// What it does NOT do:
+//   * Push a command. apply is non-undoable in v1 by Theme.hpp design.
+//     A scripted apply line is silently irreversible — Ctrl+Z after a
+//     `themes.t apply` line walks past it as if it weren't there
+//     (because there's no command to walk past). Script authors who
+//     need apply to participate in an undo group will need to wait
+//     for the (out-of-m1-scope) EditDocStateCommand option.
+//   * Confirm with the user. The panel pops a modal warning the user
+//     that apply isn't undoable; scripts skip this entirely (the
+//     bareword `apply` IS the confirmation). The Scripter window is
+//     the script author's domain; they own the consequences of every
+//     line they run.
+//   * Operate on multiple docs. v1 is active-doc-only. The verb
+//     signature accepts no positional args today (or, in the
+//     collection form, accepts exactly one — the theme id), leaving
+//     room for a future `apply "<doc-spec>"` arg that the doc
+//     Scriptable design will inform. The single-doc default is the
+//     conservative landing point — if multi-doc lands later, scripts
+//     written for v1 keep working with no edits.
+//
+// **capture** — collection-only `themes capture` / `themes capture
+// "<name>"` / `themes capture "<name>" "<category>"`. There's no proxy
+// form: capture CREATES a new theme, so the existing proxy's id isn't
+// meaningful (same reason `new` is collection-only).
+//
+// What it does:
+//   1. Refuses if no project or no active doc.
+//   2. Calls capture_theme_from_doc(*active_doc, m_project->motif) —
+//      same motif-arg-is-cosmetic story as apply.
+//   3. Sets header.name from args[0] if provided. If args[0] is empty
+//      or absent, auto-generates "Theme N" by walking has_user_name
+//      from N=1 (mirror of ThemesPanel::on_save_current_as_theme's
+//      proposal walk). Note: the panel's commit also has a
+//      "name-collides → append N" loop for the case where the user
+//      typed a duplicate — the script form skips that, since duplicate
+//      names are not a model-level error and a script that wants
+//      uniqueness can call find_by_name or check user_ids first.
+//   4. Sets header.category from args[1] if provided; empty is
+//      meaningful (= uncategorised). Default is empty.
+//   5. Pushes AddThemeCommand. Library mints the fresh "thm_<uuid>";
+//      we capture m_assigned_id and return it.
+//
+// Capture IS undoable (AddThemeCommand handles the undo by removing
+// the captured theme). The captured value contains the active doc's
+// settings AT CAPTURE TIME — subsequent doc edits don't ripple into
+// the theme. This matches both the panel's behaviour and the
+// theme-doesn't-bind invariant from Theme.hpp.
+//
+// **Why apply is proxy-AND-collection but capture is collection-only.**
+//
+// apply targets a SPECIFIC theme by id. The dotted form
+// `themes.<id> apply` reads naturally ("apply this theme") and the
+// collection form `themes apply "<id>"` reads as the by-id alternative
+// for scripts that have an id in hand without wanting to materialise
+// a proxy. Both shapes appear naturally in real script patterns.
+//
+// capture CREATES a new theme; there's no existing id to address. The
+// only sensible form is `themes capture <name?> <category?>` — the
+// collection knows the project, the active doc, and how to push the
+// AddThemeCommand. A `themes.<id> capture` form would require the
+// proxy to either overwrite the theme it addresses (not what
+// capture_theme_from_doc does — it returns a fresh value-typed Theme)
+// or ignore its own id (semantically incoherent). So capture is
+// collection-only by design, not by oversight.
+//
+// **Refresh cascade.** Both verbs need the canvas to redraw after they
+// fire, otherwise the operator sees stale state until the next click /
+// inspector toggle. The two paths:
+//
+//   * apply → signal_theme_applied(id). MainWindow_zones wires this to
+//     the same callback `m_themes.set_on_changed` installs (queue_draw +
+//     notify_document_changed + refresh_inspector + schedule_save).
+//
+//   * capture → signal_theme_added(id) (existing). ThemesPanel already
+//     listens on this for its library-list rebuild; MainWindow's
+//     existing wiring of the panel's on_changed handles the schedule_save
+//     side. No new signal needed for capture.
+//
+// **Eyes-half story.** Both verbs SHOULD update the canvas visibly:
+//
+//   * apply: the active doc's units / colours / guides / grid /
+//     margins / snap all reflect the theme's values immediately after
+//     the line runs. If grid/margin layers had to be created or
+//     removed, the layer panel re-renders too.
+//
+//   * capture: the active doc looks identical (capture is pure read).
+//     The visible change is in ThemesPanel — a new row appears with
+//     the captured name (or auto-generated "Theme N"). Same eyes-half
+//     check as `themes new`.
 //
 // ── On active-project scope ────────────────────────────────────────────────
 //
