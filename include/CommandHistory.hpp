@@ -1124,6 +1124,77 @@ struct EditLayerFieldCommand : CurvzCommand {
     // SceneNode* is held. Default `references() == false` is correct.
 };
 
+// ── EditObjectFieldCommand ───────────────────────────────────────────────────
+// s232 m3 — scene-object state-mutations sibling of EditLayerFieldCommand.
+// Same shape (single iid + before/after of one field), narrower Field set
+// (Name, Visible, Locked — no Color, since scene objects don't carry a
+// single colour tag the way layers do; per-object colour lives in
+// FillStyle/StrokeStyle and is handled by EditObjectCommand). The need
+// arises with the `objects` Scriptable's m3 element mutating verbs
+// (toggle_visible / set_visible / toggle_locked / set_locked / rename
+// on `objects.<iid>` proxies); the existing user-facing rename path in
+// LayersPanel for non-layer objects has been DIRECT mutation with no
+// undo support since forever — this command class is the surface that
+// future panel sweep can wire to, but m3 keeps the change scoped to the
+// script path.
+//
+// Same structural-vs-cosmetic posture as the layer variant: not
+// structural (no tree-shape change, no iid invalidation needed), so
+// it doesn't reproduce the s170 crash class. The motivation is undo-
+// stack hygiene — Ctrl+Z after a script-driven toggle / rename should
+// reverse the change, not silently do nothing.
+//
+// Field discriminator: `Field` enum picks which pair to read. String
+// field (Name) uses `before_str` / `after_str`; bool fields (Visible,
+// Locked) use `before_bool` / `after_bool`. The unused pair is ignored.
+// No coalescing — each invocation is one undo step, matching the
+// layer-side single-step model.
+//
+// Doc identity: not needed. The scene-object iid resolves directly to
+// the SceneNode via curvz::utils::find_by_iid (scene objects participate
+// in the per-doc iid index, same as layers). Skip silently if the iid
+// no longer resolves (node deleted by another command between push and
+// replay) — same partial-recovery shape as the layer variant.
+struct EditObjectFieldCommand : CurvzCommand {
+    enum class Field { Name, Visible, Locked };
+
+    CurvzProject* proj;             // resolution root
+    std::string   obj_iid;          // direct iid of the scene object being edited
+    Field         field;
+    std::string   before_str;       // used for Name
+    std::string   after_str;
+    bool          before_bool;      // used for Visible / Locked
+    bool          after_bool;
+
+    EditObjectFieldCommand(CurvzProject* proj,
+                           std::string obj_iid,
+                           Field field,
+                           std::string before_str,
+                           std::string after_str,
+                           bool before_bool,
+                           bool after_bool)
+        : proj(proj)
+        , obj_iid(std::move(obj_iid))
+        , field(field)
+        , before_str(std::move(before_str))
+        , after_str(std::move(after_str))
+        , before_bool(before_bool)
+        , after_bool(after_bool) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override {
+        switch (field) {
+            case Field::Name:    return "Rename object";
+            case Field::Visible: return "Toggle object visibility";
+            case Field::Locked:  return "Toggle object lock";
+        }
+        return "Edit object field";
+    }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
+};
+
 // ── RefMoveCommand ────────────────────────────────────────────────────────────
 // Two-axis move of a Ref node's anchor point. s167 m2: migrated to
 // iid+project capture; bodies out-of-line in CommandHistory.cpp.

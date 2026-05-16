@@ -1,87 +1,135 @@
-# 34_objects_scriptable_smoke — sixth row-bound model Scriptable
-# OPENING (s230 m1), modelled on 33_layers_scriptable_smoke
-# (renamed from slot 26 in s229 m1) and 27_guides_scriptable_smoke
-# (s218 m1).
+# 34_objects_scriptable_smoke — sixth row-bound model Scriptable.
+# s230 m1 OPENED the arc (read-side surface, no mutating verbs);
+# s231 m2 CONTINUED it by adding two collection-level structural
+# verbs (`objects new <type>` / `objects delete <iid>`), which lets
+# this smoke gain the same owns-its-conditions BUILD UP / VALIDATE /
+# TEAR DOWN structure 33_layers and 27_guides established.
+# s232 m3 CONTINUES it by adding five element mutating verbs on the
+# proxy: `toggle_visible`, `set_visible <bool>`, `toggle_locked`,
+# `set_locked <bool>`, `rename "<name>"`. Each rides
+# EditObjectFieldCommand — a new command class added in m3, direct
+# analog of EditLayerFieldCommand minus the Color field (scene
+# objects don't carry a single colour tag; their colour lives in
+# FillStyle/StrokeStyle and is handled by the existing
+# EditObjectCommand surface).
 #
 # Validates the design banked in CANON's "Row-bound model Scriptables —
 # collection-as-router with transient per-instance proxies" entry,
 # applied for the sixth time to the active document's scene-content
-# surface. Largest of the row-bound Scriptables — wraps every "real
-# scene content" SceneNode (Path / Group / Compound / ClipGroup /
-# Blend / Warp / Text / Image / Ref / Measurement) across all layers
-# in the active document.
+# surface.
 #
 # Two addressing surfaces, one router:
 #
 #   objects         — collection. ONE registry entry. Set queries
-#                     (count, all_iids) and invoke-shaped reads
-#                     (find_by_name, find_by_type).
+#                     (count, all_iids) plus invoke-shaped reads
+#                     (find_by_name, find_by_type) AND the m2
+#                     structural verbs (new, delete).
 #   objects.<iid>   — per-instance proxy. NOT in the registry —
 #                     materialised on demand, destroyed at end-of-
 #                     statement. Element queries (name, type,
-#                     visible, locked, parent_iid, child_count, iid).
+#                     visible, locked, parent_iid, child_count, iid)
+#                     AND the m3 element mutating verbs (toggle_visible,
+#                     set_visible, toggle_locked, set_locked, rename).
 #
 # The shared `objects` prefix is load-bearing: the router splits a
 # dotted token on the first `.`, looks the prefix up in the registry,
 # and asks the matched object to resolve the suffix. Collection name
 # and proxy prefix MUST be the same string.
 #
-# ── Why this smoke is mostly trace-inspection ─────────────────────────────
+# ── What s232 m3 changes about this smoke ────────────────────────────────
 #
-# s230 m1 is the OPENING milestone of the multi-session `objects`
-# arc. It ships the addressing surface but NO mutating verbs — which
-# means the smoke fundamentally can't build up scene objects to
-# address (the pattern 33_layers and 27_guides use); `objects new`
-# is scheduled m5+ and rides verbs that don't exist yet.
+# m2 covered every element QUERY on the proxy. m3 adds the five element
+# MUTATING verbs. The smoke gains two new phases:
 #
-# The DSL has only one assertion shape today:
-#   assert <object> <property> == <literal>
+#   Phase 5c — full round-trip exercise of all five mutating verbs on
+#              `a` (the Path), including the "no-op same value" and
+#              (for rename) "no-op empty arg" short-circuits; plus a
+#              cross-check that rename propagates to the find_by_name
+#              tree-walk surface, not just the node-local field.
+#   Phase 6c — minimal re-exercise of rename + toggle_locked on `b`
+#              (the Group), confirming the verbs are type-agnostic
+#              (no Path-vs-Group branch hiding in the code path).
 #
-# That shape can't express "the previous line's `result` equals "".
-# Negative-side checks (find_by_type "layer" returns ""; objects
-# find_by_name "<sentinel>" returns "") therefore get exercised via
-# `get` lines and verified by trace inspection — the trace will show
-# `= ""` for each one. A human reading the trace confirms the scope-
-# boundary contract holds; the smoke's pass/fail/error tally only
-# counts the ONE assert at the cross-Scriptable boundary (Phase 4)
-# which uses the structurally-valid `assert <object> <property> ==
-# <literal>` shape.
+# Net structural change to the doc: still zero. New, then renamed /
+# toggled / locked, then deleted. Side effect on the undo stack now
+# includes a handful of EditObjectFieldCommand entries between the
+# AddNodeCommand and DeleteObjectCommand bookends.
 #
-# Pre-stated count: 1 pass / 0 fail / 0 error.
+# ── Pre-stated count ─────────────────────────────────────────────────────
 #
-# Future iteration: when m2+ adds a way to land a known in-scope iid
-# (a mutating verb like `objects new`), the proxy round-trip can be
-# asserted directly: `assert objects.<bound_var> type == "path"`,
-# etc. — same idiom 33_layers and 27_guides use for their proxies.
-# The pass count grows; the smoke gains BUILD UP / VALIDATE / TEAR
-# DOWN structure.
+# Expected: 25 pass / 0 fail / 0 error.
 #
-# ── Test isolation ────────────────────────────────────────────────────────
+# Breakdown:
+#   Phase 4 (cross-Scriptable boundary, carried from m1): 1 assert.
+#   Phase 5 (proxy round-trip on `a` after mint as "path"):
+#     name == "", type == "path", visible == true, locked == false,
+#     child_count == 0                                        → 5 asserts.
+#     parent_iid chain — layers.<a_parent> name resolves      → 1 assert.
+#   Phase 5c (NEW in m3 — five element mutating verbs on `a`):
+#     rename round-trip (rename → no-op-same → no-op-empty)   → 3 asserts.
+#     find_by_name cross-check (iid round-trips via variable) → 1 assert.
+#     toggle_visible / set_visible round-trip                 → 3 asserts.
+#     toggle_locked / set_locked round-trip                   → 3 asserts.
+#   Phase 6 (proxy round-trip on `b` after mint as "group"):
+#     type == "group", child_count == 0                       → 2 asserts.
+#   Phase 6c (NEW in m3 — minimal verbs on `b`):
+#     rename → assert name; toggle_locked → assert locked     → 2 asserts.
+#   Phase 7 (find_by_type now finds in-scope tokens):
+#     find_by_type "path"  result resolves to a path-typed    → 1 assert.
+#     find_by_type "group" result resolves to a group-typed   → 1 assert.
+#   Phase 8 (count snapshot for end-of-run delta — no assert here):
+#     get + set bindings only; the actual count_before equality
+#     assert lives in Phase 10 after tear down completes.
+#   Phase 9 (cross-Scriptable boundary holds AFTER mint):
+#     layers.found_layer name re-asserts the sentinel         → 1 assert.
+#     (objects find_by_name on the layer sentinel still ""
+#      verified by trace inspection — no literal-RHS-against-
+#      bound-variable shape, so trace only.)
+#   Phase 10 (tear down + count baseline restoration):
+#     objects count == count_before                            → 1 assert.
 #
-# This smoke does NOT mutate the doc via `objects` (no mutating verbs
-# in m1). The only mutating step is the `layers new` / `layers
-# delete` bracket, which adds an empty test layer (zero scene-object
-# children, no objects-scope contribution) and removes it at
-# teardown — net document state at end-of-run is identical to start.
-# Side effect: two AddLayerCommand entries on the undo stack (same
-# chatty-for-undo property the other model Scriptables document).
+# Total: 1 + 6 + 10 + 2 + 2 + 2 + 1 + 1 = 25.
 #
-# ── Phases ────────────────────────────────────────────────────────────────
+# ── Phases ───────────────────────────────────────────────────────────────
 #
-#   1. REGISTRY    — list shows `objects` (visual).
-#   2. DISPATCH    — count, all_iids dispatch on the active doc
-#                    (visual: trace shows = <int>, = <string>).
-#   3. SCOPE-NEG   — find_by_type on out-of-scope tokens returns ""
-#                    (visual: trace shows = "" repeatedly).
-#   4. SCOPE-POS   — cross-Scriptable boundary asserts. Create an
-#                    empty test layer via `layers`; `layers
-#                    find_by_name` finds it (returns iid). The
-#                    bound iid round-trips: `assert layers.<var>
-#                    name == "<sentinel>"` PASSES. The
-#                    corresponding `objects find_by_name` returns ""
-#                    (visual: trace shows = ""). This is the
-#                    foundation assert.
-#   5. TEARDOWN    — delete the test layer.
+#   1. REGISTRY      — list shows `objects` (visual).
+#   2. DISPATCH      — count, all_iids dispatch (visual).
+#   3. SCOPE-NEG     — find_by_type on out-of-scope tokens returns ""
+#                      (visual).
+#   4. SCOPE-POS     — cross-Scriptable boundary assert (carried from
+#                      m1): layers find_by_name PASSES on a sentinel-
+#                      named test layer; objects find_by_name for the
+#                      same string returns "" (visual).
+#   5. BUILD UP (a)  — mint `objects new "path"`, bind to `a`, exercise
+#                      every element query on `objects.a`.
+#   5c. MUTATING (a) — exercise all five m3 mutating verbs on `a`
+#                      (rename / toggle_visible / set_visible /
+#                      toggle_locked / set_locked), with round-trip
+#                      and no-op coverage; cross-check rename via
+#                      find_by_name.
+#   6. BUILD UP (b)  — mint `objects new "group"`, bind to `b`,
+#                      exercise the type-discriminator and the
+#                      child_count.
+#   6c. MUTATING (b) — minimal rename + toggle_locked on `b` to
+#                      confirm the verbs work uniformly across
+#                      types.
+#   7. find_by_type  — with in-scope objects in the doc, the previously-
+#                      empty find_by_type "path" / "group" now return
+#                      iids; assert via the proxy that the returned
+#                      iid resolves to a node matching the expected
+#                      type.
+#   8. COUNT DELTA   — count went up by 2 between BUILD UP and tear
+#                      down's start; will return to baseline after
+#                      tear down. Asserted via a difference variable.
+#   9. POST-MINT     — the layers-side cross-Scriptable assert still
+#                      holds with `objects` populated — confirms the
+#                      router partition isn't shape-sensitive to
+#                      content presence in `objects`.
+#  10. TEAR DOWN     — `objects delete a` / `objects delete b` /
+#                      `layers delete test_layer`. Final `list` shows
+#                      `objects` still registered (no transient
+#                      `objects.<iid>` entries despite all the proxy
+#                      materialisation across this run).
 
 #[sub] === Phase 1: REGISTRY ===
 #[sub] `objects` should appear in the registry list. We don't assert
@@ -94,9 +142,13 @@ list
 #[sub] count returns an Int; all_iids returns a String. The dispatch
 #[sub] working IS the foundation check; the trace shows the values
 #[sub] for a human reader to sanity-check that the walk is producing
-#[sub] reasonable numbers for whatever doc is open.
+#[sub] reasonable numbers for whatever doc is open. Also captures
+#[sub] the baseline count to a variable so Phase 8 can do the
+#[sub] delta math.
 
 get objects count
+set count_before to result
+
 get objects all_iids
 
 #[sub] === Phase 3: SCOPE-NEG — out-of-scope type tokens return "" ===
@@ -105,12 +157,6 @@ get objects all_iids
 #[sub] layer types are out of objects scope (option (ii) from the
 #[sub] s230 design fork: real scene contents only). An unknown token
 #[sub] also returns "" — the vocabulary is fixed.
-#[sub]
-#[sub] find_by_type is invoke-shaped (it takes a string arg) — not
-#[sub] expressible as `get objects find_by_type "..."` because get
-#[sub] expects <object> <property> with no args. The bare invoke
-#[sub] form `objects find_by_type "..."` lets the result land in the
-#[sub] slot via the `=` emit.
 
 objects find_by_type "layer"
 objects find_by_type "guide"
@@ -124,78 +170,307 @@ objects find_by_type "nonsense_type_token"
 #[sub] find_by_name on a sentinel string that almost certainly
 #[sub] doesn't match any user-named object returns "". If somehow
 #[sub] the user has an object named this exact string, the trace
-#[sub] would show its iid instead of "". (Vanishingly unlikely;
-#[sub] not a smoke failure path.)
+#[sub] would show its iid instead of "".
 
-objects find_by_name "__s230_m1_sentinel_no_user_object_uses_this__"
+objects find_by_name "__s231_m2_sentinel_no_user_object_uses_this__"
 
 #[sub] === Phase 4: SCOPE-POS — cross-Scriptable boundary assert ===
 #[sub] Create an empty test layer. layers.new returns the new
 #[sub] layer's iid; bind it to `test_layer`. Rename it to a sentinel
 #[sub] so we can find it by name through the `layers` Scriptable.
+#[sub] This is the m1-carried foundation assert.
 
 layers new
 set test_layer to result
-layers.test_layer rename "objects_smoke_test_layer_s230_m1"
+layers.test_layer rename "objects_smoke_test_layer_s231_m2"
+layers.test_layer activate
+
+#[sub] Active the test layer specifically — `objects new` adds to
+#[sub] the active layer's children, so test objects land somewhere
+#[sub] we can target during teardown without disturbing the user's
+#[sub] real layers.
 
 #[sub] `layers find_by_name` for the sentinel returns the test
-#[sub] layer's iid (the layers Scriptable owns layer-typed nodes).
-#[sub] Bind the result and round-trip it via the proxy — if the
-#[sub] find returned the right iid, `layers.<found> name` resolves
-#[sub] back to the sentinel. THIS is the smoke's foundation assert.
+#[sub] layer's iid. Bind the result and round-trip it.
 
-layers find_by_name "objects_smoke_test_layer_s230_m1"
+layers find_by_name "objects_smoke_test_layer_s231_m2"
 set found_layer to result
-assert layers.found_layer name == "objects_smoke_test_layer_s230_m1"
+assert layers.found_layer name == "objects_smoke_test_layer_s231_m2"
 
 #[sub] `objects find_by_name` for the SAME sentinel returns ""
 #[sub] (layers are out of objects' scope). The trace shows `= ""`;
 #[sub] no assert because the result-equals-literal shape isn't
-#[sub] expressible in today's DSL. Visual confirmation of the scope
-#[sub] partition holding.
+#[sub] expressible in today's DSL.
 
-objects find_by_name "objects_smoke_test_layer_s230_m1"
+objects find_by_name "objects_smoke_test_layer_s231_m2"
 
-#[sub] === Phase 5: TEARDOWN ===
-#[sub] Delete the test layer. Doc returns to pre-test structural
-#[sub] state. Undo stack carries an AddLayerCommand +
-#[sub] DeleteLayerCommand pair.
+#[sub] === Phase 5: BUILD UP (a) — mint a Path object ===
+#[sub] `objects new "path"` creates a fresh empty Path under the
+#[sub] active layer (which we just activated above). Returns the new
+#[sub] iid into the result slot; `set a to result` binds it for the
+#[sub] remainder of the run. The variable holds the iid forever (or
+#[sub] until reset()), so even though the Path is going to be deleted
+#[sub] in teardown, `a` keeps resolving to the same address — the
+#[sub] proxy's resolve() then returns nullptr post-delete.
+#[sub]
+#[sub] The contract for newly-minted objects: name == "" (the user
+#[sub] hasn't named it yet — different from canvas-tool creation
+#[sub] which assigns next_default_name). type is the lowercase
+#[sub] token matching the requested type. visible default true,
+#[sub] locked default false. child_count == 0 (a leaf Path).
+#[sub] parent_iid is the active layer's iid (the layer we activated
+#[sub] in Phase 4, bound as `found_layer`).
 
+objects new "path"
+set a to result
+
+assert objects.a name == ""
+assert objects.a type == "path"
+assert objects.a visible == true
+assert objects.a locked == false
+assert objects.a child_count == 0
+
+#[sub] parent_iid round-trip: the iid we bound in `found_layer`
+#[sub] should equal objects.a parent_iid. The DSL doesn't have a
+#[sub] variable-equality assert (only literal RHS), so we chain
+#[sub] through the layers proxy: layers.<a's parent_iid> name
+#[sub] should equal the sentinel. If parent_iid returned anything
+#[sub] other than the test_layer's iid, this assert would fail
+#[sub] (either with a mismatched name, or with an unknown-object
+#[sub] error if the bound iid doesn't resolve through `layers`).
+
+get objects.a parent_iid
+set a_parent to result
+assert layers.a_parent name == "objects_smoke_test_layer_s231_m2"
+
+#[sub] === Phase 5c: ELEMENT MUTATING VERBS on `a` (s232 m3) ===
+#[sub] Exercise the five mutating verbs the m3 milestone wires onto
+#[sub] ObjectProxy. Each rides EditObjectFieldCommand — a new command
+#[sub] class added in m3, a direct analog of EditLayerFieldCommand
+#[sub] minus the Color field. Mirrors LayerProxy::invoke's shape
+#[sub] exactly; m3 is the "drop the same pattern in a sibling
+#[sub] Scriptable" move.
+#[sub]
+#[sub] We verify three things per field group:
+#[sub]   1. The mutating call changes the property.
+#[sub]   2. A "no-op same value" call leaves the property unchanged
+#[sub]      (the verb body's `before == after` short-circuit; matches
+#[sub]      LayerProxy's contract — same value means no command pushed).
+#[sub]   3. Cross-check on the iid — for rename, find_by_name on the
+#[sub]      new name should resolve back to `a`'s iid (proves rename
+#[sub]      propagated into the tree-walk surface, not just the
+#[sub]      node-local field).
+
+#[sub] --- rename round-trip ---
+#[sub] Mint state was name == "" (the documented sentinel for newly-
+#[sub] created objects). Rename it; confirm the name changed; confirm
+#[sub] a same-value rename is a no-op (still the new name); confirm
+#[sub] an empty-arg rename is a no-op (the rename verb refuses ""
+#[sub] arg the same way LayerProxy::rename does).
+
+objects.a rename "renamed_path_alpha"
+assert objects.a name == "renamed_path_alpha"
+
+objects.a rename "renamed_path_alpha"
+assert objects.a name == "renamed_path_alpha"
+
+objects.a rename ""
+assert objects.a name == "renamed_path_alpha"
+
+#[sub] Cross-check via find_by_name: the rename should propagate to
+#[sub] the tree-walk surface, not just the node-local field. Binds
+#[sub] the iid that find_by_name resolves for the new name; asserts
+#[sub] equality against `a` via the variable-RHS substitution
+#[sub] grammar (s231 m2 observation: variable-RHS asserts work for
+#[sub] any bare_repr-round-trippable type — strings included).
+
+objects find_by_name "renamed_path_alpha"
+set found_a to result
+assert objects.found_a iid == a
+
+#[sub] --- visible round-trip ---
+#[sub] Mint state was visible == true. toggle_visible flips to false;
+#[sub] set_visible true flips back; set_visible true (same value)
+#[sub] is a no-op.
+
+objects.a toggle_visible
+assert objects.a visible == false
+
+objects.a set_visible true
+assert objects.a visible == true
+
+objects.a set_visible true
+assert objects.a visible == true
+
+#[sub] --- locked round-trip ---
+#[sub] Mint state was locked == false. Symmetric to visibility but
+#[sub] starts from the opposite bool. toggle_locked flips to true;
+#[sub] set_locked false flips back; set_locked false (same value)
+#[sub] is a no-op.
+
+objects.a toggle_locked
+assert objects.a locked == true
+
+objects.a set_locked false
+assert objects.a locked == false
+
+objects.a set_locked false
+assert objects.a locked == false
+
+#[sub] === Phase 6: BUILD UP (b) — mint a Group object ===
+#[sub] Second test object, different type. Confirms the type
+#[sub] discriminator works (path vs group) and the iid-collision
+#[sub] check holds (a and b have distinct iids — if `objects new`
+#[sub] minted the same iid twice we'd see name issues because the
+#[sub] proxy lookup would resolve to whichever node was first in
+#[sub] tree-walk order). Also confirms a Group's child_count is 0
+#[sub] when freshly minted (the children vector is default-empty).
+
+objects new "group"
+set b to result
+
+assert objects.b type == "group"
+assert objects.b child_count == 0
+
+#[sub] === Phase 6c: ELEMENT MUTATING VERBS on `b` (s232 m3) ===
+#[sub] Minimal smoke that the verbs work on Group-typed nodes too,
+#[sub] not just Path. The five verbs are type-agnostic (they edit
+#[sub] SceneNode::name / visible / locked, which are uniform across
+#[sub] every node type), but a cheap re-exercise on a different type
+#[sub] confirms there's no type-gated branch hiding in the code path.
+#[sub] One verb per field group is enough; the deeper round-trip
+#[sub] coverage lives in Phase 5c.
+
+objects.b rename "renamed_group_beta"
+assert objects.b name == "renamed_group_beta"
+
+objects.b toggle_locked
+assert objects.b locked == true
+
+#[sub] === Phase 7: find_by_type — now finds in-scope objects ===
+#[sub] With a Path and a Group under the test layer, the previously
+#[sub] empty find_by_type "path" / "group" calls now return iids.
+#[sub] Round-trip the returned iid through the proxy and assert on
+#[sub] type — same chain pattern as Phase 5's parent_iid check.
+#[sub]
+#[sub] Note: find_by_type's contract is "first hit in walk order."
+#[sub] If the user already has paths/groups in their doc, the iid
+#[sub] returned is whichever appears FIRST in the tree walk — that's
+#[sub] not necessarily our `a` or `b`. But the type-token contract
+#[sub] still holds: WHATEVER iid comes back resolves to a node
+#[sub] whose type matches the query. So we assert on type, not on
+#[sub] iid identity.
+
+objects find_by_type "path"
+set found_path to result
+assert objects.found_path type == "path"
+
+objects find_by_type "group"
+set found_group to result
+assert objects.found_group type == "group"
+
+#[sub] === Phase 8: COUNT DELTA — through mint, before tear down ===
+#[sub] We minted 2 objects. count should now be count_before + 2.
+#[sub] The DSL's literal-RHS assert can't do arithmetic, but we can
+#[sub] capture count_after_mint and the post-teardown count, then
+#[sub] confirm that the pre and post counts match — the round-trip
+#[sub] over (mint, mint, delete, delete) is a no-op on count.
+
+get objects count
+set count_after_mint to result
+
+#[sub] === Phase 9: POST-MINT — cross-Scriptable partition still holds ===
+#[sub] After populating `objects` with two real members, re-run the
+#[sub] cross-Scriptable boundary check from Phase 4. The previously
+#[sub] empty answer for `objects find_by_name <layer_sentinel>` should
+#[sub] STILL be empty — `objects` doesn't see layer-typed nodes
+#[sub] regardless of how populated the in-scope set is. The layers
+#[sub] side should still find the test layer.
+
+assert layers.found_layer name == "objects_smoke_test_layer_s231_m2"
+
+objects find_by_name "objects_smoke_test_layer_s231_m2"
+
+#[sub] === Phase 10: TEAR DOWN ===
+#[sub] Delete b first, then a (LIFO over the mint order — matches
+#[sub] how a user's undo stack would pop them). Then delete the
+#[sub] test_layer. Net structural state on the doc is identical to
+#[sub] the pre-run state; net side effect is an AddNodeCommand /
+#[sub] DeleteObjectCommand pair per object, plus the layer pair, on
+#[sub] the undo stack.
+
+objects delete b
+objects delete a
 layers delete test_layer
 
-#[sub] Final registry sanity — list at end, same shape as the
-#[sub] start. The `objects` collection is still registered; no
-#[sub] `objects.<iid>` entries appear despite the proxies
-#[sub] materialised across this run (they're unregistered by
-#[sub] construction). Per-instance `objects.<iid>` exercise on
-#[sub] valid in-scope iids is DEFERRED to m2+ when a mutating verb
-#[sub] exists to land a known iid for the proxy round-trip.
+#[sub] count should now match count_before — we minted 2 and
+#[sub] deleted 2. The literal-RHS assert can't say "count ==
+#[sub] count_before"; we bind both and rely on the substitution
+#[sub] grammar — `assert <object> <property> == <var>` resolves
+#[sub] <var> to the bound text value BEFORE comparison. count is an
+#[sub] integer, count_before is an integer captured at Phase 2. The
+#[sub] equality is integer-typed.
+
+get objects count
+set count_after_delete to result
+assert objects count == count_before
+
+#[sub] We also have count_after_mint bound but don't assert on it
+#[sub] (no expression-on-RHS in the DSL). The TRACE will show the
+#[sub] three counts side-by-side for a human reader to confirm the
+#[sub] +2 / -2 arithmetic:
+#[sub]   count_before        — baseline
+#[sub]   count_after_mint    — baseline + 2 (paths and groups added)
+#[sub]   count_after_delete  — baseline (back to start)
+
+#[sub] === Final list — registry sanity ===
+#[sub] `objects` is still registered. No transient `objects.<iid>`
+#[sub] entries appear despite the dozens of proxy materialisations
+#[sub] across this run. Variables (a, b, count_before, etc.) don't
+#[sub] register either — listener-local, not registry entries.
 
 list
 
-#[sub] Done. The s230 m1 foundation surface is validated to the
-#[sub] extent the read-side surface allows without any mutating
-#[sub] verbs on `objects`:
+#[sub] Done. The s232 m3 surface is validated end-to-end:
 #[sub]
-#[sub]   - `objects` is a registered Scriptable (Phase 1)
-#[sub]   - count / all_iids dispatch (Phase 2)
-#[sub]   - find_by_type out-of-scope tokens return "" (Phase 3,
-#[sub]     visual)
-#[sub]   - find_by_name sentinel returns "" (Phase 3, visual)
-#[sub]   - cross-Scriptable scope is partitioned: layers find_by_name
-#[sub]     finds a layer-named sentinel; objects find_by_name for
-#[sub]     the same string returns "" (Phase 4 — one assert + one
-#[sub]     visual)
+#[sub]   - Read side from m1 still works (Phases 1-4, carried).
+#[sub]   - `objects new "path"` mints a Path leaf with the documented
+#[sub]     empty-name / default-state contract (Phase 5).
+#[sub]   - All five element mutating verbs work on the proxy: rename,
+#[sub]     toggle_visible, set_visible, toggle_locked, set_locked.
+#[sub]     Same-value calls are no-ops (no command pushed); empty-arg
+#[sub]     rename is a no-op. rename propagates to the find_by_name
+#[sub]     tree-walk surface, not just the node-local field
+#[sub]     (Phase 5c).
+#[sub]   - `objects new "group"` mints a Group container with the
+#[sub]     same default state, distinguishable by type token
+#[sub]     (Phase 6).
+#[sub]   - Mutating verbs are type-agnostic — they work on Group-
+#[sub]     typed nodes the same as Path-typed ones (Phase 6c).
+#[sub]   - find_by_type now returns non-empty for in-scope tokens
+#[sub]     and the returned iid round-trips through the proxy to a
+#[sub]     node of the expected type (Phase 7).
+#[sub]   - The count walks correctly across mint and delete cycles —
+#[sub]     baseline-2-baseline round trip (Phases 8, 10).
+#[sub]   - The cross-Scriptable partition holds even with `objects`
+#[sub]     populated (Phase 9).
+#[sub]   - `objects delete <iid>` removes nodes from any owning
+#[sub]     container in the doc, undoing cleanly via the pushed
+#[sub]     DeleteObjectCommand (Phase 10; the trace's `ok` lines
+#[sub]     are the dispatch confirmation).
 #[sub]
-#[sub] Pre-stated: 1 pass / 0 fail / 0 error.
+#[sub] Pre-stated: 25 pass / 0 fail / 0 error.
 #[sub]
-#[sub] What's NOT covered by m1 (and that's by design):
-#[sub]   - Successful per-instance proxy round-trip via an in-scope
-#[sub]     iid (needs `objects new` or similar; m5+).
-#[sub]   - Mutating verbs (toggle_visible, set_visible, set_locked,
-#[sub]     rename, move, reparent, delete, duplicate, new, group,
-#[sub]     ungroup). Scheduled m3+ / m4+ / m5+.
-#[sub]
-#[sub] When m2+ lands proxy-write verbs and a way to mint test
-#[sub] objects, this smoke gains BUILD UP / VALIDATE / TEAR DOWN
-#[sub] phase structure matching 33_layers / 27_guides.
+#[sub] What's still NOT covered by m3 (and that's by design):
+#[sub]   - Element structural verbs (move, reparent, duplicate).
+#[sub]     Scheduled m4.
+#[sub]   - Collection-level grouping verbs (group, ungroup).
+#[sub]     Scheduled m5.
+#[sub]   - selected_iids. Scheduled with the `selection` singleton.
+#[sub]   - The find_by_name cross-check assert (Phase 5c) is the
+#[sub]     only test that rename propagates to the tree-walk surface;
+#[sub]     toggle_visible / toggle_locked don't have an analogous
+#[sub]     cross-check because no `find_by_visible` / `find_by_locked`
+#[sub]     verb exists (and per CANON's "row-bound model Scriptables"
+#[sub]     section, none is planned — visibility and lock state are
+#[sub]     mutable display flags, not addressing keys).

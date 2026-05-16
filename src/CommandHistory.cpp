@@ -943,6 +943,88 @@ void EditLayerFieldCommand::undo() {
     apply_layer_field(layer, field, before_str, before_bool);
 }
 
+// ── EditObjectFieldCommand bodies (s232 m3) ──────────────────────────
+// Mirror EditLayerFieldCommand bodies exactly, swapping iid name and
+// helper. One body for all three fields (Name / Visible / Locked).
+// Resolve the scene object by iid via the project-wide find_by_iid,
+// then either set the relevant field to `after_*` (execute / redo) or
+// to `before_*` (undo). Skip silently if the node no longer resolves
+// (deleted by another command between push and replay).
+//
+// Same explicit-before/after rationale as the layer variant: explicit
+// values make replay idempotent (running execute() twice ends in the
+// same state as running it once). Toggling would work for bool fields
+// but not strings, and a partial-recovery skip wouldn't compose with
+// double-inversion.
+namespace {
+void apply_object_field(SceneNode* node,
+                        EditObjectFieldCommand::Field field,
+                        const std::string& s, bool b) {
+    using Field = EditObjectFieldCommand::Field;
+    switch (field) {
+        case Field::Name:    node->name    = s; break;
+        case Field::Visible: node->visible = b; break;
+        case Field::Locked:  node->locked  = b; break;
+    }
+}
+
+const char* field_name(EditObjectFieldCommand::Field f) {
+    using Field = EditObjectFieldCommand::Field;
+    switch (f) {
+        case Field::Name:    return "Name";
+        case Field::Visible: return "Visible";
+        case Field::Locked:  return "Locked";
+    }
+    return "?";
+}
+}  // namespace
+
+void EditObjectFieldCommand::execute() {
+    if (!proj) {
+        LOG_INFO("[IIDDIAG] EditObjectField::exec  proj=NULL");
+        return;
+    }
+    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
+    if (obj_iid.empty()) {
+        LOG_INFO("[IIDDIAG] EditObjectField::exec  empty obj_iid "
+                 "(push site bug?)");
+        return;
+    }
+    auto* node = curvz::utils::find_by_iid(*proj, obj_iid);
+    if (!node) {
+        LOG_INFO("[IIDDIAG] EditObjectField::exec  obj_iid='{}' "
+                 "resolved=nullptr (object gone) — skipping", obj_iid);
+        return;
+    }
+    LOG_INFO("[IIDDIAG] EditObjectField::exec  obj_iid='{}' field={} "
+             "applying after",
+             obj_iid, field_name(field));
+    apply_object_field(node, field, after_str, after_bool);
+}
+
+void EditObjectFieldCommand::undo() {
+    if (!proj) {
+        LOG_INFO("[IIDDIAG] EditObjectField::undo  proj=NULL");
+        return;
+    }
+    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
+    if (obj_iid.empty()) {
+        LOG_INFO("[IIDDIAG] EditObjectField::undo  empty obj_iid "
+                 "(push site bug?)");
+        return;
+    }
+    auto* node = curvz::utils::find_by_iid(*proj, obj_iid);
+    if (!node) {
+        LOG_INFO("[IIDDIAG] EditObjectField::undo  obj_iid='{}' "
+                 "resolved=nullptr (object gone) — skipping", obj_iid);
+        return;
+    }
+    LOG_INFO("[IIDDIAG] EditObjectField::undo  obj_iid='{}' field={} "
+             "applying before",
+             obj_iid, field_name(field));
+    apply_object_field(node, field, before_str, before_bool);
+}
+
 // ── PasteCommand bodies (s169 m3) ────────────────────────────────────
 // Resolve the parent layer iid, then insert clones of each snapshot at
 // the front of children (execute) or erase by id (undo). If the layer

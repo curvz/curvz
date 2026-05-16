@@ -6,6 +6,30 @@
 // transient `objects.<iid>` proxies for per-instance read operations
 // via the s216 m1 router hooks (Scriptable::can_resolve / proxy_for).
 //
+// s231 m2 — adds two collection-level structural verbs (`new <type>`
+// and `delete <iid>`) so the smoke can build up its own test objects
+// and tear them back down — the same owns-its-conditions BUILD UP /
+// VALIDATE / TEAR DOWN structure 33_layers / 27_guides established.
+// Element queries from m1 are now exercised end-to-end on iids the
+// smoke itself minted, not on whatever happened to be in the doc at
+// test time.
+//
+// s232 m3 — adds five element mutating verbs on the proxy:
+// `toggle_visible`, `set_visible <bool>`, `toggle_locked`,
+// `set_locked <bool>`, `rename "<name>"`. Each is a thin shell over
+// the new `EditObjectFieldCommand` (a direct analog of
+// `EditLayerFieldCommand` minus the Color field). The s230 m1
+// header's prediction was that these verbs could ride existing
+// `EditObjectCommand` / `EditNodeCommand` surfaces — that turned
+// out to be wrong. `EditObjectCommand` is the inspector's
+// appearance/path-edit command (path / fill / stroke / shadow);
+// it doesn't carry name / visible / locked. m3 adds
+// `EditObjectFieldCommand` to close the gap. The existing user-
+// facing rename path in LayersPanel for non-layer objects has
+// been DIRECT mutation with no undo support since forever; m3
+// keeps the change scoped to the script path, leaving the panel
+// sweep as future band-3 mop-up.
+//
 // This is the largest of the row-bound Scriptables in scope. The five
 // shipped before this one (layers / guides / swatches / styles /
 // themes) each wrapped a single collection — either a SceneNode-type-
@@ -15,45 +39,40 @@
 // (collection-as-router with transient per-instance proxies); the
 // shape of the collection differs.
 //
-// ── Why "opening" — what m1 ships and what it doesn't ─────────────────────
+// ── Arc progress (multi-session by construction) ──────────────────────────
 //
-// This is the foundation move: `objects.<iid>` becomes a resolvable
-// address. From this milestone forward every script can REACH the
-// scene; mutating it across later milestones is then incremental.
-//
-// What m1 ships (READ-SIDE only):
+// What m1 + m2 + m3 ship combined:
 //   - The collection registered as `objects` in the registry.
 //   - Collection queries: count, all_iids, find_by_name, find_by_type.
 //   - Per-instance proxies materialised by proxy_for(iid).
 //   - Element queries: name, type, visible, locked, parent_iid,
 //     child_count, iid.
-//   - NO mutating verbs anywhere — neither collection nor proxy.
-//   - History pointer captured in the ctor signature (shape-symmetry
-//     with the five existing model Scriptables; not dereferenced yet
-//     because no verb pushes a command).
+//   - Collection-level structural verbs: new <type>, delete <iid>.
+//   - Element mutating verbs: toggle_visible, set_visible <bool>,
+//     toggle_locked, set_locked <bool>, rename "<name>".
+//   - History pointer captured in the ctor and ACTIVELY USED by the
+//     structural verbs (each pushes AddNodeCommand / DeleteObjectCommand)
+//     AND by the element mutating verbs (each pushes
+//     EditObjectFieldCommand). All m3 verbs degrade gracefully to
+//     direct mutation when history is null.
 //
-// What m1 explicitly does NOT ship:
-//   - Element mutating verbs (toggle_visible, set_visible, set_locked,
-//     rename). Scheduled m3+ — they ride EditObjectCommand /
-//     EditNodeCommand surfaces that already exist for the inspector
-//     and canvas drivers. The s167 iid migration means the command
-//     stack is already keyed on CurvzProject* + obj_iid; no raw
-//     SceneNode pointers in capture state.
-//   - Structural verbs (move, reparent, delete, duplicate). Scheduled
-//     m4+. These require careful interaction with the iid index (the
-//     dirty bit, the s167 invariants).
-//   - Collection-level structural verbs (new, group, ungroup).
-//     Scheduled m5+. Open question for that milestone: which type to
-//     create (the `new` verb here has to take a type argument),
-//     which layer to add to (active? caller-specified?).
+// What m3 still does NOT ship:
+//   - Element structural verbs (move, reparent, duplicate). Scheduled
+//     m4. These require careful interaction with the iid index (the
+//     dirty bit, the s167 invariants) — the same "command pushes
+//     direct mutation then invalidate" shape m2 uses for `new` /
+//     `delete`, but with the parent-walk wired through too.
+//   - Collection-level grouping verbs (group, ungroup). Scheduled m5.
 //   - selected_iids query. CANON places `selection` as a separate
 //     singleton Scriptable, not a query on `objects`. Selection is
 //     canvas-side state, not document-side state; mixing the two
 //     here would couple this Scriptable to Canvas. Scheduled with
 //     the `selection` singleton when that lands.
 //
-// Closing the whole arc may take 3-5 sessions. m1 is the seam-opening
-// move; later milestones extend from this foundation.
+// Closing the whole arc may take 3-5 sessions total. m1 opened the
+// addressing surface; m2 makes it self-contained for testing; m3
+// adds the element-level mutating surface; m4 adds element-structural
+// verbs; m5 closes with grouping.
 //
 // ── Scope of the collection ──────────────────────────────────────────────
 //
@@ -123,10 +142,11 @@
 //
 //   objects                  — the collection Scriptable. Set queries
 //                              (count, all_iids, find_by_name,
-//                              find_by_type). ONE registry entry per
-//                              app session; held as a member by
-//                              MainWindow, registered for the lifetime
-//                              of the window.
+//                              find_by_type) plus the structural
+//                              verbs `new` / `delete`. ONE registry
+//                              entry per app session; held as a
+//                              member by MainWindow, registered for
+//                              the lifetime of the window.
 //
 //   objects.<iid>            — per-instance proxy, materialised on
 //                              demand by the collection. Reads the
@@ -152,92 +172,117 @@
 //
 // ── The proxy ────────────────────────────────────────────────────────────
 //
-// ObjectProxy is a private class inside ObjectsScriptable.cpp.
-// Constructed by proxy_for(iid), returned as a unique_ptr<Scriptable>
-// to the listener's ResolvedObject wrapper, destroyed when the wrapper
-// goes out of scope (end of run_line). It holds:
-//
-//   - the project getter (shared with the parent ObjectsScriptable so
-//     reads resolve through the current project)
-//   - the iid (the per-instance key)
-//   - the history pointer (captured but unused today, see "READ-SIDE
-//     only" above — present for shape-symmetry with the five shipped
-//     proxies, and to avoid a ctor signature change in m3+ when
-//     mutating verbs land)
-//
-// Every proxy query body calls curvz::utils::find_by_iid(proj, iid)
-// fresh — no caching of the live SceneNode pointer. If the iid no
-// longer resolves (object deleted between dispatch lines), or if the
-// resolved node is no longer of a `is_scene_object` type (rare edge
-// case where a re-typed iid stops being a scene object), the proxy's
-// queries return Null — matching the addressability-tracks-current-
-// live-state invariant established for LayerProxy / GuideProxy.
-//
-// ── Verb / query surface ─────────────────────────────────────────────────
-//
-// COLLECTION VERBS (on `objects`):
-//   (none in m1 — m3+ adds mutating verbs as commands land)
+// ObjectProxy is the per-instance Scriptable materialised by
+// proxy_for(iid). Same lifetime contract as LayerProxy / GuideProxy:
+// transient, unregistered, owned by the listener's ResolvedObject
+// wrapper for the duration of one statement. Holds the iid as the
+// stable handle; resolves through curvz::utils::find_by_iid every
+// query (no cached SceneNode pointer — that would dangle if the
+// underlying iid index rebuilds or the node moves).
 //
 // COLLECTION QUERIES (on `objects`):
-//   count                                — number of in-scope scene
-//                                          objects in the active doc.
-//                                          Walks every layer's
-//                                          subtree, counts nodes
-//                                          matching is_scene_object.
-//                                          Cheap relative to typical
-//                                          scene sizes; no caching.
+//   count          — int          number of in-scope scene objects
+//                                  in the active document, summed
+//                                  recursively across all layers.
+//   all_iids       — string       comma-separated iid list in walk
+//                                  order. Empty string if count == 0.
+//                                  No trailing comma. Walk order is
+//                                  depth-first within each top-level
+//                                  layer, layers in their natural
+//                                  vector order.
 //
-//   all_iids                             — comma-separated iids in
-//                                          tree-walk order (depth-
-//                                          first, layer-top-down).
-//                                          Same sentinel shape as
-//                                          LayersScriptable /
-//                                          GuidesScriptable all_iids
-//                                          — waiting for the future
-//                                          `foreach` listener-grammar
-//                                          extension to consume it.
-//                                          For the pilot the string
-//                                          is a sentinel (presence
-//                                          indicates the query works;
-//                                          scripts can't iterate it
-//                                          without grammar changes).
+// COLLECTION VERBS (on `objects`):
+//   new "<type>"                 — Creates a new in-scope scene object
+//                                  of the given type and inserts it
+//                                  at the front of the active layer's
+//                                  children. Returns the new node's
+//                                  iid as a string (binds to `result`,
+//                                  consumable by `set <var> to result`
+//                                  in scripts). Pushes an
+//                                  AddNodeCommand so Ctrl+Z removes
+//                                  the new node.
 //
-//   find_by_name "<name>"                — iid of the first node
-//                                          whose `name` field matches
-//                                          exactly, or "" on miss.
-//                                          Walks every layer's
-//                                          subtree depth-first.
-//                                          Names aren't unique by
-//                                          construction (dedup_names
-//                                          handles load-time
-//                                          collisions but live
-//                                          collisions can happen);
-//                                          "first hit in walk order"
-//                                          is the contract — matches
-//                                          LayersScriptable's
-//                                          find_by_name semantics.
+//                                  Type vocabulary in m2:
+//                                    "path"  — Path leaf with empty
+//                                              PathData (no nodes,
+//                                              not closed). Renders
+//                                              as nothing; addressable
+//                                              for property queries.
+//                                    "group" — Group container with
+//                                              no children. Renders
+//                                              as nothing; addressable.
 //
-//   find_by_type "<type>"                — iid of the first node
-//                                          whose type matches, or
-//                                          "" on miss. Type tokens
-//                                          are lowercase strings:
-//                                          "path", "group",
-//                                          "compound", "clipgroup",
-//                                          "blend", "warp", "text",
-//                                          "image", "ref",
-//                                          "measurement". Walk order
-//                                          and "first hit" same as
-//                                          find_by_name. Useful for
-//                                          smoke tests that need to
-//                                          land an iid of a known
-//                                          type without pre-knowing
-//                                          one.
+//                                  Returns "" on miss (no active doc,
+//                                  no active layer, unknown type
+//                                  token, args.empty()).
+//
+//                                  Name policy: NEW NODES ARE MINTED
+//                                  WITH AN EMPTY NAME. Different from
+//                                  canvas-tool creation which assigns
+//                                  next_default_name (`"Path 1"` etc.).
+//                                  Empty name is the "user hasn't
+//                                  named me yet" sentinel — `assert
+//                                  objects.<iid> name == ""` is the
+//                                  deterministic post-create check.
+//                                  m3's `rename` verb is how a script
+//                                  assigns a name.
+//
+//                                  Insertion: front of the active
+//                                  layer's children vector. Matches
+//                                  the canvas convention (most tools
+//                                  insert-at-front so the new node
+//                                  draws on top).
+//
+//   delete "<iid>"               — Removes the in-scope scene object
+//                                  identified by iid from its parent
+//                                  container, wherever in the tree
+//                                  that container lives. Pushes a
+//                                  DeleteObjectCommand so Ctrl+Z
+//                                  restores the node at its original
+//                                  index.
+//
+//                                  Returns null (no result binding).
+//                                  Returns null on miss (no project,
+//                                  no active doc, args.empty(), iid
+//                                  doesn't resolve to an in-scope
+//                                  scene object, the resolved node
+//                                  has no findable parent container).
+//
+//                                  Scrubs the global undo stack for
+//                                  raw-pointer-capture references to
+//                                  the about-to-be-deleted node and
+//                                  its descendants — same defensive
+//                                  walk LayersScriptable::delete does.
+//
+//   find_by_name "<name>"        — iid of the first node in the doc
+//                                  tree with name matching exactly,
+//                                  or "" on miss. Names aren't unique
+//                                  by construction (the document name
+//                                  uniquifier on load only normalises
+//                                  load-time collisions but live
+//                                  collisions can happen);
+//                                  "first hit in walk order" is the
+//                                  contract — matches
+//                                  LayersScriptable's
+//                                  find_by_name semantics.
+//
+//   find_by_type "<type>"        — iid of the first node whose type
+//                                  matches, or "" on miss. Type
+//                                  tokens are lowercase strings:
+//                                  "path", "group", "compound",
+//                                  "clipgroup", "blend", "warp",
+//                                  "text", "image", "ref",
+//                                  "measurement". Walk order and
+//                                  "first hit" same as find_by_name.
+//                                  Useful for smoke tests that need
+//                                  to land an iid of a known type
+//                                  without pre-knowing one.
 //
 // ELEMENT QUERIES (on `objects.<iid>`):
-//   name           — string       node.name. Empty if the user
-//                                  hasn't named the node (the
-//                                  default for newly-created paths
-//                                  / shapes until renamed).
+//   name           — string       node.name. Empty for newly-created
+//                                  nodes (the contract above); user-
+//                                  named once a m3+ `rename` verb
+//                                  runs.
 //   type           — string       lowercase type token (same
 //                                  vocabulary as find_by_type:
 //                                  "path", "group", "compound",
@@ -276,8 +321,40 @@
 //                                  handle, useful in tests).
 //
 // ELEMENT VERBS (on `objects.<iid>`):
-//   (none in m1 — m3+ adds toggle_visible / set_visible / set_locked
-//   / rename as EditObjectCommand-pushing verbs)
+//   toggle_visible                 — flip visible (push EditObjectFieldCommand).
+//                                    No-args.
+//   set_visible <bool>             — write visible to the given bool.
+//                                    No-op (no command pushed) when the
+//                                    new value equals the current one —
+//                                    same behaviour as LayerProxy.
+//   toggle_locked                  — flip locked (push EditObjectFieldCommand).
+//   set_locked  <bool>             — write locked to the given bool.
+//                                    No-op when value unchanged.
+//   rename "<name>"                — write name to the given string
+//                                    (push EditObjectFieldCommand).
+//                                    Empty-string arg AND name-unchanged
+//                                    are both no-ops. The "" sentinel
+//                                    here means "no rename happened";
+//                                    scripts that genuinely want to
+//                                    clear a name to the "" empty
+//                                    sentinel (matching the newly-
+//                                    minted state from `objects new`)
+//                                    can't do so via `rename` today —
+//                                    that's the same constraint
+//                                    LayerProxy::rename has and matches
+//                                    the LayersPanel's "empty entry
+//                                    leaves the name alone" UX
+//                                    convention. Worth a future
+//                                    `clear_name` if scripts need it.
+//
+//   All five push EditObjectFieldCommand on the global undo stack on
+//   success. Command bodies resolve iid → SceneNode every replay
+//   (find_by_iid, project-wide); deleted-between-push-and-replay
+//   degrades to a silent skip, same partial-recovery shape
+//   EditLayerFieldCommand uses.
+//
+//   (m4 will add element-structural verbs: move, reparent, duplicate.
+//   m5 closes with collection-level grouping: group, ungroup.)
 //
 // ── On the active-document scope ─────────────────────────────────────────
 //
@@ -288,10 +365,20 @@
 // objects.<iid> name` finds the iid in WHICHEVER doc holds it. The
 // iid is the address; the doc is just where it lives.
 //
+// `new` creates into the active doc's active layer specifically;
+// scripts that want to add to a different layer's children today must
+// activate that layer first (`layers.<iid> activate`). That's the
+// same constraint canvas tools observe.
+//
+// `delete` finds the iid wherever it lives across documents — the
+// same project-wide find_by_iid resolution element queries use.
+// Symmetric with `layers delete`, which also resolves by iid first
+// and only then locates the owning doc.
+//
 // ── Why no rename and no find_by_iid query ──────────────────────────────
 //
-// Rename: that's a mutating verb (m3+). Reading via `get objects.<iid>
-// name` covers the read side.
+// Rename: that's an element mutating verb (m3). Reading via `get
+// objects.<iid> name` covers the read side.
 //
 // find_by_iid: not a query — it's the resolver itself. A script that
 // has an iid in hand goes straight to `objects.<iid>` addressing; no
@@ -336,11 +423,14 @@ public:
     // getter is allowed to return nullptr; queries degrade gracefully
     // (count returns 0, all_iids returns "", find_by_* returns "").
     //
-    // `history` is non-owning and may be nullptr. Captured but unused
-    // in m1 — no mutating verbs yet, so no commands get pushed. Present
-    // in the ctor signature so the day m3+ adds mutating verbs the
-    // wiring is already in place; same shape-symmetry argument used
-    // for GuidesScriptable's pre-undoability history pointer.
+    // `history` is non-owning and may be nullptr. Captured in m1 for
+    // shape-symmetry; ACTIVELY USED from m2 onwards — the `new` and
+    // `delete` verbs push AddNodeCommand / DeleteObjectCommand on
+    // every successful invocation, and m3's element mutating verbs
+    // (toggle_visible / set_visible / toggle_locked / set_locked /
+    // rename) push EditObjectFieldCommand. A null history degrades
+    // every verb to direct mutation without undo support (the same
+    // graceful-degradation pattern guides uses).
     ObjectsScriptable(ProjectGetter get_project,
                       Curvz::CommandHistory* history);
     ~ObjectsScriptable() override = default;
@@ -357,8 +447,14 @@ public:
 
 private:
     ProjectGetter          m_get_project;
-    Curvz::CommandHistory* m_history;   // non-owning; captured but
-                                        // unused in m1 (read-side only)
+    Curvz::CommandHistory* m_history;   // non-owning; captured in m1
+                                        // for shape-symmetry, actively
+                                        // used from m2 onwards by `new`
+                                        // and `delete` and from m3
+                                        // onwards by the element mutating
+                                        // verbs on the proxy. Null
+                                        // history degrades every verb
+                                        // to direct mutation.
 };
 
 } // namespace curvz::scripting

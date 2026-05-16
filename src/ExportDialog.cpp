@@ -3,6 +3,29 @@
 // Two-tabbed dialog: Documents (per-doc SVG / PNG / refpt-coords) and
 // Icon Theme (freedesktop bundle). One File ▸ Export… menu entry,
 // hotkey Ctrl+Shift+T. See the header docstring for layout and history.
+//
+// s233 m1 — Tier 1 substrate sweep. 21 of 23 raw make_managed<Gtk::*>
+// sites in this file migrated to curvz::widgets::* substrate, folding
+// each abbrev into the substrate ctor. The 2 remaining raw sites are
+// the per-doc in-loop CheckButtons (line 223 Documents tab targets,
+// line 1130 Icon Theme tab checklist) — both Reading-C-blocked under
+// the row-builder shared-abbrev pattern, addressed eventually via the
+// `objects` Scriptable arc's m4+ surface or a per-doc model
+// Scriptable. The two anonymous Select all / Select none buttons in
+// docs_build_targets gained fresh abbrevs (`dlg_xu_d_sa` / `dlg_xu_d_sn`)
+// — they're useful test hooks. Existing curvz::utils::set_name calls
+// are preserved verbatim so widget_names_sync's long-name lookup
+// keeps working; the substrate ctor handles the script registry side.
+//
+// Also flipped set_modal(true) → set_modal(false) in build(). The
+// dialog being modal blocked the Scripter from listing the registry
+// while the dialog is open, which is the established verification
+// channel for substrate sweeps. The export operation itself is
+// synchronous within the click handler, so the non-modal flip
+// doesn't open any race window — the user can't interleave canvas
+// edits with an export run. Brings ExportDialog into line with
+// TranslateDialog / MacroManagerWindow / ScripterWindow which are
+// all non-modal self-managed windows.
 
 #include "ExportDialog.hpp"
 
@@ -15,6 +38,13 @@
 #include "RefptExporter.hpp"
 #include "SvgWriter.hpp"
 #include "curvz_utils.hpp"
+
+// s233 m1 — substrate wrappers for the 21-site sweep.
+#include "curvz/widgets/Button.hpp"
+#include "curvz/widgets/CheckButton.hpp"
+#include "curvz/widgets/DropDown.hpp"
+#include "curvz/widgets/Entry.hpp"
+#include "curvz/widgets/SpinButton.hpp"
 
 #include <gtkmm/adjustment.h>
 #include <gtkmm/filedialog.h>
@@ -109,7 +139,18 @@ void ExportDialog::build() {
     m_window->set_title("Export");
     m_window->set_transient_for(*m_parent);
     curvz::utils::apply_motif_class_from_parent(*m_window, *m_parent);
-    m_window->set_modal(true);
+    // s233 m1 — was set_modal(true). Flipped to non-modal alongside the
+    // substrate sweep so the Scripter can list registry entries while
+    // the dialog is open (modal blocks every other window, including
+    // Scripter dispatch). The export operation itself is synchronous
+    // within the Export-button click handler, so non-modal-while-
+    // configuring doesn't open any interleaving-edits-with-export race;
+    // the user can't mutate the project mid-export. Matches the
+    // self-managed non-modal lifecycle TranslateDialog /
+    // MacroManagerWindow / ScripterWindow already use. transient_for
+    // is preserved — keeps the export window stacked above the main
+    // window with the right window-manager hints.
+    m_window->set_modal(false);
     m_window->set_default_size(580, 720);
 
     // Self-managed lifecycle. signal_close_request (not signal_hide)
@@ -229,8 +270,18 @@ void ExportDialog::docs_build_targets(Gtk::Box& root) {
     }
 
     auto btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
-    auto btn_all  = Gtk::make_managed<Gtk::Button>("Select all");
-    auto btn_none = Gtk::make_managed<Gtk::Button>("Select none");
+    // s233 m1 — registered substrate. Useful test hooks: a script that
+    // wants to drive "no docs selected" can `dlg_xu_d_sn click`. Fresh
+    // abbrevs in the dlg_xu_d_* neighbourhood; long-name annotation
+    // tracked via set_name below.
+    auto btn_all  = Gtk::make_managed<curvz::widgets::Button>(
+                        "dlg_xu_d_sa", "Select all");
+    auto btn_none = Gtk::make_managed<curvz::widgets::Button>(
+                        "dlg_xu_d_sn", "Select none");
+    curvz::utils::set_name(btn_all,  "dlg_xu_d_sa",
+                           "export_unified_dialog_docs_select_all_btn");
+    curvz::utils::set_name(btn_none, "dlg_xu_d_sn",
+                           "export_unified_dialog_docs_select_none_btn");
     btn_all->signal_clicked().connect(
         sigc::mem_fun(*this, &ExportDialog::docs_on_select_all));
     btn_none->signal_clicked().connect(
@@ -249,9 +300,13 @@ void ExportDialog::docs_build_format(Gtk::Box& root) {
     root.append(*title);
 
     auto row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
-    m_docs_radio_svg   = Gtk::make_managed<Gtk::CheckButton>("SVG");
-    m_docs_radio_png   = Gtk::make_managed<Gtk::CheckButton>("PNG");
-    m_docs_radio_refpt = Gtk::make_managed<Gtk::CheckButton>("Refpt coordinates");
+    // s233 m1 — registered substrate. Existing abbrevs preserved.
+    m_docs_radio_svg   = Gtk::make_managed<curvz::widgets::CheckButton>(
+                            "dlg_xu_d_rsvg", "SVG");
+    m_docs_radio_png   = Gtk::make_managed<curvz::widgets::CheckButton>(
+                            "dlg_xu_d_rpng", "PNG");
+    m_docs_radio_refpt = Gtk::make_managed<curvz::widgets::CheckButton>(
+                            "dlg_xu_d_rref", "Refpt coordinates");
     curvz::utils::set_name(m_docs_radio_svg,   "dlg_xu_d_rsvg",  "export_unified_dialog_docs_radio_svg");
     curvz::utils::set_name(m_docs_radio_png,   "dlg_xu_d_rpng",  "export_unified_dialog_docs_radio_png");
     curvz::utils::set_name(m_docs_radio_refpt, "dlg_xu_d_rref",  "export_unified_dialog_docs_radio_refpt");
@@ -291,8 +346,11 @@ void ExportDialog::docs_build_size(Gtk::Box& root) {
         lbl->set_xalign(0.0f);
         lbl->set_size_request(60, -1);
         row->append(*lbl);
-        m_docs_radio_fit_w = Gtk::make_managed<Gtk::CheckButton>("Width");
-        m_docs_radio_fit_h = Gtk::make_managed<Gtk::CheckButton>("Height");
+        // s233 m1 — registered substrate. Existing abbrevs preserved.
+        m_docs_radio_fit_w = Gtk::make_managed<curvz::widgets::CheckButton>(
+                                "dlg_xu_d_rfw", "Width");
+        m_docs_radio_fit_h = Gtk::make_managed<curvz::widgets::CheckButton>(
+                                "dlg_xu_d_rfh", "Height");
         curvz::utils::set_name(m_docs_radio_fit_w, "dlg_xu_d_rfw", "export_unified_dialog_docs_radio_fit_w");
         curvz::utils::set_name(m_docs_radio_fit_h, "dlg_xu_d_rfh", "export_unified_dialog_docs_radio_fit_h");
         m_docs_radio_fit_h->set_group(*m_docs_radio_fit_w);
@@ -322,7 +380,9 @@ void ExportDialog::docs_build_size(Gtk::Box& root) {
             }
         }
         auto adj = Gtk::Adjustment::create(default_value, 0.01, 10000.0, 1.0, 10.0, 0.0);
-        m_docs_value_spin = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 2);
+        // s233 m1 — registered substrate (s189 m2 Adjustment-taking form).
+        m_docs_value_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+                                "dlg_xu_d_val", adj, 1.0, 2);
         curvz::utils::set_name(m_docs_value_spin, "dlg_xu_d_val", "export_unified_dialog_docs_value_spn");
         m_docs_value_spin->set_width_chars(8);
         row->append(*m_docs_value_spin);
@@ -331,7 +391,9 @@ void ExportDialog::docs_build_size(Gtk::Box& root) {
         std::vector<Glib::ustring> unit_items;
         for (int i = 0; i < kUnitCount; ++i) unit_items.emplace_back(kUnitItems[i]);
         auto unit_list = Gtk::StringList::create(unit_items);
-        m_docs_units_drop = Gtk::make_managed<Gtk::DropDown>(unit_list);
+        // s233 m1 — registered substrate (s189 m1 StringList-taking form).
+        m_docs_units_drop = Gtk::make_managed<curvz::widgets::DropDown>(
+                                "dlg_xu_d_unt", unit_list);
         curvz::utils::set_name(m_docs_units_drop, "dlg_xu_d_unt", "export_unified_dialog_docs_units_dd");
         m_docs_units_drop->set_selected(0);  // px
         m_docs_units_drop->property_selected().signal_changed().connect(
@@ -354,7 +416,9 @@ void ExportDialog::docs_build_size(Gtk::Box& root) {
         }
         dpi_items.emplace_back("Custom…");
         auto dpi_list = Gtk::StringList::create(dpi_items);
-        m_docs_dpi_drop = Gtk::make_managed<Gtk::DropDown>(dpi_list);
+        // s233 m1 — registered substrate (s189 m1 StringList-taking form).
+        m_docs_dpi_drop = Gtk::make_managed<curvz::widgets::DropDown>(
+                              "dlg_xu_d_dpi", dpi_list);
         curvz::utils::set_name(m_docs_dpi_drop, "dlg_xu_d_dpi", "export_unified_dialog_docs_dpi_dd");
         // Default to 96 (web/screen standard).
         for (int i = 0; i < kDpiPresetCount; ++i) {
@@ -369,7 +433,9 @@ void ExportDialog::docs_build_size(Gtk::Box& root) {
 
         // Custom DPI spin: 1..2400.
         auto adj = Gtk::Adjustment::create(kDpiCustomDefault, 1.0, 2400.0, 1.0, 10.0, 0.0);
-        m_docs_dpi_custom = Gtk::make_managed<Gtk::SpinButton>(adj, 1.0, 0);
+        // s233 m1 — registered substrate (s189 m2 Adjustment-taking form).
+        m_docs_dpi_custom = Gtk::make_managed<curvz::widgets::SpinButton>(
+                                "dlg_xu_d_dpc", adj, 1.0, 0);
         curvz::utils::set_name(m_docs_dpi_custom, "dlg_xu_d_dpc", "export_unified_dialog_docs_dpi_custom_spn");
         m_docs_dpi_custom->set_width_chars(6);
         m_docs_dpi_custom->set_visible(false);
@@ -400,7 +466,9 @@ void ExportDialog::docs_build_refpts(Gtk::Box& root) {
     for (int i = 0; i < kRefptFormatCount; ++i)
         fmt_items.emplace_back(kRefptFormatItems[i]);
     auto fmt_list = Gtk::StringList::create(fmt_items);
-    m_docs_refpts_format_drop = Gtk::make_managed<Gtk::DropDown>(fmt_list);
+    // s233 m1 — registered substrate (s189 m1 StringList-taking form).
+    m_docs_refpts_format_drop = Gtk::make_managed<curvz::widgets::DropDown>(
+                                    "dlg_xu_d_rpf", fmt_list);
     curvz::utils::set_name(m_docs_refpts_format_drop, "dlg_xu_d_rpf",
                            "export_unified_dialog_docs_refpts_format_dd");
     m_docs_refpts_format_drop->set_selected(0);
@@ -478,7 +546,8 @@ void ExportDialog::docs_build_output(Gtk::Box& root) {
     root.append(*title);
 
     auto row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    m_docs_folder_entry = Gtk::make_managed<Gtk::Entry>();
+    // s233 m1 — registered substrate.
+    m_docs_folder_entry = Gtk::make_managed<curvz::widgets::Entry>("dlg_xu_d_fld");
     curvz::utils::set_name(m_docs_folder_entry, "dlg_xu_d_fld", "export_unified_dialog_docs_folder_entry");
     m_docs_folder_entry->set_hexpand(true);
     m_docs_folder_entry->set_placeholder_text("Choose a folder…");
@@ -501,7 +570,9 @@ void ExportDialog::docs_build_output(Gtk::Box& root) {
         m_docs_folder_entry->set_text(prefill);
     }
 
-    m_docs_btn_browse = Gtk::make_managed<Gtk::Button>("Browse…");
+    // s233 m1 — registered substrate.
+    m_docs_btn_browse = Gtk::make_managed<curvz::widgets::Button>(
+                            "dlg_xu_d_brw", "Browse…");
     curvz::utils::set_name(m_docs_btn_browse, "dlg_xu_d_brw", "export_unified_dialog_docs_browse_btn");
     m_docs_btn_browse->signal_clicked().connect(
         sigc::mem_fun(*this, &ExportDialog::docs_on_browse));
@@ -528,7 +599,9 @@ void ExportDialog::docs_build_status_and_button(Gtk::Box& root) {
     row->set_halign(Gtk::Align::END);
     row->set_margin_top(8);
 
-    m_docs_btn_export = Gtk::make_managed<Gtk::Button>("Export");
+    // s233 m1 — registered substrate.
+    m_docs_btn_export = Gtk::make_managed<curvz::widgets::Button>(
+                            "dlg_xu_d_exp", "Export");
     curvz::utils::set_name(m_docs_btn_export, "dlg_xu_d_exp", "export_unified_dialog_docs_export_btn");
     m_docs_btn_export->add_css_class("suggested-action");
     m_docs_btn_export->signal_clicked().connect(
@@ -969,7 +1042,8 @@ void ExportDialog::theme_build_metadata(Gtk::Box& tab_root) {
     name_lbl->set_xalign(1.0f);
     m_theme_meta_grid->attach(*name_lbl, 0, 0);
 
-    m_theme_name_entry = Gtk::make_managed<Gtk::Entry>();
+    // s233 m1 — registered substrate.
+    m_theme_name_entry = Gtk::make_managed<curvz::widgets::Entry>("dlg_xu_t_nm");
     m_theme_name_entry->set_placeholder_text("MyApp");
     m_theme_name_entry->set_hexpand(true);
     curvz::utils::set_name(m_theme_name_entry, "dlg_xu_t_nm",
@@ -980,7 +1054,8 @@ void ExportDialog::theme_build_metadata(Gtk::Box& tab_root) {
     comment_lbl->set_xalign(1.0f);
     m_theme_meta_grid->attach(*comment_lbl, 0, 1);
 
-    m_theme_comment_entry = Gtk::make_managed<Gtk::Entry>();
+    // s233 m1 — registered substrate.
+    m_theme_comment_entry = Gtk::make_managed<curvz::widgets::Entry>("dlg_xu_t_cmt");
     m_theme_comment_entry->set_placeholder_text("Icons for MyApp");
     m_theme_comment_entry->set_hexpand(true);
     curvz::utils::set_name(m_theme_comment_entry, "dlg_xu_t_cmt",
@@ -1029,13 +1104,16 @@ void ExportDialog::theme_build_output(Gtk::Box& tab_root) {
 
     auto row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
 
-    m_theme_folder_entry = Gtk::make_managed<Gtk::Entry>();
+    // s233 m1 — registered substrate.
+    m_theme_folder_entry = Gtk::make_managed<curvz::widgets::Entry>("dlg_xu_t_fld");
     m_theme_folder_entry->set_placeholder_text("Choose a folder…");
     m_theme_folder_entry->set_hexpand(true);
     curvz::utils::set_name(m_theme_folder_entry, "dlg_xu_t_fld",
                            "export_unified_dialog_theme_folder_entry");
 
-    m_theme_btn_browse = Gtk::make_managed<Gtk::Button>("Browse…");
+    // s233 m1 — registered substrate.
+    m_theme_btn_browse = Gtk::make_managed<curvz::widgets::Button>(
+                             "dlg_xu_t_brw", "Browse…");
     curvz::utils::set_name(m_theme_btn_browse, "dlg_xu_t_brw",
                            "export_unified_dialog_theme_browse_btn");
     m_theme_btn_browse->signal_clicked().connect(
@@ -1071,7 +1149,9 @@ void ExportDialog::theme_build_status_and_button(Gtk::Box& tab_root) {
     row->set_halign(Gtk::Align::END);
     row->set_margin_top(8);
 
-    m_theme_btn_export = Gtk::make_managed<Gtk::Button>("Export Theme…");
+    // s233 m1 — registered substrate.
+    m_theme_btn_export = Gtk::make_managed<curvz::widgets::Button>(
+                             "dlg_xu_t_exp", "Export Theme…");
     curvz::utils::set_name(m_theme_btn_export, "dlg_xu_t_exp",
                            "export_unified_dialog_theme_export_btn");
     m_theme_btn_export->add_css_class("suggested-action");
@@ -1327,7 +1407,9 @@ void ExportDialog::build_footer(Gtk::Box& root) {
     auto row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
     row->set_halign(Gtk::Align::END);
 
-    m_btn_close = Gtk::make_managed<Gtk::Button>("Close");
+    // s233 m1 — registered substrate.
+    m_btn_close = Gtk::make_managed<curvz::widgets::Button>(
+                      "dlg_xu_close", "Close");
     curvz::utils::set_name(m_btn_close, "dlg_xu_close", "export_unified_dialog_close_btn");
     m_btn_close->signal_clicked().connect(
         sigc::mem_fun(*this, &ExportDialog::on_close));
