@@ -162,12 +162,20 @@ void ScripterWindow::build_ui() {
     // programmatic lower) leaves the Scripter visible underneath,
     // taking up real estate. Hide-on-Run / show-on-completion is what
     // the user actually wants — the trace buffer fills up during the
-    // run, and the user reads it when the window comes back. Checkbox
-    // id / abbrev unchanged (scr_lower) so existing scripts that
-    // toggle it keep working; only the visible label and behaviour
-    // changed.
-    m_btn_lower = Gtk::make_managed<curvz::widgets::CheckButton>("scr_lower", "Auto-hide");
-    curvz::utils::set_name(m_btn_lower, "scr_lower", "scripter_autohide_chk");
+    // run, and the user reads it when the window comes back.
+    // s224 m1: script abbrev renamed from "scr_lower" to "scr_hide"
+    // to match the s221 m1 Auto-hide label. The s221 m1 rationale for
+    // keeping the abbrev ("existing scripts that toggle it keep
+    // working") was forward-looking only — the sole consumer at the
+    // time was test 26, bundled with the codebase. Cleaning the drift
+    // here costs one test edit and aligns the surface. The internal
+    // member m_btn_lower and the m_run_lowered flag keep their
+    // historical names: they track the mechanism (the window was
+    // lowered, in the older meaning) not the user-facing affordance,
+    // and renaming would noise up the diff for no addressability
+    // gain. CSS name "scripter_autohide_chk" was already aligned.
+    m_btn_lower = Gtk::make_managed<curvz::widgets::CheckButton>("scr_hide", "Auto-hide");
+    curvz::utils::set_name(m_btn_lower, "scr_hide", "scripter_autohide_chk");
     m_btn_lower->set_tooltip_text(
         "Hide the Scripter during timed Runs so it doesn't take up "
         "screen real estate while the script drives Curvz. The "
@@ -1007,9 +1015,16 @@ void ScripterWindow::on_copy_output() {
             clip->set_content(Gdk::ContentProvider::create(val));
         }
     }
+    // s224 m1: post-click restore label kept consistent with build_ui's
+    // "Copy" (which itself mirrors the neighbouring "Clear" button).
+    // Pre-s224 the restorer set "Copy output", leaving the button's
+    // label permanently changed after the first click of any session —
+    // a small but real label drift surfaced as a latent bug in s206 m1
+    // when test 26 had to switch from `assert` to `get` for the scr_copy
+    // label query. Harmonised here.
     m_btn_copy->set_label("Copied");
     Glib::signal_timeout().connect_once(
-        [this]() { m_btn_copy->set_label("Copy output"); },
+        [this]() { m_btn_copy->set_label("Copy"); },
         800);
 }
 

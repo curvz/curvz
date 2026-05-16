@@ -1,9 +1,9 @@
-# 11_feature_tour_demo — auto-lower watch-mode showcase.
+# 11_feature_tour_demo — auto-hide watch-mode showcase.
 #
 # Replaces the s191 universal-hide/show test in this slot. That test
 # moved to tests/scripts/diagnostics/regression_universal_hide_show.curvzs
 # where it lives as a structural regression. The "11" slot is now a
-# pure watch-mode demo: turn on Auto-lower, crank Step delay to
+# pure watch-mode demo: turn on Auto-hide, crank Step delay to
 # 300-500ms, hit Run, set Curvz down, and watch the app drive itself
 # through a coordinated tour of its visible surface.
 #
@@ -31,9 +31,9 @@
 # Demo protocol:
 #   1. Open the Scripter window.
 #   2. Set Step delay to ~400ms in the Scripter top toolbar.
-#   3. Check Auto-lower (also in the Scripter top toolbar).
+#   3. Check Auto-hide (also in the Scripter top toolbar).
 #   4. Click this script's row in the sidebar.
-#   5. Hit Run. The Scripter drops behind MainWindow; the tour plays.
+#   5. Hit Run. The Scripter hides; the tour plays on MainWindow.
 #
 # As a side effect, this script is a smoke test for the toolbar's
 # radio invariant, the units dropdown's four options, and the

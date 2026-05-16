@@ -23,7 +23,7 @@
 #                            mid-script flip parks the engine on a
 #                            spacebar press (discovered in test
 #                            26 v1).
-#   - scr_lower            : safe to toggle (only read at Run start),
+#   - scr_hide             : safe to toggle (only read at Run start),
 #                            but kept query-only for consistency
 #                            with scr_step's posture.
 #
@@ -50,7 +50,7 @@
 #   Playback cluster (top toolbar)
 #     scr_run        Run/Stop button (Button)
 #     scr_step       Step-through CheckButton
-#     scr_lower      Auto-lower CheckButton
+#     scr_hide       Auto-hide CheckButton
 #     scr_delay      Step-delay SpinButton (range 0..5000, digits 0)
 #
 #   Script tab content header
@@ -79,7 +79,7 @@
 #   3. Run. Every line should PASS.
 #
 # Side effects: scr_delay is moved to 100 then 250 then restored to
-# 5 (the launch default). scr_step and scr_lower are not touched.
+# 5 (the launch default). scr_step and scr_hide are not touched.
 # Net effect at end-of-run: only scr_delay has moved transiently
 # and is restored.
 
@@ -108,18 +108,35 @@ assert scr_run label == "Stop"
 assert scr_step active == false
 assert scr_step label == "Step"
 
-#[sub] scr_lower — CheckButton. Launch state is off (unchecked).
+#[sub] scr_hide — CheckButton.
 #[sub]
-#[sub] No `set` round-trip. Auto-lower's read site (line 1130, "if
-#[sub] m_btn_lower->get_active() && !m_btn_step->get_active()") is
-#[sub] only consulted at Run start, so toggling mid-run wouldn't gate
-#[sub] anything — but the test stays consistent with scr_step's posture:
-#[sub] playback-control widgets get addressability + state queries
-#[sub] only; verb dispatch lives in tests run from outside the
-#[sub] Scripter.
+#[sub] Self-staged: write the state we want to assert, then assert it.
+#[sub] The pre-s224 m1 test asserted `active == false` against the
+#[sub] launch default, but the user can toggle Auto-hide between
+#[sub] runs (it's exactly the kind of session-persistent control that
+#[sub] survives a Run), so the launch-state-only assert was fragile
+#[sub] to session history. Same hazard category as the pre-s224 m1
+#[sub] scr_copy drift — state coupling to session history. The fix
+#[sub] here is to actively stage the state before reading.
+#[sub]
+#[sub] Toggling Auto-hide mid-run is safe (unlike scr_step): the read
+#[sub] site at line 1130 is consulted only at Run start, so any
+#[sub] mid-run flip wouldn't reach back into the running engine. We
+#[sub] restore to false at the end so the test leaves the user's
+#[sub] Auto-hide preference in a known clean state.
+#[sub]
+#[sub] s224 m1: abbrev renamed from scr_lower to scr_hide to match
+#[sub] the s221 m1 Auto-hide repurposing. Asserted label is now
+#[sub] "Auto-hide" (was "Auto-lower" pre-s221 m1, which the test
+#[sub] still encoded until this milestone).
 
-assert scr_lower active == false
-assert scr_lower label == "Auto-lower"
+scr_hide set false
+assert scr_hide active == false
+scr_hide set true
+assert scr_hide active == true
+scr_hide set false
+assert scr_hide active == false
+assert scr_hide label == "Auto-hide"
 
 #[sub] scr_delay — SpinButton. Range and launch value.
 
@@ -151,21 +168,22 @@ assert scr_save_as label == "Save As…"
 
 assert scr_clear label == "Clear"
 
-#[sub] scr_copy — Button. Substrate-addressability proven via `get`
-#[sub] rather than `assert`, because the original code has a latent
-#[sub] label-drift quirk: build_ui sets the label to "Copy" at
-#[sub] construction, but on_copy_output's idle timer restores it to
-#[sub] "Copy output" after the first click. So the asserted value
-#[sub] would depend on whether Copy has been clicked in this Scripter
-#[sub] session (e.g. to grab the previous test run's output). `get`
-#[sub] reads and prints the live value without comparison — proves
-#[sub] resolution, surfaces the actual label to the run output, and
-#[sub] doesn't couple to session history. The pre-existing label drift
-#[sub] is noted in the s206 m1 handoff backlog as a small UI bug
-#[sub] (one-line fix in on_copy_output's idle timer) outside this
-#[sub] milestone's scope.
+#[sub] scr_copy — Button. Label is "Copy".
+#[sub]
+#[sub] s224 m1: previously this sub-test used `get scr_copy label`
+#[sub] rather than `assert` because the s206 m1 milestone surfaced a
+#[sub] latent label-drift quirk — build_ui set the label to "Copy" at
+#[sub] construction, but on_copy_output's idle timer restored it to
+#[sub] "Copy output" after the first click, so the asserted value
+#[sub] would depend on whether Copy had been clicked in this Scripter
+#[sub] session (e.g. to grab the previous test run's output). The
+#[sub] drift is harmonised in s224 m1 (the post-click restore now
+#[sub] sets "Copy" to match build_ui and the sibling Clear button), so
+#[sub] this is now a stable assert. If a future change reopens the
+#[sub] drift, this assert will catch it the next time test 26 runs
+#[sub] after a Copy click.
 
-get scr_copy label
+assert scr_copy label == "Copy"
 
 #[sub] scr_lib_reload — Button. Icon-only (set_icon_name without a
 #[sub] set_label), so label query returns "" — same shape as the
