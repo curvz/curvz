@@ -994,6 +994,69 @@ struct MoveObjectToLayerCommand : CurvzCommand {
     // SceneNode* is held. Default `references() == false` is correct.
 };
 
+// ── MoveNodeIndexCommand ─────────────────────────────────────────────────────
+// s234 m4 — single-target, iid-keyed move within a parent's children vector.
+// Sibling of ZOrderCommand in spirit (intra-parent reorder), but with a
+// narrower contract: one object, captured by iid + parent_iid + src_idx +
+// dst_idx, suited to the script-driven `objects.<iid> move "<direction>"`
+// verb.
+//
+// Why not reuse ZOrderCommand: ZOrderCommand::apply_order builds an
+// id-keyed (SVG `id` field) map of the parent's children to apply a
+// captured permutation. Script-minted objects (via `objects new`) have
+// empty SVG `id` — they're assigned lazily at SVG-export time — so two
+// or more script-minted siblings would collide on the same empty key
+// and apply_order would silently drop all but one. Canvas tools don't
+// hit this because their creation paths populate `id` through
+// next_default_name / freshen_ids; the script path skips that. Rather
+// than retrofit ZOrderCommand's key strategy (and risk regression in
+// canvas's multi-object z-order ops which depend on the existing
+// behaviour), m4 ships a single-target iid-keyed command alongside it.
+// Same precedent as m3's EditObjectFieldCommand sitting alongside
+// EditLayerFieldCommand: separate command class, parallel shape,
+// narrower domain.
+//
+// Resolution shape: parent_iid resolves via curvz::utils::find_by_iid
+// (parent participates in the per-doc iid index). obj_iid is captured
+// informationally — execute/undo locate the target inside the resolved
+// parent's children by iid match, then move it to the recorded slot.
+// src_idx / dst_idx are the canonical slot positions, used as the
+// insertion target after the by-iid erase.
+//
+// Partial-recovery shape: if parent_iid no longer resolves (parent
+// destroyed by some other op), the command no-ops cleanly. If the
+// target object is no longer in the parent's children (somebody else
+// moved or deleted it), the command also no-ops — same shape as
+// MoveObjectToLayerCommand's "erased=no" log path.
+//
+// Not structural in the s170 sense — tree shape is unchanged, no iids
+// invalidated, no nodes destroyed. The s168 m6 invalidate-before-resolve
+// dance applies anyway because find_by_iid is the resolution path.
+struct MoveNodeIndexCommand : CurvzCommand {
+    CurvzProject* proj;         // resolution root
+    std::string   parent_iid;   // SceneNode::internal_id of the parent
+    std::string   obj_iid;      // SceneNode::internal_id of the moved node
+    int           src_idx;      // original position in parent->children
+    int           dst_idx;      // post-op position in parent->children
+
+    MoveNodeIndexCommand(CurvzProject* proj,
+                         std::string parent_iid,
+                         std::string obj_iid,
+                         int src_idx,
+                         int dst_idx)
+        : proj(proj)
+        , parent_iid(std::move(parent_iid))
+        , obj_iid(std::move(obj_iid))
+        , src_idx(src_idx)
+        , dst_idx(dst_idx) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override { return "Move object"; }
+    // No `references()` override — iid-based capture means no raw
+    // SceneNode* is held. Default `references() == false` is correct.
+};
+
 // ── ReorderLayersCommand ─────────────────────────────────────────────────────
 // s172 m3 — final structural piece of the layer-undoable arc. Closes the
 // last "direct mutation of doc->layers" path: DnD layer reorder.

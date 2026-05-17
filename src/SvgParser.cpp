@@ -852,6 +852,21 @@ static PathData parse_path_d(const std::string& d) {
     return pd;
 }
 
+// ── parse_path_d_bridge (s236 m1) ───────────────────────────────────────────
+// Non-static wrapper exposing parse_path_d to curvz_utils. The pump pair
+// `svg_d_to_path_data` / `path_data_to_svg_d` lives in curvz_utils so
+// script-side callers (ObjectProxy::set_path_data) reach the same shape
+// SvgParser / SvgWriter use, without duplicating the parser. Full lift
+// of parse_path_d + arc_to_bezier into curvz_utils is deferred to a
+// future milestone (paired with the writer-emitter sweep); m1 keeps the
+// parser body here and adds this thin wrapper as the visible seam.
+//
+// Lives in Curvz:: (not curvz::utils::) — matches the existing public
+// surface SvgParser exposes through other parser entry points.
+PathData parse_path_d_bridge(const std::string& d) {
+    return parse_path_d(d);
+}
+
 // Parse a full d string that may contain multiple subpaths (M...Z M...Z ...)
 // and return one PathData per subpath. This avoids re-parsing each subpath
 // in isolation (which would misinterpret relative 'm' commands as starting

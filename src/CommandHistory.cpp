@@ -720,6 +720,109 @@ void MoveObjectToLayerCommand::undo() {
     src->children.insert(src->children.begin() + ins, clone_node(*snap));
 }
 
+// ── MoveNodeIndexCommand bodies (s234 m4) ────────────────────────────
+// Single-target intra-parent reorder. Same resolution shape as
+// MoveObjectToLayerCommand but with one parent instead of two:
+// resolve parent_iid, locate the target inside parent->children by
+// obj_iid, then move it from its current position to the recorded
+// slot. Erase-by-iid (rather than erase-by-src_idx) is robust against
+// any commands queued between push and replay that might have shuffled
+// siblings; the recorded indices are used only as the insertion target.
+//
+// execute() = redo: move target to dst_idx within parent->children.
+// undo() = reverse: move target to src_idx within parent->children.
+//
+// Partial-recovery shape: parent gone (deleted by some other op) →
+// no-op + log. Target gone from parent (already moved/deleted by some
+// other op) → no-op + log. Same posture as the other s167-pattern
+// commands.
+//
+// Why no clone snapshot: unlike MoveObjectToLayerCommand (which moves
+// across containers and needs a fall-back snap if the source layer is
+// gone), this command stays within ONE parent. The unique_ptr we
+// temporarily move out of the children vector goes right back in at
+// the new slot — no snapshot needed because the live node is the
+// authoritative state and there's no cross-container hand-off.
+void MoveNodeIndexCommand::execute() {
+    if (!proj) {
+        LOG_INFO("[IIDDIAG] MoveNodeIndex::exec  proj=NULL");
+        return;
+    }
+    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
+    if (parent_iid.empty() || obj_iid.empty()) {
+        LOG_INFO("[IIDDIAG] MoveNodeIndex::exec  empty parent_iid or obj_iid "
+                 "(push site bug?)");
+        return;
+    }
+    auto* parent = curvz::utils::find_by_iid(*proj, parent_iid);
+    if (!parent) {
+        LOG_INFO("[IIDDIAG] MoveNodeIndex::exec  parent_iid='{}' resolved=nullptr "
+                 "(parent gone) — skipping", parent_iid);
+        return;
+    }
+    auto& ch = parent->children;
+    int from = -1;
+    for (int i = 0; i < (int)ch.size(); ++i) {
+        if (ch[i] && ch[i]->internal_id == obj_iid) { from = i; break; }
+    }
+    if (from < 0) {
+        LOG_INFO("[IIDDIAG] MoveNodeIndex::exec  obj_iid='{}' not in parent "
+                 "'{}' — skipping", obj_iid, parent_iid);
+        return;
+    }
+    int to = std::clamp(dst_idx, 0, (int)ch.size() - 1);
+    if (from == to) {
+        LOG_INFO("[IIDDIAG] MoveNodeIndex::exec  obj_iid='{}' from==to=={} "
+                 "— no-op", obj_iid, from);
+        return;
+    }
+    auto node = std::move(ch[from]);
+    ch.erase(ch.begin() + from);
+    ch.insert(ch.begin() + to, std::move(node));
+    LOG_INFO("[IIDDIAG] MoveNodeIndex::exec  obj_iid='{}' parent='{}' "
+             "moved {} -> {}", obj_iid, parent_iid, from, to);
+}
+
+void MoveNodeIndexCommand::undo() {
+    if (!proj) {
+        LOG_INFO("[IIDDIAG] MoveNodeIndex::undo  proj=NULL");
+        return;
+    }
+    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
+    if (parent_iid.empty() || obj_iid.empty()) {
+        LOG_INFO("[IIDDIAG] MoveNodeIndex::undo  empty parent_iid or obj_iid "
+                 "(push site bug?)");
+        return;
+    }
+    auto* parent = curvz::utils::find_by_iid(*proj, parent_iid);
+    if (!parent) {
+        LOG_INFO("[IIDDIAG] MoveNodeIndex::undo  parent_iid='{}' resolved=nullptr "
+                 "(parent gone) — skipping", parent_iid);
+        return;
+    }
+    auto& ch = parent->children;
+    int from = -1;
+    for (int i = 0; i < (int)ch.size(); ++i) {
+        if (ch[i] && ch[i]->internal_id == obj_iid) { from = i; break; }
+    }
+    if (from < 0) {
+        LOG_INFO("[IIDDIAG] MoveNodeIndex::undo  obj_iid='{}' not in parent "
+                 "'{}' — skipping", obj_iid, parent_iid);
+        return;
+    }
+    int to = std::clamp(src_idx, 0, (int)ch.size() - 1);
+    if (from == to) {
+        LOG_INFO("[IIDDIAG] MoveNodeIndex::undo  obj_iid='{}' from==to=={} "
+                 "— no-op", obj_iid, from);
+        return;
+    }
+    auto node = std::move(ch[from]);
+    ch.erase(ch.begin() + from);
+    ch.insert(ch.begin() + to, std::move(node));
+    LOG_INFO("[IIDDIAG] MoveNodeIndex::undo  obj_iid='{}' parent='{}' "
+             "moved {} -> {}", obj_iid, parent_iid, from, to);
+}
+
 // ── ReorderLayersCommand bodies (s172 m3) ────────────────────────────
 // Final structural piece of the layer-undoable arc. Closes the last
 // "direct mutation of doc->layers" path (DnD layer reorder).

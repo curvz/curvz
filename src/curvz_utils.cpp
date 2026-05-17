@@ -11,7 +11,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>      // s236 m1 — snprintf for fmt2 in path-d emitter
 #include <cstring>
+#include <sstream>     // s236 m1 — ostringstream for path-d emitter
+#include <string>
 #include <vector>
 
 // s125 m2a — dialog factory. Heavy widget includes go here, not in the
@@ -1513,6 +1516,86 @@ void generate_warp_preset(int preset_idx,
         bot_env = build_wave(bx, bw, y_bottom, +amp * 0.6, bot_count);
         break;
     }
+}
+
+// ── SVG path d-string pump (s236 m1) ─────────────────────────────────────
+//
+// See curvz_utils.hpp's "SVG path d-string pump" section for the scope-
+// of-promotion notes and the contract.
+
+// Bridge declaration: SvgParser.cpp's parse_path_d is file-static and
+// stays there for now (full lift deferred; see header note). m1 adds
+// a non-static wrapper in SvgParser.cpp with this signature, and the
+// pump body below calls through to it. The wrapper lives in Curvz::
+// namespace because SvgParser's other public surface does — matches
+// the parser's existing externally-visible-symbol convention.
+
+} // namespace curvz::utils
+
+namespace Curvz {
+// Forward decl of the wrapper SvgParser.cpp exposes for the m1 pump.
+// Defined alongside the file-static parse_path_d in SvgParser.cpp;
+// the wrapper is a one-line thunk into the existing parser body.
+PathData parse_path_d_bridge(const std::string& d);
+} // namespace Curvz
+
+namespace curvz::utils {
+
+::Curvz::PathData svg_d_to_path_data(const std::string& d) {
+    // Empty input is the documented "freshly-minted Path" shape —
+    // zero nodes, closed == false. The bridge handles this defensively
+    // too, but short-circuiting here saves a function call.
+    if (d.empty()) return ::Curvz::PathData{};
+    return ::Curvz::parse_path_d_bridge(d);
+}
+
+// fmt2 — two-decimal-place formatting. Matches SvgWriter's fmt2 helper
+// so re-emitted d-strings are byte-identical between save-via-writer
+// and round-trip-via-script paths. File-local because no other pump
+// needs this format today; promote if a second caller appears.
+static std::string fmt2_path_d(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.2f", v);
+    return buf;
+}
+
+std::string path_data_to_svg_d(const ::Curvz::PathData& pd) {
+    // Empty PathData → empty string. The two-byte "M " prefix is never
+    // emitted on an empty path; downstream consumers (renderer, file
+    // writer) treat the empty string as "no geometry" without parsing.
+    if (pd.nodes.empty()) return std::string{};
+
+    // Lifted verbatim from SvgWriter.cpp's two inline emitters (lines
+    // 596-622 in the compound branch and 798-819 in the single-path
+    // branch — both were byte-for-byte identical modulo whitespace).
+    // Algorithm: moveto the first anchor; for each consecutive pair
+    // (i, i+1), emit L if both flanking handles degenerate to anchors
+    // (straight segment), else C with both control points; closed
+    // paths terminate with Z.
+    std::ostringstream d;
+    d << "M " << fmt2_path_d(pd.nodes[0].x)
+      << " "  << fmt2_path_d(pd.nodes[0].y);
+
+    int n = (int)pd.nodes.size();
+    int segs = pd.closed ? n : n - 1;
+    for (int i = 0; i < segs; ++i) {
+        const ::Curvz::BezierNode& a = pd.nodes[i];
+        const ::Curvz::BezierNode& b = pd.nodes[(i + 1) % n];
+        bool a_degen = (std::abs(a.cx2 - a.x) < 1e-6 &&
+                        std::abs(a.cy2 - a.y) < 1e-6);
+        bool b_degen = (std::abs(b.cx1 - b.x) < 1e-6 &&
+                        std::abs(b.cy1 - b.y) < 1e-6);
+        if (a_degen && b_degen) {
+            d << " L " << fmt2_path_d(b.x) << " " << fmt2_path_d(b.y);
+        } else {
+            d << " C " << fmt2_path_d(a.cx2) << " " << fmt2_path_d(a.cy2)
+              << " "   << fmt2_path_d(b.cx1) << " " << fmt2_path_d(b.cy1)
+              << " "   << fmt2_path_d(b.x)   << " " << fmt2_path_d(b.y);
+        }
+    }
+    if (pd.closed) d << " Z";
+
+    return d.str();
 }
 
 } // namespace curvz::utils

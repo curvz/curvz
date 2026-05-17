@@ -338,10 +338,30 @@ MainWindow::MainWindow(Application & /*app*/) {
   // from the s230 handoff's design fork), and why selected_iids is
   // NOT on `objects` (selection is canvas-side state; it gets its
   // own future Scriptable).
+  //
+  // s235 m1 — third ctor arg: a NotifyDocChanged callback that fires
+  // the canvas-refresh cascade. ObjectsScriptable and its
+  // ObjectProxy children invoke this at the end of every successful
+  // mutating verb (collection `new` / `delete`; element toggle_visible
+  // / set_visible / toggle_locked / set_locked / rename / move /
+  // reparent / duplicate), AFTER the command push. Two calls are the
+  // canonical shape for external mutators: queue_draw repaints the
+  // canvas, notify_document_changed runs the structural cascade
+  // (layers panel rebuild, status counts, gallery thumb, blend
+  // cache invalidate, schedule_save). Mirrors s227 m1's
+  // themes_refresh_cascade lambda — same two-call pattern for the
+  // ThemesScriptable apply verb. Closes the gap Scott caught at the
+  // end of s234: script-path mutations updated the doc model and the
+  // iid index but never told Canvas anything changed, so the smoke
+  // ran clean while the canvas kept rendering its previous frame.
   m_objects_scriptable =
       std::make_unique<curvz::scripting::ObjectsScriptable>(
           [this]() -> CurvzProject* { return m_project.get(); },
-          &m_history);
+          &m_history,
+          [this]() {
+              m_canvas.queue_draw();
+              m_canvas.notify_document_changed();
+          });
 
   // s222 m2 — `inspector` Scriptable. Flat verb surface (no proxy
   // routing) that delegates to MainWindow's existing collapse-all

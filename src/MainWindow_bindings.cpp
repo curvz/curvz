@@ -1268,27 +1268,45 @@ void MainWindow::connect_signals() {
   });
 
   m_canvas.signal_document_changed().connect([this]() {
+    // s235 m1 diag-1: trace cascade entry/exit so we can see how many
+    // times this fires per script verb, and detect re-entry. The
+    // crash at end of s235 m1 round 2 showed double LayersPanel::
+    // add_child_row for the same parent in the same millisecond,
+    // suggesting the cascade re-emits m_sig_doc_changed somewhere
+    // inside its own body.
+    static int s_cascade_depth = 0;
+    ++s_cascade_depth;
+    LOG_INFO("[S235M1] cascade ENTER depth={}", s_cascade_depth);
+
     // Canvas-driven mutations (drag-move, node drags, transform handles,
     // structural edits) come through doc_changed — not prop_changed.
     // Invalidate blend caches here too so live regen works for A/B
     // edited directly on canvas, not just via the inspector.
+    LOG_INFO("[S235M1] cascade step1 mark_all_blends_dirty");
     m_canvas.mark_all_blends_dirty();
+    LOG_INFO("[S235M1] cascade step2 refresh_status_counts");
     refresh_status_counts(); // s132 m2 — replaces hand-rolled loop
+    LOG_INFO("[S235M1] cascade step3 gallery.refresh");
     m_gallery.refresh();
+    LOG_INFO("[S235M1] cascade step4 doc_tabs.refresh");
     m_doc_tabs.refresh();
     // Refresh layers panel so new object appears
+    LOG_INFO("[S235M1] cascade step5 layers.refresh");
     m_layers.refresh();
     // Persist structural changes (e.g. text-to-path link UUID) to disk
+    LOG_INFO("[S235M1] cascade step6 schedule_save");
     schedule_save();
     // Sync inspector selection position/size when object moves
     if (m_canvas.selected_object() && (m_active_tool == ActiveTool::Selection ||
                                        m_active_tool == ActiveTool::Node)) {
+      LOG_INFO("[S235M1] cascade step7 sync_selection");
       m_properties.sync_selection(m_canvas.selected_object());
     }
     // s180: live-sync the inspector's guide X/Y/A spinners during canvas
     // guide drag. Cheap and gated — sync_selected_guide bails unless the
     // single-guide editor is currently built and a guide is selected.
     // Mirrors the sync_selection call above for path objects.
+    LOG_INFO("[S235M1] cascade step8 sync_selected_guide");
     m_properties.sync_selected_guide();
     // s205 m1: live-refresh the Selection-section pivot picker's bbox
     // after a canvas move/transform. Pivot xy itself didn't change, but
@@ -1297,7 +1315,11 @@ void MainWindow::connect_signals() {
     // section rebuild. sync_selected_pivot bails unless the picker is
     // currently built, so this is essentially free for non-Selection
     // section contexts.
+    LOG_INFO("[S235M1] cascade step9 sync_selected_pivot");
     m_properties.sync_selected_pivot();
+
+    LOG_INFO("[S235M1] cascade LEAVE depth={}", s_cascade_depth);
+    --s_cascade_depth;
   });
 
   // s205 m1: pivot state changes (R-toggle, R+drag, right-click popover,

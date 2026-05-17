@@ -22,6 +22,114 @@
 // `push_string_field` on the proxy match the layer-side helpers
 // of the same names; `arg_as_bool` is added to the anon namespace.
 //
+// s234 m4 — wires three element structural verbs onto `ObjectProxy::invoke`:
+// `move "<direction>"`, `reparent "<new_parent_iid>"`, and `duplicate`.
+// Plus a new element query `child_index` on the proxy. Direct mutation
+// happens in the verb body BEFORE the command push, matching the m2 /
+// m3 shape and LayerProxy's convention.
+//
+// Command rides:
+//   - `move` rides MoveNodeIndexCommand (NEW in m4, single-target
+//     iid-keyed intra-parent reorder). Verification (first task of
+//     the milestone — same precedent as m3's first task) confirmed
+//     ZOrderCommand's apply_order keys on SVG `id`, which is empty
+//     for script-minted objects, so script-driven multi-sibling
+//     reorder would silently drop entries on undo/redo. New command
+//     uses internal_id-keyed lookup at execute/undo time. Same
+//     "ship a parallel command class" precedent m3 set with
+//     EditObjectFieldCommand.
+//   - `reparent` rides MoveObjectToLayerCommand unmodified. Its src/dst
+//     resolution via find_by_iid is container-agnostic — it walks the
+//     entire project tree, not just doc->layers, so Group / Compound /
+//     ClipGroup containers work as destinations the same as Layers.
+//     Only the description string ("Move to layer") is layer-flavored;
+//     a cosmetic concern that stays preserved this session.
+//   - `duplicate` rides DuplicateCommand. Script-side prep clones the
+//     subtree then MINTS A FRESH internal_id on every node in the
+//     cloned subtree (canvas's freshen_ids helper only touches SVG id
+//     and name, not internal_id — that's a latent canvas-side issue;
+//     out of scope for m4). Without the fresh internal_id mint, the
+//     duplicate and original would collide in the iid index and
+//     `set <var> to result` would resolve to whichever node tree-walk
+//     visits last. Returns the new iid as ScriptValue::text so scripts
+//     can bind it and immediately address the duplicate.
+//
+// New query `child_index` on the proxy: the smoke needs an observable
+// for `move` round-trips (the move verb's success leaves no visible
+// trace through name / visible / locked / type / parent_iid /
+// child_count — those are all unchanged by reorder). `child_index`
+// closes the gap; returns the node's slot position in parent->children,
+// or -1 if the node lives in a non-children slot.
+//
+// s235 m1 — adds a NotifyDocChanged callback (`std::function<void()>`)
+// threaded through the ObjectsScriptable ctor and into ObjectProxy via
+// `proxy_for`. Every successful mutating verb (collection `new` /
+// `delete`; element-level toggle_visible / set_visible / toggle_locked
+// / set_locked / rename / move / reparent / duplicate) calls the
+// callback at the END of its success path, AFTER the command push.
+// MainWindow supplies a lambda that runs `m_canvas.queue_draw();
+// m_canvas.notify_document_changed();` — the canonical two-call
+// shape for external mutators (s227 m1's themes_refresh_cascade is
+// the in-tree precedent). No-op paths (args.empty(), value
+// unchanged, unknown direction, refused refusal-class) do NOT
+// invoke the callback — there's no canvas state to refresh in
+// those cases. The callback may be null, in which case every verb
+// silently skips the refresh step (graceful degradation, same shape
+// the history pointer uses). Closes the s234-end-of-session gap
+// where the smoke ran clean but the canvas kept rendering its
+// previous frame.
+//
+// s236 m1 — OPENS the canvas-observable scripts arc. Adds the
+// first geometry-bearing verb (`set_path_data "<svg_d_string>"`)
+// to ObjectProxy::invoke, plus two new proxy queries (`node_count`
+// and `path_data`). Rides EXISTING EditPathCommand unmodified —
+// first-task verification confirmed its CurvzProject* + obj_iid +
+// before/after PathData shape (added in s167 m1) is the exact fit
+// set_path_data needs. The "ship a parallel command rather than
+// retrofit" precedent m3 and m4 set doesn't apply here; m1 reuses
+// EditPathCommand directly. New `curvz::utils::svg_d_to_path_data`
+// and `path_data_to_svg_d` pumps in curvz_utils — the emitter is
+// a full lift from SvgWriter's two duplicate inline emitters; the
+// parser side bridges to SvgParser's parse_path_d via a non-static
+// wrapper (full parser lift deferred to a future SvgParser sweep
+// milestone — the body is 260 lines plus arc_to_bezier, intertwined
+// with parse_path_d_multi, not surgical-sized).
+//
+// The verb does:
+//   1. Resolve node via the proxy's iid (returns null if iid no
+//      longer addresses a scene-object — same shape as every other
+//      proxy verb).
+//   2. Refuse if `node->path == nullptr` (non-Path types: Group,
+//      Compound, Image, Ref, etc. don't carry a PathData slot).
+//      Silent no-op, no command pushed, no callback fired.
+//   3. Refuse if args.empty(). Empty-string arg IS allowed and
+//      resolves to an empty PathData — useful clearing primitive.
+//   4. Capture `before = *node->path`; parse arg via
+//      svg_d_to_path_data; capture `after = parsed`.
+//   5. Direct mutation: `*node->path = after` (mirrors how every
+//      existing EditPathCommand call site applies before pushing).
+//   6. Push EditPathCommand(proj, m_iid, before, after, "Set path
+//      data (script)"). Skipped if history is null (graceful
+//      degrade, same shape every other proxy verb uses).
+//   7. notify_doc_changed() — the s235 m1 cascade.
+//
+// The iid index is NOT invalidated by this verb — path-data changes
+// don't reshape the iid space (no internal_id mints, no tree-
+// structure changes). EditPathCommand::execute does its own
+// invalidate-before-resolve defensively (s168 m6 pattern), which
+// covers redo/undo cycles.
+//
+// Two new proxy queries:
+//   - `node_count` (int) — size of node->path->nodes. 0 when
+//     node->path is null (non-Path types) or empty. The observable
+//     for set_path_data — deterministic, no Cairo, pure model side.
+//   - `path_data` (text) — re-emitted SVG-d string via
+//     path_data_to_svg_d. Empty string for null/empty paths. NOT
+//     byte-identical to the most-recent set_path_data input (fmt2
+//     normalisation, segment-class reclassification); the read
+//     surface for capture/inspection rather than literal-RHS
+//     round-trip assertion.
+//
 // ── Command pushes (s231 m2) ─────────────────────────────────────────────
 //
 // `new` pushes an AddNodeCommand; `delete` pushes a DeleteObjectCommand.
@@ -445,6 +553,133 @@ mint_scene_object(Curvz::SceneNode::Type t) {
     return n;
 }
 
+// ── Freshen internal_ids on a cloned subtree (s234 m4) ───────────────────
+//
+// `clone_node` copies internal_id verbatim from source — it has to,
+// because m2's `delete` relies on snap->internal_id matching the
+// erased node's iid for redo / undo to reach the same logical node.
+// For `duplicate` we want the OPPOSITE: the clone must have its own
+// stable identity so the new node and the original coexist in the
+// iid index without collision. Walk the cloned subtree recursively
+// and mint a fresh internal_id at every visited slot (children,
+// clip_shape, blend_source_*, warp_source — same descent rules
+// CurvzDocument's index_walk uses, since those are the slots that
+// participate in the iid index).
+//
+// blend_cache / warp_glyph_cache / warp_cache are NOT walked — same
+// exclusion CurvzDocument applies. Those are derived rebuilds; their
+// iids aren't stable across renders.
+//
+// Note: this is the script path's analog of canvas's freshen_ids,
+// which mints fresh SVG `id` and `name` but NOT internal_id. Canvas
+// has the same latent risk (duplicating a complex subtree leaves the
+// clone with the original's iids in the index), but addressing that
+// is a separate s234-or-later band-3 mop-up; m4 scopes the fix to
+// the script path where the smoke would otherwise definitely trip
+// the collision.
+void freshen_internal_ids(Curvz::SceneNode* n) {
+    if (!n) return;
+    n->internal_id = Curvz::generate_internal_id();
+    for (auto& c : n->children) freshen_internal_ids(c.get());
+    if (n->clip_shape)     freshen_internal_ids(n->clip_shape.get());
+    if (n->blend_source_a) freshen_internal_ids(n->blend_source_a.get());
+    if (n->blend_source_b) freshen_internal_ids(n->blend_source_b.get());
+    if (n->warp_source)    freshen_internal_ids(n->warp_source.get());
+}
+
+// ── Descendant check for cycle-refusal in reparent (s234 m4) ─────────────
+//
+// Returns true if `candidate` is anywhere in the subtree rooted at
+// `ancestor` (excluding ancestor itself — that's a separate equals-
+// self check at the verb level). Used by `reparent` to refuse moves
+// that would form a cycle (the new parent can't be a descendant of
+// the moved node; doing so would orphan the moved node from the
+// tree while leaving it pointing into its own subtree as the parent).
+//
+// Same descent rules as the iid index walk and freshen_internal_ids
+// — children plus the four structural slots. Pointer equality is the
+// "is this slot exactly that node" test; iid equality would also work
+// but pointer equality is the canonical unique_ptr-tree shape check.
+bool is_descendant_of(Curvz::SceneNode* ancestor, Curvz::SceneNode* candidate) {
+    if (!ancestor || !candidate) return false;
+    for (auto& c : ancestor->children) {
+        if (c.get() == candidate) return true;
+        if (is_descendant_of(c.get(), candidate)) return true;
+    }
+    if (ancestor->clip_shape) {
+        if (ancestor->clip_shape.get() == candidate) return true;
+        if (is_descendant_of(ancestor->clip_shape.get(), candidate)) return true;
+    }
+    if (ancestor->blend_source_a) {
+        if (ancestor->blend_source_a.get() == candidate) return true;
+        if (is_descendant_of(ancestor->blend_source_a.get(), candidate)) return true;
+    }
+    if (ancestor->blend_source_b) {
+        if (ancestor->blend_source_b.get() == candidate) return true;
+        if (is_descendant_of(ancestor->blend_source_b.get(), candidate)) return true;
+    }
+    if (ancestor->warp_source) {
+        if (ancestor->warp_source.get() == candidate) return true;
+        if (is_descendant_of(ancestor->warp_source.get(), candidate)) return true;
+    }
+    return false;
+}
+
+// ── Container-type check for reparent destination (s234 m4) ──────────────
+//
+// `reparent` accepts containers — types whose `children` vector is
+// part of the user-controlled tree shape. Leaves (Path / Text /
+// Image / Ref / Measurement) are refused as destinations even if
+// they happen to have a non-empty children vector at the moment of
+// the call (which shouldn't be possible by construction, but a
+// type-level refusal is the cleaner contract than a runtime
+// children.size() check that depends on whatever state the leaf
+// happens to be in).
+//
+// Layer and the special-layer types (GuideLayer, RefLayer, etc.)
+// ARE valid containers — they sit at the top of doc->layers and
+// hold children directly. They're "out of scope" for `objects` as
+// addressing surfaces (the iid wouldn't resolve through
+// `objects.<iid>` because is_scene_object filters them out), but
+// they CAN be the destination of a reparent issued via
+// `objects.<iid> reparent` — the dest iid is resolved through
+// find_by_iid which walks the whole project tree without
+// scope-filtering. That keeps the reparent verb's reach broad
+// (a script can move a Path into a different Layer just as easily
+// as into a sibling Group). The only types refused are leaves.
+bool is_container_type(Curvz::SceneNode::Type t) {
+    using T = Curvz::SceneNode::Type;
+    switch (t) {
+        case T::Group:
+        case T::Compound:
+        case T::ClipGroup:
+        case T::Layer:
+        case T::GuideLayer:
+        case T::RefLayer:
+        case T::MeasureLayer:
+        case T::GridLayer:
+        case T::MarginLayer:
+            return true;
+        case T::Path:
+        case T::Text:
+        case T::Image:
+        case T::Ref:
+        case T::Measurement:
+        case T::Blend:
+        case T::Warp:
+        case T::Guide:
+            // Blend and Warp have structural slots (blend_source_*,
+            // warp_source), not a user-controlled `children` vector.
+            // Refused as reparent destinations — reparenting into a
+            // structural slot is a separate operation than reparenting
+            // into a children list, and the verb's contract is the
+            // latter. Guide is a leaf typed like a marker, no
+            // children. All return false.
+            return false;
+    }
+    return false;
+}
+
 } // anon namespace
 
 // ── ObjectProxy — transient per-instance Scriptable ──────────────────────
@@ -466,10 +701,12 @@ class ObjectProxy : public Scriptable {
 public:
     ObjectProxy(ObjectsScriptable::ProjectGetter get_project,
                 Curvz::CommandHistory* history,
+                ObjectsScriptable::NotifyDocChanged notify_doc_changed,
                 std::string iid)
         : Scriptable(unregistered)
         , m_get_project(std::move(get_project))
         , m_history(history)
+        , m_notify_doc_changed(std::move(notify_doc_changed))
         , m_iid(std::move(iid)) {}
 
     ScriptValue invoke(std::string_view verb,
@@ -488,6 +725,14 @@ private:
         if (!proj) return nullptr;
         auto* n = curvz::utils::find_by_iid(*proj, m_iid);
         return is_scene_object(n) ? n : nullptr;
+    }
+
+    // s235 m1 — canvas-refresh callback trigger. Called at the end of
+    // every successful mutating verb's body, AFTER the command push.
+    // No-op when the callback is empty (graceful degradation, same
+    // shape the history pointer uses for null-history degradation).
+    void notify_doc_changed() {
+        if (m_notify_doc_changed) m_notify_doc_changed();
     }
 
     // Push an EditObjectFieldCommand with our iid. The DIRECT mutation
@@ -523,12 +768,19 @@ private:
         m_history->push(std::move(cmd));
     }
 
-    ObjectsScriptable::ProjectGetter m_get_project;
-    Curvz::CommandHistory*           m_history;   // wired in m3 — pushes
-                                                  // EditObjectFieldCommand
-                                                  // for the five element
-                                                  // mutating verbs
-    std::string                      m_iid;
+    ObjectsScriptable::ProjectGetter    m_get_project;
+    Curvz::CommandHistory*              m_history;   // wired in m3 — pushes
+                                                     // EditObjectFieldCommand
+                                                     // for the five element
+                                                     // mutating verbs
+    ObjectsScriptable::NotifyDocChanged m_notify_doc_changed;  // s235 m1 —
+                                                     // canvas-refresh callback,
+                                                     // invoked at the end of
+                                                     // every successful
+                                                     // mutating verb. May be
+                                                     // empty; refresh step
+                                                     // silently skips.
+    std::string                         m_iid;
 };
 
 // ── ObjectProxy: invoke ──────────────────────────────────────────────────
@@ -551,6 +803,7 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
         bool after  = !before;
         node->visible = after;
         push_bool_field(Field::Visible, before, after);
+        notify_doc_changed();
         return ScriptValue::null();
     }
 
@@ -561,6 +814,7 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
         if (before == after) return ScriptValue::null();  // no-op, no command
         node->visible = after;
         push_bool_field(Field::Visible, before, after);
+        notify_doc_changed();
         return ScriptValue::null();
     }
 
@@ -569,6 +823,7 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
         bool after  = !before;
         node->locked = after;
         push_bool_field(Field::Locked, before, after);
+        notify_doc_changed();
         return ScriptValue::null();
     }
 
@@ -579,6 +834,7 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
         if (before == after) return ScriptValue::null();
         node->locked = after;
         push_bool_field(Field::Locked, before, after);
+        notify_doc_changed();
         return ScriptValue::null();
     }
 
@@ -589,7 +845,322 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
         if (after.empty() || before == after) return ScriptValue::null();
         node->name = after;
         push_string_field(Field::Name, before, after);
+        notify_doc_changed();
         return ScriptValue::null();
+    }
+
+    // ── set_path_data "<svg_d_string>" (s236 m1) ─────────────────────────
+    //
+    // Replace the Path's PathData with the parsed result of an SVG
+    // `d`-attribute string. The verb takes a single string arg; the
+    // empty string IS allowed and resolves to an empty PathData (a
+    // clearing primitive without deleting the node — matches how a
+    // freshly-minted Path starts out).
+    //
+    // Rides EditPathCommand UNMODIFIED — its CurvzProject* + obj_iid
+    // + before/after PathData shape (added in the s167 m1 iid
+    // migration) is exactly what whole-path-replace needs. No
+    // parallel command class. First-task verification confirmed
+    // the fit before writing the verb.
+    //
+    // No-op returns (no command pushed, no callback fired):
+    //   - args.empty() — no string supplied.
+    //   - args[0] is not a string-shaped ScriptValue.
+    //   - node->path == nullptr — non-Path types (Group / Compound /
+    //     Image / Ref / Measurement / Blend / Warp / Text). Silent
+    //     refusal, no error sentinel through ScriptValue (future
+    //     structured-error-channel concern; see s235 backlog).
+    //
+    // The iid index is NOT invalidated here — path-data changes
+    // don't reshape iid space. EditPathCommand::execute does its own
+    // invalidate-before-resolve (s168 m6 defensive pattern), which
+    // covers redo/undo paths.
+    if (verb == "set_path_data") {
+        if (args.empty()) return ScriptValue::null();
+        std::string d_str = arg_as_string(args[0]);
+        // Note: empty d_str is intentionally allowed below — it
+        // produces an empty PathData. We don't early-return on the
+        // empty-arg case the way `rename` does, because clearing
+        // path data is a meaningful operation distinct from "do
+        // nothing." Only the wrong-shape case (args[0] isn't a
+        // string) is handled by arg_as_string returning ""; if a
+        // user genuinely passed empty quotes we honour it.
+
+        if (!node->path) return ScriptValue::null();  // non-Path
+
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+
+        // Capture before BEFORE the parse — the parse is the
+        // expensive step; if it produced something we want to
+        // commit, the before-snapshot is already in hand.
+        Curvz::PathData before = *node->path;
+        Curvz::PathData after  = curvz::utils::svg_d_to_path_data(d_str);
+
+        // Direct mutation precedes the push (mirrors every existing
+        // EditPathCommand call site in Canvas_ops.cpp / Canvas_input.cpp
+        // — user perspective is "the verb did the thing", Ctrl+Z then
+        // undoes it).
+        *node->path = after;
+
+        if (m_history) {
+            auto cmd = std::make_unique<Curvz::EditPathCommand>(
+                proj, m_iid,
+                std::move(before), std::move(after),
+                "Set path data (script)");
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::null();
+    }
+
+    // ── move "<direction>" (s234 m4) ─────────────────────────────────────
+    //
+    // Reorder within the parent's `children` vector. Direction token
+    // vocabulary: "up" (idx-1), "down" (idx+1), "top" (idx=0),
+    // "bottom" (idx=last). Mirrors LayersScriptable::move's vocabulary.
+    // Z-order convention: lower index = visually on top (the canvas
+    // draws children[0] first, children[last] last — first paint goes
+    // under subsequent paints). "up" raises in z-order (toward index
+    // 0); "down" lowers in z-order (toward last index). Same direction
+    // semantics canvas's Arrange { BringForward / SendBackward /
+    // BringToFront / SendToBack } use.
+    //
+    // No-op returns (no command pushed):
+    //   - args.empty() — no direction supplied.
+    //   - direction token isn't one of the four vocabulary entries.
+    //   - target is owned by a non-children slot (structural input;
+    //     no list position to move within).
+    //   - parent has only one child (target = self).
+    //   - target is already at the destination edge ("up" / "top" on
+    //     idx 0; "down" / "bottom" on idx last).
+    if (verb == "move") {
+        if (args.empty()) return ScriptValue::null();
+        std::string dir = arg_as_string(args[0]);
+        if (dir.empty()) return ScriptValue::null();
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+        ParentSlot slot = find_parent_node_in_project(proj, node);
+        if (!slot.parent) return ScriptValue::null();
+        if (slot.child_index < 0) return ScriptValue::null();  // non-children slot
+
+        auto& ch = slot.parent->children;
+        int n = (int)ch.size();
+        int src = slot.child_index;
+        int dst = src;
+        if      (dir == "up")     dst = std::max(0, src - 1);
+        else if (dir == "down")   dst = std::min(n - 1, src + 1);
+        else if (dir == "top")    dst = 0;
+        else if (dir == "bottom") dst = n - 1;
+        else return ScriptValue::null();  // unknown direction
+        if (dst == src) return ScriptValue::null();  // already there
+
+        // Direct mutation first (mirrors m2 `new` / `delete` and m3
+        // mutating verbs' shape — user perspective is "the verb did
+        // the thing"; Ctrl+Z then undoes it). Move the unique_ptr out
+        // of the source slot, erase, insert at the destination.
+        auto moved = std::move(ch[src]);
+        ch.erase(ch.begin() + src);
+        ch.insert(ch.begin() + dst, std::move(moved));
+
+        // Invalidate the owning doc's iid index — same shape as m2
+        // `new`/`delete`. Find the doc via the parent iid (cheaper
+        // than walking docs again).
+        auto* owning_doc = curvz::utils::find_doc_by_iid(
+            *proj, slot.parent->internal_id);
+        if (owning_doc) owning_doc->invalidate_iid_index();
+
+        if (m_history) {
+            auto cmd = std::make_unique<Curvz::MoveNodeIndexCommand>(
+                proj, slot.parent->internal_id, m_iid, src, dst);
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::null();
+    }
+
+    // ── reparent "<new_parent_iid>" (s234 m4) ────────────────────────────
+    //
+    // Move the node from its current container's `children` slot
+    // into the named container's `children` (front-insert at idx 0,
+    // matching `objects new`'s "new on top" convention).
+    //
+    // Pushes MoveObjectToLayerCommand (unmodified from s171 m2).
+    // Its src_layer_iid / dst_layer_iid fields are named for the
+    // historical use case (cross-layer DnD), but mechanically the
+    // command resolves either iid via find_by_iid which walks the
+    // entire project tree — Layers, Groups, Compounds, ClipGroups
+    // all participate as resolution targets. Reusing it preserves
+    // the existing s170-crash-resilient undo behaviour for cross-
+    // container moves.
+    //
+    // No-op returns (no command pushed):
+    //   - args.empty() — no destination supplied.
+    //   - dest iid empty or doesn't resolve.
+    //   - dest type isn't a container (Path / Text / Image / Ref /
+    //     Measurement / Blend / Warp / Guide — see
+    //     is_container_type). Blend / Warp have structural slots
+    //     not children vectors; refusing them keeps the contract
+    //     "children-slot reparent only."
+    //   - dest equals self (same node).
+    //   - dest is a descendant of self (cycle — would orphan the
+    //     moved node into its own subtree).
+    //   - source is owned by a non-children slot (clip_shape /
+    //     blend_source_* / warp_source — same refusal as `delete`
+    //     and `move`).
+    if (verb == "reparent") {
+        if (args.empty()) return ScriptValue::null();
+        std::string dst_iid = arg_as_string(args[0]);
+        if (dst_iid.empty()) return ScriptValue::null();
+        if (dst_iid == m_iid) return ScriptValue::null();  // self
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+
+        auto* dst_parent = curvz::utils::find_by_iid(*proj, dst_iid);
+        if (!dst_parent) return ScriptValue::null();
+        if (!is_container_type(dst_parent->type)) return ScriptValue::null();
+        // Cycle refusal: dst must not be in the subtree of node.
+        if (is_descendant_of(node, dst_parent)) return ScriptValue::null();
+
+        ParentSlot slot = find_parent_node_in_project(proj, node);
+        if (!slot.parent) return ScriptValue::null();
+        if (slot.child_index < 0) return ScriptValue::null();  // non-children slot
+
+        // No-op when the new parent equals the current parent AND
+        // the front insertion would be a self-move on idx 0 (the
+        // node is already on top of the same parent's children).
+        // Distinct-parent reparents always proceed; same-parent
+        // reparents bail to avoid a redundant erase+insert on the
+        // same slot.
+        if (slot.parent == dst_parent && slot.child_index == 0) {
+            return ScriptValue::null();
+        }
+
+        // Capture src / dst doc identities before mutation. Both
+        // resolve through find_doc_by_iid; the docs may differ
+        // (cross-doc reparent isn't a normal use case but the
+        // command is iid-keyed so it would work).
+        auto* src_doc = curvz::utils::find_doc_by_iid(
+            *proj, slot.parent->internal_id);
+        auto* dst_doc = curvz::utils::find_doc_by_iid(*proj, dst_iid);
+
+        // Snapshot for the command BEFORE the mutation. clone_node
+        // preserves internal_id; the command's redo / undo each
+        // re-insert a fresh clone of this snap, keeping the iid
+        // stable so the script's bound variable still resolves
+        // post-replay.
+        std::unique_ptr<Curvz::SceneNode> snap_for_cmd;
+        if (m_history) {
+            snap_for_cmd = Curvz::clone_node(*node);
+        }
+
+        std::string src_layer_iid = slot.parent->internal_id;
+        std::string dst_layer_iid = dst_iid;
+        int src_index = slot.child_index;
+        int dst_index = 0;  // front-insert ("new on top" convention)
+
+        // Direct mutation: move the unique_ptr from src.children to
+        // dst.children at dst_index. The live node's identity stays
+        // the same; the snapshot above is the command's redo-source
+        // (a fresh clone gets inserted on every redo/undo cycle).
+        auto& src_ch = slot.parent->children;
+        auto moved = std::move(src_ch[src_index]);
+        src_ch.erase(src_ch.begin() + src_index);
+        int dst_n = (int)dst_parent->children.size();
+        int ins = std::clamp(dst_index, 0, dst_n);
+        dst_parent->children.insert(dst_parent->children.begin() + ins,
+                                    std::move(moved));
+
+        if (src_doc) src_doc->invalidate_iid_index();
+        if (dst_doc && dst_doc != src_doc) dst_doc->invalidate_iid_index();
+
+        if (snap_for_cmd && m_history) {
+            auto cmd = std::make_unique<Curvz::MoveObjectToLayerCommand>(
+                proj,
+                std::move(src_layer_iid),
+                std::move(dst_layer_iid),
+                m_iid,
+                std::move(snap_for_cmd),
+                src_index, dst_index);
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::null();
+    }
+
+    // ── duplicate (s234 m4) ──────────────────────────────────────────────
+    //
+    // Clone the node (and its full subtree) and insert the clone at
+    // the original's slot position — the duplicate ends up at the
+    // original's index, pushing the original down by one. This
+    // matches canvas's alt-drag-duplicate convention (the duplicate
+    // ends up on top of the original in z-order).
+    //
+    // The clone has FRESH internal_ids on every node in its subtree
+    // (see freshen_internal_ids comment) so the iid index can hold
+    // both original and duplicate distinctly. SVG `id` and `name`
+    // are NOT freshened — script-minted objects start with empty
+    // `id` (assigned lazily at SVG-export time) and the script
+    // controls naming via `rename`. A script that wants " (copy)"
+    // suffix semantics can rename after binding the new iid.
+    //
+    // Pushes DuplicateCommand. Returns the new iid as
+    // ScriptValue::text so `set <var> to result` binds for
+    // immediate addressing.
+    //
+    // No-op returns (ScriptValue::text("")):
+    //   - source is owned by a non-children slot (clip_shape /
+    //     blend_source_* / warp_source — duplicating into a
+    //     non-children slot doesn't fit the verb's contract, same
+    //     refusal as `delete` / `move` / `reparent`).
+    if (verb == "duplicate") {
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::text("");
+
+        ParentSlot slot = find_parent_node_in_project(proj, node);
+        if (!slot.parent) return ScriptValue::text("");
+        if (slot.child_index < 0) return ScriptValue::text("");  // non-children
+
+        // Clone the subtree, then mint fresh internal_ids on every
+        // node so the duplicate and the original coexist in the
+        // iid index without collision.
+        auto dup = Curvz::clone_node(*node);
+        freshen_internal_ids(dup.get());
+        std::string new_iid = dup->internal_id;
+
+        // Insert at the original's slot index — duplicate goes on
+        // top of the original (lower index = visually on top), the
+        // original shifts down by one. Matches canvas alt-drag
+        // duplicate's index choice.
+        int insert_idx = slot.child_index;
+
+        // Snapshot for the command BEFORE inserting. clone_node
+        // preserves internal_id of the freshly-iid'd duplicate;
+        // the command captures snap + parent_iid + index so undo
+        // can find and erase the duplicate by its (now fresh) iid.
+        std::unique_ptr<Curvz::SceneNode> snap_for_cmd;
+        if (m_history) {
+            snap_for_cmd = Curvz::clone_node(*dup);
+        }
+
+        slot.parent->children.insert(slot.parent->children.begin() + insert_idx,
+                                     std::move(dup));
+
+        auto* owning_doc = curvz::utils::find_doc_by_iid(
+            *proj, slot.parent->internal_id);
+        if (owning_doc) owning_doc->invalidate_iid_index();
+
+        if (snap_for_cmd && m_history) {
+            std::vector<Curvz::DuplicateCommand::Entry> entries;
+            entries.push_back({slot.parent->internal_id,
+                               std::move(snap_for_cmd),
+                               insert_idx});
+            auto cmd = std::make_unique<Curvz::DuplicateCommand>(
+                proj, std::move(entries));
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::text(new_iid);
     }
 
     return ScriptValue::null();
@@ -615,6 +1186,44 @@ ScriptValue ObjectProxy::query(std::string_view property) const {
         return ScriptValue::text(find_parent_iid_in_project(proj, node));
     }
 
+    // child_index (s234 m4) — node's slot position in parent->children,
+    // or -1 if the node is owned by a non-children structural slot
+    // (clip_shape, blend_source_*, warp_source). The smoke uses this
+    // to assert that `move` actually changed position; no other element
+    // query observes z-order.
+    if (property == "child_index") {
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::integer(-1);
+        ParentSlot slot = find_parent_node_in_project(proj, node);
+        return ScriptValue::integer(slot.child_index);
+    }
+
+    // node_count (s236 m1) — size of the Path's BezierNode vector.
+    // For non-Path types (Group / Compound / Image / etc.) the
+    // node->path slot is nullptr; the query returns 0 by contract
+    // (treats "no path" as "no nodes" rather than erroring or
+    // returning a sentinel). This is the observable for
+    // set_path_data — deterministic, no Cairo, pure model side.
+    if (property == "node_count") {
+        if (!node->path) return ScriptValue::integer(0);
+        return ScriptValue::integer(
+            static_cast<long long>(node->path->nodes.size()));
+    }
+
+    // path_data (s236 m1) — re-emitted SVG-d string via curvz_utils'
+    // path_data_to_svg_d pump. Empty string if path is null or has
+    // no nodes. NOT byte-identical to the input that last set the
+    // path data (fmt2 normalises decimals, segment classification
+    // can shift between L and C based on handle degeneracy); the
+    // read surface for capture/inspection rather than literal-RHS
+    // round-trip assertion. A future structural round-trip probe
+    // would parse both strings to PathData and compare.
+    if (property == "path_data") {
+        if (!node->path) return ScriptValue::text("");
+        return ScriptValue::text(
+            curvz::utils::path_data_to_svg_d(*node->path));
+    }
+
     return ScriptValue::null();
 }
 
@@ -628,27 +1237,47 @@ std::vector<std::string> ObjectProxy::verbs() const {
         "toggle_locked",
         "set_locked",
         "rename",
-        // m4 will add element-structural verbs (move, reparent,
-        // duplicate). m5 closes with collection-level grouping
-        // (group, ungroup) — those live on the collection, not
-        // the proxy.
+        // s236 m1 — geometry-bearing mutating verb. Pushes
+        // EditPathCommand (whole-path replace; s167-migrated
+        // existing command, no parallel class needed). Direct
+        // mutation precedes the push. Refuses on non-Path
+        // node types (silent no-op).
+        "set_path_data",
+        // s234 m4 — three element structural verbs. `move` pushes
+        // MoveNodeIndexCommand (new in m4); `reparent` pushes
+        // MoveObjectToLayerCommand (existing); `duplicate` pushes
+        // DuplicateCommand (existing). Direct mutation happens
+        // in the verb body before the push, same shape as m2 / m3.
+        "move",
+        "reparent",
+        "duplicate",
+        // m5 (now blocked behind the canvas-observable arc) closes
+        // with collection-level grouping (group, ungroup) — those
+        // live on the collection, not the proxy.
     };
 }
 
 std::vector<std::string> ObjectProxy::properties() const {
     return {
         "name", "type", "visible", "locked",
-        "parent_iid", "child_count", "iid",
+        "parent_iid", "child_count", "child_index", "iid",
+        // s236 m1 — geometry queries. node_count is the observable
+        // for set_path_data; path_data is the re-emitted d-string
+        // for round-trip / inspection. Both degrade to "" / 0 for
+        // non-Path types where node->path is null.
+        "node_count", "path_data",
     };
 }
 
 // ── ObjectsScriptable ────────────────────────────────────────────────────
 
 ObjectsScriptable::ObjectsScriptable(ProjectGetter get_project,
-                                     Curvz::CommandHistory* history)
+                                     Curvz::CommandHistory* history,
+                                     NotifyDocChanged notify_doc_changed)
     : Scriptable("objects")
     , m_get_project(std::move(get_project))
-    , m_history(history) {
+    , m_history(history)
+    , m_notify_doc_changed(std::move(notify_doc_changed)) {
     // Registry registration happens in the Scriptable base ctor under
     // the name "objects". MainWindow holds us as a member; the
     // registry entry lives for the window's lifetime.
@@ -668,6 +1297,7 @@ std::unique_ptr<Scriptable>
 ObjectsScriptable::proxy_for(std::string_view key) {
     if (!can_resolve(key)) return nullptr;
     return std::make_unique<ObjectProxy>(m_get_project, m_history,
+                                         m_notify_doc_changed,
                                          std::string(key));
 }
 
@@ -792,6 +1422,7 @@ ScriptValue ObjectsScriptable::invoke(std::string_view verb,
                 active, std::move(snap_for_cmd));
             m_history->push(std::move(cmd));
         }
+        if (m_notify_doc_changed) m_notify_doc_changed();
         return ScriptValue::text(new_iid);
     }
 
@@ -889,6 +1520,7 @@ ScriptValue ObjectsScriptable::invoke(std::string_view verb,
                 slot.parent, std::move(snap_for_cmd), erase_idx);
             m_history->push(std::move(cmd));
         }
+        if (m_notify_doc_changed) m_notify_doc_changed();
         return ScriptValue::null();
     }
 

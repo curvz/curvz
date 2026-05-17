@@ -30,6 +30,122 @@
 // keeps the change scoped to the script path, leaving the panel
 // sweep as future band-3 mop-up.
 //
+// s234 m4 — adds three element structural verbs on the proxy:
+// `move "<direction>"`, `reparent "<new_parent_iid>"`, and
+// `duplicate`. Plus a new element query `child_index` (int) so
+// `move` round-trips are observable from script land.
+//
+// s235 m1 — wires a NotifyDocChanged callback through the ctor and
+// down into ObjectProxy so every mutating verb (collection-level
+// `new` / `delete`; element-level toggle_visible / set_visible /
+// toggle_locked / set_locked / rename / move / reparent / duplicate)
+// fires the canvas-refresh cascade after a successful push. Closes
+// the gap Scott caught at the end of s234: script-path mutations
+// were updating CurvzDocument and the iid index but never telling
+// Canvas anything changed, so the smoke ran clean but the canvas
+// kept rendering its previous frame. MainWindow supplies a callback
+// that runs `m_canvas.queue_draw(); m_canvas.notify_document_changed();`
+// — the canonical two-call shape for external mutators, mirroring
+// s227 m1's themes_refresh_cascade. The callback may be nullptr; in
+// that case every verb silently skips the refresh step (matches the
+// graceful-degradation contract the history pointer already uses).
+// The gap is arc-wide — LayersScriptable / GuidesScriptable et al.
+// have the same hole — but s235 m1 scope is ObjectsScriptable only;
+// the sibling Scriptables get the same callback retrofit in a
+// follow-up sweep.
+//
+// s236 m1 — OPENS the canvas-observable scripts arc by adding the
+// first geometry-bearing verb on the proxy: `set_path_data
+// "<svg_d_string>"`. Plus two new element queries: `node_count`
+// (int — size of the Path's BezierNode vector, 0 for non-Path) and
+// `path_data` (text — re-emitted SVG-d string for round-trip /
+// inspection use cases). Together these let scripts BUILD UP a
+// canvas-observable Path end-to-end without depending on pre-
+// existing canvas state — the gap the s235 close logged in the
+// "Self-contained canvas-observable tests" canon entry.
+//
+// Rides EXISTING `EditPathCommand` (the s167/s168-migrated whole-
+// path replace command). First-task verification confirmed it's a
+// perfect shape match — captures CurvzProject* + obj_iid + before/
+// after PathData, executes / undoes via `*obj->path = after/before`.
+// No parallel command class needed, unlike m3's EditObjectFieldCommand
+// (vs EditObjectCommand) and m4's MoveNodeIndexCommand (vs
+// ZOrderCommand). The s230-m1 prediction about command-class reuse
+// was wrong for m3 and m4 but right here — third matching
+// application of the "verify before assuming" first-task discipline.
+//
+// New `curvz::utils::svg_d_to_path_data` and `path_data_to_svg_d`
+// pumps in curvz_utils. The path_data_to_svg_d emitter is a full
+// lift from SvgWriter's two inline emitters (duplicates of each
+// other; the writer keeps its inline copies for now — sweep
+// deferred). svg_d_to_path_data bridges to SvgParser's existing
+// parse_path_d via a non-static wrapper added in m1 (the parser body
+// is 260 lines plus a 60-line arc_to_bezier helper, both file-static
+// and intertwined with parse_path_d_multi; full lift deferred to a
+// future SvgParser sweep milestone). The visible-from-outside seam
+// is the curvz_utils pump pair; the file-static parser body becomes
+// callable through the bridge for now.
+//
+//   `set_path_data` early-returns (no command pushed) when:
+//     - args.empty() — no string supplied.
+//     - resolved node has no `path` slot (non-Path types: Group,
+//       Compound, Image, Ref, Measurement, etc.). Silent no-op,
+//       matching how other proxy verbs handle off-type calls (no
+//       error sentinel through ScriptValue — that's a future
+//       structured-error-channel concern, see s235 backlog).
+//   On success: direct mutation (*node->path = after) precedes the
+//   EditPathCommand push, mirroring m2/m3/m4's shape. The owning
+//   doc's iid index is NOT invalidated by this verb — path-data
+//   changes don't reshape the iid space (no internal_id mints, no
+//   tree-structure changes, no parent/child slot moves). The s168
+//   m6 "invalidate before resolve" inside EditPathCommand::execute
+//   covers redo/undo cycles defensively.
+//
+//   `node_count` returns the size of node->path->nodes; 0 if path
+//   is null. The observable for set_path_data — pure model side,
+//   no Cairo, deterministic.
+//
+//   `path_data` returns the re-emitted d-string via
+//   path_data_to_svg_d; "" if path is null or empty. NOT byte-
+//   identical to the most-recent set_path_data input (fmt2
+//   normalisation, segment-class reclassification); a future
+//   structural round-trip probe would parse both and compare
+//   PathData. m1 ships the read query for capture/inspection use
+//   cases; a literal-RHS round-trip assert isn't in scope.
+//
+//   `move` rides a NEW command class — `MoveNodeIndexCommand`
+//   (single-target, iid-keyed intra-parent reorder). The s231
+//   handoff's m4 prediction was that move could ride the existing
+//   `ZOrderCommand`; that turned out to be wrong. ZOrderCommand's
+//   `apply_order` keys on SVG `id` (not internal_id), and script-
+//   minted objects have empty SVG `id` (it's assigned lazily at
+//   SVG-export time). Multiple script-minted siblings would
+//   collide on the empty key and the redo / undo would silently
+//   drop entries. Same first-task-of-milestone "verify before
+//   assuming" precedent as m3's discovery about EditObjectCommand
+//   vs EditObjectFieldCommand.
+//
+//   `reparent` rides existing `MoveObjectToLayerCommand`
+//   unmodified. The verification (also first task of m4) confirms
+//   its src_layer_iid / dst_layer_iid resolution via find_by_iid
+//   is container-agnostic — it walks the whole project tree, not
+//   just doc->layers — so Group/Compound/ClipGroup containers
+//   work as destinations the same as Layers do. The command's
+//   description string is the only layer-flavoured cosmetic
+//   ("Move to layer"); preserved for now.
+//
+//   `duplicate` rides existing `DuplicateCommand`. Script-side
+//   prep mints a FRESH internal_id on the cloned subtree before
+//   insertion — clone_node copies internal_id verbatim (it has to,
+//   for command snap/undo to re-insert with the same identity),
+//   and an unfresh duplicate would collide with the original in
+//   the iid index. Canvas's `freshen_ids` helper only freshens
+//   SVG `id` and `name`, not `internal_id` — that's a separate
+//   latent issue in canvas duplicate, out of scope for m4;
+//   scope here is the script path. The verb returns the new
+//   iid into `result` so a script can `set <var> to result` and
+//   address the duplicate immediately.
+//
 // This is the largest of the row-bound Scriptables in scope. The five
 // shipped before this one (layers / guides / swatches / styles /
 // themes) each wrapped a single collection — either a SceneNode-type-
@@ -41,38 +157,49 @@
 //
 // ── Arc progress (multi-session by construction) ──────────────────────────
 //
-// What m1 + m2 + m3 ship combined:
+// What m1 + m2 + m3 + m4 (+ s235 m1 + s236 m1) ship combined:
 //   - The collection registered as `objects` in the registry.
 //   - Collection queries: count, all_iids, find_by_name, find_by_type.
 //   - Per-instance proxies materialised by proxy_for(iid).
 //   - Element queries: name, type, visible, locked, parent_iid,
-//     child_count, iid.
+//     child_count, child_index, iid, node_count, path_data.
 //   - Collection-level structural verbs: new <type>, delete <iid>.
 //   - Element mutating verbs: toggle_visible, set_visible <bool>,
-//     toggle_locked, set_locked <bool>, rename "<name>".
+//     toggle_locked, set_locked <bool>, rename "<name>",
+//     set_path_data "<svg_d_string>".
+//   - Element structural verbs: move "<direction>",
+//     reparent "<new_parent_iid>", duplicate.
 //   - History pointer captured in the ctor and ACTIVELY USED by the
-//     structural verbs (each pushes AddNodeCommand / DeleteObjectCommand)
-//     AND by the element mutating verbs (each pushes
-//     EditObjectFieldCommand). All m3 verbs degrade gracefully to
-//     direct mutation when history is null.
+//     collection structural verbs (AddNodeCommand / DeleteObjectCommand)
+//     AND by the element mutating verbs (EditObjectFieldCommand,
+//     EditPathCommand) AND by the element structural verbs
+//     (MoveNodeIndexCommand / MoveObjectToLayerCommand /
+//     DuplicateCommand). All verbs degrade gracefully to direct
+//     mutation when history is null.
+//   - Canvas-refresh callback fires after every successful mutating
+//     verb (s235 m1 wiring; s236 m1's set_path_data participates).
 //
-// What m3 still does NOT ship:
-//   - Element structural verbs (move, reparent, duplicate). Scheduled
-//     m4. These require careful interaction with the iid index (the
-//     dirty bit, the s167 invariants) — the same "command pushes
-//     direct mutation then invalidate" shape m2 uses for `new` /
-//     `delete`, but with the parent-walk wired through too.
-//   - Collection-level grouping verbs (group, ungroup). Scheduled m5.
+// What s236 m1 still does NOT ship:
+//   - `set_fill` / `set_stroke`. Scheduled m2 / m3 of the canvas-
+//     observable arc. Geometry alone is wireframe-only on canvas;
+//     fill/stroke make the Path canvas-visible in fill-shaded modes.
+//   - `bbox_w` / `bbox_h` queries. Bbox math needs the Cairo path
+//     pass — non-trivial promotion. Deferred until a smoke needs it.
+//   - `closed` read query (the bool flag on PathData). Natural pair
+//     to node_count for round-tripping shape; future milestone.
+//   - Collection-level grouping verbs (group, ungroup). Scheduled
+//     for the objects-arc-close milestone (still pending; the
+//     canvas-observable arc takes priority over closing objects).
 //   - selected_iids query. CANON places `selection` as a separate
-//     singleton Scriptable, not a query on `objects`. Selection is
-//     canvas-side state, not document-side state; mixing the two
-//     here would couple this Scriptable to Canvas. Scheduled with
-//     the `selection` singleton when that lands.
+//     singleton Scriptable, not a query on `objects`. Scheduled
+//     with the `selection` singleton when that lands.
 //
-// Closing the whole arc may take 3-5 sessions total. m1 opened the
-// addressing surface; m2 makes it self-contained for testing; m3
-// adds the element-level mutating surface; m4 adds element-structural
-// verbs; m5 closes with grouping.
+// Closing the canvas-observable arc may take 2-4 sessions total.
+// m1 opens geometry; m2 adds fill; m3 adds stroke; a possible m4
+// integrates them with a canvas-observable smoke. The objects arc
+// proper (group/ungroup) waits until after — m5 grouping would
+// also benefit from canvas-observable smoke shape, which is
+// exactly what this arc is building.
 //
 // ── Scope of the collection ──────────────────────────────────────────────
 //
@@ -315,12 +442,24 @@
 //                                  reads from the live vector so
 //                                  even if someone abuses a leaf
 //                                  with children it still answers.
+//   child_index    — int          node's position within its parent's
+//                                  `children` vector. -1 if the node
+//                                  is owned by a non-children slot
+//                                  (clip_shape, blend_source_*,
+//                                  warp_source) — structurally
+//                                  positioned, not list-indexed. Also
+//                                  -1 if the parent walk can't find
+//                                  a slot at all (shouldn't happen
+//                                  for a node that resolved through
+//                                  find_by_iid — defensive). Used by
+//                                  scripts to observe `move` round-
+//                                  trips (s234 m4).
 //   iid            — string       node.internal_id (for completeness:
 //                                  a script can `get objects.<iid>
 //                                  iid` to verify it has the right
 //                                  handle, useful in tests).
 //
-// ELEMENT VERBS (on `objects.<iid>`):
+// ELEMENT MUTATING VERBS (on `objects.<iid>`):
 //   toggle_visible                 — flip visible (push EditObjectFieldCommand).
 //                                    No-args.
 //   set_visible <bool>             — write visible to the given bool.
@@ -353,8 +492,68 @@
 //   degrades to a silent skip, same partial-recovery shape
 //   EditLayerFieldCommand uses.
 //
-//   (m4 will add element-structural verbs: move, reparent, duplicate.
-//   m5 closes with collection-level grouping: group, ungroup.)
+// ELEMENT STRUCTURAL VERBS (on `objects.<iid>`, s234 m4):
+//   move "<direction>"             — reorder within parent's `children`.
+//                                    Direction token: "up" (idx-1,
+//                                    visually toward top), "down" (idx+1,
+//                                    visually toward bottom), "top"
+//                                    (idx=0), "bottom" (idx=last).
+//                                    Mirrors LayersScriptable's `move`
+//                                    direction vocabulary. Pushes
+//                                    MoveNodeIndexCommand (single-target,
+//                                    iid-keyed; NOT ZOrderCommand —
+//                                    that command keys on SVG `id`
+//                                    which is empty for script-minted
+//                                    nodes and would collide). No-ops:
+//                                    unknown direction, parent has
+//                                    only one child, target already
+//                                    at destination edge ("up" at
+//                                    top, "down" at bottom).
+//                                    Node owned by a non-children
+//                                    slot is also a no-op (structural
+//                                    inputs aren't list-positioned).
+//   reparent "<new_parent_iid>"    — move the node into the named
+//                                    container's `children` (front-
+//                                    insert: idx 0, on top). Pushes
+//                                    MoveObjectToLayerCommand (the
+//                                    name is layer-historical;
+//                                    mechanically the command is
+//                                    container-agnostic). Refusals
+//                                    (all no-ops): dest iid empty
+//                                    or doesn't resolve; dest is a
+//                                    leaf type (Path / Text / Image
+//                                    / Ref / Measurement — can't
+//                                    hold children); dest equals
+//                                    self; dest is a descendant of
+//                                    self (cycle); source is owned
+//                                    by a non-children slot (clip_shape
+//                                    / blend_source_* / warp_source —
+//                                    same refusal `delete` uses for
+//                                    the same reason).
+//   duplicate                      — clone the node and insert the
+//                                    clone at the original's slot
+//                                    (the duplicate ends up on top
+//                                    of the original; matches canvas
+//                                    alt-drag-duplicate convention).
+//                                    Pushes DuplicateCommand. Returns
+//                                    the new iid as ScriptValue::text;
+//                                    a script binds via `set <var>
+//                                    to result` and immediately
+//                                    addresses the duplicate. The
+//                                    clone has a FRESH internal_id
+//                                    (and a fresh iid on every
+//                                    descendant in the subtree) so
+//                                    the iid index doesn't collide.
+//                                    Name is preserved as-is (no
+//                                    " (2)" suffix machinery; the
+//                                    script can rename via the m3
+//                                    rename verb if desired).
+//                                    No-ops: source owned by a non-
+//                                    children slot (same refusal
+//                                    shape as `delete` / `move` /
+//                                    `reparent`).
+//
+//   (m5 closes the arc with collection-level grouping: group, ungroup.)
 //
 // ── On the active-document scope ─────────────────────────────────────────
 //
@@ -414,7 +613,8 @@ namespace curvz::scripting {
 
 class ObjectsScriptable : public Scriptable {
 public:
-    using ProjectGetter = std::function<Curvz::CurvzProject*()>;
+    using ProjectGetter    = std::function<Curvz::CurvzProject*()>;
+    using NotifyDocChanged = std::function<void()>;
 
     // Registers as "objects" via the Scriptable base ctor. The project
     // getter is called fresh on every verb invocation — never cached —
@@ -428,11 +628,23 @@ public:
     // `delete` verbs push AddNodeCommand / DeleteObjectCommand on
     // every successful invocation, and m3's element mutating verbs
     // (toggle_visible / set_visible / toggle_locked / set_locked /
-    // rename) push EditObjectFieldCommand. A null history degrades
-    // every verb to direct mutation without undo support (the same
-    // graceful-degradation pattern guides uses).
+    // rename) push EditObjectFieldCommand. m4's element structural
+    // verbs (move / reparent / duplicate) push MoveNodeIndexCommand /
+    // MoveObjectToLayerCommand / DuplicateCommand respectively. A
+    // null history degrades every verb to direct mutation without
+    // undo support (the same graceful-degradation pattern guides uses).
+    //
+    // `notify_doc_changed` is the s235 m1 canvas-refresh callback.
+    // Called at the end of every successful mutating verb (collection
+    // and proxy alike) AFTER the command push. MainWindow supplies
+    // a lambda that runs `m_canvas.queue_draw(); m_canvas.
+    // notify_document_changed();` — the canonical two-call shape for
+    // external mutators (mirrors s227 m1's themes_refresh_cascade).
+    // May be nullptr; verbs silently skip the refresh step in that
+    // case (same graceful-degradation shape as the history pointer).
     ObjectsScriptable(ProjectGetter get_project,
-                      Curvz::CommandHistory* history);
+                      Curvz::CommandHistory* history,
+                      NotifyDocChanged notify_doc_changed = {});
     ~ObjectsScriptable() override = default;
 
     ScriptValue invoke(std::string_view verb,
@@ -450,11 +662,21 @@ private:
     Curvz::CommandHistory* m_history;   // non-owning; captured in m1
                                         // for shape-symmetry, actively
                                         // used from m2 onwards by `new`
-                                        // and `delete` and from m3
-                                        // onwards by the element mutating
-                                        // verbs on the proxy. Null
+                                        // and `delete`, from m3 onwards
+                                        // by the element mutating verbs
+                                        // on the proxy, and from m4
+                                        // onwards by the element
+                                        // structural verbs (move /
+                                        // reparent / duplicate). Null
                                         // history degrades every verb
                                         // to direct mutation.
+    NotifyDocChanged       m_notify_doc_changed;  // s235 m1 — canvas-
+                                        // refresh callback. Threaded
+                                        // into ObjectProxy via the
+                                        // proxy ctor so element verbs
+                                        // can fire the cascade too.
+                                        // May be empty; verbs skip the
+                                        // refresh step in that case.
 };
 
 } // namespace curvz::scripting

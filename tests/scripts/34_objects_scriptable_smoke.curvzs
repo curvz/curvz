@@ -4,7 +4,7 @@
 # verbs (`objects new <type>` / `objects delete <iid>`), which lets
 # this smoke gain the same owns-its-conditions BUILD UP / VALIDATE /
 # TEAR DOWN structure 33_layers and 27_guides established.
-# s232 m3 CONTINUES it by adding five element mutating verbs on the
+# s232 m3 CONTINUED it by adding five element mutating verbs on the
 # proxy: `toggle_visible`, `set_visible <bool>`, `toggle_locked`,
 # `set_locked <bool>`, `rename "<name>"`. Each rides
 # EditObjectFieldCommand — a new command class added in m3, direct
@@ -12,6 +12,20 @@
 # objects don't carry a single colour tag; their colour lives in
 # FillStyle/StrokeStyle and is handled by the existing
 # EditObjectCommand surface).
+# s234 m4 CONTINUES it by adding three element structural verbs on
+# the proxy: `move "<direction>"`, `reparent "<new_parent_iid>"`,
+# `duplicate`. Plus a new element query `child_index` (int) so
+# `move` round-trips are observable from script land. Command
+# rides:
+#   - `move` rides MoveNodeIndexCommand (NEW in m4 — single-target
+#     iid-keyed intra-parent reorder; see header for the
+#     verify-before-assume note that ruled out ZOrderCommand reuse).
+#   - `reparent` rides MoveObjectToLayerCommand (existing s171 m2
+#     command, mechanically container-agnostic despite the
+#     historically-layer-flavored name).
+#   - `duplicate` rides DuplicateCommand (existing s170 m3 command);
+#     the script-side prep mints fresh internal_ids on the cloned
+#     subtree to avoid iid-index collision with the original.
 #
 # Validates the design banked in CANON's "Row-bound model Scriptables —
 # collection-as-router with transient per-instance proxies" entry,
@@ -27,37 +41,41 @@
 #   objects.<iid>   — per-instance proxy. NOT in the registry —
 #                     materialised on demand, destroyed at end-of-
 #                     statement. Element queries (name, type,
-#                     visible, locked, parent_iid, child_count, iid)
-#                     AND the m3 element mutating verbs (toggle_visible,
-#                     set_visible, toggle_locked, set_locked, rename).
+#                     visible, locked, parent_iid, child_count,
+#                     child_index, iid) AND the m3 element mutating
+#                     verbs (toggle_visible, set_visible,
+#                     toggle_locked, set_locked, rename) AND the
+#                     m4 element structural verbs (move, reparent,
+#                     duplicate).
 #
 # The shared `objects` prefix is load-bearing: the router splits a
 # dotted token on the first `.`, looks the prefix up in the registry,
 # and asks the matched object to resolve the suffix. Collection name
 # and proxy prefix MUST be the same string.
 #
-# ── What s232 m3 changes about this smoke ────────────────────────────────
+# ── What s234 m4 changes about this smoke ────────────────────────────────
 #
-# m2 covered every element QUERY on the proxy. m3 adds the five element
-# MUTATING verbs. The smoke gains two new phases:
+# m3 covered every element MUTATING verb on the proxy. m4 adds three
+# element STRUCTURAL verbs (which mutate tree shape rather than node
+# fields). The smoke gains one new phase:
 #
-#   Phase 5c — full round-trip exercise of all five mutating verbs on
-#              `a` (the Path), including the "no-op same value" and
-#              (for rename) "no-op empty arg" short-circuits; plus a
-#              cross-check that rename propagates to the find_by_name
-#              tree-walk surface, not just the node-local field.
-#   Phase 6c — minimal re-exercise of rename + toggle_locked on `b`
-#              (the Group), confirming the verbs are type-agnostic
-#              (no Path-vs-Group branch hiding in the code path).
+#   Phase 6e — exercise `move "<direction>"` in all four direction
+#              tokens with edge-case no-ops; `duplicate` returning a
+#              fresh iid with fresh-internal_id round-trip; `reparent`
+#              cross-container move with four refusal classes (cycle,
+#              self, leaf-dest, empty-arg); plus the new `child_index`
+#              query as the observable for move/duplicate/reparent
+#              position effects.
 #
-# Net structural change to the doc: still zero. New, then renamed /
-# toggled / locked, then deleted. Side effect on the undo stack now
-# includes a handful of EditObjectFieldCommand entries between the
-# AddNodeCommand and DeleteObjectCommand bookends.
+# Net structural change to the doc: still zero. Three nodes minted (a,
+# b, d) and three deleted (plus the test_layer). Side effect on the
+# undo stack now includes MoveNodeIndexCommand, MoveObjectToLayerCommand,
+# and DuplicateCommand entries on top of m2's Add/Delete and m3's
+# EditObjectField entries.
 #
 # ── Pre-stated count ─────────────────────────────────────────────────────
 #
-# Expected: 25 pass / 0 fail / 0 error.
+# Expected: 48 pass / 0 fail / 0 error.
 #
 # Breakdown:
 #   Phase 4 (cross-Scriptable boundary, carried from m1): 1 assert.
@@ -65,15 +83,26 @@
 #     name == "", type == "path", visible == true, locked == false,
 #     child_count == 0                                        → 5 asserts.
 #     parent_iid chain — layers.<a_parent> name resolves      → 1 assert.
-#   Phase 5c (NEW in m3 — five element mutating verbs on `a`):
+#   Phase 5c (m3 — five element mutating verbs on `a`):
 #     rename round-trip (rename → no-op-same → no-op-empty)   → 3 asserts.
 #     find_by_name cross-check (iid round-trips via variable) → 1 assert.
 #     toggle_visible / set_visible round-trip                 → 3 asserts.
 #     toggle_locked / set_locked round-trip                   → 3 asserts.
 #   Phase 6 (proxy round-trip on `b` after mint as "group"):
 #     type == "group", child_count == 0                       → 2 asserts.
-#   Phase 6c (NEW in m3 — minimal verbs on `b`):
+#   Phase 6c (m3 — minimal verbs on `b`):
 #     rename → assert name; toggle_locked → assert locked     → 2 asserts.
+#   Phase 6e (NEW in m4 — three element structural verbs):
+#     baseline child_index on `a` and `b`                     → 2 asserts.
+#     move "up" plus sibling-shift cross-check                → 2 asserts.
+#     move "up" no-op at top edge                             → 1 assert.
+#     move "down"                                             → 1 assert.
+#     move "top"                                              → 1 assert.
+#     move "bottom"                                           → 1 assert.
+#     unknown direction no-op                                 → 1 assert.
+#     duplicate — type/name/d.child_index/a.child_index/iid   → 5 asserts.
+#     reparent — parent_iid/b.child_count/b.idx/d.idx/a.idx   → 5 asserts.
+#     reparent refusals — cycle / self / leaf-dest / empty    → 4 asserts.
 #   Phase 7 (find_by_type now finds in-scope tokens):
 #     find_by_type "path"  result resolves to a path-typed    → 1 assert.
 #     find_by_type "group" result resolves to a group-typed   → 1 assert.
@@ -88,7 +117,7 @@
 #   Phase 10 (tear down + count baseline restoration):
 #     objects count == count_before                            → 1 assert.
 #
-# Total: 1 + 6 + 10 + 2 + 2 + 2 + 1 + 1 = 25.
+# Total: 1 + 6 + 10 + 2 + 2 + 23 + 2 + 1 + 1 = 48.
 #
 # ── Phases ───────────────────────────────────────────────────────────────
 #
@@ -113,20 +142,31 @@
 #   6c. MUTATING (b) — minimal rename + toggle_locked on `b` to
 #                      confirm the verbs work uniformly across
 #                      types.
+#   6e. STRUCTURAL    — exercise the three m4 structural verbs on
+#                      `a` and `b`. move "<direction>" in all four
+#                      token shapes plus edge-case no-ops; duplicate
+#                      with fresh-iid round-trip; reparent cross-
+#                      container plus four refusal classes. Uses
+#                      the new `child_index` query as the move/dup/
+#                      reparent observable.
 #   7. find_by_type  — with in-scope objects in the doc, the previously-
 #                      empty find_by_type "path" / "group" now return
 #                      iids; assert via the proxy that the returned
 #                      iid resolves to a node matching the expected
 #                      type.
-#   8. COUNT DELTA   — count went up by 2 between BUILD UP and tear
-#                      down's start; will return to baseline after
-#                      tear down. Asserted via a difference variable.
+#   8. COUNT DELTA   — count went up by 3 between BUILD UP and tear
+#                      down's start (a + b + d-the-duplicate); will
+#                      return to baseline after tear down. Asserted
+#                      via a difference variable.
 #   9. POST-MINT     — the layers-side cross-Scriptable assert still
 #                      holds with `objects` populated — confirms the
 #                      router partition isn't shape-sensitive to
 #                      content presence in `objects`.
-#  10. TEAR DOWN     — `objects delete a` / `objects delete b` /
-#                      `layers delete test_layer`. Final `list` shows
+#  10. TEAR DOWN     — `objects delete d` / `objects delete a` /
+#                      `objects delete b` / `layers delete test_layer`.
+#                      `delete a` resolves a inside b's children
+#                      project-wide via find_by_iid (a was reparented
+#                      into b in Phase 6e). Final `list` shows
 #                      `objects` still registered (no transient
 #                      `objects.<iid>` entries despite all the proxy
 #                      materialisation across this run).
@@ -347,6 +387,205 @@ assert objects.b name == "renamed_group_beta"
 objects.b toggle_locked
 assert objects.b locked == true
 
+#[sub] === Phase 6e: ELEMENT STRUCTURAL VERBS (s234 m4) ===
+#[sub] Exercise the three structural verbs the m4 milestone wires onto
+#[sub] ObjectProxy: `move "<direction>"`, `reparent "<new_parent_iid>"`,
+#[sub] `duplicate`. Plus the new `child_index` query (without which
+#[sub] `move` round-trips wouldn't be observable from script land — no
+#[sub] other element query reflects z-order).
+#[sub]
+#[sub] Tree state entering this phase (test_layer.children):
+#[sub]   [b, a]   — b at idx 0 (top), a at idx 1 (bottom)
+#[sub]
+#[sub] b is at idx 0 because `new` front-inserts (s231 m2 contract:
+#[sub] "new on top"). a was minted first into [a]; b minted second
+#[sub] pushed a down to idx 1.
+
+#[sub] --- baseline child_index ---
+#[sub] Confirm the new query reports the post-Phase-6 positions
+#[sub] correctly. These two asserts also establish that child_index
+#[sub] works on both Path-typed (`a`) and Group-typed (`b`) nodes —
+#[sub] same type-agnosticism the m3 mutating verbs have.
+
+assert objects.a child_index == 1
+assert objects.b child_index == 0
+
+#[sub] --- move "up" / "down" / "top" / "bottom" round-trip on `a` ---
+#[sub] Direction tokens mirror LayersScriptable::move's vocabulary
+#[sub] ("up"/"down"/"top"/"bottom"). Z-order semantics: lower index
+#[sub] = visually on top, so "up" raises in z-order (idx -1) and
+#[sub] "down" lowers (idx +1). Same canvas convention canvas's
+#[sub] Arrange { BringForward / SendBackward / BringToFront /
+#[sub] SendToBack } uses.
+#[sub]
+#[sub] "up" on a (idx 1 → idx 0). Tree becomes [a, b].
+#[sub] Assertion shape: assert a's new position AND assert b
+#[sub] shifted (the move is single-target but the SIDE EFFECT on
+#[sub] the sibling's index is part of the contract).
+
+objects.a move "up"
+assert objects.a child_index == 0
+assert objects.b child_index == 1
+
+#[sub] "up" on a again — already at top edge. Verb no-ops (no
+#[sub] command pushed, no tree mutation). child_index stays 0.
+
+objects.a move "up"
+assert objects.a child_index == 0
+
+#[sub] "down" on a (idx 0 → idx 1). Tree becomes [b, a] again.
+
+objects.a move "down"
+assert objects.a child_index == 1
+
+#[sub] "top" on a (idx 1 → idx 0). Same end state as "up" from
+#[sub] idx 1, but the semantic is "jump to top" rather than "shift
+#[sub] one toward top." For a 2-element list the two are
+#[sub] equivalent; in a deeper list they'd diverge. Tree becomes
+#[sub] [a, b] again.
+
+objects.a move "top"
+assert objects.a child_index == 0
+
+#[sub] "bottom" on a (idx 0 → idx 1, since there are only two
+#[sub] children). Tree becomes [b, a] again.
+
+objects.a move "bottom"
+assert objects.a child_index == 1
+
+#[sub] --- unknown direction no-op ---
+#[sub] Unknown direction tokens return null without mutating.
+#[sub] child_index unchanged from previous assert.
+
+objects.a move "sideways"
+assert objects.a child_index == 1
+
+#[sub] --- duplicate on `a` ---
+#[sub] Clones `a` and its subtree, mints fresh internal_ids on
+#[sub] every node in the clone, inserts at the original's slot
+#[sub] (the duplicate goes on top of the original; the original
+#[sub] shifts down by one). Same z-order convention canvas's
+#[sub] alt-drag-duplicate uses.
+#[sub]
+#[sub] Pre-duplicate tree: [b, a] with a at idx 1.
+#[sub] Post-duplicate tree: [b, d, a] with d (the duplicate) at
+#[sub] idx 1 (a's slot), a at idx 2 (shifted down by one).
+#[sub]
+#[sub] `duplicate` returns the new iid via the result slot — same
+#[sub] shape as `new` and `find_by_*`. Binding it via `set d to
+#[sub] result` makes the duplicate addressable for the remainder
+#[sub] of the smoke.
+
+objects.a duplicate
+set d to result
+
+#[sub] Type and name are preserved from the source. Name preservation
+#[sub] is the script-path contract — canvas's freshen_ids adds a
+#[sub] " (N)" suffix to names; the script path doesn't, because
+#[sub] scripts that want renaming should use the m3 `rename` verb
+#[sub] explicitly. The clone's name matches the original's renamed
+#[sub] state from Phase 5c ("renamed_path_alpha").
+
+assert objects.d type == "path"
+assert objects.d name == "renamed_path_alpha"
+
+#[sub] Positions: d at idx 1 (a's old slot), a shifted to idx 2.
+
+assert objects.d child_index == 1
+assert objects.a child_index == 2
+
+#[sub] Fresh-iid round-trip: `iid` query on the proxy returns the
+#[sub] node's internal_id, which should equal `d` (the binding we
+#[sub] just made). This proves freshen_internal_ids on the clone
+#[sub] worked — if it hadn't, the duplicate would have the same
+#[sub] iid as the original, the iid index would collide (last-
+#[sub] write-wins per CurvzDocument.cpp), and `set d to result`
+#[sub] would carry whatever iid the duplicate function emitted,
+#[sub] but `objects.d iid` would resolve through find_by_iid to
+#[sub] whichever node tree-walk visits last with that iid.
+#[sub] Variable-RHS assert grammar (s231 m2 observation) makes the
+#[sub] check exact.
+
+assert objects.d iid == d
+
+#[sub] --- reparent `a` into `b` ---
+#[sub] Pre-reparent state: test_layer.children = [b, d, a], b is
+#[sub] empty (child_count == 0).
+#[sub]
+#[sub] After `objects.a reparent b`: a is moved out of test_layer
+#[sub] and into b's children at idx 0 (front-insert, "new on top"
+#[sub] convention). Tree shape:
+#[sub]   test_layer.children = [b, d]
+#[sub]   b.children = [a]
+#[sub]
+#[sub] The argument is the iid bound to `b` (the variable from
+#[sub] Phase 6). DSL substitution gives the bare iid as the
+#[sub] string-shaped arg.
+
+objects.a reparent b
+
+#[sub] a's parent is now b (not test_layer). Assertion shape: bind
+#[sub] a's new parent_iid, then chain through objects.<bound> to
+#[sub] assert on b's identity. We have `b` directly as a bound iid
+#[sub] string, so the variable-RHS assert grammar works:
+#[sub]   assert objects.a parent_iid == b
+#[sub] resolves a's parent_iid (returns b's iid as a string) and
+#[sub] compares to the bound `b` variable's text value. Equal.
+
+assert objects.a parent_iid == b
+
+#[sub] b's child_count went from 0 to 1 (a is now its only child).
+
+assert objects.b child_count == 1
+
+#[sub] b's position in test_layer didn't change (still idx 0). d's
+#[sub] position didn't change either (still idx 1). Reparent moves
+#[sub] one node across containers; sibling indices on either side
+#[sub] adjust ONLY for the gap left by removal (d was at idx 2
+#[sub] before, shifts to idx 1 when a vacates) and the front-insert
+#[sub] at the destination.
+
+assert objects.b child_index == 0
+assert objects.d child_index == 1
+
+#[sub] a's child_index in its new parent (b) is 0 — front-inserted.
+
+assert objects.a child_index == 0
+
+#[sub] --- reparent refusals ---
+#[sub] Four refusal classes. Each is a no-op (no command pushed,
+#[sub] no tree mutation); the assertions confirm state didn't
+#[sub] drift.
+
+#[sub] Cycle refusal: reparenting b into a would form a cycle —
+#[sub] a is currently inside b's subtree, so b becoming a child
+#[sub] of a would mean a → b → a infinitely. is_descendant_of(b, a)
+#[sub] returns true; the verb refuses. b's parent stays
+#[sub] test_layer (bound as `found_layer`).
+
+objects.b reparent a
+assert objects.b parent_iid == found_layer
+
+#[sub] Self-reparent refusal: reparenting a into a is a self-edge,
+#[sub] refused at the dst_iid == m_iid check before any tree walk.
+
+objects.a reparent a
+assert objects.a parent_iid == b
+
+#[sub] Leaf-destination refusal: a (a Path) is not a container
+#[sub] type (is_container_type returns false for Path/Text/Image/
+#[sub] Ref/Measurement/Blend/Warp/Guide). Reparenting d into a is
+#[sub] refused without disturbing d's current placement.
+
+objects.d reparent a
+assert objects.d parent_iid == found_layer
+
+#[sub] Empty-arg refusal: reparent without a destination iid is a
+#[sub] no-op at the args.empty() check.
+
+objects.a reparent ""
+assert objects.a parent_iid == b
+
 #[sub] === Phase 7: find_by_type — now finds in-scope objects ===
 #[sub] With a Path and a Group under the test layer, the previously
 #[sub] empty find_by_type "path" / "group" calls now return iids.
@@ -370,17 +609,18 @@ set found_group to result
 assert objects.found_group type == "group"
 
 #[sub] === Phase 8: COUNT DELTA — through mint, before tear down ===
-#[sub] We minted 2 objects. count should now be count_before + 2.
-#[sub] The DSL's literal-RHS assert can't do arithmetic, but we can
-#[sub] capture count_after_mint and the post-teardown count, then
-#[sub] confirm that the pre and post counts match — the round-trip
-#[sub] over (mint, mint, delete, delete) is a no-op on count.
+#[sub] We minted 3 objects (a + b + the duplicate d from Phase 6e).
+#[sub] count should now be count_before + 3. The DSL's literal-RHS
+#[sub] assert can't do arithmetic, but we can capture count_after_mint
+#[sub] and the post-teardown count, then confirm that the pre and
+#[sub] post counts match — the round-trip over (mint a, mint b,
+#[sub] duplicate a, delete d, delete a, delete b) is a no-op on count.
 
 get objects count
 set count_after_mint to result
 
 #[sub] === Phase 9: POST-MINT — cross-Scriptable partition still holds ===
-#[sub] After populating `objects` with two real members, re-run the
+#[sub] After populating `objects` with three real members, re-run the
 #[sub] cross-Scriptable boundary check from Phase 4. The previously
 #[sub] empty answer for `objects find_by_name <layer_sentinel>` should
 #[sub] STILL be empty — `objects` doesn't see layer-typed nodes
@@ -392,24 +632,39 @@ assert layers.found_layer name == "objects_smoke_test_layer_s231_m2"
 objects find_by_name "objects_smoke_test_layer_s231_m2"
 
 #[sub] === Phase 10: TEAR DOWN ===
-#[sub] Delete b first, then a (LIFO over the mint order — matches
-#[sub] how a user's undo stack would pop them). Then delete the
-#[sub] test_layer. Net structural state on the doc is identical to
-#[sub] the pre-run state; net side effect is an AddNodeCommand /
-#[sub] DeleteObjectCommand pair per object, plus the layer pair, on
-#[sub] the undo stack.
+#[sub] After Phase 6e the tree shape is:
+#[sub]   test_layer.children = [b, d]
+#[sub]   b.children          = [a]
+#[sub]
+#[sub] Three minted scene objects (a, b, d), all need to come down
+#[sub] for count_before to match. `delete` resolves the iid project-
+#[sub] wide via find_by_iid, so order doesn't matter — `delete a`
+#[sub] finds a inside b's children regardless of where in the tree
+#[sub] it lives. We delete in roughly LIFO order over the mint
+#[sub] sequence (d minted last via duplicate → delete first; then
+#[sub] a; then b — matches how a user's undo stack would pop them).
+#[sub] Then delete the test_layer; the layer is empty by then.
+#[sub]
+#[sub] Net structural state on the doc is identical to the pre-run
+#[sub] state; net side effect on the undo stack is a richer pile of
+#[sub] commands now — AddNodeCommand pairs for a/b/d's mint paths,
+#[sub] EditObjectFieldCommand entries for the m3 rename/toggle/set,
+#[sub] MoveNodeIndexCommand entries for the m4 move ops,
+#[sub] MoveObjectToLayerCommand entry for the reparent, plus
+#[sub] DeleteObjectCommand bookends.
 
-objects delete b
+objects delete d
 objects delete a
+objects delete b
 layers delete test_layer
 
-#[sub] count should now match count_before — we minted 2 and
-#[sub] deleted 2. The literal-RHS assert can't say "count ==
-#[sub] count_before"; we bind both and rely on the substitution
-#[sub] grammar — `assert <object> <property> == <var>` resolves
-#[sub] <var> to the bound text value BEFORE comparison. count is an
-#[sub] integer, count_before is an integer captured at Phase 2. The
-#[sub] equality is integer-typed.
+#[sub] count should now match count_before — we minted 3 and
+#[sub] deleted 3 (a, b, d-the-duplicate). The literal-RHS assert
+#[sub] can't say "count == count_before"; we bind both and rely
+#[sub] on the substitution grammar — `assert <object> <property>
+#[sub] == <var>` resolves <var> to the bound text value BEFORE
+#[sub] comparison. count is an integer, count_before is an integer
+#[sub] captured at Phase 2. The equality is integer-typed.
 
 get objects count
 set count_after_delete to result
@@ -418,25 +673,25 @@ assert objects count == count_before
 #[sub] We also have count_after_mint bound but don't assert on it
 #[sub] (no expression-on-RHS in the DSL). The TRACE will show the
 #[sub] three counts side-by-side for a human reader to confirm the
-#[sub] +2 / -2 arithmetic:
+#[sub] +3 / -3 arithmetic:
 #[sub]   count_before        — baseline
-#[sub]   count_after_mint    — baseline + 2 (paths and groups added)
+#[sub]   count_after_mint    — baseline + 3 (a + b + d-the-duplicate)
 #[sub]   count_after_delete  — baseline (back to start)
 
 #[sub] === Final list — registry sanity ===
 #[sub] `objects` is still registered. No transient `objects.<iid>`
 #[sub] entries appear despite the dozens of proxy materialisations
-#[sub] across this run. Variables (a, b, count_before, etc.) don't
+#[sub] across this run. Variables (a, b, d, count_before, etc.) don't
 #[sub] register either — listener-local, not registry entries.
 
 list
 
-#[sub] Done. The s232 m3 surface is validated end-to-end:
+#[sub] Done. The s234 m4 surface is validated end-to-end:
 #[sub]
 #[sub]   - Read side from m1 still works (Phases 1-4, carried).
 #[sub]   - `objects new "path"` mints a Path leaf with the documented
 #[sub]     empty-name / default-state contract (Phase 5).
-#[sub]   - All five element mutating verbs work on the proxy: rename,
+#[sub]   - All five m3 element mutating verbs work on the proxy: rename,
 #[sub]     toggle_visible, set_visible, toggle_locked, set_locked.
 #[sub]     Same-value calls are no-ops (no command pushed); empty-arg
 #[sub]     rename is a no-op. rename propagates to the find_by_name
@@ -445,27 +700,40 @@ list
 #[sub]   - `objects new "group"` mints a Group container with the
 #[sub]     same default state, distinguishable by type token
 #[sub]     (Phase 6).
-#[sub]   - Mutating verbs are type-agnostic — they work on Group-
+#[sub]   - m3 mutating verbs are type-agnostic — they work on Group-
 #[sub]     typed nodes the same as Path-typed ones (Phase 6c).
+#[sub]   - The three m4 element structural verbs work on the proxy
+#[sub]     (Phase 6e):
+#[sub]       * `move "<direction>"` reorders within the parent's
+#[sub]         children in all four direction tokens; edge-cases
+#[sub]         (already-at-target, unknown-direction) no-op cleanly.
+#[sub]       * `duplicate` returns a fresh iid into result; the
+#[sub]         clone has its own internal_id (no iid-index collision
+#[sub]         with the original); type and name are preserved from
+#[sub]         the source.
+#[sub]       * `reparent` moves the node across containers; the four
+#[sub]         refusal classes (cycle, self, leaf-dest, empty-arg)
+#[sub]         all no-op without disturbing tree state.
+#[sub]   - The new `child_index` proxy query gives scripts an
+#[sub]     observable for move/dup/reparent position effects.
 #[sub]   - find_by_type now returns non-empty for in-scope tokens
 #[sub]     and the returned iid round-trips through the proxy to a
 #[sub]     node of the expected type (Phase 7).
 #[sub]   - The count walks correctly across mint and delete cycles —
-#[sub]     baseline-2-baseline round trip (Phases 8, 10).
+#[sub]     baseline-3-baseline round trip (Phases 8, 10).
 #[sub]   - The cross-Scriptable partition holds even with `objects`
 #[sub]     populated (Phase 9).
 #[sub]   - `objects delete <iid>` removes nodes from any owning
-#[sub]     container in the doc, undoing cleanly via the pushed
+#[sub]     container in the doc — including a-inside-b after Phase
+#[sub]     6e's reparent — undoing cleanly via the pushed
 #[sub]     DeleteObjectCommand (Phase 10; the trace's `ok` lines
 #[sub]     are the dispatch confirmation).
 #[sub]
-#[sub] Pre-stated: 25 pass / 0 fail / 0 error.
+#[sub] Pre-stated: 48 pass / 0 fail / 0 error.
 #[sub]
-#[sub] What's still NOT covered by m3 (and that's by design):
-#[sub]   - Element structural verbs (move, reparent, duplicate).
-#[sub]     Scheduled m4.
+#[sub] What's still NOT covered by m4 (and that's by design):
 #[sub]   - Collection-level grouping verbs (group, ungroup).
-#[sub]     Scheduled m5.
+#[sub]     Scheduled m5 (closing the arc).
 #[sub]   - selected_iids. Scheduled with the `selection` singleton.
 #[sub]   - The find_by_name cross-check assert (Phase 5c) is the
 #[sub]     only test that rename propagates to the tree-walk surface;
@@ -474,3 +742,7 @@ list
 #[sub]     verb exists (and per CANON's "row-bound model Scriptables"
 #[sub]     section, none is planned — visibility and lock state are
 #[sub]     mutable display flags, not addressing keys).
+#[sub]   - Round-tripping move/reparent/duplicate via Ctrl+Z (undo).
+#[sub]     The trace verifies the COMMANDS were pushed; visual undo
+#[sub]     verification is part of Scott's manual three-channel
+#[sub]     acceptance, not the smoke's automated coverage.

@@ -1,0 +1,294 @@
+# 35_objects_path_data — opens the canvas-observable scripts arc.
+#
+# s235 m1 wired the canvas-refresh callback into ObjectsScriptable's
+# every mutating verb, but the smoke for that wiring couldn't be
+# canvas-observable: the only verbs that touched scene-objects (new,
+# delete, toggle_visible, etc.) didn't produce pixels on canvas. A
+# minted Path with empty path data renders nothing; toggling visible
+# on a Path with no geometry is invisible. The s235 close logged a
+# direct gap: scripts can't BUILD UP canvas-observable targets.
+#
+# s236 m1 closes the first piece of that gap by adding `set_path_data
+# <svg_d_string>` to the ObjectProxy. The verb takes an SVG-d
+# attribute string, parses it through curvz_utils' new path-d pump,
+# and pushes EditPathCommand (the s167/s168-migrated whole-path
+# replace command — already iid-shaped, perfect fit; no parallel
+# command class needed, unlike m3's EditObjectFieldCommand or m4's
+# MoveNodeIndexCommand). Fill / stroke / actual canvas-visible
+# rendering land in subsequent milestones; m1 ships geometry, which
+# is the foundation — fill on an empty Path still draws nothing.
+#
+# The smoke also exercises the new `node_count` proxy query (the
+# observable for `set_path_data`'s effect — integer, deterministic,
+# no Cairo) and the read-side `path_data` query (round-trip view of
+# the d-string back from the model; trace-channel only, the
+# normalised re-emission isn't byte-identical to the input so no
+# literal-RHS assert is shippable).
+#
+# ── Owns-its-conditions structure (CANON) ────────────────────────────────
+#
+# BUILD UP / VALIDATE / TEAR DOWN. The smoke mints its own test
+# layer and test objects, validates the new surface end-to-end,
+# and tears everything back down. Net structural change to the
+# doc: zero. Side effect on the undo stack: AddNodeCommand for the
+# mints, EditPathCommand entries for the set_path_data calls,
+# DeleteObjectCommand pairs for the teardown.
+#
+# ── Pre-stated count ─────────────────────────────────────────────────────
+#
+# Expected: 10 pass / 0 fail / 0 error.
+#
+# Breakdown:
+#   Phase 3 (BUILD UP — mint `p` as Path, baseline shape):
+#     type == "path", node_count == 0                         → 2 asserts.
+#   Phase 4 (SET — closed rect, 4 BezierNodes):
+#     node_count == 4                                          → 1 assert.
+#   Phase 5 (CHANGE — closed triangle, 3 BezierNodes):
+#     node_count == 3                                          → 1 assert.
+#   Phase 6 (PATH_DATA query — bind + visual, trace-channel only):
+#                                                              → 0 asserts.
+#   Phase 7 (CLEAR — empty d-string, 0 BezierNodes):
+#     node_count == 0                                          → 1 assert.
+#   Phase 8 (OPEN PATH — no Z terminator, 3 BezierNodes):
+#     node_count == 3                                          → 1 assert.
+#   Phase 9 (NEGATIVE — set_path_data on a Group is a no-op):
+#     g type == "group", g node_count == 0                     → 2 asserts.
+#   Phase 10 (CROSS-CHECK — find_by_type "path" finds `p`):
+#     found_path type == "path"                                → 1 assert.
+#   Phase 11 (TEAR DOWN — round-trip count):
+#     objects count == count_before                            → 1 assert.
+#
+# Total: 2 + 1 + 1 + 0 + 1 + 1 + 2 + 1 + 1 = 10.
+#
+# ── On the `node_count` observable ───────────────────────────────────────
+#
+# `node_count` returns the size of the Path's BezierNode vector — a
+# pure model-side property, no Cairo, no rendering, deterministic
+# across runs. After `set_path_data "M 0 0 L 100 0 L 100 100 L 0 100
+# Z"` the value is 4 (one BezierNode per anchor; Z closes the path
+# without adding a node). After `set_path_data ""` the value is 0.
+# After `set_path_data "M 0 0 L 50 50 L 100 0"` (open path, no Z)
+# the value is 3.
+#
+# For non-Path nodes (Group / Compound / Image / etc.), path_data
+# isn't a meaningful concept (path == nullptr), so node_count
+# degrades to 0 — matching the "node_count is the size of nodes,
+# treating a missing path as having no nodes" contract documented
+# on the query.
+#
+# Bbox queries (bbox_w / bbox_h) would be the natural follow-on
+# observable for true canvas-coverage validation, but bbox math
+# requires the Cairo pass and isn't pure-model. Scheduled for a
+# later milestone if a smoke needs it. node_count is sufficient
+# for the round-trip "did set_path_data land in the model?" check.
+#
+# ── On the `path_data` read-side query ───────────────────────────────────
+#
+# Returns the SVG-d string representation of the Path's PathData,
+# re-emitted via the same `path_data_to_svg_d` pump SvgWriter uses
+# (after the s236 m1 pump promotion). The emitter normalises the
+# input (lossless on the model layer, but textually different —
+# "M 0 0" becomes "M 0.00 0.00" with fmt2 formatting, segments
+# always emit as C or L depending on handle degeneracy, etc.). So
+# the round-trip isn't byte-identical and a literal-RHS assert
+# would be brittle.
+#
+# The query is exposed anyway because scripts that want to capture
+# geometry need the read side, and because the trace shows whether
+# the round-trip preserves the structural shape (same number of
+# anchors, same closed/open status). Phase 6 binds the result to
+# a variable and lets the trace carry the value for human
+# inspection.
+#
+# ── Canvas-observable (three-channel acceptance) ─────────────────────────
+#
+# Trace channel: the 10 asserts above.
+# Visual channel: the test path is minted under a test layer that
+#   the user can see in the Layers panel. After Phase 4's SET, the
+#   path has rect geometry but no fill / stroke (m1 doesn't ship
+#   appearance verbs), so it renders as an outline-only rect in
+#   wireframe mode — or as nothing in fill-only modes. m2's
+#   `set_fill` makes the rect canvas-visible in all modes. For m1,
+#   a useful visual probe is running with Canvas in node/outline
+#   mode and watching the rect appear / change / disappear across
+#   phases.
+# Build channel: Scott's compile.
+#
+# Phase 9's negative case (set_path_data on a Group) is a no-op
+# without an error sentinel — the verb body resolves the node,
+# checks node->path is non-null, and silently early-returns when
+# it isn't. That's the same shape every other proxy verb uses for
+# refused arg-class cases (no error reporting through ScriptValue;
+# the trace just shows the verb dispatched without effect). Future
+# milestones may add a structured error channel; m1 inherits the
+# convention.
+
+#[sub] === Phase 1: REGISTRY ===
+#[sub] `objects` should appear in the registry list — same baseline
+#[sub] check smoke 34 opens with.
+
+list
+
+#[sub] === Phase 2: DISPATCH — baseline count ===
+#[sub] Captures the pre-mint count to compare against after teardown.
+
+get objects count
+set count_before to result
+
+#[sub] === Phase 3: BUILD UP — mint test layer and Path object ===
+#[sub] Same shape as smoke 34: mint a sentinel-named test layer,
+#[sub] activate it, then mint `p` under it via `objects new "path"`.
+#[sub] A freshly-minted Path has empty PathData (the documented
+#[sub] contract — see ObjectsScriptable header). node_count returns
+#[sub] 0 against an empty path's nodes vector.
+
+layers new
+set test_layer to result
+layers.test_layer rename "objects_path_data_smoke_s236_m1"
+layers.test_layer activate
+
+objects new "path"
+set p to result
+
+assert objects.p type == "path"
+assert objects.p node_count == 0
+
+#[sub] === Phase 4: SET — closed rect (4 anchors, Z terminator) ===
+#[sub] Canonical 100×100 rect at the origin. Four BezierNodes (one
+#[sub] per corner); the Z terminator closes the path without adding
+#[sub] a node. set_path_data parses the d-string through curvz_utils'
+#[sub] svg_d_to_path_data pump, captures the existing PathData as
+#[sub] `before`, replaces it with the parsed value, and pushes
+#[sub] EditPathCommand for undo.
+
+objects.p set_path_data "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+assert objects.p node_count == 4
+
+#[sub] === Phase 5: CHANGE — closed triangle (3 anchors) ===
+#[sub] Replaces the rect's PathData with a triangle. EditPathCommand
+#[sub] captures rect-PathData as `before` and triangle-PathData as
+#[sub] `after`; Ctrl+Z then restores the rect. The smoke doesn't
+#[sub] exercise undo (visual-channel concern for Scott's three-
+#[sub] channel acceptance, not script-channel coverage).
+
+objects.p set_path_data "M 0 0 L 100 0 L 50 100 Z"
+assert objects.p node_count == 3
+
+#[sub] === Phase 6: PATH_DATA QUERY — read-side round-trip ===
+#[sub] Bind the re-emitted d-string to a variable. The trace shows
+#[sub] the value; no literal-RHS assert because the re-emission is
+#[sub] normalised (fmt2 formatting, L-vs-C segment classification),
+#[sub] so byte-equality with the original input isn't a stable
+#[sub] property. A future round-trip-fidelity probe would parse
+#[sub] both strings to PathData and compare structurally; the DSL
+#[sub] doesn't carry that compare shape today.
+
+get objects.p path_data
+set pd_out to result
+
+#[sub] === Phase 7: CLEAR — empty d-string ===
+#[sub] set_path_data "" replaces the triangle's PathData with an
+#[sub] empty one. The parser returns an empty PathData for empty
+#[sub] input (the same shape `objects new "path"` produces). Useful
+#[sub] as a clearing primitive without deleting the node.
+
+objects.p set_path_data ""
+assert objects.p node_count == 0
+
+#[sub] === Phase 8: OPEN PATH — no Z terminator ===
+#[sub] M + 2 L segments, no Z. Three BezierNodes; closed == false
+#[sub] in the resulting PathData. The model represents open and
+#[sub] closed paths with the same BezierNode vector and a separate
+#[sub] `closed` bool, so node_count is the same shape regardless.
+#[sub] (A future `closed` query would be the natural pair to
+#[sub] distinguish the two; not in m1 scope.)
+
+objects.p set_path_data "M 0 0 L 50 50 L 100 0"
+assert objects.p node_count == 3
+
+#[sub] === Phase 9: NEGATIVE — set_path_data on a Group is a no-op ===
+#[sub] Mint a Group; Groups don't carry a PathData (path == nullptr
+#[sub] on every non-Path node). set_path_data on the group's proxy
+#[sub] should resolve the node, check `node->path`, see it's null,
+#[sub] and silently early-return without pushing a command.
+#[sub] node_count on a Group degrades to 0 (no nodes vector to
+#[sub] size; treated as 0 by contract). type round-trips as "group".
+
+objects new "group"
+set g to result
+
+assert objects.g type == "group"
+assert objects.g node_count == 0
+
+objects.g set_path_data "M 0 0 L 100 100 Z"
+
+#[sub] === Phase 10: CROSS-CHECK — find_by_type now resolves ===
+#[sub] With `p` in scope (and `g`), find_by_type "path" should
+#[sub] return a path-typed iid. We assert on type, not on iid
+#[sub] identity, because find_by_type's "first hit" contract
+#[sub] doesn't guarantee which path it returns when more than one
+#[sub] is in scope (and there may be user-drawn paths in the doc
+#[sub] from before the script ran).
+
+objects find_by_type "path"
+set found_path to result
+assert objects.found_path type == "path"
+
+#[sub] === Phase 11: TEAR DOWN ===
+#[sub] Three mints (test_layer via layers.new, p via objects.new,
+#[sub] g via objects.new) need three matching deletes. The Path
+#[sub] gets its PathData freed when DeleteObjectCommand owns the
+#[sub] snapshot; no leak. count returns to count_before — round-
+#[sub] trip baseline.
+
+objects delete p
+objects delete g
+layers delete test_layer
+
+get objects count
+assert objects count == count_before
+
+#[sub] === Final list — registry sanity ===
+#[sub] Same shape as smoke 34's close: `objects` still present, no
+#[sub] transient proxies registered, the dozens of proxy
+#[sub] materialisations across this run all cleaned up at end-of-
+#[sub] statement.
+
+list
+
+#[sub] Done. The s236 m1 surface is validated:
+#[sub]   - `objects.<iid> set_path_data <svg_d_string>` lands geometry
+#[sub]     into the Path's PathData via curvz_utils' new
+#[sub]     svg_d_to_path_data pump, pushes EditPathCommand for undo,
+#[sub]     fires the s235 m1 canvas-refresh callback at success.
+#[sub]   - Empty d-string clears the path (node_count → 0).
+#[sub]   - Open paths (no Z) round-trip with node_count matching
+#[sub]     the anchor count.
+#[sub]   - set_path_data on non-Path nodes (Group) is a clean no-op.
+#[sub]   - `node_count` read query gives scripts an observable for
+#[sub]     geometry changes — integer, deterministic, no Cairo.
+#[sub]   - `path_data` read query gives scripts the d-string round-
+#[sub]     trip for capture / inspection use cases (trace-channel
+#[sub]     observable, not literal-RHS-assertable due to fmt2
+#[sub]     normalisation).
+#[sub]
+#[sub] Pre-stated: 10 pass / 0 fail / 0 error.
+#[sub]
+#[sub] What's still NOT covered by m1 (and that's by design):
+#[sub]   - `set_fill` / `set_stroke`. Scheduled m2 / m3. Without
+#[sub]     those, the rect / triangle / open-path are wireframe-
+#[sub]     only on canvas.
+#[sub]   - `bbox_w` / `bbox_h` queries. Bbox needs the Cairo path
+#[sub]     pass; non-trivial. Future milestone if a smoke needs it.
+#[sub]   - `closed` query (the bool flag on PathData). Useful pair
+#[sub]     to node_count for round-tripping shape; future milestone.
+#[sub]   - `require <var>` flow-control verb (logged backlog from
+#[sub]     s235). Phase 6's `set pd_out to result` would benefit
+#[sub]     from a "did the prior step produce something?" gate; for
+#[sub]     m1 the smoke runs unconditionally because Phase 5's
+#[sub]     SET is the precondition and we trust it landed (the
+#[sub]     assert in Phase 5 IS the gate).
+#[sub]   - Byte-identical round-trip of the d-string. Re-emission
+#[sub]     normalises whitespace and segment-type classification;
+#[sub]     a structural round-trip probe (parse out, parse in,
+#[sub]     compare PathData) needs a DSL extension not in m1 scope.

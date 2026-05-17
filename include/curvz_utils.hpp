@@ -23,6 +23,12 @@
 //   build_gradient_pattern FillStyle + bbox → Cairo::Pattern (linear/radial)
 //   render_drop_shadow_under blur+composite a host_pat shadow under cr
 //                            (offscreen surface + box blur + masked tint)
+//   svg_d_to_path_data     SVG `d` attribute string → PathData
+//                          (s236 m1 — bridges to SvgParser::parse_path_d
+//                           via non-static wrapper; full lift deferred)
+//   path_data_to_svg_d     PathData → SVG `d` attribute string
+//                          (s236 m1 — full lift from SvgWriter inline
+//                           emitters; writer keeps its copies for now)
 //
 // ── SVG id contract ──────────────────────────────────────────────────
 //
@@ -807,5 +813,63 @@ void generate_warp_preset(int preset_idx,
                           int top_count, int bot_count,
                           ::Curvz::PathData& top_env,
                           ::Curvz::PathData& bot_env);
+
+// ── SVG path d-string pump (s236 m1) ──────────────────────────────────
+//
+// Bidirectional converters between SVG `d`-attribute strings and the
+// in-memory `PathData` model. Promoted to curvz_utils so script-side
+// callers (ObjectProxy::set_path_data, the `path_data` read query)
+// reach the same shape SvgWriter / SvgParser use, without each surface
+// open-coding its own parser/emitter. Encode/decode live next to
+// each other — same pump-pair convention as encode_svg_id, the
+// warp_presets generator, etc.
+//
+// ── Scope of the m1 promotion ────────────────────────────────────────
+//
+// `svg_d_to_path_data` BRIDGES to SvgParser.cpp's existing
+// `parse_path_d` static helper via a non-static wrapper added in m1.
+// The 260-line parser body (plus its 60-line arc_to_bezier helper)
+// stays put for now — lifting it cleanly would touch the most-tested
+// load path in the project and bloats the m1 delta. The wrapper is
+// the visible-from-outside seam; a future "SvgParser sweep" milestone
+// can move the bodies here once the file-static glue is teased apart
+// (parse_path_d_multi shares arc_to_bezier; both want to come over
+// together).
+//
+// `path_data_to_svg_d` IS the full lift. The SvgWriter has two
+// byte-for-byte inline d-string emitters (compound path / single
+// path), both ~25 lines, both file-local. Promoted here; the writer
+// keeps its inline copies for now (sweep deferred — same shape as the
+// parser case, paired with the full parser lift in a future
+// milestone). Calling sites in script land reach the pump directly.
+//
+// ── Contract ─────────────────────────────────────────────────────────
+//
+// svg_d_to_path_data:
+//   - Empty input → empty PathData (zero nodes, closed == false).
+//     Matches the s231 m2 `objects new "path"` mint contract — the
+//     same shape a freshly-minted Path carries.
+//   - Whole-string parse failure (malformed d-string) → empty
+//     PathData. The existing parser is permissive and skips bad
+//     tokens; we surface that as the empty-PathData sentinel rather
+//     than introducing an error channel m1 doesn't ship.
+//   - Successfully parsed d-string → PathData with one BezierNode
+//     per anchor point, closed flag set iff a Z/z terminator was
+//     seen.
+//
+// path_data_to_svg_d:
+//   - Empty PathData → empty string.
+//   - Non-empty PathData → "M x y" prefix + L / C segments per
+//     consecutive node pair (L when both flanking handles degenerate
+//     to anchors; C otherwise) + " Z" suffix if closed.
+//   - All coordinates formatted via the same fmt2 (`%.2f`-style)
+//     convention SvgWriter uses, so re-emission matches what the
+//     file save path produces. Not byte-identical to the input — the
+//     normalised shape is the documented round-trip contract.
+//
+// Both are pure functions. No GTK, no Cairo, no I/O. Safe to call
+// from any thread.
+::Curvz::PathData svg_d_to_path_data(const std::string& d);
+std::string       path_data_to_svg_d(const ::Curvz::PathData& pd);
 
 } // namespace curvz::utils
