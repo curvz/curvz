@@ -277,6 +277,15 @@ private:
     sigc::connection m_library_swatch_added_conn;
     sigc::connection m_library_swatch_removed_conn;
 
+    // s243 m1 — connections for the new palette signal trio on the
+    // library. Same rationale as the swatch trio above: undo/redo of
+    // palette CRUD commands mutates the library directly, bypassing the
+    // panel's panel-driven m_sig_library_changed emit, so the library
+    // has to fan out the change for the panel grid to stay current.
+    sigc::connection m_library_palette_added_conn;
+    sigc::connection m_library_palette_removed_conn;
+    sigc::connection m_library_palette_changed_conn;
+
     // --- Right-click context (M5) -----------------------------------------
     //
     // When the user right-clicks a chip, we record which swatch + which

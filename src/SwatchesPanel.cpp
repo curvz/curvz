@@ -235,6 +235,9 @@ void SwatchesPanel::set_library(color::SwatchLibrary* lib) {
     m_library_swatch_changed_conn.disconnect();
     m_library_swatch_added_conn.disconnect();    // s220 m1a hotfix
     m_library_swatch_removed_conn.disconnect();  // s220 m1a hotfix
+    m_library_palette_added_conn.disconnect();   // s243 m1
+    m_library_palette_removed_conn.disconnect(); // s243 m1
+    m_library_palette_changed_conn.disconnect(); // s243 m1
 
     m_library = lib;
 
@@ -285,6 +288,31 @@ void SwatchesPanel::set_library(color::SwatchLibrary* lib) {
                 [this](const color::SwatchId& /*id*/) {
                     m_sig_library_changed.emit();
                     m_sig_inspector_refresh_needed.emit();
+                    refresh();
+                });
+
+        // s243 m1 — palette signal trio. Same shape as the swatch trio
+        // above. Command-driven palette CRUD (Add/Remove/Rename/
+        // PaletteMembership undo/redo, plus the s243 m2 scripted path)
+        // bypasses the panel's panel-driven m_sig_library_changed emit,
+        // so the library has to fan out via these signals for the
+        // grid + palette dropdown to stay current.
+        m_library_palette_added_conn =
+            m_library->signal_palette_added().connect(
+                [this](const color::PaletteId& /*id*/) {
+                    m_sig_library_changed.emit();
+                    refresh();
+                });
+        m_library_palette_removed_conn =
+            m_library->signal_palette_removed().connect(
+                [this](const color::PaletteId& /*id*/) {
+                    m_sig_library_changed.emit();
+                    refresh();
+                });
+        m_library_palette_changed_conn =
+            m_library->signal_palette_changed().connect(
+                [this](const color::PaletteId& /*id*/) {
+                    m_sig_library_changed.emit();
                     refresh();
                 });
     }
@@ -600,6 +628,23 @@ void SwatchesPanel::refresh() {
                     static_cast<guint>(std::distance(palette_ids.begin(), it)));
                 m_syncing_dropdown = false;
             }
+        } else if (!palette_ids.empty()) {
+            // s243 m1 fix: active is empty but the library has palettes.
+            // This is the post-delete-of-active state: remove_palette
+            // cleared m_active_palette, the dropdown rebuild visually
+            // shows index 0 as selected, but nobody synced the library.
+            // Result: next operation that reads active_palette (Delete,
+            // Rename, etc.) silently bails on its empty-active guard.
+            //
+            // The dropdown's "default to index 0" is a panel-display
+            // rule; make the library follow it so visible state and
+            // library state stay aligned. Same posture applies to the
+            // load-from-disk case where the project's editor_state
+            // didn't repopulate active (also caught during s243 m1
+            // testing — see log timestamps 13:00:40 vs 13:01:35).
+            m_library->set_active_palette(palette_ids.front());
+            // Dropdown's default selection is already index 0 — no
+            // explicit set_selected needed; the picker visual matches.
         }
 
         m_dropdown_sel_conn = drop->property_selected().signal_changed().connect(
@@ -1125,12 +1170,39 @@ void SwatchesPanel::on_new_palette() {
         color::Palette p;
         p.name   = name;
         p.source = "user";
-        auto new_id = m_library->add_palette(std::move(p));
+        // s243 m1: push AddPaletteCommand instead of calling
+        // add_palette directly. The command mints a fresh id on
+        // execute(); we read it back from m_assigned_id so the
+        // set_active_palette follow-up addresses the right palette.
+        // set_active_palette stays outside undo (transient working
+        // state, matching the recents-MRU posture from s220 m1a).
+        color::PaletteId new_id;
+        if (m_history) {
+            auto cmd = std::make_unique<AddPaletteCommand>(
+                m_library, std::move(p), "New palette");
+            // s243 m1 fix: the new-palette UX makes the new palette
+            // active. Declare it on the command so redo restores
+            // active too (otherwise undo-then-redo leaves active
+            // empty and subsequent Delete Palette silently bails).
+            cmd->set_make_active(true);
+            cmd->execute();
+            new_id = cmd->m_assigned_id;
+            m_history->push(std::move(cmd));
+        } else {
+            new_id = m_library->add_palette(std::move(p));
+        }
         if (new_id.empty()) {
             LOG_ERROR("SwatchesPanel::on_new_palette: add_palette failed");
             return;
         }
         m_library->set_active_palette(new_id);
+        // signal_palette_added already fired from add_palette, which
+        // ran m_sig_library_changed.emit() + refresh() via the new
+        // listener. The panel-side emit + refresh below is a
+        // belt-and-braces double-fire (refresh is idempotent;
+        // schedule_save is debounced) — kept for symmetry with the
+        // other palette handlers and so the panel doesn't depend on
+        // the library-listener wiring being present.
         m_sig_library_changed.emit();
         refresh();
     });
@@ -1150,7 +1222,18 @@ void SwatchesPanel::on_rename_palette() {
             // on_new_palette comment for rationale.
             if (name.empty()) return;
             if (!m_library) return;
-            m_library->rename_palette(active, name);
+            // s243 m1: push RenamePaletteCommand. Defaults guard: the
+            // panel never builds this for a defaults id (the rename
+            // affordance is only present for editable palettes); the
+            // library would refuse anyway.
+            if (m_history) {
+                auto cmd = std::make_unique<RenamePaletteCommand>(
+                    m_library, active, name, "Rename palette");
+                cmd->execute();
+                m_history->push(std::move(cmd));
+            } else {
+                m_library->rename_palette(active, name);
+            }
             m_sig_library_changed.emit();
             refresh();
         });
@@ -1164,7 +1247,21 @@ void SwatchesPanel::on_delete_palette() {
     // Straight delete — no confirmation. Swatches stay in the library;
     // only the palette (view) is removed. Restoring = create a new
     // palette and drag swatches back in (M5 territory).
-    m_library->remove_palette(active);
+    //
+    // s243 m1: push RemovePaletteCommand. The ctor snapshots the
+    // palette value AND the active-palette state BEFORE execute() runs,
+    // then execute() calls remove_palette (which clears
+    // m_active_palette as a side effect when the removed palette was
+    // active). Undo re-adds via add_palette with the captured id and
+    // restores active iff this palette was the active one pre-remove.
+    if (m_history) {
+        auto cmd = std::make_unique<RemovePaletteCommand>(
+            m_library, active, "Delete palette");
+        cmd->execute();
+        m_history->push(std::move(cmd));
+    } else {
+        m_library->remove_palette(active);
+    }
     m_sig_library_changed.emit();
     refresh();
 }
@@ -1174,10 +1271,41 @@ void SwatchesPanel::on_duplicate_palette() {
     color::PaletteId active = m_library->active_palette();
     if (active.empty()) return;
 
+    // s243 m1: duplicate_palette stays the single source of truth for
+    // "what's in a duplicate" (source lookup, name fallback, builtin
+    // clearing, cross-tier swatch refs). We call it directly, then
+    // wrap the result in an AddPaletteCommand::already_added so the
+    // duplicate is undoable. Mirrors the AddSwatchCommand::already_added
+    // shape used by the swatch popover-commit path.
     auto new_id = m_library->duplicate_palette(active, /*new_name=*/"");
     if (new_id.empty()) {
         LOG_ERROR("SwatchesPanel::on_duplicate_palette: duplicate failed");
         return;
+    }
+    if (m_history) {
+        const color::Palette* live = m_library->find_palette(new_id);
+        if (live) {
+            auto cmd = AddPaletteCommand::already_added(
+                m_library, *live, "Duplicate palette");
+            // s243 m1 fix: the duplicate-palette UX makes the new
+            // palette active (the panel sets active right after this
+            // push). Declare it on the command so redo restores active
+            // too — without this, undo-then-redo leaves active empty
+            // and subsequent Delete Palette silently bails on its
+            // empty-active guard. See AddPaletteCommand::m_make_active
+            // for the full story.
+            cmd->set_make_active(true);
+            cmd->execute();   // no-op for already_added (just flips
+                              // the m_first_execute_consumed flag so
+                              // subsequent redoes go through the
+                              // normal add path). Matches the panel's
+                              // AddSwatchCommand::already_added usage.
+            m_history->push(std::move(cmd));
+        }
+        // If find_palette unexpectedly returns null (defensive — the
+        // duplicate just succeeded), we still set active + refresh,
+        // we just lose undo coverage for this duplicate. Better than
+        // crashing or leaving the panel in a confused state.
     }
     m_library->set_active_palette(new_id);
     m_sig_library_changed.emit();
@@ -1888,10 +2016,51 @@ void SwatchesPanel::on_ctx_move_to_palette(const color::PaletteId& target) {
     // If the user right-clicked from a palette grid (non-empty context),
     // this is a move: remove from source, add to target. For recents-chip
     // context (empty), it's just an add.
+    //
+    // s243 m1: the move case pushes a PaletteMembershipCommand via the
+    // already_moved factory — captures the source palette + the
+    // pre-remove index so undo restores the original position exactly.
+    // The add-only case stays un-undoable in m1 (matches the s220 m1a
+    // posture for analogous follow-up palette-membership adds; see the
+    // detailed comment in that branch below).
     if (!m_ctx_palette_id.empty() && m_ctx_palette_id != target) {
+        // Move case. Capture the source index BEFORE remove_from_palette
+        // mutates anything. find_palette returns the live Palette so we
+        // can walk swatches and locate the index.
+        std::size_t src_index = 0;
+        if (const color::Palette* src_pal = m_library->find_palette(m_ctx_palette_id)) {
+            for (std::size_t i = 0; i < src_pal->swatches.size(); ++i) {
+                if (src_pal->swatches[i] == m_ctx_swatch_id) {
+                    src_index = i;
+                    break;
+                }
+            }
+        }
         m_library->remove_from_palette(m_ctx_palette_id, m_ctx_swatch_id);
+        m_library->add_to_palette(target, m_ctx_swatch_id);
+        if (m_history) {
+            auto cmd = PaletteMembershipCommand::already_moved(
+                m_library, m_ctx_swatch_id,
+                m_ctx_palette_id, src_index,
+                target,
+                "Move swatch between palettes");
+            cmd->execute();  // no-op for already_moved; flips the
+                             // already-applied flag so subsequent
+                             // redoes go through apply_().
+            m_history->push(std::move(cmd));
+        }
+    } else {
+        // Add-only case (recents-chip context; m_ctx_palette_id empty or
+        // identical to target). NOT undoable in m1 — matches the s220
+        // m1a posture for analogous follow-up palette-membership adds
+        // (popover-commit and on_ctx_duplicate_swatch's add_to_palette
+        // both stay outside undo). A future milestone that adds the
+        // PaletteMembershipCommand::already_added factory back can close
+        // this gap; until then, drag-back is the recovery path (a
+        // single click in a panel rebuild after undo isn't a regression
+        // — it's the same shape as before s243).
+        m_library->add_to_palette(target, m_ctx_swatch_id);
     }
-    m_library->add_to_palette(target, m_ctx_swatch_id);
 
     m_sig_library_changed.emit();
     refresh();

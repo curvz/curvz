@@ -2300,6 +2300,487 @@ struct RemoveSwatchCommand : CurvzCommand {
     bool preserves_selection() const override { return true; }
 };
 
+// ── AddPaletteCommand (s243 m1) ───────────────────────────────────────────────
+//
+// Adds a Palette to the custom tier of the SwatchLibrary. First of the
+// s243 m1 palette-CRUD command quintet (Add/Remove/Rename/
+// PaletteMembership + duplicate goes through Add by composition). Mirrors
+// AddSwatchCommand in shape — the swatch-CRUD shape is the right fit
+// because palettes live on the same library, with the same string-id
+// identity model and the same project-tied lifetime. NOT the s242 m1
+// scene-tree iid shape (CurvzProject* + node iids) — palettes are not
+// in the scene tree.
+//
+// Identity model — mirrors AddSwatchCommand exactly:
+//   * If palette_value.id is empty at construction, execute() calls
+//     library->add_palette() and lets the library generate a fresh id.
+//     The assigned id is captured into m_assigned_id so undo / redo
+//     target the same id consistently.
+//   * If the id is pre-set, execute() preserves it; add_palette rejects
+//     collisions (returns empty), which we detect and the command
+//     no-ops on undo.
+//
+// Redo policy: replay the SAME id captured during the first execute.
+// add_palette with a pre-set id succeeds because the id was just freed
+// by undo()'s remove_palette call.
+//
+// Two construction modes (mirrors AddSwatchCommand):
+//   * Standard ctor: caller hands over the value, command's first
+//     execute() adds. The panel's on_new_palette path uses this.
+//     Scripted callers in s243 m2 will also single-shot through here.
+//   * "Already-added" factory: caller has ALREADY called add_palette
+//     OR duplicate_palette directly (and so has the live id in hand).
+//     The factory captures the live value + id; first execute() is a
+//     no-op (palette is already there), undo() removes by the
+//     captured id, redo() re-adds. The panel's on_duplicate_palette
+//     uses this so duplicate_palette stays the single source of truth
+//     for duplicate semantics.
+//
+// Library pointer captured at push time, lifetime guaranteed by the
+// project (same as AddSwatchCommand).
+//
+// preserves_selection: true. Library mutation, not a scene-tree change.
+struct AddPaletteCommand : CurvzCommand {
+    color::SwatchLibrary* library;
+    color::Palette        palette_value;   // captured at construction
+    color::PaletteId      m_assigned_id;   // captured on first execute()
+    std::string           desc;
+    bool                  m_first_execute_consumed = false;  // true after
+                                                             // already_added
+    // s243 m1 fix: when true, execute() (including redo) sets the
+    // newly-added palette as the library's active palette after the
+    // add. Both the panel's on_new_palette and on_duplicate_palette
+    // make the new palette active as part of the UX contract; without
+    // this flag, undo-then-redo would re-add the palette but leave
+    // active empty (cleared by the prior undo's remove_palette side
+    // effect), and any subsequent operation that reads active_palette
+    // (e.g. Delete Palette) would silently bail on its empty-active
+    // guard. The flag is set by the caller at command-build time:
+    // the panel knows whether the new palette should become active.
+    // Symmetric with RemovePaletteCommand's active_before snapshot.
+    bool                  m_make_active = false;
+
+    AddPaletteCommand(color::SwatchLibrary* lib,
+                      color::Palette p,
+                      std::string description = "Add palette")
+        : library(lib)
+        , palette_value(std::move(p))
+        , desc(std::move(description)) {}
+
+    // Already-added variant. Caller has done the add (directly via
+    // add_palette OR via duplicate_palette, which goes through
+    // add_palette internally). This factory captures the live palette
+    // value + id, then treats the first execute() as a no-op so push()
+    // doesn't double-add. Subsequent redoes (after an undo) replay the
+    // add normally. Mirrors AddSwatchCommand::already_added in shape.
+    //
+    // Used by the duplicate-palette path: duplicate_palette returns
+    // the new id, the caller looks up the resulting Palette, and wraps
+    // it in this factory so duplicate-then-undo cleans up the
+    // duplicate. The library's duplicate_palette stays the single
+    // source of truth for "what's in a duplicate"; this factory just
+    // makes the result undoable.
+    //
+    // Required: live_value.id must be non-empty (the live id of the
+    // palette in the library).
+    static std::unique_ptr<AddPaletteCommand>
+    already_added(color::SwatchLibrary* lib,
+                  color::Palette live_value,
+                  std::string description = "Add palette") {
+        auto cmd = std::make_unique<AddPaletteCommand>(
+            lib, std::move(live_value), std::move(description));
+        cmd->m_assigned_id = cmd->palette_value.id;
+        cmd->m_first_execute_consumed = true;
+        return cmd;
+    }
+
+    // Caller declares whether the new palette should become active
+    // after this command runs (including on redo). Use when the call
+    // site's UX contract makes the new palette active — both
+    // on_new_palette and on_duplicate_palette do. See m_make_active
+    // doc above for rationale.
+    AddPaletteCommand& set_make_active(bool v) {
+        m_make_active = v;
+        return *this;
+    }
+
+    void execute() override {
+        if (!library) return;
+        if (m_first_execute_consumed) {
+            // The palette is already in the library (caller did the
+            // add). Drop this execute, but flip the flag so subsequent
+            // redoes go through the normal add path. Mirrors
+            // AddSwatchCommand's same-named pattern.
+            //
+            // NOTE: we do NOT touch active_palette here even when
+            // m_make_active is true, because for the already_added
+            // path the caller has already set active live (the
+            // duplicate-palette UX runs set_active_palette as part of
+            // the panel handler, BEFORE wrapping in this factory).
+            // active is correct at first-execute time; m_make_active
+            // only kicks in on subsequent redoes via the normal-add
+            // branch below.
+            m_first_execute_consumed = false;
+            return;
+        }
+        // First execute: id may be empty -> library mints. Subsequent
+        // redoes: id is non-empty (carried in m_assigned_id and
+        // mirrored back into palette_value.id below).
+        color::PaletteId result = library->add_palette(palette_value);
+        if (result.empty()) {
+            // add_palette rejected — typically a redo-after-collision
+            // (shouldn't happen since undo just freed the id). Library
+            // logs WARN; we leave m_assigned_id empty so undo() becomes
+            // a no-op.
+            return;
+        }
+        m_assigned_id = result;
+        // Mirror the assigned id back into palette_value so a second
+        // redo (after another undo) targets the same id with a pre-set
+        // value.
+        palette_value.id = result;
+        // s243 m1 fix: restore active state on redo. The undo that
+        // preceded this redo called remove_palette, which cleared
+        // m_active_palette as a side effect when this palette had been
+        // active. The caller's UX contract (panel duplicate/new) is
+        // "the new palette becomes active"; honour it on redo too.
+        // Re-emit signal_palette_changed so the panel rebuilds with
+        // the correct active state — same ordering-subtlety fix as
+        // RemovePaletteCommand::undo().
+        if (m_make_active) {
+            library->set_active_palette(result);
+            library->signal_palette_changed().emit(result);
+        }
+    }
+
+    void undo() override {
+        if (!library) return;
+        if (m_assigned_id.empty()) return;  // execute failed earlier
+        library->remove_palette(m_assigned_id);
+        // Don't clear m_assigned_id — redo needs to re-add with the
+        // same id.
+    }
+
+    std::string description() const override { return desc; }
+
+    bool preserves_selection() const override { return true; }
+};
+
+// ── RemovePaletteCommand (s243 m1) ────────────────────────────────────────────
+//
+// Removes a custom-tier Palette from the SwatchLibrary. Mirrors
+// RemoveSwatchCommand in shape, but with one extra captured dimension:
+// the active_palette state.
+//
+// What SwatchLibrary::remove_palette destroys vs what undo must restore:
+//   * The palette record itself      -> restored via add_palette(snapshot)
+//                                       with pre-set id (id was freed
+//                                       by the remove). The palette's
+//                                       swatch list (cross-tier
+//                                       references included) round-trips
+//                                       intact because it's part of the
+//                                       Palette value type.
+//   * active_palette                  -> if the removed palette WAS the
+//                                       active one, remove_palette
+//                                       cleared m_active_palette. Undo
+//                                       restores by capturing the
+//                                       pre-remove active state and
+//                                       calling set_active_palette on it.
+//                                       If active was something else,
+//                                       it survived remove_palette
+//                                       unchanged and we don't touch it
+//                                       on undo.
+//
+// What is NOT restored: nothing else. Palettes don't have a per-project
+// MRU-style transient state analogous to swatch recents.
+//
+// Defaults-tier guard: panel never builds a RemovePaletteCommand for a
+// defaults id (default palettes are read-only); the s243 m2 scripted
+// `palettes delete` verb will also refuse on is_default_palette before
+// constructing. The command itself doesn't enforce — symmetric with
+// RemoveSwatchCommand.
+//
+// Snapshot timing: built in the ctor, BEFORE execute() runs. Standard
+// panel usage:
+//     auto cmd = std::make_unique<RemovePaletteCommand>(lib, id);
+//     cmd->execute();
+//     history->push(std::move(cmd));
+// The library walk in the ctor sees the live, pre-remove state.
+//
+// preserves_selection: true. Library mutation, not a scene-tree change.
+struct RemovePaletteCommand : CurvzCommand {
+    color::SwatchLibrary* library;
+    color::Palette        palette_value;       // full snapshot pre-remove
+    color::PaletteId      active_before;       // m_active_palette pre-remove,
+                                               // captured to restore on undo
+                                               // iff this command's palette
+                                               // was the active one
+    std::string           desc;
+
+    RemovePaletteCommand(color::SwatchLibrary* lib,
+                         const color::PaletteId& id,
+                         std::string description = "Delete palette")
+        : library(lib)
+        , desc(std::move(description)) {
+        if (!library) return;
+        const color::Palette* existing = library->find_palette(id);
+        if (!existing) return;
+        palette_value = *existing;
+        // Capture active state pre-remove. We only need to restore it
+        // on undo if it pointed at THIS palette; remove_palette only
+        // clears m_active_palette when the removed palette was active.
+        active_before = library->active_palette();
+    }
+
+    void execute() override {
+        if (!library) return;
+        if (palette_value.id.empty()) return;  // ctor failed to snapshot
+        library->remove_palette(palette_value.id);
+    }
+
+    void undo() override {
+        if (!library) return;
+        if (palette_value.id.empty()) return;
+        // Re-add with the original id. add_palette accepts pre-set ids
+        // as long as they're not in either tier — the id is free because
+        // execute() just removed it.
+        //
+        // ORDERING SUBTLETY (mirrors RemoveSwatchCommand::undo()):
+        // add_palette fires signal_palette_added synchronously, which
+        // triggers the panel's refresh() — at that moment
+        // m_active_palette has NOT yet been restored (set_active_palette
+        // runs below), so the panel's dropdown reads an empty active
+        // and renders stale. Fix: set active first, THEN re-emit
+        // signal_palette_changed so the panel refreshes a second time
+        // with the active correct. Double-fire is harmless (refresh is
+        // idempotent; schedule_save is debounced). Same shape as
+        // RemoveSwatchCommand's post-replay re-emit.
+        color::PaletteId restored = library->add_palette(palette_value);
+        if (restored.empty()) return;  // collision shouldn't happen; bail.
+
+        // Restore active_palette IF this palette was the active one
+        // pre-remove. If active was something else, it survived the
+        // remove and we don't touch it.
+        if (active_before == palette_value.id) {
+            library->set_active_palette(palette_value.id);
+            // Re-emit so panel refreshes with the correct active state.
+            library->signal_palette_changed().emit(restored);
+        }
+    }
+
+    std::string description() const override { return desc; }
+
+    bool preserves_selection() const override { return true; }
+};
+
+// ── RenamePaletteCommand (s243 m1) ────────────────────────────────────────────
+//
+// Renames a custom-tier Palette in place. Lightweight — captures the
+// palette id, the old name (for undo), and the new name (for redo).
+// Mirrors the rename half of EditSwatchCommand in shape.
+//
+// Snapshot timing: built in the ctor, BEFORE execute() runs. The ctor
+// reads the pre-rename name from the library. Standard panel usage:
+//     auto cmd = std::make_unique<RenamePaletteCommand>(lib, id, "New name");
+//     cmd->execute();
+//     history->push(std::move(cmd));
+//
+// Defaults-tier guard: panel never builds a RenamePaletteCommand for a
+// defaults id. The s243 m2 scripted path will also refuse on
+// is_default_palette before constructing.
+//
+// preserves_selection: true. Library mutation, not a scene-tree change.
+struct RenamePaletteCommand : CurvzCommand {
+    color::SwatchLibrary* library;
+    color::PaletteId      palette_id;
+    std::string           old_name;     // captured in ctor
+    std::string           new_name;     // captured by caller
+    bool                  m_snapshot_ok = false;  // true iff ctor found the palette
+    std::string           desc;
+
+    RenamePaletteCommand(color::SwatchLibrary* lib,
+                         color::PaletteId id,
+                         std::string new_name_,
+                         std::string description = "Rename palette")
+        : library(lib)
+        , palette_id(std::move(id))
+        , new_name(std::move(new_name_))
+        , desc(std::move(description)) {
+        if (!library) return;
+        const color::Palette* existing = library->find_palette(palette_id);
+        if (!existing) return;
+        old_name = existing->name;
+        m_snapshot_ok = true;
+    }
+
+    void execute() override {
+        if (!library || !m_snapshot_ok) return;
+        library->rename_palette(palette_id, new_name);
+    }
+
+    void undo() override {
+        if (!library || !m_snapshot_ok) return;
+        library->rename_palette(palette_id, old_name);
+    }
+
+    std::string description() const override { return desc; }
+
+    bool preserves_selection() const override { return true; }
+};
+
+// ── PaletteMembershipCommand (s243 m1) ────────────────────────────────────────
+//
+// One atomic command for membership mutations between palettes. m1 ships
+// only the MOVE case (closes the on_ctx_move_to_palette site's two-call
+// undo gap — a move feels like one user gesture and undo should restore
+// both sides in one step). The pure-add and pure-remove cases are
+// supported by the underlying apply_() machinery but no factory ships
+// for them in m1; a future milestone that needs them can add
+// already_added / already_removed factories alongside the existing
+// already_moved.
+//
+// State captured as a "before" and "after" snapshot of the swatch's
+// membership in up to two palettes. Each side records:
+//   * palette_id   — empty means "not in any palette on this side"
+//   * index        — position within that palette's swatches vector;
+//                    unused when palette_id is empty
+//
+// Cases (all four supported by apply_(); only Move is exercised in m1):
+//   * Pure add:    before = (empty, 0), after = (pid, idx)
+//   * Pure remove: before = (pid, idx), after = (empty, 0)
+//   * Move:        before = (src_pid, src_idx), after = (dst_pid, dst_idx)
+//   * No-op:       before == after — skipped by apply_().
+//
+// Execute strategy: apply the AFTER snapshot. If after.palette_id is
+// empty, remove from before's palette. If before.palette_id is empty,
+// add to after's palette + reorder to after.index. If both are non-empty
+// (move), remove from before + add to after + reorder.
+//
+// Undo strategy: apply the BEFORE snapshot, symmetrically.
+//
+// Why factories: the call sites think in user-gesture terms ("move",
+// "add", "remove"), not in two-snapshot terms. Factories take the
+// user-gesture arguments and snapshot the necessary library state
+// internally. The raw before/after fields can be tricky to populate
+// correctly (especially the index-after-the-remove subtleties); factories
+// hide that.
+//
+// preserves_selection: true. Library mutation, not a scene-tree change.
+struct PaletteMembershipCommand : CurvzCommand {
+    struct Side {
+        color::PaletteId palette_id;   // empty = swatch not in any palette
+                                       // on this side
+        std::size_t      index = 0;    // position within that palette's
+                                       // swatches vector; unused when
+                                       // palette_id is empty
+    };
+
+    color::SwatchLibrary* library;
+    color::SwatchId       swatch_id;
+    Side                  before;
+    Side                  after;
+    bool                  m_snapshot_ok = false;
+    std::string           desc;
+
+    PaletteMembershipCommand(color::SwatchLibrary* lib,
+                             color::SwatchId sid,
+                             Side before_,
+                             Side after_,
+                             std::string description)
+        : library(lib)
+        , swatch_id(std::move(sid))
+        , before(std::move(before_))
+        , after(std::move(after_))
+        , desc(std::move(description)) {
+        m_snapshot_ok = (library != nullptr) && !swatch_id.empty();
+    }
+
+    // Factory: swatch was just moved from src palette to dst palette
+    // (caller already did the remove_from_palette + add_to_palette).
+    // Captures the src palette pre-remove index (caller passes it in,
+    // since by now the library has lost it) and reads the dst palette
+    // post-add index back from the library. Mirrors the
+    // AddSwatchCommand::already_added live-state-snapshot shape.
+    //
+    // m1 ships only the already_moved factory; the pure-add and
+    // pure-remove cases are not exercised by any current call site.
+    // When script verbs `palettes add_swatch_to` / `remove_swatch_from`
+    // (or similar) land in a later milestone, add `already_added` /
+    // `already_removed` factories then — the apply_() machinery
+    // already handles all three sub-cases (and the no-op fourth).
+    static std::unique_ptr<PaletteMembershipCommand>
+    already_moved(color::SwatchLibrary* lib,
+                  color::SwatchId sid,
+                  color::PaletteId src_pid, std::size_t src_index,
+                  color::PaletteId dst_pid,
+                  std::string description = "Move swatch between palettes") {
+        Side before{std::move(src_pid), src_index};
+        // Read dst index post-move so undo's after-state matches reality.
+        std::size_t dst_index = 0;
+        if (lib && !dst_pid.empty()) {
+            if (const color::Palette* p = lib->find_palette(dst_pid)) {
+                for (std::size_t i = 0; i < p->swatches.size(); ++i) {
+                    if (p->swatches[i] == sid) { dst_index = i; break; }
+                }
+            }
+        }
+        Side after{std::move(dst_pid), dst_index};
+        auto cmd = std::make_unique<PaletteMembershipCommand>(
+            lib, std::move(sid), std::move(before), std::move(after),
+            std::move(description));
+        cmd->m_already_applied = true;
+        return cmd;
+    }
+
+    void execute() override {
+        if (!library || !m_snapshot_ok) return;
+        if (m_already_applied) {
+            // Caller did the mutation; treat this execute as a no-op,
+            // but flip the flag so subsequent redoes go through the
+            // normal apply path (mirrors AddSwatchCommand's
+            // m_first_execute_consumed pattern).
+            m_already_applied = false;
+            return;
+        }
+        apply_(after, /*replacing=*/before);
+    }
+
+    void undo() override {
+        if (!library || !m_snapshot_ok) return;
+        apply_(before, /*replacing=*/after);
+    }
+
+    std::string description() const override { return desc; }
+
+    bool preserves_selection() const override { return true; }
+
+private:
+    bool m_already_applied = false;
+
+    // Transition the swatch from `replacing` state to `target` state.
+    // The four sub-cases are:
+    //   * target empty, replacing non-empty -> pure remove from replacing.pid
+    //   * target non-empty, replacing empty -> pure add to target.pid + reorder
+    //   * both non-empty -> move (remove from replacing.pid + add to
+    //                       target.pid + reorder)
+    //   * both empty -> no-op (caller built a degenerate command)
+    void apply_(const Side& target, const Side& replacing) {
+        const bool to_empty   = target.palette_id.empty();
+        const bool from_empty = replacing.palette_id.empty();
+        if (to_empty && from_empty) return;
+        // Remove from the OLD palette first (if any).
+        if (!from_empty) {
+            library->remove_from_palette(replacing.palette_id, swatch_id);
+        }
+        // Add to the NEW palette (if any) and place at the captured index.
+        if (!to_empty) {
+            library->add_to_palette(target.palette_id, swatch_id);
+            library->reorder_in_palette(target.palette_id, swatch_id,
+                                        target.index);
+        }
+    }
+};
+
 // ── BindStyleCommand (S79 m4a) ────────────────────────────────────────────────
 //
 // Binds one or more SceneNodes to a Style id and re-materialises their

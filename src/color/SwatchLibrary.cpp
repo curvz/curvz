@@ -205,6 +205,9 @@ PaletteId SwatchLibrary::add_palette(Palette p) {
     }
     PaletteId id = p.id;
     m_custom_palettes.emplace(id, std::move(p));
+    // s243 m1: notify command-driven listeners (panel rebuilds on this
+    // when add_palette runs through a command's execute/redo).
+    m_sig_palette_added.emit(id);
     return id;
 }
 
@@ -218,6 +221,8 @@ bool SwatchLibrary::remove_palette(const PaletteId& id) {
     if (it == m_custom_palettes.end()) return false;
     m_custom_palettes.erase(it);
     if (m_active_palette == id) m_active_palette.clear();
+    // s243 m1: notify command-driven listeners.
+    m_sig_palette_removed.emit(id);
     return true;
 }
 
@@ -231,6 +236,8 @@ bool SwatchLibrary::rename_palette(const PaletteId& id,
     auto it = m_custom_palettes.find(id);
     if (it == m_custom_palettes.end()) return false;
     it->second.name = new_name;
+    // s243 m1: notify command-driven listeners.
+    m_sig_palette_changed.emit(id);
     return true;
 }
 
@@ -264,6 +271,9 @@ bool SwatchLibrary::add_to_palette(const PaletteId& pid, const SwatchId& sid) {
         return true;  // idempotent
     }
     sw.push_back(sid);
+    // s243 m1: notify command-driven listeners (real membership change,
+    // not the idempotent-true early return above).
+    m_sig_palette_changed.emit(pid);
     return true;
 }
 
@@ -279,7 +289,10 @@ bool SwatchLibrary::remove_from_palette(const PaletteId& pid,
     auto& sw = pit->second.swatches;
     auto before = sw.size();
     sw.erase(std::remove(sw.begin(), sw.end(), sid), sw.end());
-    return sw.size() != before;
+    bool changed = sw.size() != before;
+    // s243 m1: notify only when the membership actually changed.
+    if (changed) m_sig_palette_changed.emit(pid);
+    return changed;
 }
 
 bool SwatchLibrary::reorder_in_palette(const PaletteId& pid,
@@ -300,6 +313,8 @@ bool SwatchLibrary::reorder_in_palette(const PaletteId& pid,
     sw.erase(it);
     if (new_index > sw.size()) new_index = sw.size();
     sw.insert(sw.begin() + static_cast<std::ptrdiff_t>(new_index), id);
+    // s243 m1: notify command-driven listeners.
+    m_sig_palette_changed.emit(pid);
     return true;
 }
 

@@ -271,6 +271,29 @@ public:
     using SwatchRemovedSignal = sigc::signal<void(const SwatchId&)>;
     SwatchRemovedSignal& signal_swatch_removed() { return m_sig_swatch_removed; }
 
+    // s243 m1 — palette signal trio. Same shape as the swatch trio above,
+    // and for the same reason: the s220 m1a hotfix observation that
+    // undo-driven CRUD bypasses the panel and needs the library to fan
+    // out a "your view is stale" notification. Palette CRUD via the
+    // panel still emits SwatchesPanel::signal_library_changed directly
+    // (cheaper, batches save), but the panel ALSO listens on these so
+    // command-driven palette CRUD refreshes correctly.
+    //
+    // Discrimination model: ADDED fires from add_palette + duplicate_palette.
+    // REMOVED fires from remove_palette. CHANGED fires from rename_palette
+    // AND from per-palette membership mutations (add_to_palette /
+    // remove_from_palette / reorder_in_palette). The combined CHANGED
+    // signal matches the panel's "rebuild the grid wholesale" reaction —
+    // splitting into "renamed" vs "membership-changed" would buy nothing
+    // for the panel; a future listener that wants discrimination can
+    // get it by reading the palette state when the signal fires.
+    using PaletteAddedSignal   = sigc::signal<void(const PaletteId&)>;
+    using PaletteRemovedSignal = sigc::signal<void(const PaletteId&)>;
+    using PaletteChangedSignal = sigc::signal<void(const PaletteId&)>;
+    PaletteAddedSignal&   signal_palette_added()   { return m_sig_palette_added; }
+    PaletteRemovedSignal& signal_palette_removed() { return m_sig_palette_removed; }
+    PaletteChangedSignal& signal_palette_changed() { return m_sig_palette_changed; }
+
     // --- JSON round-trip ---------------------------------------------------
     //
     // Two tiers, two round-trips. Each JSON blob carries the swatches +
@@ -355,6 +378,9 @@ private:
     SwatchChangedSignal m_sig_swatch_changed;
     SwatchAddedSignal   m_sig_swatch_added;    // s220 m1a hotfix
     SwatchRemovedSignal m_sig_swatch_removed;  // s220 m1a hotfix
+    PaletteAddedSignal   m_sig_palette_added;   // s243 m1
+    PaletteRemovedSignal m_sig_palette_removed; // s243 m1
+    PaletteChangedSignal m_sig_palette_changed; // s243 m1
 };
 
 // ── App-global defaults singleton ───────────────────────────────────────────
