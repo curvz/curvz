@@ -1,0 +1,346 @@
+# 38_objects_set_stroke_width — closes the appearance branch's
+# visual loop and the canvas-observable arc's geometry+fill+stroke
+# triad.
+#
+# s239 m1 shipped set_stroke (colour) but the visual outline didn't
+# render because fresh-mint Paths default to stroke.width == 0.0.
+# m1's trace channel passed clean (stroke == "#0000ff" etc.) but
+# the visual half of three-channel acceptance was deferred: a
+# black-paint-on-zero-width stroke is invisible to the renderer.
+# m2 ships set_stroke_width — first numeric-arg verb on
+# ObjectProxy — and the matching stroke_width read query, closing
+# the visual loop.
+#
+# What "closes" means here: a script can now produce a fully-styled
+# visible shape on canvas in a single end-to-end sequence:
+#
+#   objects new "path"
+#   objects.p set_path_data "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+#   objects.p set_fill "red"
+#   objects.p set_stroke "blue"
+#   objects.p set_stroke_width 4.0
+#
+# Five lines, four verbs (geometry from s237 m1, fill from s238 m1,
+# stroke paint from s239 m1, stroke width from s239 m2), one
+# canvas-visible red rect with a blue 4-pixel outline. The arc's
+# foundational "scripts can produce visible art on canvas" phase
+# is now complete; remaining stroke fields (cap / join / miter /
+# opacity) and gradient / swatch bindings stay on the backlog.
+#
+# Material differences from set_stroke (m1):
+#   - Numeric arg, not string token. First numeric-arg verb on
+#     ObjectProxy; earlier verbs all took strings or no args. The
+#     anon namespace gains arg_as_double (lifted in shape from
+#     StylesScriptable / LayersScriptable / GuidesScriptable). It
+#     accepts ScriptValue::Double (native) and ScriptValue::Int
+#     (coerced via static_cast<double>), so `set_stroke_width 2`
+#     and `set_stroke_width 2.0` both reach the same double at
+#     the verb seam — matching the user's typical expectation
+#     when typing whole-number widths.
+#   - Numeric query return. stroke_width is the first numeric
+#     ObjectProxy property (others are Int counts or String
+#     tokens). Returns ScriptValue::real(node->stroke.width).
+#     ScriptValue strict-equality has no Int/Double coercion, so
+#     the assert RHS literal must be Double-kind: `== 2.0` works,
+#     `== 2` does not. Smoke 38 uses Double literals throughout
+#     for kind-cleanness.
+#   - No clamp / no negative-refusal. Matches
+#     StylesScriptable::stroke_width's shipped convention: the
+#     model accepts whatever the script supplies; the renderer
+#     handles edge cases (zero = no outline; negative zeros out
+#     at the Cairo seam). Consistent behaviour across the two
+#     scriptables touching node->stroke.width.
+#   - Partial binding-clear. set_stroke_width clears bound_style
+#     (a width edit is a direct appearance edit that breaks the
+#     style binding), but does NOT clear fill_swatch_id or
+#     stroke_swatch_id (swatch bindings represent PAINT
+#     references; width edits don't touch paint). Same partial-
+#     clear convention set_fill and set_stroke established.
+#
+# Verify-before-assume's SIXTH "fits unmodified" case in a row.
+# EditAppearanceCommand's 14-arg constructor takes whole-StrokeStyle
+# on both before and after sides; width is a field on StrokeStyle,
+# so the existing capture covers width-only edits without
+# modification. Three "existing-fits" outcomes in a row this
+# session (set_stroke colour, set_stroke fill-axis preservation,
+# set_stroke_width).
+#
+# ── Owns-its-conditions structure (CANON) ────────────────────────────────
+#
+# BUILD UP / VALIDATE / TEAR DOWN. The smoke mints its own test
+# layer and three test objects (a Path for the numeric matrix, a
+# Group for the universal-class probe, a second Path for the
+# visual-close phase), validates the new surface end-to-end, and
+# tears everything back down. Net structural change to the doc:
+# zero. Side effects on the undo stack: AddNodeCommand for the
+# mints, EditPathCommand for the geometry sets,
+# EditAppearanceCommand entries for the set_fill / set_stroke /
+# set_stroke_width calls, DeleteObjectCommand pairs for the
+# teardown.
+#
+# ── Pre-stated count ─────────────────────────────────────────────────────
+#
+# Expected: 13 pass / 0 fail / 0 error.
+#
+# Breakdown:
+#   Phase 1 (REGISTRY):                                       → 0 asserts.
+#   Phase 2 (DISPATCH — baseline count):                      → 0 asserts.
+#   Phase 3 (BUILD UP — mint test_layer, mint `p` as Path,
+#            geometry, baseline stroke_width):
+#     p type == "path"                                         → 1 assert.
+#     p stroke_width == 0.0 (fresh-mint default)              → 1 assert.
+#   Phase 4 (SET — Double literal, byte-clean):
+#     p stroke_width == 4.0                                    → 1 assert.
+#   Phase 5 (SET — Int coerces to Double via arg_as_double):
+#     p stroke_width == 2.0                                    → 1 assert.
+#   Phase 6 (SET — zero, explicit no-thickness gesture):
+#     p stroke_width == 0.0                                    → 1 assert.
+#   Phase 7 (NEGATIVE-VALUE-ACCEPTED — model accepts; renderer
+#            zeroes at Cairo seam):
+#     p stroke_width == -1.0                                   → 1 assert.
+#   Phase 8 (UNIVERSAL — set_stroke_width on a Group is NOT refused):
+#     g type == "group", g stroke_width == 3.0                 → 2 asserts.
+#   Phase 9 (VISUAL CLOSE — fill + stroke paint + stroke width
+#            on one Path; visible red rect with blue outline):
+#     v fill == "#ff0000", v stroke == "#0000ff",
+#     v stroke_width == 4.0                                    → 3 asserts.
+#   Phase 10 (CROSS-CHECK — find_by_type "path" still resolves):
+#     found_path type == "path"                                → 1 assert.
+#   Phase 11 (TEAR DOWN — round-trip count):
+#     objects count == count_before                            → 1 assert.
+#
+# Total: 0 + 0 + 2 + 1 + 1 + 1 + 1 + 2 + 3 + 1 + 1 = 13.
+#
+# ── On the Int-Double coercion (Phase 5) ─────────────────────────────────
+#
+# The DSL lexer emits bare `2` as ScriptValue::Int and `2.0` as
+# ScriptValue::Double — two different kinds. ScriptValue equality
+# is strict-kind with no coercion (see ScriptValue.hpp's `equals`).
+# So an assert like `assert obj stroke_width == 2` would FAIL even
+# if the underlying width is 2.0, because the query returns Double
+# and the literal is Int. The smoke side has to be explicit about
+# kind.
+#
+# But the VERB side accepts both — arg_as_double accepts Int and
+# coerces via static_cast<double>. So Phase 5 calls `set_stroke_width
+# 2` (Int literal), the coercion lands stroke.width = 2.0, the query
+# returns Double(2.0), and the assert RHS `== 2.0` (Double literal)
+# matches. This phase exercises the coercion specifically — without
+# it, callers would have to track whether their width literal needs
+# a decimal point or not, which is the kind of fiddly surprise a
+# script DSL should absorb.
+#
+# ── On the negative-value Phase 7 ────────────────────────────────────────
+#
+# The model accepts negative widths; the renderer zeroes them out
+# at the Cairo seam (Cairo's stroke-width is non-negative). So
+# `set_stroke_width -1.0` lands -1.0 on the model, the query reads
+# it back as -1.0, but the canvas renders no outline. This is the
+# same "model accepts whatever; renderer handles edge cases"
+# convention StylesScriptable::stroke_width follows — see the
+# comment in StylesScriptable.cpp line 498 ("Inspector clamps at
+# its UI layer; the model accepts whatever the script supplies").
+# Whether to add a non-negative clamp at the script surface is a
+# backlog item; consistency with the styles surface wins for now.
+#
+# ── On the visual-close Phase 9 ──────────────────────────────────────────
+#
+# This is the canvas-observable arc's payoff phase. The smoke mints
+# a second path `v` (separate from `p` to keep the colour/width
+# matrix on `p` clean) and sets all three appearance values:
+# fill=red, stroke=blue, stroke_width=4.0. The trace asserts each
+# value independently; the VISUAL channel is "Scott looks at the
+# canvas and sees a red rect with a blue outline." Three-channel
+# acceptance for the milestone hinges on this phase's visual
+# behaviour. If the trace passes but the canvas shows no outline,
+# the milestone has not landed.
+#
+# Three-channel acceptance for m2 = trace pass (13 asserts) + clean
+# build + VISIBLE blue outline around a red rect after Phase 9.
+#
+# ── Canvas-observable (three-channel acceptance) ─────────────────────────
+#
+# Trace channel: the 13 asserts above.
+# Visual channel: AFTER Phase 9, the document shows a red 100×100
+#   rect at user-origin with a blue 4-pixel outline. This is the
+#   complete payoff of the canvas-observable arc.
+# Build channel: Scott's compile.
+
+#[sub] === Phase 1: REGISTRY ===
+#[sub] `objects` should appear in the registry list — baseline.
+
+list
+
+#[sub] === Phase 2: DISPATCH — baseline count ===
+#[sub] Captures the pre-mint object count to compare against after
+#[sub] teardown.
+
+get objects count
+set count_before to result
+
+#[sub] === Phase 3: BUILD UP — mint test layer, Path, geometry ===
+#[sub] Mint a sentinel-named test layer, activate it, mint `p` as a
+#[sub] Path, set its geometry. A freshly-minted Path has
+#[sub] stroke.width defaulting to 0.0 (SceneNode/StrokeStyle struct
+#[sub] default), so the baseline `stroke_width` query returns 0.0
+#[sub] — the exact reason m1's set_stroke produced no visible
+#[sub] outline. Phase 4 changes that.
+
+layers new
+set test_layer to result
+layers.test_layer rename "objects_set_stroke_width_smoke_s239_m2"
+layers.test_layer activate
+
+objects new "path"
+set p to result
+objects.p set_path_data "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+
+assert objects.p type == "path"
+assert objects.p stroke_width == 0.0
+
+#[sub] === Phase 4: SET — Double literal byte-clean ===
+#[sub] Double-kind literal lands directly on stroke.width without
+#[sub] coercion. The query reads it back through ScriptValue::real;
+#[sub] the assert's RHS is also a Double literal so the strict-kind
+#[sub] equality compares value-on-value.
+
+objects.p set_stroke_width 4.0
+assert objects.p stroke_width == 4.0
+
+#[sub] === Phase 5: SET — Int coerces to Double via arg_as_double ===
+#[sub] Int-kind literal `2` goes through arg_as_double's static_cast
+#[sub] and lands stroke.width = 2.0. The query returns Double(2.0);
+#[sub] the assert RHS is `2.0` (Double), so the kind-strict equality
+#[sub] matches. Without arg_as_double's Int-coercion, this phase
+#[sub] would silently no-op (the fallback would equal width_before
+#[sub] = 4.0 from Phase 4) and the assert would catch the breakage.
+
+objects.p set_stroke_width 2
+assert objects.p stroke_width == 2.0
+
+#[sub] === Phase 6: SET — zero, the explicit no-thickness gesture ===
+#[sub] `set_stroke_width 0.0` is the explicit way for a script to
+#[sub] remove a stroke's thickness — distinct from the fresh-mint
+#[sub] default (which arrives at 0.0 via the SceneNode struct
+#[sub] default, not via the verb). After this phase, the rect's
+#[sub] outline disappears even though stroke.paint is still set
+#[sub] (the colour from m1's earlier set_stroke calls remains
+#[sub] intact — width and paint are orthogonal axes).
+
+objects.p set_stroke_width 0.0
+assert objects.p stroke_width == 0.0
+
+#[sub] === Phase 7: NEGATIVE-VALUE-ACCEPTED ===
+#[sub] The model accepts negative widths; the renderer zeroes them
+#[sub] at the Cairo seam (Cairo stroke-width is non-negative). The
+#[sub] trace channel shows -1.0; the visual channel renders no
+#[sub] outline (same as Phase 6's zero). This matches
+#[sub] StylesScriptable::stroke_width's "model accepts whatever;
+#[sub] renderer handles edge cases" convention. The smoke documents
+#[sub] the behaviour rather than enforcing a clamp at the script
+#[sub] surface; a future clamp decision is a backlog item.
+
+objects.p set_stroke_width -1.0
+assert objects.p stroke_width == -1.0
+
+#[sub] === Phase 8: UNIVERSAL — set_stroke_width on a Group is NOT refused ===
+#[sub] Same universal posture as set_fill and set_stroke. Appearance
+#[sub] lives on every SceneNode subtype, including container types
+#[sub] that don't draw a stroked region directly. The model field
+#[sub] update lands; the visual effect on the Group depends on the
+#[sub] container's render path (style inheritance / per-child
+#[sub] effects).
+
+objects new "group"
+set g to result
+objects.g set_stroke_width 3.0
+
+assert objects.g type == "group"
+assert objects.g stroke_width == 3.0
+
+#[sub] === Phase 9: VISUAL CLOSE ===
+#[sub] The canvas-observable arc's payoff phase. Mint a second Path
+#[sub] `v`, set its geometry to a 100×100 rect, then layer all three
+#[sub] appearance values: fill=red, stroke=blue, stroke_width=4.0.
+#[sub] The trace asserts each value independently; the VISUAL
+#[sub] channel — Scott looking at the canvas — shows a RED rect
+#[sub] with a BLUE 4-pixel outline. This is the complete payoff of
+#[sub] the canvas-observable arc: geometry from s237 m1, fill from
+#[sub] s238 m1, stroke paint from s239 m1, stroke width from s239
+#[sub] m2 — five lines of script produce a fully-styled visible
+#[sub] shape on canvas.
+
+objects new "path"
+set v to result
+objects.v set_path_data "M 150 0 L 250 0 L 250 100 L 150 100 Z"
+objects.v set_fill "red"
+objects.v set_stroke "blue"
+objects.v set_stroke_width 4.0
+
+assert objects.v fill == "#ff0000"
+assert objects.v stroke == "#0000ff"
+assert objects.v stroke_width == 4.0
+
+#[sub] === Phase 10: CROSS-CHECK — find_by_type "path" still resolves ===
+#[sub] Sanity check that the appearance work didn't disturb the iid
+#[sub] index. Same shape smokes 36 and 37 used. `p` and `v` are
+#[sub] both Paths; first-hit returns one of them.
+
+objects find_by_type "path"
+set found_path to result
+assert objects.found_path type == "path"
+
+#[sub] === Phase 11: TEAR DOWN ===
+#[sub] Four mints (test_layer, p, g, v) — four matching deletes.
+#[sub] count returns to count_before — round-trip baseline.
+
+objects delete p
+objects delete g
+objects delete v
+layers delete test_layer
+
+get objects count
+assert objects count == count_before
+
+#[sub] === Final list — registry sanity ===
+#[sub] `objects` still present; no transient proxies registered.
+
+list
+
+#[sub] Done. The s239 m2 surface is validated:
+#[sub]   - `objects.<iid> set_stroke_width <number>` accepts Double
+#[sub]     and Int (Int coerced via arg_as_double's static_cast),
+#[sub]     writes the value directly onto SceneNode::stroke.width,
+#[sub]     clears bound_style (style binding break), preserves
+#[sub]     fill_swatch_id and stroke_swatch_id (paint bindings
+#[sub]     don't disturb on a width edit), pushes
+#[sub]     EditAppearanceCommand with whole-StrokeStyle before/after
+#[sub]     (only width differs).
+#[sub]   - `stroke_width` query returns the double directly via
+#[sub]     ScriptValue::real. First numeric ObjectProxy property.
+#[sub]   - No clamp, no negative refusal — matches
+#[sub]     StylesScriptable::stroke_width's convention.
+#[sub]   - Universal across SceneNode subtypes.
+#[sub]   - The canvas-observable arc's appearance branch CLOSES:
+#[sub]     geometry + fill + stroke (paint + width) all addressable
+#[sub]     from scripts. A five-line script produces a visible
+#[sub]     styled shape on canvas.
+#[sub]
+#[sub] Pre-stated: 13 pass / 0 fail / 0 error.
+#[sub]
+#[sub] What's still NOT covered by m2 (and that's by design):
+#[sub]   - stroke_cap, stroke_join, stroke_miter, stroke_opacity
+#[sub]     verbs. Each is a separate vocabulary (enum tokens for
+#[sub]     cap/join, numeric for miter/opacity); scope-limited
+#[sub]     out of this milestone.
+#[sub]   - Gradient tokens on fill or stroke. Same scope-limit as
+#[sub]     m1.
+#[sub]   - Swatch / style binding via script. Same scope-limit as
+#[sub]     m1.
+#[sub]   - Whether to align script-side binding-clear with
+#[sub]     mutate_appearance's broader convention (both swatch
+#[sub]     bindings cleared on ANY appearance edit) — backlog item.
+#[sub]   - Non-negative clamp at the script surface for stroke
+#[sub]     width — backlog item.
+#[sub]   - Undo / redo exercise. Three-channel acceptance for
+#[sub]     Scott visually after Phase 9.

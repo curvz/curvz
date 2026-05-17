@@ -1,0 +1,349 @@
+# 37_objects_set_stroke — closes the appearance branch of the
+# canvas-observable scripts arc (symmetric second half).
+#
+# s238 m1 shipped set_fill + fill query + the curvz_utils pump pair
+# (fill_attr_to_fill_style / fill_style_to_fill_attr). That opened
+# the appearance branch — scripts could produce a SOLID FILLED
+# shape on canvas for the first time, the arc's first colour-on-
+# canvas event. s239 m1 ships the symmetric companion: set_stroke
+# and the stroke read query.
+#
+# Mirror-shape of s238 m1, materially:
+#   - Same EditAppearanceCommand (the existing s167-migrated
+#     command, FIFTH "fits unmodified" case for verify-before-
+#     assume in a row after s236 m1 / s237 m1 / s238 m1).
+#   - Same fill_attr_to_fill_style pump (stroke.paint is a
+#     FillStyle so the pump operates on it without modification —
+#     no new pump this milestone, just a second caller for the
+#     existing one).
+#   - Same direct-override semantics (a direct stroke colour set
+#     breaks the stroke_swatch_id binding and the bound_style
+#     binding; the capture restores them on undo).
+#   - Same universal-across-SceneNode-subtypes posture (no node-
+#     type refusal — set_stroke on a Group is accepted, same as
+#     set_fill).
+#   - Same byte-clean round-trip on canonical input forms; same
+#     normalising behaviour on named colours / rgb() / rgba() /
+#     uppercase hex / short hex.
+#   - Same value-unchanged no-op early-return (via the renamed
+#     anon helper fill_style_equals_byte_rounded — formerly
+#     fill_style_equals_for_set_fill, now neutrally named because
+#     set_stroke is the second caller).
+#
+# Material differences from set_fill (and what this smoke probes):
+#   - Visual scope-limit. Fresh-mint Paths have stroke.width == 0.0
+#     (SceneNode default), so set_stroke "black" lands a black
+#     paint on a zero-width stroke — the canvas-visible outline
+#     doesn't appear until set_stroke_width sets a nonzero width
+#     in a future milestone. The smoke is TRACE-CHANNEL-ONLY on
+#     the stroke side; the `stroke` query reads back the colour,
+#     and that's the full validation surface for m1. Three-channel
+#     acceptance for m1 = trace pass + clean build + (deferred)
+#     visual outline once width verb lands. The canon "regression
+#     tests own their conditions" forbids the smoke from pre-
+#     setting width via the inspector to fake the visual; that
+#     preconditions-violation would defeat the smoke's purpose.
+#   - Axis-independence. Phase 10 sets BOTH fill and stroke on the
+#     same node and asserts they hold their distinct values. This
+#     is the unique-to-s239-m1 phase — without it, the smoke is
+#     near-mechanical copy of smoke 36. The axis-independence
+#     probe verifies that set_fill and set_stroke don't disturb
+#     each other's state (EditAppearanceCommand's symmetric
+#     capture is what guarantees this — each verb writes only its
+#     axis's _after value and leaves the other axis at
+#     _before == _after).
+#
+# ── Owns-its-conditions structure (CANON) ────────────────────────────────
+#
+# BUILD UP / VALIDATE / TEAR DOWN. The smoke mints its own test
+# layer and two test objects (a Path for the colour matrix, a
+# Group for the universal-class probe), validates the new surface
+# end-to-end, and tears everything back down. Net structural
+# change to the doc: zero. Side effect on the undo stack:
+# AddNodeCommand for the mints, EditPathCommand for the geometry,
+# EditAppearanceCommand entries for the set_stroke / set_fill
+# calls, DeleteObjectCommand pairs for the teardown.
+#
+# ── Pre-stated count ─────────────────────────────────────────────────────
+#
+# Expected: 13 pass / 0 fail / 0 error.
+#
+# Breakdown:
+#   Phase 1 (REGISTRY):                                       → 0 asserts.
+#   Phase 2 (DISPATCH — baseline count):                      → 0 asserts.
+#   Phase 3 (BUILD UP — mint test_layer, mint `p` as Path,
+#            geometry, baseline stroke):
+#     p type == "path"                                         → 1 assert.
+#     p stroke == "currentColor" (fresh-mint default)         → 1 assert.
+#   Phase 4 (SET — named colour "black", normalises to hex):
+#     p stroke == "#000000"                                    → 1 assert.
+#   Phase 5 (SET — lowercase hex byte-clean round-trip):
+#     p stroke == "#ff0000"                                    → 1 assert.
+#   Phase 6 (SET — "none", byte-clean round-trip):
+#     p stroke == "none"                                       → 1 assert.
+#   Phase 7 (SET — "currentColor", byte-clean round-trip):
+#     p stroke == "currentColor"                               → 1 assert.
+#   Phase 8 (NEGATIVE — unknown token degrades to currentColor):
+#     p stroke == "currentColor"                               → 1 assert.
+#   Phase 9 (UNIVERSAL — set_stroke on a Group is NOT refused):
+#     g type == "group", g stroke == "#0000ff"                 → 2 asserts.
+#   Phase 10 (AXIS-INDEPENDENCE — fill and stroke don't disturb
+#             each other on the same node):
+#     p fill == "#ff0000", p stroke == "#0000ff"               → 2 asserts.
+#   Phase 11 (CROSS-CHECK — find_by_type "path" still resolves):
+#     found_path type == "path"                                → 1 assert.
+#   Phase 12 (TEAR DOWN — round-trip count):
+#     objects count == count_before                            → 1 assert.
+#
+# Total: 0 + 0 + 2 + 1 + 1 + 1 + 1 + 1 + 2 + 2 + 1 + 1 = 13.
+#
+# ── On the `stroke` read-side query ──────────────────────────────────────
+#
+# Returns the SVG fill-attribute string for stroke.paint, re-
+# emitted via curvz_utils' fill_style_to_fill_attr pump (same pump
+# that powers the `fill` query — stroke.paint is a FillStyle, so
+# the pump applies without modification). Four cases mirror the
+# fill query:
+#   - FillStyle::None         → "none"
+#   - FillStyle::CurrentColor → "currentColor"
+#   - FillStyle::Solid        → "#RRGGBB" (lowercase hex)
+#   - FillStyle::*Gradient    → "#RRGGBB" of first stop (fallback)
+#
+# The query returns the PAINT only, not width / cap / join /
+# miter / opacity. Each of those five non-paint stroke fields
+# will be a separate query when its matching verb lands —
+# stroke_width returning a number, stroke_cap / stroke_join
+# returning enum tokens. Set-side and read-side stay symmetric:
+# set_stroke writes only paint, stroke query reads only paint.
+#
+# ── On the visual scope-limit ────────────────────────────────────────────
+#
+# A fresh-mint Path has stroke.width == 0.0 (SceneNode/StrokeStyle
+# struct default). set_stroke "black" lands a black paint on a
+# zero-width stroke — the canvas paints nothing visible, despite
+# the trace showing "stroke == #000000". This is by design for
+# m1: the colour-vocabulary verb (set_stroke) and the numeric-arg
+# verb (set_stroke_width, m2) have materially different vocabulary
+# shapes, and bundling them risks blurring the "what does this
+# verb do" contract.
+#
+# The canvas-observable arc's appearance branch CLOSES in two
+# steps: m1 (this milestone) ships the colour axis; m2 ships
+# the width axis. With both landed, a script can produce a fully-
+# styled visible shape on canvas — geometry from s237 m1, fill
+# from s238 m1, stroke colour from s239 m1, stroke width from
+# s239+ m2. The smoke 37 trace channel validates colour wiring;
+# the visual outline waits for m2.
+#
+# ── On the axis-independence probe (Phase 10) ────────────────────────────
+#
+# EditAppearanceCommand captures BOTH whole-FillStyle and whole-
+# StrokeStyle on both the before and after sides. set_fill writes
+# its new value into fill_after and leaves stroke_after equal to
+# stroke_before (the "stroke unchanged" comment in the verb body).
+# set_stroke does the symmetric: writes its new value into
+# stroke_after and leaves fill_after equal to fill_before.
+#
+# The axis-independence test sets fill RED first, then stroke
+# BLUE, then asserts BOTH values. If set_stroke accidentally wrote
+# its fill_after as a default-constructed FillStyle instead of
+# echoing fill_before, the rect would lose its red fill when
+# stroke was set. The assert catches that regression class.
+# Specifically: set_fill's set_stroke counterpart in the verb
+# body uses `fill_before` for BOTH fb and fa (the symmetric mirror
+# of set_fill's use of `stroke_before` for both sb and sa). This
+# phase is what catches a typo on either side of that mirror.
+#
+# ── Canvas-observable (three-channel acceptance) ─────────────────────────
+#
+# Trace channel: the 13 asserts above.
+# Visual channel: AFTER Phase 4's set_stroke "black", the rect's
+#   stroke paint is black but the rect renders no visible outline
+#   (width=0). Visual channel is deferred to the m2 set_stroke_width
+#   milestone, which closes the appearance branch.
+# Build channel: Scott's compile.
+
+#[sub] === Phase 1: REGISTRY ===
+#[sub] `objects` should appear in the registry list — baseline.
+
+list
+
+#[sub] === Phase 2: DISPATCH — baseline count ===
+#[sub] Captures the pre-mint object count to compare against after
+#[sub] teardown.
+
+get objects count
+set count_before to result
+
+#[sub] === Phase 3: BUILD UP — mint test layer, Path, geometry ===
+#[sub] Mint a sentinel-named test layer, activate it, mint `p` as a
+#[sub] Path, set its geometry to a 100×100 rect at user-origin (the
+#[sub] s237 m1 user-space convention). A freshly-minted Path has
+#[sub] stroke.paint defaulting to FillStyle::CurrentColor (SceneNode
+#[sub] struct default), so the baseline `stroke` query returns
+#[sub] "currentColor" via the pump — same baseline as fill on a
+#[sub] fresh-mint Path.
+
+layers new
+set test_layer to result
+layers.test_layer rename "objects_set_stroke_smoke_s239_m1"
+layers.test_layer activate
+
+objects new "path"
+set p to result
+objects.p set_path_data "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+
+assert objects.p type == "path"
+assert objects.p stroke == "currentColor"
+
+#[sub] === Phase 4: SET — named colour "black" normalises to hex ===
+#[sub] "black" parses through the named-colour subset to (0,0,0)
+#[sub] Solid; the read-side pump emits "#000000". Round-trip is
+#[sub] normalising. Visual: the rect's stroke paint is now black,
+#[sub] but width=0 means no outline is rendered — visual scope-
+#[sub] limit closes in m2 with set_stroke_width.
+
+objects.p set_stroke "black"
+assert objects.p stroke == "#000000"
+
+#[sub] === Phase 5: SET — lowercase hex byte-clean round-trip ===
+#[sub] Lowercase "#RRGGBB" round-trips byte-clean: parser reads
+#[sub] "#ff0000" to Solid (255, 0, 0); emitter writes "#ff0000"
+#[sub] back via "%02x". Same byte-clean guarantee as fill.
+
+objects.p set_stroke "#ff0000"
+assert objects.p stroke == "#ff0000"
+
+#[sub] === Phase 6: SET — "none" byte-clean round-trip ===
+#[sub] FillStyle::None on stroke.paint — the explicit "no stroke
+#[sub] paint" state. Distinct from "stroke defaults to CurrentColor"
+#[sub] (Phase 3's baseline). With width=0 the visual is
+#[sub] indistinguishable from CurrentColor; with a nonzero width
+#[sub] (future m2) the rect's outline would disappear under "none"
+#[sub] but show with "currentColor".
+
+objects.p set_stroke "none"
+assert objects.p stroke == "none"
+
+#[sub] === Phase 7: SET — "currentColor" byte-clean round-trip ===
+#[sub] FillStyle::CurrentColor on stroke.paint — defers to the
+#[sub] containing context's colour. Mirror of fill's Phase 7.
+
+objects.p set_stroke "currentColor"
+assert objects.p stroke == "currentColor"
+
+#[sub] === Phase 8: NEGATIVE — unknown token degrades to currentColor ===
+#[sub] The pump's safe-default for unrecognised tokens is
+#[sub] CurrentColor (matches SvgParser::parse_fill). Phase 7
+#[sub] already set stroke to CurrentColor, so this Phase's
+#[sub] set_stroke is also a no-op early-return (parsed CurrentColor
+#[sub] equals existing CurrentColor on byte-rounded comparison) —
+#[sub] no new EditAppearanceCommand on the undo stack. The assert
+#[sub] verifies the read-side query shows the expected state
+#[sub] regardless. Same shape as smoke 36's Phase 8 silent-no-op
+#[sub] double coverage.
+
+objects.p set_stroke "definitely-not-a-color-token-67890"
+assert objects.p stroke == "currentColor"
+
+#[sub] === Phase 9: UNIVERSAL — set_stroke on a Group is NOT refused ===
+#[sub] Appearance lives on every SceneNode subtype. Same posture
+#[sub] as set_fill — no node-type refusal, container types accept
+#[sub] the verb. The Group's stroke.paint slot now carries the
+#[sub] blue Solid, and the query reads it back via the pump.
+
+objects new "group"
+set g to result
+objects.g set_stroke "blue"
+
+assert objects.g type == "group"
+assert objects.g stroke == "#0000ff"
+
+#[sub] === Phase 10: AXIS-INDEPENDENCE — fill and stroke orthogonal ===
+#[sub] The unique-to-s239-m1 phase. Set fill RED on `p` (which had
+#[sub] stroke = currentColor from Phase 7's set + Phase 8's no-op),
+#[sub] then set stroke BLUE on `p`. Assert BOTH values hold their
+#[sub] expected colours independently.
+#[sub]
+#[sub] Why this matters: EditAppearanceCommand's symmetric capture
+#[sub] takes whole-FillStyle AND whole-StrokeStyle on both before
+#[sub] and after sides. set_fill writes only fill_after and echoes
+#[sub] stroke_before into stroke_after; set_stroke does the
+#[sub] symmetric. If either verb accidentally wrote a default-
+#[sub] constructed value on the other axis instead of echoing,
+#[sub] this phase catches it.
+
+objects.p set_fill "red"
+objects.p set_stroke "blue"
+assert objects.p fill == "#ff0000"
+assert objects.p stroke == "#0000ff"
+
+#[sub] === Phase 11: CROSS-CHECK — find_by_type "path" still resolves ===
+#[sub] Sanity check that the appearance work didn't disturb the
+#[sub] iid index or break type-keyed lookups. Same shape smoke 36
+#[sub] used.
+
+objects find_by_type "path"
+set found_path to result
+assert objects.found_path type == "path"
+
+#[sub] === Phase 12: TEAR DOWN ===
+#[sub] Three mints (test_layer, p, g) need three matching deletes.
+#[sub] DeleteObjectCommand owns the per-object snapshots (path,
+#[sub] fill, stroke, etc.); no leak. count returns to count_before
+#[sub] — round-trip baseline.
+
+objects delete p
+objects delete g
+layers delete test_layer
+
+get objects count
+assert objects count == count_before
+
+#[sub] === Final list — registry sanity ===
+#[sub] Same shape as smoke 36's close: `objects` still present, no
+#[sub] transient proxies registered.
+
+list
+
+#[sub] Done. The s239 m1 surface is validated:
+#[sub]   - `objects.<iid> set_stroke <token>` parses the token
+#[sub]     through curvz_utils' fill_attr_to_fill_style pump (same
+#[sub]     pump set_fill uses — stroke.paint is a FillStyle),
+#[sub]     captures the full pre-edit appearance state, writes the
+#[sub]     new FillStyle onto SceneNode::stroke.paint while
+#[sub]     preserving stroke.width / cap / join / miter / opacity,
+#[sub]     clears the stroke_swatch_id and bound_style bindings
+#[sub]     (direct-override break — undoable via the captured
+#[sub]     before-state), pushes EditAppearanceCommand for undo,
+#[sub]     fires the s235 m1 canvas-refresh callback at success.
+#[sub]   - Same-value set_stroke is a clean no-op (no command
+#[sub]     pushed, no callback fired) — Phase 8's degraded-to-
+#[sub]     currentColor case after Phase 7's already-currentColor
+#[sub]     exercises this.
+#[sub]   - `stroke` read query returns the canonical SVG fill-
+#[sub]     attribute string for stroke.paint — "none",
+#[sub]     "currentColor", or lowercase "#RRGGBB" for Solid.
+#[sub]     Byte-clean round-trip on canonical input forms.
+#[sub]   - Unknown tokens degrade to CurrentColor (same as set_fill).
+#[sub]   - set_stroke is universal across SceneNode subtypes — not
+#[sub]     refused on non-Paths (same as set_fill).
+#[sub]   - Axis-independence: fill and stroke are orthogonal on the
+#[sub]     same node; setting one doesn't disturb the other.
+#[sub]
+#[sub] Pre-stated: 13 pass / 0 fail / 0 error.
+#[sub]
+#[sub] What's still NOT covered by m1 (and that's by design):
+#[sub]   - Canvas-visible stroke outline. width=0 default means no
+#[sub]     outline renders; the visual closes in m2 with
+#[sub]     set_stroke_width.
+#[sub]   - stroke_width / stroke_cap / stroke_join / stroke_miter /
+#[sub]     stroke_opacity verbs. Each is a separate vocabulary
+#[sub]     (numeric or enum), scope-limited out of this milestone.
+#[sub]   - Gradient tokens on stroke. Same scope-limit as set_fill.
+#[sub]   - stroke_swatch_id binding via script. Same scope-limit
+#[sub]     and same future-swatches-arc dependency as set_fill.
+#[sub]   - Stroke-opacity round-trip via the rgba() form. Same
+#[sub]     lossy-on-alpha caveat as fill.
+#[sub]   - Undo / redo exercise. Three-channel acceptance for Scott
+#[sub]     visually once m2 lands.

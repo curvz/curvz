@@ -281,6 +281,132 @@
 // observable arc; geometry from s237 m1 + appearance from s238 m1 =
 // a path the user can see in every render mode.
 //
+// s239 m1 — SYMMETRIC second half of the appearance branch. Adds
+// `set_stroke "<color_token>"` and the matching `stroke` read query
+// to ObjectProxy. Mirror-shape sibling to set_fill / fill: same
+// command (EditAppearanceCommand, fifth "existing command fits"
+// case for verify-before-assume in a row after s236 m1 / s237 m1 /
+// s238 m1), same pump pair (fill_attr_to_fill_style /
+// fill_style_to_fill_attr — `stroke.paint` is a FillStyle so the
+// pumps cover it without modification), same direct-override
+// semantics (clears stroke_swatch_id, clears bound_style — the
+// same break_swatch_binding canon as the fill side), same
+// universal-across-SceneNode-subtypes posture, same no-op early-
+// return on value-unchanged. No new pump, no new helper, no new
+// command — the architectural shape s238 m1 established lifts
+// verbatim to the stroke axis.
+//
+// The anon-namespace equality helper renames from
+// `fill_style_equals_for_set_fill` to `fill_style_equals_byte_rounded`
+// — same body, neutral name. The "for_set_fill" suffix earned its
+// retirement the moment a second caller (set_stroke) needed the
+// same byte-rounded comparison. Same Unix-style naming as the
+// curvz_utils pumps: describe what the function does, not who
+// calls it.
+//
+// What set_stroke does NOT touch: width, cap, join, miter, opacity.
+// All five stroke fields beyond `paint` are preserved through the
+// verb — stroke_new is constructed as `node->stroke` with only the
+// `paint` field overwritten. EditAppearanceCommand carries the
+// full StrokeStyle before AND after, so undo restores the entire
+// stroke struct (paint reverts, the unchanged fields self-assign).
+// This is scope-limit by design: stroke-width / cap / join would
+// each be a NUMERIC-arg or ENUM-arg verb, materially different
+// from set_stroke's color-token vocabulary, and bundling them
+// would blur the "what does this verb do" contract. The numeric
+// stroke verbs are scheduled for s240+ as set_stroke_width etc.
+//
+// Visual scope-limit for m1: fresh-mint Paths have stroke.width
+// defaulting to 0.0, so set_stroke "black" lands a black paint on
+// a zero-width stroke — the canvas-visible outline doesn't appear
+// until set_stroke_width sets a nonzero width. The smoke is
+// trace-channel-only on the stroke side (asserts `stroke ==
+// "#000000"` etc.); the visual outline closes in the m2 set_stroke_width
+// milestone. Same canon as set_fill — the BUILD UP / VALIDATE /
+// TEAR DOWN structure owns its conditions, so the smoke can't
+// pre-set stroke-width via the inspector to fake the visual; that
+// preconditions-violation would defeat the smoke's purpose.
+// Three-channel acceptance for m1 = trace pass + clean build +
+// (deferred) visual outline once width verb lands.
+//
+// Verify-before-assume's fifth "fits unmodified" case in a row.
+// First task this session: reading EditAppearanceCommand's
+// stroke_before / stroke_after fields and confirming both are
+// whole-StrokeStyle (FillStyle paint + 5 numeric/enum fields), not
+// just paint. Confirmed: the 14-arg constructor's `sb` and `sa`
+// parameters are StrokeStyle, same shape as `fb` / `fa` for fill.
+// Symmetric capture across axes. The discipline keeps paying back.
+//
+// s239 m2 — CLOSES the appearance branch's visual loop. Adds
+// `set_stroke_width <number>` and the matching `stroke_width`
+// read query to ObjectProxy. First NUMERIC-arg verb on this
+// proxy — earlier verbs took string tokens (path data, colour
+// tokens, direction tokens) or no args (toggle / duplicate).
+// Same EditAppearanceCommand ride as set_fill and set_stroke
+// (SIXTH "fits unmodified" case for verify-before-assume in a
+// row); the command's StrokeStyle slot covers width.
+//
+// Anon namespace gains `arg_as_double` (lifted in shape from
+// StylesScriptable / LayersScriptable / GuidesScriptable's
+// helpers of the same name — accepts both ScriptValue::Double
+// (native) and ScriptValue::Int (coerced via static_cast<double>),
+// returns fallback for any other kind). The script DSL emits
+// `3` as Int and `3.0` as Double, so the coercion lets users
+// write either `set_stroke_width 2` or `set_stroke_width 2.0`
+// without surprise.
+//
+// What set_stroke_width does NOT touch: paint, cap, join, miter,
+// opacity. StrokeStyle has six fields; m1 owns paint, m2 owns
+// width, the remaining four (cap, join, miter, opacity) wait
+// for their own milestones. stroke_new is constructed as
+// `node->stroke` with only the `width` field overwritten — same
+// shape as set_stroke's paint-only overwrite, just a different
+// scalar slot.
+//
+// No clamp / no refusal on negative or zero values. The script
+// surface accepts whatever the user supplies; the renderer
+// handles edge cases (zero width = no outline rendered, which
+// is the m1 default state; negative widths zero out at the
+// Cairo seam). This matches StylesScriptable::stroke_width's
+// shipped convention: "Inspector clamps at its UI layer; the
+// model accepts whatever the script supplies." Consistent
+// behaviour across the two scriptables that touch the same
+// underlying field.
+//
+// Direct-override semantics: clears bound_style on the after side
+// (a direct width edit breaks the style binding, mirroring set_fill
+// / set_stroke / inspector). Does NOT clear stroke_swatch_id or
+// fill_swatch_id — the swatch bindings represent paint references,
+// and width edits don't touch paint. This is the same partial-clear
+// convention set_stroke established in m1 (set_stroke clears only
+// stroke_swatch_id, not fill_swatch_id; set_fill clears only
+// fill_swatch_id, not stroke_swatch_id). The inspector's
+// mutate_appearance funnel goes further and clears BOTH swatch
+// bindings on ANY appearance edit (see style/StyleInterop.cpp
+// lines 95-104) — script-side has been narrower throughout this
+// arc. Whether to align the script-side with mutate_appearance's
+// both-sides-always-clear is a backlog item for s240+; m2 holds
+// the line set by m1 to avoid a behaviour-shift mid-arc.
+//
+// New proxy query:
+//   - `stroke_width` (real) — returns ScriptValue::real(node->
+//     stroke.width). Same shape as LayersProxy's `opacity` and
+//     GuidesProxy's `x` / `y` / `angle`. The DSL's assert uses
+//     a Double literal RHS (`assert obj stroke_width == 2.0`)
+//     for byte-equal compare; integer-like values can be asserted
+//     either as `== 2.0` (Double-Double match) or — since
+//     ScriptValue equality is STRICT-kind — must NOT use `== 2`
+//     (Int-Double mismatch).
+//
+// Visual loop closes here. With m1's set_stroke + m2's
+// set_stroke_width, a script can produce a fully-styled visible
+// shape on canvas: geometry from s237 m1, fill from s238 m1,
+// stroke paint from s239 m1, stroke width from s239 m2. The
+// canvas-observable arc's appearance branch is now complete on
+// the colour-and-thickness axis; remaining stroke fields (cap,
+// join, miter, opacity) and gradient / swatch bindings stay on
+// the backlog.
+//
 // ── Command pushes (s231 m2) ─────────────────────────────────────────────
 //
 // `new` pushes an AddNodeCommand; `delete` pushes a DeleteObjectCommand.
@@ -473,6 +599,23 @@ bool arg_as_bool(const ScriptValue& v, bool fallback) {
         if (v.s == "false") return false;
     }
     return fallback;
+}
+
+// Parse a double from a ScriptValue. Accepts Double directly; accepts
+// Int and coerces via static_cast<double> (so the DSL's `2` and
+// `2.0` literals both reach the same value at the verb's seam,
+// matching the user's typical expectation when typing whole-number
+// widths). Returns `fallback` for any other kind. Lifted in shape
+// from StylesScriptable / LayersScriptable / GuidesScriptable's
+// helpers of the same name (s225 m1 / s232 m3 vintage). Added to
+// this file in s239 m2 — first numeric-arg verb on ObjectProxy
+// (set_stroke_width).
+double arg_as_double(const ScriptValue& v, double fallback) {
+    switch (v.kind) {
+        case ValueKind::Double: return v.d;
+        case ValueKind::Int:    return static_cast<double>(v.i);
+        default:                return fallback;
+    }
 }
 
 // ── Scene-tree walker ────────────────────────────────────────────────────
@@ -831,18 +974,25 @@ bool is_container_type(Curvz::SceneNode::Type t) {
     return false;
 }
 
-// s238 m1 — field-level FillStyle equality for the set_fill no-op
-// early-return. We compare exactly the fields fill_attr_to_fill_style
-// can produce: type plus (for Solid) r/g/b/a. Stops / gradient geometry
-// are NOT compared — the script-side pump can't produce gradients in
-// m1, so two gradient FillStyles that differ only in stops would
-// always pass equality from set_fill's perspective; the verb body
-// guarantees fill_new is one of {None, CurrentColor, Solid} so the
-// gradient-stops difference never reaches here. Strict-equal on
-// gradient fields would defeat the m1 no-op check; we deliberately
-// omit them. If a future milestone teaches set_fill to accept gradient
-// tokens, the comparison surface expands here too.
-bool fill_style_equals_for_set_fill(const Curvz::FillStyle& a,
+// s238 m1 / s239 m1 — field-level FillStyle equality for the no-op
+// early-return on set_fill and set_stroke. We compare exactly the
+// fields fill_attr_to_fill_style can produce: type plus (for Solid)
+// r/g/b/a. Stops / gradient geometry are NOT compared — the script-
+// side pump can't produce gradients in m1, so two gradient FillStyles
+// that differ only in stops would always pass equality from the
+// verb's perspective; the verb body guarantees the new FillStyle is
+// one of {None, CurrentColor, Solid} so the gradient-stops difference
+// never reaches here. Strict-equal on gradient fields would defeat
+// the m1 no-op check; we deliberately omit them. If a future
+// milestone teaches set_fill / set_stroke to accept gradient tokens,
+// the comparison surface expands here too.
+//
+// Neutral name (s239 m1 rename from `fill_style_equals_for_set_fill`):
+// `byte_rounded` describes WHAT the helper does (channel comparison
+// at hex-byte resolution), not WHO calls it. Two callers now use it
+// — fill side and stroke side — and the symmetry will hold for any
+// future paint-bearing verb on this surface.
+bool fill_style_equals_byte_rounded(const Curvz::FillStyle& a,
                                     const Curvz::FillStyle& b) {
     if (a.type != b.type) return false;
     if (a.type != Curvz::FillStyle::Type::Solid) return true;
@@ -1166,7 +1316,7 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
     //     vocabulary slot and we treat it as accidental.
     //   - parsed fill_new equals current node->fill on the field
     //     surface fill_attr_to_fill_style produces (see
-    //     fill_style_equals_for_set_fill in anon namespace).
+    //     fill_style_equals_byte_rounded in anon namespace).
     //
     // The iid index is NOT invalidated here — appearance changes
     // don't reshape iid space. EditAppearanceCommand::execute does
@@ -1183,7 +1333,7 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
         Curvz::FillStyle fill_new = curvz::utils::fill_attr_to_fill_style(tok);
         Curvz::FillStyle fill_before = node->fill;
 
-        if (fill_style_equals_for_set_fill(fill_new, fill_before)) {
+        if (fill_style_equals_byte_rounded(fill_new, fill_before)) {
             // Same colour as the current state — no command, no
             // callback. Matches the value-unchanged early-return
             // shape set_visible / set_locked / rename use.
@@ -1222,6 +1372,252 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
                 /*bsb=*/std::move(bsb),
                 /*bsa=*/std::string{},       // style binding cleared
                 "Set fill (script)");
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::null();
+    }
+
+    // ── set_stroke "<color_token>" (s239 m1) ─────────────────────────────
+    //
+    // Symmetric second half of the appearance branch. Mirror-shape
+    // sibling of set_fill: same EditAppearanceCommand (the existing
+    // s167-migrated command, FIFTH "fits unmodified" case in a row),
+    // same fill_attr_to_fill_style pump (operates on stroke.paint —
+    // a FillStyle — without modification), same direct-override
+    // semantics (clears stroke_swatch_id and bound_style on the after
+    // side; mirrors mutate_appearance's inspector behaviour), same
+    // universal-across-SceneNode-subtypes posture, same no-op early-
+    // return on value-unchanged via fill_style_equals_byte_rounded
+    // (the anon helper formerly known as fill_style_equals_for_set_fill,
+    // renamed neutrally this session).
+    //
+    // Scope: COLOUR only. The verb writes into stroke.paint and leaves
+    // stroke.width / stroke.cap / stroke.join / stroke.miter /
+    // stroke.opacity unchanged. Each of those five fields will be a
+    // separate verb in a future milestone — set_stroke_width takes
+    // a numeric token, set_stroke_cap / set_stroke_join take enum
+    // tokens. Bundling them into set_stroke would blur the "what
+    // does this verb do" contract; the numeric/enum verbs are
+    // scope-limited out of this milestone by design.
+    //
+    // Visual scope-limit: fresh-mint Paths have stroke.width == 0.0,
+    // so set_stroke "black" lands a black paint on a zero-width
+    // stroke — the canvas shows NOTHING new until the width verb
+    // sets a nonzero width. This is by design (the smoke owns its
+    // conditions, so it can't pre-set width via the inspector); the
+    // visual outline closes in m2 with set_stroke_width. Trace
+    // channel (the `stroke` query reading back the colour) is the
+    // full validation surface for m1.
+    //
+    // Direct-override semantics: a direct stroke colour set BREAKS
+    // the stroke_swatch_id binding and the bound_style binding,
+    // same as set_fill does on the fill side. The fill bindings
+    // (fill_swatch_id) are NOT touched — only the stroke-swatch
+    // and the (whole-node) bound_style are cleared. Without the
+    // bound_style break, "set_stroke black on a style-bound node,
+    // undo, then edit the bound style" produces a colour-on-bound-
+    // style surprise where the style edit overrides the script's
+    // direct stroke. The capture restores the binding on undo, so
+    // the break is undoable.
+    //
+    // Pre-edit snapshot: every field EditAppearanceCommand restores
+    // on undo. fill_before is captured (and fill_after equals
+    // fill_before, unchanged — the symmetric mirror of set_fill's
+    // stroke_before/stroke_after invariant). The 14-arg constructor
+    // takes fill_swatch_id_before/_after AND bound_style_before/
+    // _after as the swatch/style binding capture — fill_swatch
+    // unchanged on both sides; stroke_swatch cleared on after;
+    // bound_style cleared on after.
+    //
+    // No-op returns (no command pushed, no callback fired):
+    //   - args.empty().
+    //   - args[0] is not a string-shaped ScriptValue.
+    //   - args[0] is the empty string after arg_as_string.
+    //   - parsed stroke_new.paint equals current node->stroke.paint
+    //     via fill_style_equals_byte_rounded. Since set_stroke only
+    //     touches the paint slot, paint-equal => StrokeStyle-equal
+    //     (the other five fields are preserved from the current
+    //     stroke), so paint-equality is the necessary AND sufficient
+    //     no-op condition.
+    //
+    // The iid index is NOT invalidated (appearance changes don't
+    // reshape iid space). EditAppearanceCommand::execute does its
+    // own invalidate-before-resolve defensively (s168 m6 pattern).
+    if (verb == "set_stroke") {
+        if (args.empty()) return ScriptValue::null();
+        std::string tok = arg_as_string(args[0]);
+        if (tok.empty()) return ScriptValue::null();
+
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+
+        // Parse the token through the shared pump. stroke.paint is
+        // a FillStyle — same vocabulary, same fallback (unknown
+        // tokens degrade to CurrentColor).
+        Curvz::FillStyle paint_new = curvz::utils::fill_attr_to_fill_style(tok);
+        Curvz::FillStyle paint_before = node->stroke.paint;
+
+        if (fill_style_equals_byte_rounded(paint_new, paint_before)) {
+            // Same colour as the current stroke paint — no command,
+            // no callback. width / cap / join / miter / opacity are
+            // not touched by this verb, so paint-equality is also
+            // StrokeStyle-equality from this verb's perspective.
+            return ScriptValue::null();
+        }
+
+        // Pre-edit snapshot. Same shape as set_fill's snapshot, with
+        // the axes swapped: fill side stays fixed, stroke side is
+        // what changes.
+        Curvz::FillStyle   fill_before = node->fill;
+        Curvz::StrokeStyle stroke_before = node->stroke;
+        std::string        fsib          = node->fill_swatch_id;
+        std::string        ssib          = node->stroke_swatch_id;
+        std::string        bsb           = node->bound_style;
+
+        // Build stroke_new from stroke_before with only paint
+        // overwritten. The other five fields self-preserve through
+        // the command (stroke_after == stroke_new == stroke_before
+        // except for paint).
+        Curvz::StrokeStyle stroke_new = stroke_before;
+        stroke_new.paint = paint_new;
+
+        // Direct mutation precedes the push. Same shape as set_fill.
+        node->stroke           = stroke_new;
+        node->stroke_swatch_id = "";   // break the stroke swatch binding
+        node->bound_style      = "";   // break the style binding
+
+        if (m_history) {
+            auto cmd = std::make_unique<Curvz::EditAppearanceCommand>(
+                proj, m_iid,
+                /*fb=*/fill_before,
+                /*sb=*/std::move(stroke_before),
+                /*fa=*/fill_before,              // fill unchanged
+                /*sa=*/stroke_new,
+                /*fsib=*/fsib,
+                /*ssib=*/std::move(ssib),
+                /*fsia=*/fsib,                   // fill swatch unchanged
+                /*ssia=*/std::string{},          // stroke swatch cleared
+                /*bsb=*/std::move(bsb),
+                /*bsa=*/std::string{},           // style binding cleared
+                "Set stroke (script)");
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::null();
+    }
+
+    // ── set_stroke_width <number> (s239 m2) ──────────────────────────────
+    //
+    // Closes the appearance branch's visual loop. m1 (set_stroke) gave
+    // a Path's outline a colour; m2 gives it a thickness. Without the
+    // thickness, m1's colour landed on a zero-width stroke (the
+    // SceneNode default) and the canvas painted no outline regardless
+    // of the colour — set_stroke "blue" was trace-channel-only. With
+    // m2 in place, `set_stroke "blue"; set_stroke_width 2.0` produces
+    // a visible blue outline. The arc's geometry+fill+stroke triad is
+    // complete.
+    //
+    // First numeric-arg verb on ObjectProxy. Earlier verbs took string
+    // tokens (path data, colour tokens, direction tokens, type tokens)
+    // or no args at all (toggle_visible, duplicate). The DSL emits
+    // bare integer literals as ScriptValue::Int and decimal literals as
+    // ScriptValue::Double; arg_as_double accepts both (Int coerced via
+    // static_cast<double>), so `set_stroke_width 2` and `set_stroke_width
+    // 2.0` both reach the same value at this seam. ScriptValue's
+    // strict-equality contract on the assert side means RHS literals
+    // for stroke_width queries must be Double-shaped (e.g. `== 2.0`,
+    // not `== 2`).
+    //
+    // Rides EditAppearanceCommand unmodified (SIXTH "fits unmodified"
+    // case for verify-before-assume in a row). The command's
+    // StrokeStyle slots already capture every stroke field including
+    // width; the verb writes a stroke_after with only `width`
+    // overwritten relative to stroke_before. Same architectural shape
+    // as set_stroke's paint-only overwrite, just a different scalar
+    // slot on the StrokeStyle struct.
+    //
+    // No clamp, no negative-refusal, no zero-refusal. Matches
+    // StylesScriptable::stroke_width's shipped convention: the model
+    // accepts whatever the script supplies; the renderer handles
+    // edge cases. Zero width = no outline rendered (which is exactly
+    // the m1 default state, so set_stroke_width 0.0 is the explicit
+    // "remove stroke thickness" gesture). Negative widths zero out
+    // at the Cairo seam (renderer treats negative as no-stroke).
+    //
+    // Direct-override on bindings: clears bound_style (a direct width
+    // edit breaks the style binding, mirroring set_fill / set_stroke /
+    // inspector). Does NOT clear stroke_swatch_id or fill_swatch_id —
+    // swatch bindings represent PAINT references; width edits don't
+    // touch paint. Same partial-clear convention set_fill (m1, fill-
+    // swatch only) and set_stroke (m1 of this session, stroke-swatch
+    // only) established. The inspector's mutate_appearance funnel goes
+    // further and clears BOTH swatch bindings on any appearance edit;
+    // whether to align script-side to that broader convention is a
+    // backlog item.
+    //
+    // No-op returns (no command pushed, no callback fired):
+    //   - args.empty().
+    //   - arg_as_double falls through to the fallback (passed as
+    //     current node->stroke.width). For non-numeric / non-bool
+    //     ScriptValues this yields width_new == width_before, which
+    //     the equality check immediately catches.
+    //   - parsed width_new equals current node->stroke.width on
+    //     direct double-equal compare. The values that flow through
+    //     this verb come from arg_as_double without any pump-stage
+    //     parsing, so float-precision drift between successive
+    //     identical calls is not a concern — same value typed twice
+    //     produces byte-equal doubles.
+    if (verb == "set_stroke_width") {
+        if (args.empty()) return ScriptValue::null();
+
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+
+        double width_before = node->stroke.width;
+        double width_new    = arg_as_double(args[0], width_before);
+        if (width_new == width_before) {
+            // Same width as the current state — also catches the
+            // non-numeric-arg case (arg_as_double returns the
+            // fallback, which is width_before).
+            return ScriptValue::null();
+        }
+
+        // Pre-edit snapshot. Same shape as set_stroke's snapshot:
+        // both axes captured whole, plus all three binding fields.
+        Curvz::FillStyle   fill_before   = node->fill;
+        Curvz::StrokeStyle stroke_before = node->stroke;
+        std::string        fsib          = node->fill_swatch_id;
+        std::string        ssib          = node->stroke_swatch_id;
+        std::string        bsb           = node->bound_style;
+
+        // Build stroke_new from stroke_before with only width
+        // overwritten. paint / cap / join / miter / opacity all
+        // self-preserve through the command.
+        Curvz::StrokeStyle stroke_new = stroke_before;
+        stroke_new.width = width_new;
+
+        // Direct mutation precedes the push. Same shape as set_stroke
+        // and set_fill. Note: fill_swatch_id and stroke_swatch_id are
+        // NOT cleared — see narrative above (width edits don't touch
+        // paint, so swatch bindings stay intact).
+        node->stroke      = stroke_new;
+        node->bound_style = "";   // break the style binding
+
+        if (m_history) {
+            auto cmd = std::make_unique<Curvz::EditAppearanceCommand>(
+                proj, m_iid,
+                /*fb=*/fill_before,
+                /*sb=*/std::move(stroke_before),
+                /*fa=*/fill_before,              // fill unchanged
+                /*sa=*/stroke_new,
+                /*fsib=*/fsib,
+                /*ssib=*/ssib,
+                /*fsia=*/fsib,                   // fill swatch unchanged
+                /*ssia=*/ssib,                   // stroke swatch unchanged
+                /*bsb=*/std::move(bsb),
+                /*bsa=*/std::string{},           // style binding cleared
+                "Set stroke width (script)");
             m_history->push(std::move(cmd));
         }
         notify_doc_changed();
@@ -1584,6 +1980,54 @@ ScriptValue ObjectProxy::query(std::string_view property) const {
         return ScriptValue::text(curvz::utils::fill_style_to_fill_attr(node->fill));
     }
 
+    // stroke (s239 m1) — re-emitted SVG fill-attribute string for
+    // stroke.paint, via curvz_utils' fill_style_to_fill_attr pump.
+    // The observable for set_stroke; same byte-clean round-trip on
+    // canonical input forms, same normalising behaviour on named
+    // colours / rgb() / rgba() / uppercase hex / short hex. Same
+    // not-space-aware posture as the fill query (stroke paint
+    // values don't carry coordinates either).
+    //
+    // Returns the PAINT only, not width / cap / join / miter /
+    // opacity. Each of those is its own future query — stroke_width
+    // returning a number, stroke_cap / stroke_join returning enum
+    // tokens. Set-side and read-side stay symmetric: set_stroke
+    // writes only paint and the stroke query reads only paint.
+    //
+    // For a fresh-mint Path: stroke.paint defaults to
+    // FillStyle::CurrentColor (the SceneNode/FillStyle struct
+    // default), so the baseline `stroke` query returns "currentColor"
+    // before any set_stroke call — same as the baseline `fill`
+    // query. width defaults to 0.0, which is why a fresh-mint Path
+    // renders no outline even when stroke.paint is set to a visible
+    // colour; that's the visual scope-limit closing in m2.
+    if (property == "stroke") {
+        return ScriptValue::text(curvz::utils::fill_style_to_fill_attr(node->stroke.paint));
+    }
+
+    // stroke_width (s239 m2) — direct read of node->stroke.width as a
+    // Double-kind ScriptValue. Symmetric observable for set_stroke_width.
+    // Same shape as LayersProxy's `opacity` query and GuidesProxy's
+    // `x` / `y` / `angle` queries — model field is a double; return
+    // it through ScriptValue::real without coercion or formatting.
+    //
+    // For a fresh-mint Path: stroke.width defaults to 0.0 (the
+    // SceneNode/StrokeStyle struct default). The baseline query
+    // returns 0.0 before any set_stroke_width call. With m2 in place,
+    // a set_stroke + set_stroke_width pair produces a visible outline
+    // — the canvas-observable arc's appearance branch closes its
+    // visual loop here.
+    //
+    // ScriptValue strict-equality has implications for the assert
+    // side: `assert obj stroke_width == 2.0` compares a Double query
+    // result against a Double-kind RHS literal — matches. `assert
+    // obj stroke_width == 2` compares Double against an Int-kind RHS
+    // and FAILS (different kinds, no coercion). Smoke 38 uses
+    // Double literals throughout to make the comparison kind-clean.
+    if (property == "stroke_width") {
+        return ScriptValue::real(node->stroke.width);
+    }
+
     return ScriptValue::null();
 }
 
@@ -1612,6 +2056,27 @@ std::vector<std::string> ObjectProxy::verbs() const {
         // hex / named / rgb forms); gradients via script land in
         // a future milestone via the swatches / styles surface.
         "set_fill",
+        // s239 m1 — symmetric appearance-bearing mutating verb.
+        // Same EditAppearanceCommand ride as set_fill (the existing
+        // s167-migrated command — FIFTH "fits unmodified" case for
+        // verify-before-assume in a row). Writes into stroke.paint
+        // only; the other five StrokeStyle fields (width / cap /
+        // join / miter / opacity) are preserved and will each be
+        // a separate numeric/enum verb in a future milestone. Same
+        // colour vocabulary as set_fill via the shared
+        // fill_attr_to_fill_style pump in curvz_utils. Universal
+        // across SceneNode subtypes.
+        "set_stroke",
+        // s239 m2 — first NUMERIC-arg verb on ObjectProxy. Closes
+        // the appearance branch's visual loop: m1's set_stroke gave
+        // a Path's outline a colour; m2 gives it a thickness. With
+        // both landed, set_stroke "blue" + set_stroke_width 2.0
+        // produces a visible blue outline. Same EditAppearanceCommand
+        // ride (SIXTH "fits unmodified" case). Accepts Int and Double
+        // via arg_as_double (Int coerced); no clamp, no negative-
+        // refusal — matches StylesScriptable::stroke_width's
+        // convention.
+        "set_stroke_width",
         // s234 m4 — three element structural verbs. `move` pushes
         // MoveNodeIndexCommand (new in m4); `reparent` pushes
         // MoveObjectToLayerCommand (existing); `duplicate` pushes
@@ -1640,6 +2105,19 @@ std::vector<std::string> ObjectProxy::properties() const {
         // curvz_utils' fill_style_to_fill_attr pump. Universal
         // across SceneNode types (appearance lives on every node).
         "fill",
+        // s239 m1 — symmetric stroke-side observable. Returns the
+        // re-emitted SVG fill-attribute string for stroke.paint via
+        // the same pump. Universal across SceneNode types. Reads
+        // paint only — width / cap / join / miter / opacity each
+        // get their own query when their matching verbs land.
+        "stroke",
+        // s239 m2 — numeric stroke-width observable. Returns the
+        // double-valued node->stroke.width directly via
+        // ScriptValue::real. Same shape as LayersProxy's `opacity`.
+        // The first numeric ObjectProxy property (others are Int
+        // counts or String tokens). Asserts on the script side need
+        // Double-kind RHS literals (`== 2.0` not `== 2`).
+        "stroke_width",
     };
 }
 
