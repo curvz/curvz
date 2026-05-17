@@ -60,8 +60,17 @@ public:
     RunMacroSignal&       signal_run_macro()       { return m_sig_run_macro;       }
     RebuildBlendSignal&   signal_rebuild_blend()   { return m_sig_rebuild_blend;   }
 
-private:
+    // s237 m2 — rebuild the panel's row list from current doc state.
+    // Promoted from private to public so script-side mutators
+    // (LayersScriptable's `new`/`delete`/`move`/etc.) can request the
+    // same panel refresh the +/- button handlers do at their tails.
+    // The button handlers wrap it in Glib::signal_idle().connect_once
+    // for the deferred-rebuild shape; the script-side caller can do
+    // the same (MainWindow's panel-getter lambda is the natural site
+    // for the idle scheduling, not LayersScriptable itself).
     void rebuild();
+
+private:
     void add_layer_row(int layer_idx, Gtk::Box* parent);
     void add_guide_layer_row(int layer_idx, Gtk::Box* parent);
     void add_ref_layer_row(int layer_idx, Gtk::Box* parent);

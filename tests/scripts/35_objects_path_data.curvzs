@@ -18,6 +18,24 @@
 # rendering land in subsequent milestones; m1 ships geometry, which
 # is the foundation — fill on an empty Path still draws nothing.
 #
+# s237 m1 retrofits set_path_data and path_data to interpret coords
+# in user-space (Y-up, origin at bottom-left of artboard) rather
+# than doc-space (Y-down, top-left). The d-string the user types
+# is parsed into PathData, then flipped through CoordSpace (the
+# canonical Y-flip seam in include/CoordSpace.hpp) before being
+# stored as doc-space PathData. On the read side, path_data flips
+# the stored doc-space PathData back to user-space before emitting.
+# Users see geometry land where their rulers say it should land.
+#
+# Phase 4 reads "M 0 0 L 100 0 L 100 100 L 0 100 Z" as a 100×100
+# rect anchored at the bottom-left of the page — where Y=0 means
+# the page floor. The visual channel: the rect lives at user-origin
+# (where a ruler typed (0, 0) would point), not at doc-origin
+# (top-left, where s236 m1's rect landed). The trace channel: the
+# rect still has 4 BezierNodes, the triangle still has 3 — the
+# Y-flip is structure-preserving by construction (each BezierNode
+# flips its anchor + both handles; no nodes added or dropped).
+#
 # The smoke also exercises the new `node_count` proxy query (the
 # observable for `set_path_data`'s effect — integer, deterministic,
 # no Cairo) and the read-side `path_data` query (round-trip view of
@@ -59,6 +77,20 @@
 #     objects count == count_before                            → 1 assert.
 #
 # Total: 2 + 1 + 1 + 0 + 1 + 1 + 2 + 1 + 1 = 10.
+#
+# (s237 m1 originally added a Phase 6b — feed the captured path_data
+# d-string back through set_path_data and assert node_count survives
+# the round-trip. The DSL splits text-valued variables on whitespace
+# when they appear in verb-arg position, so `set_path_data pd_out`
+# tokenises as ten args instead of one; arg_as_string(args[0]) picks
+# up just "M" and the parser returns a one-anchor PathData. The bug
+# is in the DSL's variable-substitution shape, not in the pump pair.
+# Logged on the backlog as "DSL: text variables in verb-arg position
+# need single-token treatment." The user-space round-trip itself IS
+# observable through the convergence of Phase 6's clean re-emission
+# and Phases 4/5/7/8's literal-RHS asserts on user-space coords — the
+# Phase 6b structural-survival probe was nice-to-have, not load-
+# bearing. A future DSL milestone will bring back a real assert.)
 #
 # ── On the `node_count` observable ───────────────────────────────────────
 #
@@ -182,6 +214,15 @@ assert objects.p node_count == 3
 #[sub] property. A future round-trip-fidelity probe would parse
 #[sub] both strings to PathData and compare structurally; the DSL
 #[sub] doesn't carry that compare shape today.
+#[sub]
+#[sub] s237 m1: the emitted d-string is in user-space — same Y-up
+#[sub] frame the original input used. The convergence of this
+#[sub] phase's trace output (user-space coords in the d-string)
+#[sub] and Phases 4/5/7/8's literal-RHS asserts (user-space coords
+#[sub] in the inputs) is the user-space round-trip probe. A real
+#[sub] re-set-from-captured-string assert needs the DSL to treat
+#[sub] text variables as single tokens in verb-arg position; logged
+#[sub] on the backlog.
 
 get objects.p path_data
 set pd_out to result
@@ -256,11 +297,13 @@ assert objects count == count_before
 
 list
 
-#[sub] Done. The s236 m1 surface is validated:
+#[sub] Done. The s236 m1 + s237 m1 surface is validated:
 #[sub]   - `objects.<iid> set_path_data <svg_d_string>` lands geometry
 #[sub]     into the Path's PathData via curvz_utils' new
-#[sub]     svg_d_to_path_data pump, pushes EditPathCommand for undo,
-#[sub]     fires the s235 m1 canvas-refresh callback at success.
+#[sub]     svg_d_to_path_data pump, flips parsed user-space PathData
+#[sub]     to doc-space via the s237 m1 path_data_user_to_doc pump,
+#[sub]     pushes EditPathCommand for undo, fires the s235 m1
+#[sub]     canvas-refresh callback at success.
 #[sub]   - Empty d-string clears the path (node_count → 0).
 #[sub]   - Open paths (no Z) round-trip with node_count matching
 #[sub]     the anchor count.
@@ -270,7 +313,10 @@ list
 #[sub]   - `path_data` read query gives scripts the d-string round-
 #[sub]     trip for capture / inspection use cases (trace-channel
 #[sub]     observable, not literal-RHS-assertable due to fmt2
-#[sub]     normalisation).
+#[sub]     normalisation). Returns user-space coords as of s237 m1 —
+#[sub]     Phase 6's trace output converges with Phases 4/5/7/8's
+#[sub]     literal-RHS asserts to validate the user-space round-trip
+#[sub]     without a separate re-set-from-captured-string phase.
 #[sub]
 #[sub] Pre-stated: 10 pass / 0 fail / 0 error.
 #[sub]
@@ -292,3 +338,9 @@ list
 #[sub]     normalises whitespace and segment-type classification;
 #[sub]     a structural round-trip probe (parse out, parse in,
 #[sub]     compare PathData) needs a DSL extension not in m1 scope.
+#[sub]   - Visual centering. The user-space-flipped geometry lands
+#[sub]     at the bottom-left of the page (user-origin) rather than
+#[sub]     centered. A future milestone may add a `proj` singleton
+#[sub]     with page-width/height queries so smokes can mint geometry
+#[sub]     centered without hardcoded coords; for now, near-the-
+#[sub]     origin geometry is the convention.

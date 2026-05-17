@@ -155,18 +155,59 @@
 // (collection-as-router with transient per-instance proxies); the
 // shape of the collection differs.
 //
+// s237 m1 — RETROFITS set_path_data and path_data to speak user-space.
+//
+// The s236 m1 visual channel surfaced an architectural call: the
+// scripter is a user surface, an extension of the app *to* the user.
+// The d-string a user types into a script must be interpreted in the
+// space the user sees (Y-up, origin at bottom-left of artboard), not
+// in the doc-space (Y-down, top-left) the engine stores internally.
+// s236 m1's geometry landed at the doc-space origin and Scott noted
+// the visual mismatch — the trace passed but the user-facing axes
+// were inverted. m1 reuses the existing `CoordSpace` Y-flip seam from
+// `include/CoordSpace.hpp` (the canonical "(canvas_height - y)
+// appears nowhere else" home) through a new `curvz::utils` pump
+// pair: `path_data_user_to_doc` and `path_data_doc_to_user`. Each
+// walks the PathData's BezierNode vector and routes every (y, cy1,
+// cy2) through CoordSpace.
+//
+// Third matching application of the "verify before assume" first-
+// task discipline in a row: s232 m3 + s234 m4 found commands NEEDED
+// new parallel classes, s236 m1 found EditPathCommand FIT unmodified,
+// s237 m1 found the Y-flip pump ALREADY EXISTED (CoordSpace) — the
+// retrofit is a lift, not a build. The pattern is not "predict, then
+// look"; it's "look first."
+//
+// Wiring change at the script-side seam:
+//   - set_path_data: parse → look up owning doc → flip user→doc →
+//     direct mutation + EditPathCommand push (carrying doc-space
+//     PathData, the convention every canvas-tool site already uses).
+//   - path_data query: copy stored PathData → look up owning doc →
+//     flip doc→user → emit user-space d-string.
+// EditPathCommand undo/redo behaviour is unchanged — it has no
+// awareness of user-space; only the script-side seam crosses.
+//
+// "Infrastructure pump in curvz_utils, called from every site that
+// crosses the seam" is now banked at three pumps:
+//   - find_by_iid       (s167 m1 — iid migration seam)
+//   - SVG-d pump pair   (s236 m1 — d-string ↔ PathData seam)
+//   - user-space pair   (s237 m1 — user ↔ doc geometry seam)
+// Promotes to a tier of its own in the LEDGER on next consolidation.
+//
 // ── Arc progress (multi-session by construction) ──────────────────────────
 //
-// What m1 + m2 + m3 + m4 (+ s235 m1 + s236 m1) ship combined:
+// What m1 + m2 + m3 + m4 (+ s235 m1 + s236 m1 + s237 m1) ship combined:
 //   - The collection registered as `objects` in the registry.
 //   - Collection queries: count, all_iids, find_by_name, find_by_type.
 //   - Per-instance proxies materialised by proxy_for(iid).
 //   - Element queries: name, type, visible, locked, parent_iid,
-//     child_count, child_index, iid, node_count, path_data.
+//     child_count, child_index, iid, node_count, path_data (the
+//     last returns user-space coords as of s237 m1).
 //   - Collection-level structural verbs: new <type>, delete <iid>.
 //   - Element mutating verbs: toggle_visible, set_visible <bool>,
 //     toggle_locked, set_locked <bool>, rename "<name>",
-//     set_path_data "<svg_d_string>".
+//     set_path_data "<svg_d_string>" (interprets in user-space as
+//     of s237 m1; user→doc flip happens between parse and store).
 //   - Element structural verbs: move "<direction>",
 //     reparent "<new_parent_iid>", duplicate.
 //   - History pointer captured in the ctor and ACTIVELY USED by the
@@ -177,9 +218,10 @@
 //     DuplicateCommand). All verbs degrade gracefully to direct
 //     mutation when history is null.
 //   - Canvas-refresh callback fires after every successful mutating
-//     verb (s235 m1 wiring; s236 m1's set_path_data participates).
+//     verb (s235 m1 wiring; s236 m1's set_path_data participates;
+//     s237 m1 retrofit doesn't change the callback shape).
 //
-// What s236 m1 still does NOT ship:
+// What s237 m1 still does NOT ship:
 //   - `set_fill` / `set_stroke`. Scheduled m2 / m3 of the canvas-
 //     observable arc. Geometry alone is wireframe-only on canvas;
 //     fill/stroke make the Path canvas-visible in fill-shaded modes.

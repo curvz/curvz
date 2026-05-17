@@ -7,6 +7,7 @@
 #include "CurvzProject.hpp"     // s167 m1 — find_by_iid walks project docs
 #include "CurvzLog.hpp"    // s126: diagnostics for confirm callback path
 #include "scripting/Scriptable.hpp"  // s199 m1 — force_unregister_subtree pump
+#include "CoordSpace.hpp"       // s237 m1 — Y-flip seam for user-space pumps
 
 #include <algorithm>
 #include <cctype>
@@ -1596,6 +1597,60 @@ std::string path_data_to_svg_d(const ::Curvz::PathData& pd) {
     if (pd.closed) d << " Z";
 
     return d.str();
+}
+
+// ── path_data_user_to_doc / path_data_doc_to_user (s237 m1) ──────────────
+//
+// Bidirectional Y-flip walker on PathData. The script speaks user-space
+// (Y-up, origin at bottom-left of artboard); the engine stores in
+// doc-space (Y-down, origin at top-left). canvas_h is the artboard
+// height — the per-doc constant that anchors the flip.
+//
+// Both pumps walk every BezierNode in pd.nodes and flip Y on:
+//   - the anchor       (x,   y)
+//   - the in-handle    (cx1, cy1)
+//   - the out-handle   (cx2, cy2)
+// X is untouched. node_sets are NOT walked — they store parametric
+// describers (cx, cy, radius, angle_offset) that index into the same
+// nodes vector; flipping the anchor positions covers what the user
+// sees. (If a future NodeSet kind stores absolute Y in its params,
+// that case is its own ripening — for now Rect / Ellipse / Star /
+// Polygon carry cx and cy which are anchor-equivalent and flipped
+// implicitly by the constraint regenerating from flipped anchors.
+// The smoke doesn't exercise NodeSet-shaped paths; if a regression
+// surfaces, the fix is here.)
+//
+// Mathematically, Y-flip is its own inverse (canvas_h - (canvas_h - y) = y),
+// so the two functions are structurally identical operations. Two
+// names exist to document intent at call sites — `user_to_doc` after
+// a parse, `doc_to_user` before an emit. A reader of
+// ObjectsScriptable.cpp shouldn't have to think "wait, which direction
+// is this?"; the name says it.
+//
+// CoordSpace is the canonical Y-flip seam. The "(canvas_height - y)
+// appears nowhere else in the codebase" rule from CoordSpace.hpp
+// continues to hold — these pumps construct a CoordSpace and route
+// every flip through its `to_doc_y` / `to_user_y` methods. No new
+// open-coded Y-flip arithmetic is introduced.
+//
+// Pure on the input. No I/O. Safe to call from any thread.
+
+void path_data_user_to_doc(::Curvz::PathData& pd, double canvas_h) {
+    ::Curvz::CoordSpace cs{canvas_h};
+    for (auto& n : pd.nodes) {
+        n.y   = cs.to_doc_y(n.y);
+        n.cy1 = cs.to_doc_y(n.cy1);
+        n.cy2 = cs.to_doc_y(n.cy2);
+    }
+}
+
+void path_data_doc_to_user(::Curvz::PathData& pd, double canvas_h) {
+    ::Curvz::CoordSpace cs{canvas_h};
+    for (auto& n : pd.nodes) {
+        n.y   = cs.to_user_y(n.y);
+        n.cy1 = cs.to_user_y(n.cy1);
+        n.cy2 = cs.to_user_y(n.cy2);
+    }
 }
 
 } // namespace curvz::utils

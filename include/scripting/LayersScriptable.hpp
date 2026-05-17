@@ -190,6 +190,7 @@
 namespace Curvz {
 struct CurvzProject;
 class  CommandHistory;
+class  LayersPanel;  // s237 m2 — panel-side rebuild hook (header-clean fwd decl)
 }
 
 namespace curvz::scripting {
@@ -197,6 +198,7 @@ namespace curvz::scripting {
 class LayersScriptable : public Scriptable {
 public:
     using ProjectGetter = std::function<Curvz::CurvzProject*()>;
+    using PanelGetter   = std::function<Curvz::LayersPanel*()>;
 
     // Registers as "layers" via the Scriptable base ctor. The project
     // getter is called fresh on every verb invocation — never cached —
@@ -210,8 +212,29 @@ public:
     // CommandHistory object itself has a stable address (it's a value
     // member, not a pointer that gets swapped), so storing a raw
     // pointer is safe for the LayersScriptable's lifetime.
+    //
+    // `get_panel` is the s237 m2 panel-rebuild hook. The +/- button
+    // handlers on LayersPanel (on_add_layer, on_delete_layer) end
+    // their work by emitting two signals and scheduling a deferred
+    // panel rebuild via Glib::signal_idle().connect_once → rebuild().
+    // Script-side `layers new` / `delete` / `move` / `rename` /
+    // `set_visible` / etc. mutate the doc but never reach the panel,
+    // so the panel keeps rendering its previous row set until the
+    // user clicks +/- (which forces a rebuild). Same shape gap that
+    // the s222 m1 fix-1 closed for StylesScriptable; closes it here
+    // for LayersScriptable too.
+    //
+    // Pattern: the lambda passed in returns a `LayersPanel*` (or
+    // nullptr if MainWindow has been torn down). The Scriptable
+    // verbs that mutate the doc call the lambda after the command
+    // push and ask the panel to rebuild. The idle-scheduling is the
+    // panel's concern; the verb's job is just "tell the panel its
+    // state is stale." If get_panel is nullptr (test harness path),
+    // verbs skip the rebuild step — graceful degradation, same shape
+    // the history pointer uses.
     LayersScriptable(ProjectGetter get_project,
-                     Curvz::CommandHistory* history);
+                     Curvz::CommandHistory* history,
+                     PanelGetter get_panel = nullptr);
     ~LayersScriptable() override = default;
 
     ScriptValue invoke(std::string_view verb,
@@ -227,6 +250,19 @@ public:
 private:
     ProjectGetter          m_get_project;
     Curvz::CommandHistory* m_history;   // non-owning; outlives us
+    PanelGetter            m_get_panel; // s237 m2 — nullable panel-
+                                        // rebuild hook. Lifetime: the
+                                        // lambda captures `this`
+                                        // (MainWindow); MainWindow
+                                        // outlives the Scriptable.
+
+    // s237 m2 — collection-level panel-rebuild trigger. Mirrors
+    // LayerProxy::notify_panel_dirty exactly: schedules a deferred
+    // rebuild via Glib::signal_idle so the rebuild lands on the
+    // next idle tick rather than mid-verb. No-op when the getter
+    // is nullable. Body lives in the .cpp so this header doesn't
+    // need to pull in glibmm/main.h or LayersPanel.hpp.
+    void notify_panel_dirty();
 };
 
 } // namespace curvz::scripting

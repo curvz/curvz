@@ -229,10 +229,21 @@ MainWindow::MainWindow(Application & /*app*/) {
   // s219 m1 — always constructed. The Scriptable is cheap (one
   // unique_ptr + one registry entry); whether the SCRIPTER WINDOW is
   // visible is a separate concern governed by scripter_enabled.
+  //
+  // s237 m2 — third ctor arg: a PanelGetter lambda for after-mutation
+  // panel rebuild. Same shape as the s222 m1 fix-1 hook on
+  // StylesScriptable. Closes the "ghost row stays after script delete"
+  // gap Scott reported at s237 close — script-side `layers delete`
+  // mutates the doc but doesn't reach the panel, so the row keeps
+  // rendering until the user clicks +/- (which forces a rebuild
+  // via on_add_layer / on_delete_layer's tail). The lambda is
+  // identical to StylesScriptable's: returns &m_layers, the panel
+  // member that lives at MainWindow scope.
   m_layers_scriptable =
       std::make_unique<curvz::scripting::LayersScriptable>(
           [this]() -> CurvzProject* { return m_project.get(); },
-          &m_history);
+          &m_history,
+          [this]() -> LayersPanel* { return &m_layers; });
 
   // s218 m1 / s219 m1 — `guides` collection Scriptable. Same construction shape
   // as the layers Scriptable above: same project-getter (resolves

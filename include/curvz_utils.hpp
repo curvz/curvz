@@ -29,6 +29,12 @@
 //   path_data_to_svg_d     PathData → SVG `d` attribute string
 //                          (s236 m1 — full lift from SvgWriter inline
 //                           emitters; writer keeps its copies for now)
+//   path_data_user_to_doc  user-space PathData (Y-up, bottom-left origin)
+//                          → doc-space PathData (Y-down, top-left origin)
+//   path_data_doc_to_user  doc-space PathData → user-space PathData
+//                          (s237 m1 — script-side user-space pump pair;
+//                           internally uses CoordSpace, the canonical
+//                           Y-flip seam. Mutates in place.)
 //
 // ── SVG id contract ──────────────────────────────────────────────────
 //
@@ -871,5 +877,64 @@ void generate_warp_preset(int preset_idx,
 // from any thread.
 ::Curvz::PathData svg_d_to_path_data(const std::string& d);
 std::string       path_data_to_svg_d(const ::Curvz::PathData& pd);
+
+// ── User-space / doc-space pump pair (s237 m1) ───────────────────────
+//
+// The scripter is a user surface — an extension of the app *to* the
+// user, not a window into the engine *for* the user. Coords entering
+// script verbs and leaving script queries must be in the space the
+// user sees in rulers and on the canvas: Y-up, origin at the
+// bottom-left of the artboard, page-unit pixels. The engine stores
+// geometry in doc-space: Y-down, origin at the top-left, same px
+// magnitude. The two spaces share X and differ in Y.
+//
+// These pumps are the **script-side seam** between the two spaces.
+// Every coord-bearing verb arg (set_path_data, eventually set_x /
+// set_y / set_bbox / polygon cx/cy / line endpoints / etc.) calls
+// `path_data_user_to_doc` after parsing the user's input; every
+// coord-bearing query return calls `path_data_doc_to_user` before
+// re-emitting. The user types `M 0 0 L 100 0 L 100 100 L 0 100 Z`
+// and gets a 100×100 rect oriented the way they'd see it on a
+// ruler — anchored at user-origin (page-bottom-left), apex
+// upward, no mental Y-flip required.
+//
+// Internally both pumps walk every BezierNode in the PathData and
+// apply CoordSpace's Y-flip to the anchor (x, y), the in-handle
+// (cx1, cy1), and the out-handle (cx2, cy2). X is a pass-through;
+// only Y crosses the seam. CoordSpace is the canonical Y-flip seam
+// — the "(canvas_height - y) appears nowhere else" rule from
+// CoordSpace.hpp continues to hold; the math has exactly one home.
+//
+// **Bidirectional and involutive.** Calling user_to_doc then
+// doc_to_user (or vice versa) round-trips to the input exactly,
+// modulo floating-point precision. The smoke exercises this with
+// `set_path_data → get path_data → set_path_data` round-trips
+// asserting node_count survives.
+//
+// **Why a PathData walker rather than a d-string walker.** Y-flip
+// at the PathData layer composes cleanly with the existing
+// svg_d_to_path_data / path_data_to_svg_d pumps (parse → flip,
+// flip → emit). A d-string walker would have to re-parse-and-
+// re-emit just to find the numbers; same work, more error surface.
+//
+// **Why not CoordSpace::flip_path_data directly.** CoordSpace.hpp
+// includes only math/Vec2.hpp; adding a PathData-aware method
+// would force it to pull in SceneNode.hpp and turn the lightweight
+// pump-pair header into a SceneNode dependency. The PathData
+// walker lives in curvz_utils alongside its siblings; CoordSpace
+// stays focused on the primitive Y-flip operation.
+//
+// In-place by convention — matches the "walker" shape used elsewhere
+// in curvz_utils (e.g. force_unregister_subtree). The callers in
+// ObjectsScriptable.cpp already hold the PathData by value (after
+// the svg_d_to_path_data parse, or as a local copy in the query
+// path); mutating in place avoids an extra copy.
+//
+// Both pumps are pure functions on the input PathData. No GTK, no
+// Cairo, no I/O. canvas_h is taken as a double so callers can pass
+// either `doc->canvas_height()` (returns int) or `(double)` cast
+// versions without ceremony.
+void path_data_user_to_doc(::Curvz::PathData& pd, double canvas_h);
+void path_data_doc_to_user(::Curvz::PathData& pd, double canvas_h);
 
 } // namespace curvz::utils

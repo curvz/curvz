@@ -130,6 +130,66 @@
 //     surface for capture/inspection rather than literal-RHS
 //     round-trip assertion.
 //
+// s237 m1 — RETROFIT set_path_data and path_data to speak user-space.
+//
+// The s236 m1 visual channel surfaced an architectural call: the
+// scripter is a user surface — an extension of the app *to* the
+// user, not a window into the engine *for* the user. Scott saw
+// triangles at the doc-space origin (top-left of the page, Y-down)
+// instead of the user-space origin (bottom-left of the page, Y-up)
+// where the user expects geometry typed in script to land.
+//
+// First task (verify before assume): looked for the existing
+// screen → doc helper in Canvas. Found something better — the pump
+// already exists. `CoordSpace` in include/CoordSpace.hpp encodes
+// exactly the Y-flip the script seam needs: `to_doc_y(user_y)` and
+// `to_user_y(doc_y)`, taking canvas_height as the per-doc constant.
+// CoordSpace.hpp explicitly documents itself as "the ONLY place in
+// the codebase where the Y-flip is performed" — the rule the
+// retrofit must respect.
+//
+// The retrofit lifts a PathData-level walker into curvz_utils:
+// `path_data_user_to_doc(pd, canvas_h)` and `path_data_doc_to_user
+// (pd, canvas_h)`. Each walks pd.nodes and routes every (y, cy1,
+// cy2) through a CoordSpace — the canonical seam stays the only
+// place (canvas_height - y) appears. X is a pass-through.
+//
+// Wiring change at the script-side seam:
+//
+//   set_path_data: ... parse via svg_d_to_path_data → look up the
+//     owning doc via curvz::utils::find_doc_by_iid → flip
+//     `after` from user-space to doc-space via path_data_user_to_doc
+//     → direct mutation + EditPathCommand push (now carrying the
+//     doc-space PathData, same shape the canvas tools have always
+//     produced).
+//
+//   path_data query: ... copy the stored (doc-space) PathData →
+//     look up the owning doc → flip the copy via path_data_doc_to_user
+//     → emit the user-space d-string via path_data_to_svg_d. The
+//     stored PathData stays untouched (it remains canonical in
+//     doc-space; the flip lives in a transient local).
+//
+// Third complementary verify-before-assume case in the row: s232 m3
+// + s234 m4 found commands NEEDED new parallel classes, s236 m1
+// found EditPathCommand FIT unmodified, s237 m1 found the pump
+// ALREADY EXISTED (CoordSpace) and the retrofit lifts it into the
+// script-side seam via a PathData walker. The discipline is the
+// same in every direction: don't predict the shape, look at the
+// candidate first.
+//
+// The EditPathCommand undo/redo behaviour is unchanged. Before and
+// after PathData are captured in doc-space (post-flip on the verb
+// side, pre-existing on the canvas-tool side). The history layer
+// has no awareness of user-space; only the script-side seam does.
+//
+// Both the user-space pump and the find_doc_by_iid lookup can fail
+// gracefully: if the doc lookup returns nullptr (defensive — should
+// not happen since find_by_iid just resolved the node), the flip is
+// skipped and the PathData lands in doc-space without Y-flip. That
+// matches the s236 m1 "engine-space landing" — a regression, not a
+// crash. Two-channel acceptance catches it (the visual would show
+// inverted geometry).
+//
 // ── Command pushes (s231 m2) ─────────────────────────────────────────────
 //
 // `new` pushes an AddNodeCommand; `delete` pushes a DeleteObjectCommand.
@@ -897,10 +957,34 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
         Curvz::PathData before = *node->path;
         Curvz::PathData after  = curvz::utils::svg_d_to_path_data(d_str);
 
+        // s237 m1 — flip the parsed user-space PathData to doc-space
+        // before mutating the model. The d-string the user typed is
+        // in user-space (Y-up, bottom-left origin); the engine stores
+        // in doc-space (Y-down, top-left origin). Look up the owning
+        // doc to get canvas_height — the per-doc constant that
+        // anchors the flip. find_doc_by_iid walks every doc in the
+        // project; in the normal path it returns the same doc
+        // find_by_iid (which has already resolved `node`) saw.
+        // Empty PathData round-trips through the flip as a no-op
+        // (no nodes to walk), preserving the clearing-primitive
+        // semantics of set_path_data "".
+        if (auto* owner = curvz::utils::find_doc_by_iid(*proj, m_iid)) {
+            double ch = (double)owner->canvas_height();
+            curvz::utils::path_data_user_to_doc(after, ch);
+        }
+        // (Defensive: if find_doc_by_iid returns nullptr — should not
+        // happen since find_by_iid just resolved `node` in resolve()
+        // above — the path lands unflipped. That's the s236 m1 visual
+        // regression rather than a crash; the visual channel surfaces
+        // it the same way it surfaced the original miss.)
+
         // Direct mutation precedes the push (mirrors every existing
         // EditPathCommand call site in Canvas_ops.cpp / Canvas_input.cpp
         // — user perspective is "the verb did the thing", Ctrl+Z then
-        // undoes it).
+        // undoes it). The PathData stored is in doc-space (post-flip),
+        // matching the convention the canvas-tool sites have always
+        // produced; EditPathCommand and the renderer have no awareness
+        // of user-space.
         *node->path = after;
 
         if (m_history) {
@@ -1218,10 +1302,34 @@ ScriptValue ObjectProxy::query(std::string_view property) const {
     // read surface for capture/inspection rather than literal-RHS
     // round-trip assertion. A future structural round-trip probe
     // would parse both strings to PathData and compare.
+    //
+    // s237 m1 — flip the stored (doc-space) PathData back to
+    // user-space before emitting the d-string. The user sees what
+    // they typed: set_path_data with "M 0 0 L 100 100 Z" round-
+    // trips through the model as a user-space d-string starting
+    // with "M 0.00 0.00 ..." (or fmt2-normalised variant), not as
+    // doc-space coordinates reflecting the stored Y-flipped form.
+    //
+    // The stored PathData stays untouched — flip into a transient
+    // local copy. node->path is the canonical doc-space store;
+    // EditPathCommand undo/redo and the renderer both read it
+    // directly. Only the script-side seam crosses to user-space.
     if (property == "path_data") {
         if (!node->path) return ScriptValue::text("");
-        return ScriptValue::text(
-            curvz::utils::path_data_to_svg_d(*node->path));
+        // Copy so the flip doesn't touch the canonical doc-space
+        // PathData. Empty PathData walks as a no-op (zero nodes).
+        Curvz::PathData pd = *node->path;
+        if (auto* proj = m_get_project ? m_get_project() : nullptr) {
+            if (auto* owner = curvz::utils::find_doc_by_iid(*proj, m_iid)) {
+                double ch = (double)owner->canvas_height();
+                curvz::utils::path_data_doc_to_user(pd, ch);
+            }
+            // (Defensive: same shape as the set_path_data verb —
+            // missing owner returns the unflipped doc-space form,
+            // which the visual channel surfaces. Trace and visual
+            // disagree → not done, per the two-channel rule.)
+        }
+        return ScriptValue::text(curvz::utils::path_data_to_svg_d(pd));
     }
 
     return ScriptValue::null();

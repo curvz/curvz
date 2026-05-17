@@ -38,6 +38,42 @@
 //   either (the panel mutates active_layer_index directly without
 //   pushing a command — same shape we mirror). It's UI state, not
 //   data state.
+//
+// ── s237 m2 — panel-rebuild hook closes the ghost-row gap ──────────────────
+//
+// At s237 close Scott reported: after `layers delete`, the deleted
+// layer's row stays in the Layers panel until +/- is clicked. The
+// model is correctly mutated (subsequent operations behave as if
+// the layer is gone), but the panel keeps rendering its previous
+// row set.
+//
+// Root cause: LayersPanel::on_add_layer / on_delete_layer end with
+// a deferred `Glib::signal_idle().connect_once([this](){ rebuild(); })`
+// — the panel rebuilds its row list from current doc state. The
+// script-side verbs (`layers new` / `delete` / `move` / `rename` /
+// `set_visible` / etc.) mutate the doc and push commands but never
+// touch the panel. The panel's rebuild() was private, so even an
+// external observer couldn't trigger it.
+//
+// Fix shape (same as s222 m1 fix-1 for StylesScriptable):
+//   1. Promote LayersPanel::rebuild() to public.
+//   2. LayersScriptable gains a third ctor arg, `PanelGetter` —
+//      nullable lambda returning a LayersPanel*. Threaded into
+//      LayerProxy via proxy_for so element-level verbs participate.
+//   3. Every successful mutating verb ends by calling
+//      `notify_panel_dirty()` which schedules a deferred rebuild
+//      via Glib::signal_idle (same idle-deferral shape the button
+//      handlers use, so we don't rebuild mid-verb-stack).
+//
+// 13 fire sites total: 8 on LayerProxy (toggle_visible, set_visible,
+// toggle_locked, set_locked, rename, color, opacity, activate) and
+// 5 on the collection (new, delete, move, hide_others, show_all).
+// hide_others/show_all only fire when any layer actually flipped
+// (mirrors the existing "no_op early-return when nothing changed"
+// shape; an all-already-hidden hide_others is a no-op).
+//
+// MainWindow wires the lambda: [this](){ return &m_layers; }. Same
+// shape StylesScriptable's PanelGetter already uses.
 
 #include "scripting/LayersScriptable.hpp"
 #include "scripting/Scriptable.hpp"
@@ -47,7 +83,9 @@
 #include "CurvzProject.hpp"
 #include "SceneNode.hpp"
 #include "curvz_utils.hpp"
+#include "LayersPanel.hpp"  // s237 m2 — panel-side rebuild hook
 
+#include <glibmm/main.h>    // s237 m2 — Glib::signal_idle for deferred rebuild
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -142,10 +180,12 @@ class LayerProxy : public Scriptable {
 public:
     LayerProxy(LayersScriptable::ProjectGetter get_project,
                Curvz::CommandHistory* history,
+               LayersScriptable::PanelGetter get_panel,
                std::string iid)
         : Scriptable(unregistered)
         , m_get_project(std::move(get_project))
         , m_history(history)
+        , m_get_panel(std::move(get_panel))
         , m_iid(std::move(iid)) {}
 
     ScriptValue invoke(std::string_view verb,
@@ -164,6 +204,24 @@ private:
         auto* proj = m_get_project ? m_get_project() : nullptr;
         if (!proj) return nullptr;
         return curvz::utils::find_by_iid(*proj, m_iid);
+    }
+
+    // s237 m2 — panel-rebuild trigger. Called at the end of every
+    // successful mutating verb's body, AFTER the command push. The
+    // panel-getter is nullable (test harness path); skips silently
+    // when empty, same shape the history pointer uses.
+    //
+    // The LayersPanel's +/- button handlers wrap rebuild() in
+    // Glib::signal_idle().connect_once for deferred application;
+    // we do the same here so the rebuild lands on the next idle
+    // tick rather than in the middle of the verb's stack frame.
+    // Idle-scheduling matters: rebuild() destroys and recreates the
+    // row widgets, and doing that mid-verb could interfere with
+    // anything observing the doc state from within the same dispatch.
+    void notify_panel_dirty() {
+        auto* panel = m_get_panel ? m_get_panel() : nullptr;
+        if (!panel) return;
+        Glib::signal_idle().connect_once([panel]() { panel->rebuild(); });
     }
 
     // Push an EditLayerFieldCommand with our iid. The DIRECT mutation
@@ -198,6 +256,7 @@ private:
 
     LayersScriptable::ProjectGetter m_get_project;
     Curvz::CommandHistory*          m_history;   // non-owning; outlives us
+    LayersScriptable::PanelGetter   m_get_panel; // s237 m2 — nullable
     std::string                     m_iid;
 };
 
@@ -214,6 +273,7 @@ ScriptValue LayerProxy::invoke(std::string_view verb,
         bool after  = !before;
         layer->visible = after;
         push_bool_field(Field::Visible, before, after);
+        notify_panel_dirty();  // s237 m2
         return ScriptValue::null();
     }
 
@@ -224,6 +284,7 @@ ScriptValue LayerProxy::invoke(std::string_view verb,
         if (before == after) return ScriptValue::null();  // no-op, no command
         layer->visible = after;
         push_bool_field(Field::Visible, before, after);
+        notify_panel_dirty();  // s237 m2
         return ScriptValue::null();
     }
 
@@ -232,6 +293,7 @@ ScriptValue LayerProxy::invoke(std::string_view verb,
         bool after  = !before;
         layer->locked = after;
         push_bool_field(Field::Locked, before, after);
+        notify_panel_dirty();  // s237 m2
         return ScriptValue::null();
     }
 
@@ -242,6 +304,7 @@ ScriptValue LayerProxy::invoke(std::string_view verb,
         if (before == after) return ScriptValue::null();
         layer->locked = after;
         push_bool_field(Field::Locked, before, after);
+        notify_panel_dirty();  // s237 m2
         return ScriptValue::null();
     }
 
@@ -252,6 +315,7 @@ ScriptValue LayerProxy::invoke(std::string_view verb,
         if (after.empty() || before == after) return ScriptValue::null();
         layer->name = after;
         push_string_field(Field::Name, before, after);
+        notify_panel_dirty();  // s237 m2
         return ScriptValue::null();
     }
 
@@ -273,6 +337,7 @@ ScriptValue LayerProxy::invoke(std::string_view verb,
         if (before == after) return ScriptValue::null();
         layer->color = after;
         push_string_field(Field::Color, before, after);
+        notify_panel_dirty();  // s237 m2
         return ScriptValue::null();
     }
 
@@ -291,6 +356,7 @@ ScriptValue LayerProxy::invoke(std::string_view verb,
         if (v < 0.0) v = 0.0;
         if (v > 1.0) v = 1.0;
         layer->opacity = v;
+        notify_panel_dirty();  // s237 m2 (opacity row reads layer->opacity)
         return ScriptValue::null();
     }
 
@@ -314,6 +380,7 @@ ScriptValue LayerProxy::invoke(std::string_view verb,
         int idx = curvz::utils::find_layer_index_by_iid(*doc, m_iid);
         if (idx < 0) return ScriptValue::null();
         doc->active_layer_index = idx;
+        notify_panel_dirty();  // s237 m2 (active-row highlight tracks index)
         return ScriptValue::null();
     }
 
@@ -368,13 +435,30 @@ std::vector<std::string> LayerProxy::properties() const {
 // ── LayersScriptable ────────────────────────────────────────────────────────
 
 LayersScriptable::LayersScriptable(ProjectGetter get_project,
-                                   Curvz::CommandHistory* history)
+                                   Curvz::CommandHistory* history,
+                                   PanelGetter get_panel)
     : Scriptable("layers")
     , m_get_project(std::move(get_project))
-    , m_history(history) {
+    , m_history(history)
+    , m_get_panel(std::move(get_panel)) {
     // Registry registration happens in the Scriptable base ctor under
     // the name "layers". MainWindow holds us as a member; the registry
     // entry lives for the window's lifetime.
+    //
+    // s237 m2 — get_panel is the third ctor arg, nullable. When wired,
+    // every successful mutating verb (collection-level `new` /
+    // `delete` / `move` / `hide_others` / `show_all`, plus the
+    // LayerProxy element-level mutating verbs threaded through
+    // proxy_for) schedules a panel rebuild via Glib::signal_idle so
+    // the row list catches up to the new doc state. Closes the
+    // "ghost row stays after layers delete" gap Scott reported at
+    // s237 close.
+}
+
+void LayersScriptable::notify_panel_dirty() {
+    auto* panel = m_get_panel ? m_get_panel() : nullptr;
+    if (!panel) return;
+    Glib::signal_idle().connect_once([panel]() { panel->rebuild(); });
 }
 
 // ── Router hooks ────────────────────────────────────────────────────────────
@@ -398,7 +482,12 @@ LayersScriptable::proxy_for(std::string_view key) {
     // tolerated: LayerProxy::push_* checks before pushing, so a test
     // harness without history wired still gets correct model
     // mutations, just no undo entries.
+    //
+    // s237 m2 — thread the panel-getter too. The proxy's mutating
+    // verbs schedule a panel rebuild after their pushes, same shape
+    // the collection-level verbs use.
     return std::make_unique<LayerProxy>(m_get_project, m_history,
+                                        m_get_panel,
                                         std::string(key));
 }
 
@@ -461,6 +550,7 @@ ScriptValue LayersScriptable::invoke(std::string_view verb,
                 insert_pos, active_before, active_after);
             m_history->push(std::move(cmd));
         }
+        notify_panel_dirty();  // s237 m2
         return ScriptValue::text(new_iid);
     }
 
@@ -537,6 +627,7 @@ ScriptValue LayersScriptable::invoke(std::string_view verb,
                 idx, active_before, new_active);
             m_history->push(std::move(cmd));
         }
+        notify_panel_dirty();  // s237 m2 — closes the ghost-row gap
         return ScriptValue::null();
     }
 
@@ -608,6 +699,7 @@ ScriptValue LayersScriptable::invoke(std::string_view verb,
                 m_history->push(std::move(cmd));
             }
         }
+        notify_panel_dirty();  // s237 m2
         return ScriptValue::null();
     }
 
@@ -621,12 +713,14 @@ ScriptValue LayersScriptable::invoke(std::string_view verb,
         if (keep_iid.empty()) return ScriptValue::null();
 
         using Field = Curvz::EditLayerFieldCommand::Field;
+        bool any_flipped = false;
         for (auto& l : doc->layers) {
             if (!is_real_layer(l.get())) continue;
             if (l->internal_id == keep_iid) continue;
             if (!l->visible) continue;  // already hidden, skip
             bool before = l->visible;
             l->visible = false;
+            any_flipped = true;
             if (m_history && !l->internal_id.empty()) {
                 auto cmd = std::make_unique<Curvz::EditLayerFieldCommand>(
                     proj, l->internal_id, Field::Visible,
@@ -635,16 +729,19 @@ ScriptValue LayersScriptable::invoke(std::string_view verb,
                 m_history->push(std::move(cmd));
             }
         }
+        if (any_flipped) notify_panel_dirty();  // s237 m2
         return ScriptValue::null();
     }
 
     if (verb == "show_all") {
         using Field = Curvz::EditLayerFieldCommand::Field;
+        bool any_flipped = false;
         for (auto& l : doc->layers) {
             if (!is_real_layer(l.get())) continue;
             if (l->visible) continue;
             bool before = l->visible;
             l->visible = true;
+            any_flipped = true;
             if (m_history && !l->internal_id.empty()) {
                 auto cmd = std::make_unique<Curvz::EditLayerFieldCommand>(
                     proj, l->internal_id, Field::Visible,
@@ -653,6 +750,7 @@ ScriptValue LayersScriptable::invoke(std::string_view verb,
                 m_history->push(std::move(cmd));
             }
         }
+        if (any_flipped) notify_panel_dirty();  // s237 m2
         return ScriptValue::null();
     }
 
