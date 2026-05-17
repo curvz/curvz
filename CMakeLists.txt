@@ -478,6 +478,7 @@ set(SOURCES
     src/scripting/LayersScriptable.cpp
     src/scripting/GuidesScriptable.cpp
     src/scripting/SwatchesScriptable.cpp
+    src/scripting/PalettesScriptable.cpp
     src/scripting/StylesScriptable.cpp
     src/scripting/ThemesScriptable.cpp
     src/scripting/ObjectsScriptable.cpp

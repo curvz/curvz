@@ -14,6 +14,7 @@
 #include "scripting/LayersScriptable.hpp"  // s216 m1 — model Scriptable pilot
 #include "scripting/GuidesScriptable.hpp"  // s218 m1 — second model Scriptable
 #include "scripting/SwatchesScriptable.hpp"  // s221 m1 — third model Scriptable
+#include "scripting/PalettesScriptable.hpp"  // s243 m2 — eighth model Scriptable
 #include "scripting/StylesScriptable.hpp"  // s222 m1 — fourth model Scriptable
 #include "scripting/ThemesScriptable.hpp"  // s223 m1 — fifth model Scriptable
 #include "scripting/ObjectsScriptable.hpp"  // s230 m1 — sixth model Scriptable
@@ -268,6 +269,29 @@ MainWindow::MainWindow(Application & /*app*/) {
   // EditSwatchCommand) and the Scriptable rides that plumbing.
   m_swatches_scriptable =
       std::make_unique<curvz::scripting::SwatchesScriptable>(
+          [this]() -> CurvzProject* { return m_project.get(); },
+          &m_history);
+
+  // s243 m2 — `palettes` collection Scriptable. Sibling of
+  // m_swatches_scriptable — both wrap CurvzProject::swatches (the
+  // SwatchLibrary holds two parallel pools, swatches and palettes;
+  // each gets its own collection Scriptable). Same construction
+  // shape: project-getter resolves m_project.get() fresh on every
+  // verb call, history pointer to the doc's CommandHistory.
+  //
+  // history is DEREFERENCED on every mutating CRUD verb — s243 m1
+  // made every palette CRUD undoable (AddPaletteCommand /
+  // RemovePaletteCommand / RenamePaletteCommand) and the Scriptable
+  // rides exactly that plumbing. The `activate` verb is the one
+  // mutator that doesn't push a command (transient working state,
+  // matching the panel's posture).
+  //
+  // No PanelGetter — SwatchesPanel listens on the s243 m1 palette
+  // signal trio and rebuilds wholesale on any fire. Fourth
+  // application of the panel-visibility canon entry, same shape as
+  // m_themes_scriptable (no panel-side step needed).
+  m_palettes_scriptable =
+      std::make_unique<curvz::scripting::PalettesScriptable>(
           [this]() -> CurvzProject* { return m_project.get(); },
           &m_history);
 

@@ -153,6 +153,7 @@ namespace curvz::widgets { class ToggleButton; }  // s219 m1 — headerbar Scrip
 namespace curvz::scripting { class LayersScriptable; }
 namespace curvz::scripting { class GuidesScriptable; }
 namespace curvz::scripting { class SwatchesScriptable; }
+namespace curvz::scripting { class PalettesScriptable; }  // s243 m2 — eighth model Scriptable
 namespace curvz::scripting { class StylesScriptable; }
 namespace curvz::scripting { class ThemesScriptable; }
 namespace curvz::scripting { class ObjectsScriptable; }
@@ -166,9 +167,10 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
-    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
+    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s243 m2 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
     // unique_ptr<curvz::scripting::GuidesScriptable>,
     // unique_ptr<curvz::scripting::SwatchesScriptable>,
+    // unique_ptr<curvz::scripting::PalettesScriptable>,
     // unique_ptr<curvz::scripting::StylesScriptable>,
     // unique_ptr<curvz::scripting::ThemesScriptable>,
     // unique_ptr<curvz::scripting::ObjectsScriptable>, and
@@ -663,6 +665,32 @@ private:
     // s220 m1a made swatch CRUD undoable and the Scriptable rides that
     // plumbing.
     std::unique_ptr<curvz::scripting::SwatchesScriptable> m_swatches_scriptable;
+    // s243 m2 — `palettes` collection Scriptable, eighth row-bound model
+    // Scriptable. Sibling of m_swatches_scriptable — both wrap the same
+    // SwatchLibrary, just opposite ends of it (the library holds two
+    // parallel two-tier pools, swatches and palettes). Closes the s243
+    // arc on top of the s243 m1 palette-CRUD command quintet
+    // (AddPaletteCommand / RemovePaletteCommand / RenamePaletteCommand /
+    // PaletteMembershipCommand). Same lifetime / construction /
+    // destruction shape as m_swatches_scriptable; transient per-instance
+    // `palettes.<iid>` proxies route through this object's `proxy_for`.
+    //
+    // history pointer is DEREFERENCED on every mutating CRUD verb
+    // (new / delete / duplicate / rename) — s243 m1 made every palette
+    // CRUD undoable and the Scriptable rides exactly that plumbing.
+    // The `activate` verb is the one mutator that doesn't push a
+    // command — set_active_palette is transient working state,
+    // deliberately outside undo (matches the panel's dropdown click).
+    //
+    // No PanelGetter argument — SwatchesPanel listens on the s243 m1
+    // palette signal trio (signal_palette_added / _removed / _changed)
+    // and rebuilds the dropdown + grid wholesale on any fire. Scripted
+    // palette mutations show up automatically. Fourth application of
+    // the visibility canon entry (s221 swatches: library-side fix;
+    // s222 styles: panel-side fix; s223 themes: no fix needed because
+    // the panel doesn't filter; s243 palettes: same as themes — the
+    // panel's library-signal listeners are sufficient).
+    std::unique_ptr<curvz::scripting::PalettesScriptable> m_palettes_scriptable;
     // s222 m1 — `styles` collection Scriptable, fourth row-bound model
     // Scriptable. Second library-collection Scriptable (sibling of
     // m_swatches_scriptable; both wrap project-scoped libraries rather
