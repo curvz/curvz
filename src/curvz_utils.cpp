@@ -1653,4 +1653,204 @@ void path_data_doc_to_user(::Curvz::PathData& pd, double canvas_h) {
     }
 }
 
+// ── SVG fill-attribute pump pair (s238 m1) ───────────────────────────
+//
+// Mirrors SvgParser.cpp::parse_fill and SvgWriter.cpp::fill_attr on
+// the four context-free types. The gradient (url(#...)) and the
+// SwatchRef-id sidecar branches are deliberately omitted — they
+// require a parse-time defs table / a write-time collector pointer
+// that the script-side seam doesn't carry. The fall-through is
+// CurrentColor (matches SvgParser's safe-default for unknown tokens);
+// the gradient emit side falls back to first-stop hex (matches
+// SvgWriter when g_grad_collector is absent).
+//
+// The 19-name common subset is the same one SvgParser carries —
+// black/white/red/green/blue/yellow/cyan/magenta/orange/purple/grey/
+// gray/silver/navy/teal/maroon/lime/aqua/fuchsia/olive. Anything
+// outside falls through to CurrentColor rather than failing — the
+// script-side seam stays permissive.
+//
+// Pure on the input. No I/O. Safe to call from any thread.
+
+namespace {
+
+// Common 19-name subset. Kept in sync with SvgParser.cpp's table
+// (intentional duplication — the SvgParser sweep on backlog will
+// collapse both copies into one canonical lookup; until then, two
+// tables in two places is the explicit "we know about this" state).
+struct NamedColor { const char* name; uint32_t rgb; };
+constexpr NamedColor k_named_colors[] = {
+    {"black",   0x000000}, {"white",   0xffffff},
+    {"red",     0xff0000}, {"green",   0x008000},
+    {"blue",    0x0000ff}, {"yellow",  0xffff00},
+    {"cyan",    0x00ffff}, {"magenta", 0xff00ff},
+    {"orange",  0xffa500}, {"purple",  0x800080},
+    {"grey",    0x808080}, {"gray",    0x808080},
+    {"silver",  0xc0c0c0}, {"navy",    0x000080},
+    {"teal",    0x008080}, {"maroon",  0x800000},
+    {"lime",    0x00ff00}, {"aqua",    0x00ffff},
+    {"fuchsia", 0xff00ff}, {"olive",   0x808000},
+};
+
+// Lowercase a single-character: ASCII-safe, no locale. Matches the
+// permissive token-comparison shape SvgParser uses (it compares
+// against lowercase entries but doesn't lowercase the input; we go
+// one better here so "Red" and "RED" both parse as the named colour).
+inline char ascii_lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c;
+}
+
+std::string ascii_lowercased(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) out.push_back(ascii_lower(c));
+    return out;
+}
+
+// Trim leading/trailing ASCII whitespace.
+std::string trimmed(const std::string& s) {
+    size_t a = 0, b = s.size();
+    while (a < b && (s[a] == ' ' || s[a] == '\t')) ++a;
+    while (b > a && (s[b-1] == ' ' || s[b-1] == '\t')) --b;
+    return s.substr(a, b - a);
+}
+
+} // anon namespace
+
+::Curvz::FillStyle fill_attr_to_fill_style(const std::string& token_raw) {
+    using FS = ::Curvz::FillStyle;
+    FS fs;
+    std::string val = trimmed(token_raw);
+
+    // Empty / currentColor — both map to CurrentColor. The default-
+    // constructed FillStyle already has type == CurrentColor, but
+    // we set it explicitly to be readable.
+    if (val.empty()) {
+        fs.type = FS::Type::CurrentColor;
+        return fs;
+    }
+    {
+        std::string lc = ascii_lowercased(val);
+        if (lc == "currentcolor") {
+            fs.type = FS::Type::CurrentColor;
+            return fs;
+        }
+        if (lc == "none") {
+            fs.type = FS::Type::None;
+            return fs;
+        }
+    }
+
+    // #RRGGBB hex.
+    if (val.size() == 7 && val[0] == '#') {
+        unsigned rgb = 0;
+        if (std::sscanf(val.c_str() + 1, "%x", &rgb) == 1) {
+            fs.type = FS::Type::Solid;
+            fs.r = ((rgb >> 16) & 0xff) / 255.0;
+            fs.g = ((rgb >>  8) & 0xff) / 255.0;
+            fs.b = ( rgb        & 0xff) / 255.0;
+            fs.a = 1.0;
+            return fs;
+        }
+    }
+
+    // #RGB short-form (expanded to RRGGBB).
+    if (val.size() == 4 && val[0] == '#') {
+        unsigned rgb = 0;
+        if (std::sscanf(val.c_str() + 1, "%x", &rgb) == 1) {
+            int r = (rgb >> 8) & 0xf;
+            int g = (rgb >> 4) & 0xf;
+            int b =  rgb       & 0xf;
+            fs.type = FS::Type::Solid;
+            fs.r = (r | (r << 4)) / 255.0;
+            fs.g = (g | (g << 4)) / 255.0;
+            fs.b = (b | (b << 4)) / 255.0;
+            fs.a = 1.0;
+            return fs;
+        }
+    }
+
+    // rgb(r,g,b) — integer 0-255 channels.
+    if (val.rfind("rgb(", 0) == 0) {
+        int r = 0, g = 0, b = 0;
+        if (std::sscanf(val.c_str(), "rgb(%d,%d,%d)", &r, &g, &b) == 3) {
+            fs.type = FS::Type::Solid;
+            fs.r = r / 255.0; fs.g = g / 255.0; fs.b = b / 255.0;
+            fs.a = 1.0;
+            return fs;
+        }
+    }
+
+    // rgba(r,g,b,a) — integer rgb, float a.
+    if (val.rfind("rgba(", 0) == 0) {
+        int r = 0, g = 0, b = 0; float a = 1.0f;
+        if (std::sscanf(val.c_str(), "rgba(%d,%d,%d,%f)", &r, &g, &b, &a) == 4) {
+            fs.type = FS::Type::Solid;
+            fs.r = r / 255.0; fs.g = g / 255.0; fs.b = b / 255.0;
+            fs.a = a;
+            return fs;
+        }
+    }
+
+    // Named — case-insensitive lookup against the 19-name subset.
+    {
+        std::string lc = ascii_lowercased(val);
+        for (const auto& nc : k_named_colors) {
+            if (lc == nc.name) {
+                fs.type = FS::Type::Solid;
+                fs.r = ((nc.rgb >> 16) & 0xff) / 255.0;
+                fs.g = ((nc.rgb >>  8) & 0xff) / 255.0;
+                fs.b = ( nc.rgb        & 0xff) / 255.0;
+                fs.a = 1.0;
+                return fs;
+            }
+        }
+    }
+
+    // Unknown / url(#...) without a defs table / unrecognised paint
+    // server — degrade to CurrentColor. Matches SvgParser's safe-
+    // default. No log line at this seam: callers from script land
+    // should see "I typed something the verb didn't recognise, it
+    // landed as currentColor" through the read-side query rather
+    // than through curvz.log.
+    fs.type = FS::Type::CurrentColor;
+    return fs;
+}
+
+std::string fill_style_to_fill_attr(const ::Curvz::FillStyle& fs) {
+    using FS = ::Curvz::FillStyle;
+    switch (fs.type) {
+        case FS::Type::None:         return "none";
+        case FS::Type::CurrentColor: return "currentColor";
+        case FS::Type::Solid: {
+            char buf[8];
+            std::snprintf(buf, sizeof(buf), "#%02x%02x%02x",
+                          (int)std::round(fs.r * 255),
+                          (int)std::round(fs.g * 255),
+                          (int)std::round(fs.b * 255));
+            return buf;
+        }
+        case FS::Type::LinearGradient:
+        case FS::Type::RadialGradient: {
+            // No collector context at the script-side seam — degrade
+            // to first-stop hex (or the remembered solid colour if
+            // stops is empty). Matches SvgWriter's fallback when
+            // g_grad_collector is null.
+            double r = fs.r, g = fs.g, b = fs.b;
+            if (!fs.stops.empty()) {
+                r = fs.stops.front().r;
+                g = fs.stops.front().g;
+                b = fs.stops.front().b;
+            }
+            char buf[8];
+            std::snprintf(buf, sizeof(buf), "#%02x%02x%02x",
+                          (int)std::round(r * 255),
+                          (int)std::round(g * 255),
+                          (int)std::round(b * 255));
+            return buf;
+        }
+    }
+    return "none";  // unreachable; silences -Wreturn-type
+}
+
 } // namespace curvz::utils

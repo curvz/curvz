@@ -1,0 +1,317 @@
+# 36_objects_set_fill — opens the appearance branch of the canvas-
+# observable scripts arc.
+#
+# s236 m1 + s237 m1 + s237 m2 cleared the ground for the canvas-
+# observable arc — scripts can mint Paths, set their geometry in
+# user-space, and see layer-panel state update without manual prompt.
+# But minted geometry without fill renders only as wireframe (and
+# only in modes that draw outlines); in fill-shaded modes the path
+# is invisible. The arc's payoff — "the user types something and
+# sees colour on the canvas" — has been waiting on the first
+# appearance verb since s231.
+#
+# s238 m1 ships `set_fill <color_token>` on ObjectProxy. The verb
+# parses the token through a new curvz_utils pump pair
+# (fill_attr_to_fill_style / fill_style_to_fill_attr), captures the
+# pre-edit appearance snapshot, writes the new FillStyle directly
+# onto the SceneNode, clears the swatch and style bindings (direct-
+# override break, matches inspector / eyedropper behaviour), and
+# pushes EditAppearanceCommand — the existing iid-migrated command
+# from s167 m2, fitting unmodified. Fourth verify-before-assume
+# "existing command fits" case in a row (after s236 m1 reusing
+# EditPathCommand and s237 m1 reusing CoordSpace; s232 m3 and s234
+# m4 had to ship parallel classes).
+#
+# The matching `fill` read query re-emits the FillStyle as an SVG
+# fill-attribute string via the same pump pair. Unlike `path_data`
+# (whose normalisation prevents byte-clean round-trip), the fill
+# pump round-trips cleanly on the canonical input forms — "none",
+# "currentColor", lowercase "#RRGGBB" — and normalises other inputs
+# (named colours, rgb()/rgba(), uppercase hex, short hex) to
+# lowercase "#RRGGBB" on the read side. The literal-RHS asserts
+# below exercise both the byte-clean cases and the normalising
+# cases.
+#
+# ── Owns-its-conditions structure (CANON) ────────────────────────────────
+#
+# BUILD UP / VALIDATE / TEAR DOWN. The smoke mints its own test
+# layer and two test objects (a Path for the rect, a Group for the
+# negative-class probe), validates the new surface end-to-end, and
+# tears everything back down. Net structural change to the doc:
+# zero. Side effect on the undo stack: AddNodeCommand for the mints,
+# EditPathCommand for the geometry set, EditAppearanceCommand
+# entries for the set_fill calls, DeleteObjectCommand pairs for
+# the teardown.
+#
+# ── Pre-stated count ─────────────────────────────────────────────────────
+#
+# Expected: 11 pass / 0 fail / 0 error.
+#
+# Breakdown:
+#   Phase 1 (REGISTRY):                                       → 0 asserts.
+#   Phase 2 (DISPATCH — baseline count):                      → 0 asserts.
+#   Phase 3 (BUILD UP — mint test_layer, mint `p` as Path,
+#            geometry, baseline fill):
+#     p type == "path"                                         → 1 assert.
+#     p fill == "currentColor" (fresh-mint default)           → 1 assert.
+#   Phase 4 (SET — named colour, normalises to hex):
+#     p fill == "#ff0000"                                      → 1 assert.
+#   Phase 5 (SET — lowercase hex, byte-clean round-trip):
+#     p fill == "#00ff00"                                      → 1 assert.
+#   Phase 6 (SET — "none", byte-clean round-trip):
+#     p fill == "none"                                         → 1 assert.
+#   Phase 7 (SET — "currentColor", byte-clean round-trip):
+#     p fill == "currentColor"                                 → 1 assert.
+#   Phase 8 (NEGATIVE — unknown token degrades to currentColor):
+#     p fill == "currentColor"                                 → 1 assert.
+#   Phase 9 (UNIVERSAL — set_fill on a Group is NOT refused):
+#     g type == "group", g fill == "#0000ff"                   → 2 asserts.
+#   Phase 10 (CROSS-CHECK — find_by_type "path" still resolves):
+#     found_path type == "path"                                → 1 assert.
+#   Phase 11 (TEAR DOWN — round-trip count):
+#     objects count == count_before                            → 1 assert.
+#
+# Total: 0 + 0 + 2 + 1 + 1 + 1 + 1 + 1 + 2 + 1 + 1 = 11.
+#
+# ── On the `fill` read-side query ────────────────────────────────────────
+#
+# Returns the SVG fill-attribute string representation of the
+# FillStyle, re-emitted via curvz_utils' fill_style_to_fill_attr
+# pump. Four cases:
+#   - FillStyle::None         → "none"
+#   - FillStyle::CurrentColor → "currentColor"
+#   - FillStyle::Solid        → "#RRGGBB" (lowercase hex, %02x per
+#                                          channel)
+#   - FillStyle::*Gradient    → "#RRGGBB" of first stop (fallback —
+#                                          script seam doesn't carry
+#                                          gradient defs context)
+#
+# Round-trip is byte-clean for the canonical input forms and
+# normalising for the rest. A future structural round-trip probe
+# would compare FillStyle values directly; the DSL doesn't carry
+# value-vs-value compare today.
+#
+# ── On the "no node-type refusal" choice ─────────────────────────────────
+#
+# Phase 9 sets fill on a Group, which is NOT refused. Appearance
+# lives on every SceneNode subtype (Path, Group, Compound, Image,
+# Ref, Text, etc.) — the inspector's fill controls don't grey out
+# for non-Path selections, and style inheritance / per-child
+# fill-rule effects can make a Group's fill meaningful even though
+# the container itself doesn't draw a filled region directly. So
+# set_fill on a Group has effect, just not the same canvas-visible
+# effect as set_fill on a Path. This contrasts with set_path_data,
+# which refuses non-Path nodes (path == nullptr) because PathData
+# is structurally absent on those types.
+#
+# ── On the unknown-token degrade ─────────────────────────────────────────
+#
+# Phase 8 sets fill to "definitely-not-a-color-token-12345". The
+# pump parses this as CurrentColor (the safe default; matches
+# SvgParser's behaviour on unrecognised fill values). Trace shows
+# "currentColor"; no warning channel in the script DSL. A future
+# milestone may add structured-error reporting (logged on backlog
+# s235); for m1, the visible behaviour is the contract.
+#
+# ── Canvas-observable (three-channel acceptance) ─────────────────────────
+#
+# Trace channel: the 11 asserts above.
+# Visual channel: after Phase 4's set_fill "red", the rect (minted
+#   in Phase 3 with the s236/s237 100×100 rect-at-user-origin
+#   geometry) becomes a SOLID RED 100×100 rect anchored at the
+#   bottom-left of the page. After Phase 5, green. After Phase 6,
+#   None — the rect should render as outline-only in modes that
+#   draw outlines, or as nothing in fill-only modes. After Phase 7,
+#   CurrentColor — the rect picks up the document's current colour,
+#   typically black or whatever the doc's text-context defines.
+#   The visual progression rect-red → rect-green → rect-empty →
+#   rect-currentColor is the first "I see colour change because of
+#   script" event in the arc.
+# Build channel: Scott's compile.
+
+#[sub] === Phase 1: REGISTRY ===
+#[sub] `objects` should appear in the registry list — baseline.
+
+list
+
+#[sub] === Phase 2: DISPATCH — baseline count ===
+#[sub] Captures the pre-mint object count to compare against after
+#[sub] teardown.
+
+get objects count
+set count_before to result
+
+#[sub] === Phase 3: BUILD UP — mint test layer, Path, geometry ===
+#[sub] Mint a sentinel-named test layer, activate it, mint `p` as a
+#[sub] Path, set its geometry to a 100×100 rect at user-origin
+#[sub] (bottom-left of the page; s237 m1 user-space convention).
+#[sub] A freshly-minted Path's fill defaults to CurrentColor (the
+#[sub] SceneNode struct default), so the baseline `fill` query
+#[sub] returns "currentColor" via the pump.
+
+layers new
+set test_layer to result
+layers.test_layer rename "objects_set_fill_smoke_s238_m1"
+layers.test_layer activate
+
+objects new "path"
+set p to result
+objects.p set_path_data "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+
+assert objects.p type == "path"
+assert objects.p fill == "currentColor"
+
+#[sub] === Phase 4: SET — named colour normalises to hex ===
+#[sub] "red" parses through the 19-name common subset to (255,0,0)
+#[sub] Solid; the read-side pump emits "#ff0000". Round-trip is
+#[sub] normalising (input "red", output "#ff0000") — byte-equality
+#[sub] is on the normalised form. Visual: SOLID RED rect, the
+#[sub] first colour-on-canvas event in the arc.
+
+objects.p set_fill "red"
+assert objects.p fill == "#ff0000"
+
+#[sub] === Phase 5: SET — lowercase hex byte-clean round-trip ===
+#[sub] Lowercase "#RRGGBB" round-trips byte-clean: the parser
+#[sub] reads "#00ff00" to Solid (0, 255, 0); the emitter writes
+#[sub] "#00ff00" back via "%02x". Visual: rect changes from red
+#[sub] to green. EditAppearanceCommand carries the rect-red
+#[sub] before-state, so Ctrl+Z would walk back through green →
+#[sub] red → currentColor (the smoke doesn't exercise undo;
+#[sub] three-channel acceptance for Scott visually).
+
+objects.p set_fill "#00ff00"
+assert objects.p fill == "#00ff00"
+
+#[sub] === Phase 6: SET — "none" byte-clean round-trip ===
+#[sub] FillStyle::None — the explicit "this object has no fill"
+#[sub] state. Distinct from "fill defaults to CurrentColor"
+#[sub] (Phase 3's baseline). Visual: rect disappears from
+#[sub] fill-shaded modes; outline-only in wireframe modes (where
+#[sub] stroke is also "none" by default — so the rect may be
+#[sub] entirely invisible until set_stroke lands in a later
+#[sub] milestone).
+
+objects.p set_fill "none"
+assert objects.p fill == "none"
+
+#[sub] === Phase 7: SET — "currentColor" byte-clean round-trip ===
+#[sub] FillStyle::CurrentColor — defers to the containing context's
+#[sub] colour. Distinct from None (Phase 6) and from a freshly-
+#[sub] minted default (Phase 3, which is also CurrentColor but
+#[sub] arrived at via the SceneNode default rather than via
+#[sub] set_fill).
+
+objects.p set_fill "currentColor"
+assert objects.p fill == "currentColor"
+
+#[sub] === Phase 8: NEGATIVE — unknown token degrades to currentColor ===
+#[sub] The pump's safe-default for unrecognised tokens is
+#[sub] CurrentColor (matches SvgParser::parse_fill). No error
+#[sub] channel through the DSL in m1; the read-side query is the
+#[sub] observable. Phase 7 already set fill to CurrentColor, so
+#[sub] this Phase's set_fill is also a no-op early-return (parsed
+#[sub] CurrentColor equals existing CurrentColor) — no new
+#[sub] EditAppearanceCommand on the undo stack. The assert
+#[sub] verifies the read-side query shows the expected state
+#[sub] regardless.
+
+objects.p set_fill "definitely-not-a-color-token-12345"
+assert objects.p fill == "currentColor"
+
+#[sub] === Phase 9: UNIVERSAL — set_fill on a Group is NOT refused ===
+#[sub] Appearance lives on every SceneNode subtype. Unlike
+#[sub] set_path_data, which refused Groups via node->path ==
+#[sub] nullptr, set_fill accepts Groups (and Compounds, Images,
+#[sub] Refs, etc.) and lands a FillStyle on the container's
+#[sub] appearance slot. The container itself doesn't draw a
+#[sub] filled region directly, but style inheritance and
+#[sub] per-child fill-rule effects make the value meaningful.
+#[sub] The fill query reads back the set value via the pump.
+
+objects new "group"
+set g to result
+objects.g set_fill "blue"
+
+assert objects.g type == "group"
+assert objects.g fill == "#0000ff"
+
+#[sub] === Phase 10: CROSS-CHECK — find_by_type "path" still resolves ===
+#[sub] Sanity check that the appearance work didn't disturb the
+#[sub] iid index or break type-keyed lookups. Same shape smoke 35
+#[sub] used. Returns a path-typed iid; we assert on type rather
+#[sub] than on iid identity (find_by_type's "first hit" doesn't
+#[sub] guarantee which of multiple paths is returned).
+
+objects find_by_type "path"
+set found_path to result
+assert objects.found_path type == "path"
+
+#[sub] === Phase 11: TEAR DOWN ===
+#[sub] Three mints (test_layer, p, g) need three matching deletes.
+#[sub] DeleteObjectCommand owns the per-object snapshots (path,
+#[sub] fill, stroke, etc.); no leak. count returns to count_before
+#[sub] — round-trip baseline.
+
+objects delete p
+objects delete g
+layers delete test_layer
+
+get objects count
+assert objects count == count_before
+
+#[sub] === Final list — registry sanity ===
+#[sub] Same shape as smoke 35's close: `objects` still present, no
+#[sub] transient proxies registered. Every ObjectProxy / LayerProxy
+#[sub] materialised across this run is cleaned up at end-of-
+#[sub] statement.
+
+list
+
+#[sub] Done. The s238 m1 surface is validated:
+#[sub]   - `objects.<iid> set_fill <token>` parses the token through
+#[sub]     curvz_utils' fill_attr_to_fill_style pump, captures the
+#[sub]     full pre-edit appearance state, writes the new FillStyle
+#[sub]     onto the SceneNode, clears the swatch and style bindings
+#[sub]     (direct-override break — undoable via the captured
+#[sub]     before-state), pushes EditAppearanceCommand for undo,
+#[sub]     fires the s235 m1 canvas-refresh callback at success.
+#[sub]   - Same-value set_fill is a clean no-op (no command pushed,
+#[sub]     no callback fired) — Phase 8's degraded-to-currentColor
+#[sub]     case after Phase 7's already-currentColor exercises this.
+#[sub]   - `fill` read query returns the canonical SVG fill-
+#[sub]     attribute string for any FillStyle — "none",
+#[sub]     "currentColor", or lowercase "#RRGGBB" for Solid.
+#[sub]     Byte-clean round-trip on the canonical input forms;
+#[sub]     normalising on named colours / rgb() / rgba() / uppercase
+#[sub]     hex / short hex.
+#[sub]   - Unknown tokens degrade to CurrentColor (no error
+#[sub]     channel in m1; future structured-error work is logged
+#[sub]     on backlog from s235).
+#[sub]   - set_fill is universal across SceneNode subtypes — not
+#[sub]     refused on non-Paths (unlike set_path_data). Appearance
+#[sub]     is a per-node-everywhere field.
+#[sub]
+#[sub] Pre-stated: 11 pass / 0 fail / 0 error.
+#[sub]
+#[sub] What's still NOT covered by m1 (and that's by design):
+#[sub]   - `set_stroke`. Scheduled m2/m3 of the canvas-observable
+#[sub]     arc. Without it, a set_fill "none" rect has no visual
+#[sub]     trace at all in any render mode.
+#[sub]   - Gradient tokens. The script-side pump degrades gradient
+#[sub]     FillStyle to first-stop hex on emit and parses url(#...)
+#[sub]     references as CurrentColor; gradients via script go
+#[sub]     through the swatches / styles surface, not via set_fill.
+#[sub]   - Swatch-id binding via script. set_fill clears the swatch
+#[sub]     binding on direct override (matches inspector behaviour);
+#[sub]     binding a swatch from script is a separate verb for a
+#[sub]     future milestone.
+#[sub]   - Fill-opacity as a separate token. The "rgba(r,g,b,a)"
+#[sub]     form captures alpha into FillStyle.a, but the pump emits
+#[sub]     "#RRGGBB" without alpha — alpha round-trip is currently
+#[sub]     lossy on the read side. A future milestone may either
+#[sub]     emit "#RRGGBBAA" hex or split fill-opacity into a
+#[sub]     separate query.
+#[sub]   - Undo / redo exercise. The smoke doesn't push and pop
+#[sub]     through the EditAppearanceCommand stack; that's three-
+#[sub]     channel-acceptance territory for Scott visually.

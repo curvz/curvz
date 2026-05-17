@@ -190,6 +190,97 @@
 // crash. Two-channel acceptance catches it (the visual would show
 // inverted geometry).
 //
+// s238 m1 — APPEARANCE branch of the canvas-observable arc opens.
+// Adds the first appearance-bearing verb (`set_fill "<color_token>"`)
+// to ObjectProxy::invoke, plus a matching `fill` read query. Rides
+// EXISTING EditAppearanceCommand unmodified — verify-before-assume's
+// FOURTH "existing command fits" case (after s236 m1 reusing
+// EditPathCommand and s237 m1 reusing CoordSpace; s232 m3 and s234
+// m4 had to ship parallel classes). EditAppearanceCommand's capture
+// is whole-FillStyle + whole-StrokeStyle plus swatch-id and bound-
+// style snapshots; for a fill-only edit the verb writes only
+// `fill_after`, leaving stroke_after / fill_swatch_id_after /
+// stroke_swatch_id_after / bound_style_after equal to their `_before`
+// snapshots so undo restores those four to themselves (no-op for
+// stroke / swatches / binding).
+//
+// New `curvz::utils::fill_attr_to_fill_style` and
+// `fill_style_to_fill_attr` pumps in curvz_utils — third
+// infrastructure-pump candidate after find_by_iid (s167 m1) and the
+// svg-d pair (s236 m1). Both legacy seams (SvgParser::parse_fill,
+// SvgWriter::fill_attr) stay put as file-statics with their
+// gradient-server branches intact; the script-side pumps cover the
+// four context-free fill types (None, CurrentColor, Solid, with a
+// graceful first-stop-hex degrade for gradients written from
+// script). Future SvgParser sweep collapses to one canonical pair.
+//
+// Vocabulary on set_fill:
+//   - "none"             → FillStyle::None
+//   - "currentColor"     → FillStyle::CurrentColor
+//   - "#RRGGBB"          → FillStyle::Solid
+//   - "#RGB"             → FillStyle::Solid (short-form, expanded)
+//   - "rgb(r,g,b)"       → FillStyle::Solid
+//   - "rgba(r,g,b,a)"    → FillStyle::Solid
+//   - named (19 colours) → FillStyle::Solid
+//   - anything else      → FillStyle::CurrentColor (safe default)
+//
+// The verb does:
+//   1. Resolve node via the proxy's iid.
+//   2. Refuse if args.empty(). Unlike set_path_data, an empty-string
+//      arg is ALSO refused — empty fill token has no defensible
+//      vocabulary slot here (SVG's "fill omitted" maps to CurrentColor
+//      from the renderer's side, but the user typing `set_fill ""`
+//      reads as accidental and we silently no-op rather than convert
+//      a typo into a mutation). Future calibration if the field
+//      reports the convention as surprising.
+//   3. No node-type refusal — appearance lives on every SceneNode
+//      subtype (Path, Group, Compound, Image, Ref, Text, etc.).
+//      Setting fill on a Group/Compound has a semantic effect via
+//      style inheritance even though the Group itself doesn't draw
+//      a filled region directly. Matches inspector and broadcast
+//      behaviour.
+//   4. Parse arg via fill_attr_to_fill_style → `fill_new`.
+//   5. Capture full pre-edit appearance snapshot: fill_before,
+//      stroke_before, fill_swatch_id_before, stroke_swatch_id_before,
+//      bound_style_before. Same shape EditAppearanceCommand carries.
+//   6. No-op (no command, no callback) when fill_new equals
+//      fill_before — same value-unchanged early-return shape as
+//      set_visible / set_locked / rename. Comparison uses the
+//      FillStyle field-level == below (anon namespace helper).
+//   7. Direct mutation: write fill_new onto node->fill. Also clear
+//      fill_swatch_id and bound_style — direct-override semantics
+//      that mirror style::mutate_appearance on the inspector side
+//      (a direct fill set breaks the swatch binding and the style
+//      binding; the s82 / s92 capture shape exists exactly to undo
+//      this break correctly).
+//   8. Push EditAppearanceCommand with the 14-arg constructor
+//      (proj, m_iid, fill_before, stroke_before, fill_new,
+//      stroke_before, fsib, ssib, "", ssib, bsb, "", desc) —
+//      fill_after = fill_new, the four "stroke / swatches / binding"
+//      after-values are: stroke unchanged, fill_swatch cleared,
+//      stroke_swatch unchanged, bound_style cleared. Skipped if
+//      history is null.
+//   9. notify_doc_changed() — the s235 m1 cascade.
+//
+// The iid index is NOT invalidated by this verb — appearance changes
+// don't reshape iid space. EditAppearanceCommand::execute does its
+// own invalidate-before-resolve defensively (s168 m6 pattern), which
+// covers redo/undo cycles.
+//
+// New proxy query:
+//   - `fill` (text) — re-emitted fill attribute string via
+//     fill_style_to_fill_attr. "none" / "currentColor" / "#RRGGBB"
+//     forms. Byte-clean round-trip for the canonical input forms
+//     (lowercase hex normalises via "%02x"; named colours
+//     normalise to hex; rgb()/rgba() normalise to hex). The literal-
+//     RHS assert in smoke 36 round-trips on the normalised forms.
+//
+// Canvas-observable: the wireframe rect from s237 m1 becomes a SOLID
+// (or stroked, once set_stroke lands in m2/m3) shape that's visible
+// in fill-shaded canvas modes. First colour milestone of the canvas-
+// observable arc; geometry from s237 m1 + appearance from s238 m1 =
+// a path the user can see in every render mode.
+//
 // ── Command pushes (s231 m2) ─────────────────────────────────────────────
 //
 // `new` pushes an AddNodeCommand; `delete` pushes a DeleteObjectCommand.
@@ -740,6 +831,33 @@ bool is_container_type(Curvz::SceneNode::Type t) {
     return false;
 }
 
+// s238 m1 — field-level FillStyle equality for the set_fill no-op
+// early-return. We compare exactly the fields fill_attr_to_fill_style
+// can produce: type plus (for Solid) r/g/b/a. Stops / gradient geometry
+// are NOT compared — the script-side pump can't produce gradients in
+// m1, so two gradient FillStyles that differ only in stops would
+// always pass equality from set_fill's perspective; the verb body
+// guarantees fill_new is one of {None, CurrentColor, Solid} so the
+// gradient-stops difference never reaches here. Strict-equal on
+// gradient fields would defeat the m1 no-op check; we deliberately
+// omit them. If a future milestone teaches set_fill to accept gradient
+// tokens, the comparison surface expands here too.
+bool fill_style_equals_for_set_fill(const Curvz::FillStyle& a,
+                                    const Curvz::FillStyle& b) {
+    if (a.type != b.type) return false;
+    if (a.type != Curvz::FillStyle::Type::Solid) return true;
+    // Solid: hex-byte resolution matters (the round-trip through
+    // %02x clamps differences smaller than 1/255 to byte-equal).
+    // Compare on the rounded byte values, not raw doubles, so a
+    // hex-clean fill_new doesn't fail equality on float-precision
+    // drift from a prior parse.
+    auto byte = [](double v) { return (int)std::round(v * 255.0); };
+    return byte(a.r) == byte(b.r)
+        && byte(a.g) == byte(b.g)
+        && byte(a.b) == byte(b.b)
+        && byte(a.a) == byte(b.a);
+}
+
 } // anon namespace
 
 // ── ObjectProxy — transient per-instance Scriptable ──────────────────────
@@ -992,6 +1110,118 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
                 proj, m_iid,
                 std::move(before), std::move(after),
                 "Set path data (script)");
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::null();
+    }
+
+    // ── set_fill "<color_token>" (s238 m1) ───────────────────────────────
+    //
+    // First appearance-bearing verb on ObjectProxy. Replaces the
+    // SceneNode's `fill` FillStyle with the value parsed from the
+    // single string arg. Rides EditAppearanceCommand unmodified —
+    // its 14-arg constructor (proj + obj_iid + whole-FillStyle and
+    // whole-StrokeStyle before/after + swatch-id snapshots +
+    // bound_style snapshots) is the exact iid-shaped capture this
+    // verb needs.
+    //
+    // Vocabulary (see fill_attr_to_fill_style in curvz_utils):
+    //   "none" / "currentColor" / "#RRGGBB" / "#RGB" / "rgb(...)" /
+    //   "rgba(...)" / named (19-name common subset, case-insensitive).
+    //   Unknown tokens degrade to CurrentColor (matches SvgParser's
+    //   safe-default for unrecognised paint values).
+    //
+    // No node-type refusal: appearance lives on every SceneNode
+    // subtype, unlike `set_path_data` which refused non-Paths via
+    // node->path == nullptr. Setting fill on a Group / Compound has
+    // a documented effect via style inheritance even though the
+    // container itself doesn't draw a filled region directly. Same
+    // shape the inspector's fill controls have always taken — they
+    // don't grey out for non-Path selections.
+    //
+    // Direct-override semantics on swatch / style bindings: a direct
+    // fill set BREAKS the fill_swatch_id binding and the bound_style
+    // binding (clearing both fields on the SceneNode at execute time).
+    // The same break SvgParser.cpp's style::mutate_appearance does on
+    // the inspector / eyedropper / broadcast paths — see S82 m4f and
+    // S92 m3 narratives on EditAppearanceCommand for the rationale.
+    // Without this break, "I set my object's fill to red, undo to
+    // green, then edit the swatch" produces a colour-on-bound-swatch
+    // surprise. The capture in EditAppearanceCommand restores the
+    // pre-edit bindings on undo, so the break is undoable.
+    //
+    // Stroke is NOT touched: every stroke_after field equals its
+    // stroke_before counterpart, so undo round-trips stroke through
+    // a self-assignment (effectively a no-op on stroke). The 14-arg
+    // constructor covers fill_swatch_id and bound_style as separate
+    // before/after pairs; we pass swatch_id_after = "" and
+    // bound_style_after = "" to capture the break.
+    //
+    // No-op returns (no command pushed, no callback fired):
+    //   - args.empty() — no token supplied.
+    //   - args[0] is not a string-shaped ScriptValue.
+    //   - args[0] is the empty string after arg_as_string — unlike
+    //     set_path_data, an empty fill token has no defensible
+    //     vocabulary slot and we treat it as accidental.
+    //   - parsed fill_new equals current node->fill on the field
+    //     surface fill_attr_to_fill_style produces (see
+    //     fill_style_equals_for_set_fill in anon namespace).
+    //
+    // The iid index is NOT invalidated here — appearance changes
+    // don't reshape iid space. EditAppearanceCommand::execute does
+    // its own invalidate-before-resolve defensively (s168 m6
+    // pattern), which covers redo/undo paths.
+    if (verb == "set_fill") {
+        if (args.empty()) return ScriptValue::null();
+        std::string tok = arg_as_string(args[0]);
+        if (tok.empty()) return ScriptValue::null();
+
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+
+        Curvz::FillStyle fill_new = curvz::utils::fill_attr_to_fill_style(tok);
+        Curvz::FillStyle fill_before = node->fill;
+
+        if (fill_style_equals_for_set_fill(fill_new, fill_before)) {
+            // Same colour as the current state — no command, no
+            // callback. Matches the value-unchanged early-return
+            // shape set_visible / set_locked / rename use.
+            return ScriptValue::null();
+        }
+
+        // Pre-edit snapshot of every field EditAppearanceCommand
+        // restores on undo. Stroke is captured before (and after,
+        // unchanged) so the round-trip is field-symmetric — the
+        // command body writes every after-value, and the undo body
+        // writes every before-value, regardless of which the verb
+        // actually meant to change.
+        Curvz::StrokeStyle stroke_before     = node->stroke;
+        std::string        fsib              = node->fill_swatch_id;
+        std::string        ssib              = node->stroke_swatch_id;
+        std::string        bsb               = node->bound_style;
+
+        // Direct mutation precedes the push. Same shape as
+        // set_path_data and the canvas tools — the user perspective
+        // is "the verb did the thing"; Ctrl+Z then undoes it.
+        node->fill           = fill_new;
+        node->fill_swatch_id = "";       // break the swatch binding
+        node->bound_style    = "";       // break the style binding
+
+        if (m_history) {
+            auto cmd = std::make_unique<Curvz::EditAppearanceCommand>(
+                proj, m_iid,
+                /*fb=*/std::move(fill_before),
+                /*sb=*/stroke_before,
+                /*fa=*/fill_new,
+                /*sa=*/stroke_before,        // stroke unchanged
+                /*fsib=*/std::move(fsib),
+                /*ssib=*/ssib,
+                /*fsia=*/std::string{},      // swatch binding cleared
+                /*ssia=*/ssib,                // stroke swatch unchanged
+                /*bsb=*/std::move(bsb),
+                /*bsa=*/std::string{},       // style binding cleared
+                "Set fill (script)");
             m_history->push(std::move(cmd));
         }
         notify_doc_changed();
@@ -1332,6 +1562,28 @@ ScriptValue ObjectProxy::query(std::string_view property) const {
         return ScriptValue::text(curvz::utils::path_data_to_svg_d(pd));
     }
 
+    // fill (s238 m1) — re-emitted SVG fill-attribute string via
+    // curvz_utils' fill_style_to_fill_attr pump. The observable for
+    // set_fill — byte-clean round-trip on the canonical input forms
+    // (lowercase #RRGGBB hex, "none", "currentColor"). Named colours
+    // and rgb()/rgba() inputs normalise to lowercase hex on the read
+    // side; the trace channel shows the normalised form, the
+    // literal-RHS assert in smoke 36 uses the normalised form for
+    // cleanness.
+    //
+    // Unlike path_data, this query is NOT space-aware — fill values
+    // don't carry coordinates, so the user-space / doc-space pump
+    // pair doesn't apply. A SwatchRef binding or a gradient FillStyle
+    // emits a #RRGGBB fallback (first stop or remembered solid
+    // colour); the round-trip through script is lossy on those cases
+    // by design, since the script-side seam doesn't carry the
+    // gradient defs / swatch library context the file IO path does.
+    // Scripts that need to apply or read gradient bindings go through
+    // the swatches / styles surface, not through set_fill.
+    if (property == "fill") {
+        return ScriptValue::text(curvz::utils::fill_style_to_fill_attr(node->fill));
+    }
+
     return ScriptValue::null();
 }
 
@@ -1351,6 +1603,15 @@ std::vector<std::string> ObjectProxy::verbs() const {
         // mutation precedes the push. Refuses on non-Path
         // node types (silent no-op).
         "set_path_data",
+        // s238 m1 — appearance-bearing mutating verb. Pushes
+        // EditAppearanceCommand (whole-FillStyle replace plus
+        // swatch-id / bound-style break-on-override capture;
+        // s167-migrated existing command, fourth "fits unmodified"
+        // case for verify-before-assume). Accepts the four
+        // context-free fill types (None, CurrentColor, Solid via
+        // hex / named / rgb forms); gradients via script land in
+        // a future milestone via the swatches / styles surface.
+        "set_fill",
         // s234 m4 — three element structural verbs. `move` pushes
         // MoveNodeIndexCommand (new in m4); `reparent` pushes
         // MoveObjectToLayerCommand (existing); `duplicate` pushes
@@ -1374,6 +1635,11 @@ std::vector<std::string> ObjectProxy::properties() const {
         // for round-trip / inspection. Both degrade to "" / 0 for
         // non-Path types where node->path is null.
         "node_count", "path_data",
+        // s238 m1 — appearance query. `fill` is the observable for
+        // set_fill: re-emitted SVG fill-attribute string via
+        // curvz_utils' fill_style_to_fill_attr pump. Universal
+        // across SceneNode types (appearance lives on every node).
+        "fill",
     };
 }
 

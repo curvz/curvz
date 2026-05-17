@@ -35,6 +35,14 @@
 //                          (s237 m1 — script-side user-space pump pair;
 //                           internally uses CoordSpace, the canonical
 //                           Y-flip seam. Mutates in place.)
+//   fill_attr_to_fill_style  SVG fill= attribute string → FillStyle
+//   fill_style_to_fill_attr  FillStyle → SVG fill= attribute string
+//                          (s238 m1 — script-side fill pump pair; covers
+//                           the four context-free fill types: None,
+//                           CurrentColor, Solid (hex/named), and graceful
+//                           degrade for gradient / unknown. Legacy file-
+//                           statics in SvgParser/SvgWriter retain the
+//                           full gradient-server branches for now.)
 //
 // ── SVG id contract ──────────────────────────────────────────────────
 //
@@ -936,5 +944,75 @@ std::string       path_data_to_svg_d(const ::Curvz::PathData& pd);
 // versions without ceremony.
 void path_data_user_to_doc(::Curvz::PathData& pd, double canvas_h);
 void path_data_doc_to_user(::Curvz::PathData& pd, double canvas_h);
+
+// ── SVG fill-attribute pump pair (s238 m1) ───────────────────────────
+//
+// Bidirectional converters between an SVG `fill=` attribute string and
+// the in-memory `FillStyle` value. The script-side seam for the
+// `set_fill <color_token>` verb and the matching `fill` read query on
+// ObjectProxy — same shape the svg-d pump pair (s236 m1) opened for
+// path data, third infrastructure-pump candidate after find_by_iid and
+// the svg-d pair.
+//
+// ── Scope of the m1 promotion ────────────────────────────────────────
+//
+// SvgParser.cpp's file-static `parse_fill` and SvgWriter.cpp's
+// file-static `fill_attr` cover the same vocabulary plus url(#id)
+// gradient references resolved via parse-time / write-time globals
+// (`g_gradient_defs`, `g_grad_collector`). The gradient branches are
+// CONTEXT-BOUND — they need a defs table or a collector pointer that
+// only exists during a full document parse / write. Lifting them
+// requires threading state the script-side seam doesn't have.
+//
+// The m1 pump pair covers the four context-free types: None,
+// CurrentColor, Solid (hex / named), and falls back to CurrentColor
+// for url(#...) and unknown tokens (the same safe-default the file-
+// static parser uses). Gradient round-trip via script is deferred —
+// scripts that want to apply a gradient go through the swatch/style
+// surface, which already lives in a context where the gradient defs
+// are resolvable. The legacy file-statics in SvgParser / SvgWriter
+// stay put; a future SvgParser / SvgWriter sweep (already on backlog
+// from the s236 m1 narrative) will collapse to one canonical pair
+// that handles both context-bound and context-free cases.
+//
+// ── Vocabulary ───────────────────────────────────────────────────────
+//
+// fill_attr_to_fill_style accepts:
+//   - ""             → CurrentColor (the SVG default-when-omitted)
+//   - "currentColor" → CurrentColor
+//   - "none"         → None
+//   - "#RRGGBB"      → Solid
+//   - "#RGB"         → Solid (short-form, expanded to RRGGBB)
+//   - "rgb(r,g,b)"   → Solid (integer 0-255 channels)
+//   - "rgba(r,g,b,a)"→ Solid (integer rgb, float a — alpha currently
+//                            captured in FillStyle.a)
+//   - named colour   → Solid (the 19-name common subset SvgParser
+//                            supports — black/white/red/green/blue/
+//                            yellow/cyan/magenta/orange/purple/grey/
+//                            gray/silver/navy/teal/maroon/lime/aqua/
+//                            fuchsia/olive)
+//   - anything else  → CurrentColor (safe default, matches parser)
+//
+// fill_style_to_fill_attr emits:
+//   - None         → "none"
+//   - CurrentColor → "currentColor"
+//   - Solid        → "#RRGGBB" (lowercase hex, snprintf "%02x" per
+//                              channel; matches SvgWriter's fill_attr)
+//   - Gradient     → "#RRGGBB" of the first stop (or remembered solid
+//                              colour if stops is empty). Same fallback
+//                              shape SvgWriter uses when its
+//                              g_grad_collector is absent — degrades
+//                              to a visible colour rather than emitting
+//                              an unresolvable url(#...) reference.
+//
+// ── Contract ─────────────────────────────────────────────────────────
+//
+// Round-trip on the m1 vocabulary is byte-clean for None, CurrentColor,
+// and lowercase #RRGGBB. Other inputs normalise (named → hex,
+// uppercase hex → lowercase, short hex → long, rgb()/rgba() → hex).
+// Pure functions. No GTK, no Cairo, no I/O. Safe to call from any
+// thread.
+::Curvz::FillStyle fill_attr_to_fill_style(const std::string& token);
+std::string        fill_style_to_fill_attr(const ::Curvz::FillStyle& fs);
 
 } // namespace curvz::utils
