@@ -1,0 +1,353 @@
+# 40_objects_set_stroke_miter_opacity — closes the appearance
+# branch's remaining stroke axis (miter and opacity).
+#
+# s240 m1 shipped the enum-token sub-axis (cap and join). s241
+# m1 closes the remaining two numeric stroke fields. Both reuse
+# arg_as_double from s239 m2 — no new helper, no new command,
+# near-mechanical given the established pattern.
+#
+# After this milestone, all six StrokeStyle fields are
+# addressable from scripts:
+#   - paint  (s239 m1, set_stroke + stroke query)
+#   - width  (s239 m2, set_stroke_width + stroke_width query)
+#   - cap    (s240 m1, set_stroke_cap + cap query)
+#   - join   (s240 m1, set_stroke_join + join query)
+#   - miter  (s241 m1, set_stroke_miter + miter query — THIS)
+#   - opacity(s241 m1, set_stroke_opacity + stroke_opacity query
+#                                                  — THIS)
+#
+# Plus the fill axis from s238 m1. The appearance branch is now
+# fully closed for direct-paint surfaces. Remaining backlog:
+# gradient tokens, swatch bindings, mutate_appearance alignment
+# decision.
+#
+# Material differences from set_stroke_width (m2):
+#   - Field names. set_stroke_miter writes to
+#     SceneNode::stroke.miter; set_stroke_opacity writes to
+#     SceneNode::stroke.opacity. Both are doubles.
+#   - Naming divergence noted (backlog item):
+#     SceneNode::stroke.miter (4.0 default) vs
+#     style::Style::stroke.miter_limit (4.0 default) are the
+#     same concept under different field names on two different
+#     structs. ObjectsScriptable surfaces the verb as
+#     set_stroke_miter (matches SceneNode); StylesScriptable
+#     surfaces its setter as stroke_miter_limit (matches
+#     style::Style). Whether to align the field names is open.
+#   - Query naming: `miter` (drops stroke_ prefix; the proxy IS
+#     the object, no surface ambiguity) and `stroke_opacity`
+#     (keeps stroke_ prefix to disambiguate from layer-level
+#     opacity meanings that LayersProxy uses).
+#   - Same partial binding-clear convention: clear bound_style,
+#     preserve fill_swatch_id and stroke_swatch_id (these edits
+#     don't touch paint).
+#   - No clamp / no negative-refusal. Same convention as
+#     set_stroke_width. Negative opacity zeros at Cairo's clamp;
+#     opacity > 1.0 saturates at 1.0; negative miter is honoured
+#     by the model but the renderer treats it as 0.0 (clip
+#     immediately).
+#
+# Verify-before-assume's NINTH and TENTH "fits unmodified" cases
+# in a row. EditAppearanceCommand's whole-StrokeStyle capture
+# covers miter and opacity along with everything else without
+# modification.
+#
+# ── Owns-its-conditions structure (CANON) ────────────────────────────────
+#
+# BUILD UP / VALIDATE / TEAR DOWN. The smoke mints its own test
+# layer and three test objects (a Path `p` for the numeric
+# matrix, a Group `g` for the universal-class probe, a second
+# Path `v` for the visual-close phase), validates the new
+# surface end-to-end, and tears everything back down.
+#
+# ── Pre-stated count ─────────────────────────────────────────────────────
+#
+# Expected: 16 pass / 0 fail / 0 error.
+#
+# Breakdown:
+#   Phase 1 (REGISTRY):                                       → 0 asserts.
+#   Phase 2 (DISPATCH — baseline count):                      → 0 asserts.
+#   Phase 3 (BUILD UP — mint test_layer, Path `p`, geometry,
+#            baseline miter and opacity defaults):
+#     p type == "path",
+#     p miter == 4.0 (StrokeStyle struct default),
+#     p stroke_opacity == 1.0 (StrokeStyle struct default)     → 3 asserts.
+#   Phase 4 (SET miter — Double literal):
+#     p miter == 8.0                                           → 1 assert.
+#   Phase 5 (SET miter — Int coerces via arg_as_double):
+#     p miter == 2.0                                           → 1 assert.
+#   Phase 6 (SET stroke_opacity — half-transparent):
+#     p stroke_opacity == 0.5                                  → 1 assert.
+#   Phase 7 (SET stroke_opacity — fully transparent gesture):
+#     p stroke_opacity == 0.0                                  → 1 assert.
+#   Phase 8 (NEGATIVE-VALUE-ACCEPTED — model honest, no clamp;
+#            opacity == -0.5 lands on model, renderer clamps
+#            at Cairo seam):
+#     p stroke_opacity == -0.5                                 → 1 assert.
+#   Phase 9 (UNIVERSAL — miter and opacity on a Group):
+#     g type == "group",
+#     g miter == 10.0,
+#     g stroke_opacity == 0.75                                 → 3 asserts.
+#   Phase 10 (VISUAL CLOSE — hairpin polygon with miter join,
+#             miter limit high enough to extend the point,
+#             stroke_opacity 0.5 so fill shows through stroke):
+#     v stroke_width == 40.0,
+#     v miter == 100.0,
+#     v stroke_opacity == 0.5                                  → 3 asserts.
+#   Phase 11 (CROSS-CHECK — find_by_type "path" still resolves):
+#     found_path type == "path"                                → 1 assert.
+#   Phase 12 (TEAR DOWN — round-trip count):
+#     objects count == count_before                            → 1 assert.
+#
+# Total: 0 + 0 + 3 + 1 + 1 + 1 + 1 + 1 + 3 + 3 + 1 + 1 = 16.
+#
+# ── On the negative-opacity Phase 8 ──────────────────────────────────────
+#
+# The model accepts negative opacity; the renderer clamps at the
+# Cairo seam (cairo_set_source_rgba's alpha is conceptually
+# 0.0-1.0, and a negative alpha renders as fully transparent).
+# So `set_stroke_opacity -0.5` lands -0.5 on the model, the
+# query reads it back as -0.5, but the canvas renders no
+# outline. Same "model accepts whatever; renderer handles edge
+# cases" convention StylesScriptable / set_stroke_width follow.
+#
+# Whether to add a 0.0-1.0 clamp at the script surface is a
+# backlog item; consistency with the rest of the appearance arc
+# wins for now. Same posture as set_stroke_width's negative-
+# width Phase 7 in smoke 38.
+#
+# ── On the visual-close Phase 10 ─────────────────────────────────────────
+#
+# The miter-and-opacity payoff phase. Mint a second Path `v`,
+# set its geometry to a HAIRPIN polygon — three points forming
+# a sharp acute angle where miter extension would be dramatic.
+# Layer the appearance values:
+#   - fill = "yellow" (opaque interior so opacity's effect on
+#     stroke vs fill is visible).
+#   - stroke = "blue" (the outline colour).
+#   - stroke_width = 40.0 (fat enough for miter / opacity
+#     effects to read at default zoom).
+#   - stroke_cap = "round" (cleans up the open endpoints; not
+#     the focus of this milestone but avoids visual clutter
+#     from default butt caps on the hairpin's open ends).
+#   - stroke_join = "miter" (REQUIRED for miter to have any
+#     visible effect; bevel and round joins ignore miter).
+#   - miter = 100.0 (very high — extends the corner point well
+#     beyond what default 4.0 would allow on a sharp angle).
+#   - stroke_opacity = 0.5 (the YELLOW fill shows through the
+#     half-transparent BLUE stroke at the overlap; the visible
+#     stroke colour is the blend of blue-and-yellow,
+#     approximately gray-green, in the overlap region. Where
+#     the stroke extends past the fill (the miter point), it
+#     reads as half-transparent blue against the canvas
+#     background).
+#
+# The trace asserts the three new fields independently; the
+# VISUAL channel — Scott looking at the canvas — shows a
+# hairpin shape with a long sharp miter point at the acute
+# corner, half-transparent blue outline, fill showing through.
+#
+# Three-channel acceptance for s241 m1 = trace pass (16 asserts)
+# + clean build + VISIBLE miter extension and half-transparent
+# stroke after Phase 10.
+#
+# ── Canvas-observable (three-channel acceptance) ─────────────────────────
+#
+# Trace channel: the 16 asserts above.
+# Visual channel: AFTER Phase 10, the document shows a hairpin
+#   polygon at user-origin (300, 0) — three points forming a
+#   sharp acute angle — with a yellow fill, half-transparent
+#   blue 40px stroke, round caps, miter join, and a clearly
+#   extended miter point at the acute corner. The colour at the
+#   overlap reads as a blue-yellow blend; the miter extension
+#   pokes well past the corner geometry.
+# Build channel: Scott's compile.
+
+#[sub] === Phase 1: REGISTRY ===
+#[sub] `objects` should appear in the registry list — baseline.
+
+list
+
+#[sub] === Phase 2: DISPATCH — baseline count ===
+#[sub] Captures the pre-mint object count to compare against after
+#[sub] teardown.
+
+get objects count
+set count_before to result
+
+#[sub] === Phase 3: BUILD UP — mint test layer, Path, geometry ===
+#[sub] Mint a sentinel-named test layer, activate it, mint `p` as a
+#[sub] Path, set its geometry. A freshly-minted Path has
+#[sub] stroke.miter defaulting to 4.0 and stroke.opacity defaulting
+#[sub] to 1.0 (SceneNode.hpp:78-79 struct defaults).
+
+layers new
+set test_layer to result
+layers.test_layer rename "objects_set_stroke_miter_opacity_smoke_s241_m1"
+layers.test_layer activate
+
+objects new "path"
+set p to result
+objects.p set_path_data "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+
+assert objects.p type == "path"
+assert objects.p miter == 4.0
+assert objects.p stroke_opacity == 1.0
+
+#[sub] === Phase 4: SET miter — Double literal byte-clean ===
+#[sub] Double-kind literal `8.0` lands directly on stroke.miter
+#[sub] via arg_as_double's native-Double branch. Query reads it
+#[sub] back through ScriptValue::real; assert's RHS is also a
+#[sub] Double literal so the strict-kind equality compares
+#[sub] value-on-value.
+
+objects.p set_stroke_miter 8.0
+assert objects.p miter == 8.0
+
+#[sub] === Phase 5: SET miter — Int coerces to Double via arg_as_double ===
+#[sub] Int-kind literal `2` goes through arg_as_double's
+#[sub] static_cast<double> branch and lands stroke.miter = 2.0.
+#[sub] The query returns Double(2.0); the assert RHS is `2.0`
+#[sub] (Double), so the kind-strict equality matches. Same
+#[sub] coercion path that smoke 38 exercises on stroke_width.
+
+objects.p set_stroke_miter 2
+assert objects.p miter == 2.0
+
+#[sub] === Phase 6: SET stroke_opacity — half-transparent ===
+#[sub] Double literal 0.5 lands on stroke.opacity. The model
+#[sub] field is a 0.0-1.0 alpha multiplier applied to the
+#[sub] resolved stroke paint at the Cairo seam. Visual effect
+#[sub] is half-strength outline; not visible on a fresh path
+#[sub] with zero stroke width yet, but the model state is
+#[sub] correct (Phase 10 makes it visible with a fat stroke).
+
+objects.p set_stroke_opacity 0.5
+assert objects.p stroke_opacity == 0.5
+
+#[sub] === Phase 7: SET stroke_opacity — fully transparent gesture ===
+#[sub] Explicit 0.0 is the "no outline" gesture distinct from
+#[sub] the fresh-mint default (which arrives at 1.0). At
+#[sub] opacity=0.0 the renderer composites the resolved stroke
+#[sub] paint at zero alpha — no outline visible. Different from
+#[sub] stroke_width=0.0 (which short-circuits the stroke pass
+#[sub] entirely) but visually equivalent.
+
+objects.p set_stroke_opacity 0.0
+assert objects.p stroke_opacity == 0.0
+
+#[sub] === Phase 8: NEGATIVE-VALUE-ACCEPTED ===
+#[sub] The model accepts negative opacity; the renderer clamps
+#[sub] at the Cairo seam. Trace channel shows -0.5; visual
+#[sub] channel renders no outline (same as Phase 7's zero). This
+#[sub] matches StylesScriptable / set_stroke_width's "model
+#[sub] accepts whatever; renderer handles edge cases" convention.
+
+objects.p set_stroke_opacity -0.5
+assert objects.p stroke_opacity == -0.5
+
+#[sub] === Phase 9: UNIVERSAL — miter and opacity on a Group ===
+#[sub] Same universal posture as every other appearance verb.
+#[sub] Appearance lives on every SceneNode subtype.
+
+objects new "group"
+set g to result
+objects.g set_stroke_miter 10.0
+objects.g set_stroke_opacity 0.75
+
+assert objects.g type == "group"
+assert objects.g miter == 10.0
+assert objects.g stroke_opacity == 0.75
+
+#[sub] === Phase 10: VISUAL CLOSE ===
+#[sub] The appearance branch's full-closure payoff. Mint a
+#[sub] second Path `v` with a HAIRPIN polygon (three points
+#[sub] forming a sharp acute angle where miter extension is
+#[sub] dramatic). Layer the appearance values:
+#[sub]   - fill = "yellow" (opaque interior).
+#[sub]   - stroke = "blue" (outline).
+#[sub]   - stroke_width = 40.0 (fat enough for both miter and
+#[sub]     opacity effects to register).
+#[sub]   - stroke_cap = "round" (cleans up the hairpin's open
+#[sub]     endpoints).
+#[sub]   - stroke_join = "miter" (REQUIRED for miter limit to
+#[sub]     have any visible effect).
+#[sub]   - miter = 100.0 (extends the corner point well past
+#[sub]     default 4.0 on the acute angle).
+#[sub]   - stroke_opacity = 0.5 (yellow fill shows through the
+#[sub]     half-transparent blue stroke).
+#[sub] The hairpin path: starts at (300, 200), goes up to a
+#[sub] sharp point at (350, 0), comes back down to (400, 200).
+#[sub] The acute angle at (350, 0) gets the dramatic miter
+#[sub] extension.
+
+objects new "path"
+set v to result
+objects.v set_path_data "M 300 200 L 350 0 L 400 200"
+objects.v set_fill "yellow"
+objects.v set_stroke "blue"
+objects.v set_stroke_width 40.0
+objects.v set_stroke_cap "round"
+objects.v set_stroke_join "miter"
+objects.v set_stroke_miter 100.0
+objects.v set_stroke_opacity 0.5
+
+assert objects.v stroke_width == 40.0
+assert objects.v miter == 100.0
+assert objects.v stroke_opacity == 0.5
+
+#[sub] === Phase 11: CROSS-CHECK — find_by_type "path" still resolves ===
+#[sub] Sanity check that the appearance work didn't disturb the
+#[sub] iid index. `p` and `v` are both Paths; first-hit returns
+#[sub] one of them.
+
+objects find_by_type "path"
+set found_path to result
+assert objects.found_path type == "path"
+
+#[sub] === Phase 12: TEAR DOWN ===
+#[sub] Four mints (test_layer, p, g, v) — four matching deletes.
+#[sub] count returns to count_before — round-trip baseline.
+
+objects delete p
+objects delete g
+objects delete v
+layers delete test_layer
+
+get objects count
+assert objects count == count_before
+
+#[sub] === Final list — registry sanity ===
+#[sub] `objects` still present; no transient proxies registered.
+
+list
+
+#[sub] Done. The s241 m1 surface is validated:
+#[sub]   - `objects.<iid> set_stroke_miter <number>` accepts
+#[sub]     Double and Int (Int coerced via arg_as_double),
+#[sub]     writes directly onto SceneNode::stroke.miter, clears
+#[sub]     bound_style, preserves both swatch ids.
+#[sub]   - `objects.<iid> set_stroke_opacity <number>` same
+#[sub]     shape on SceneNode::stroke.opacity.
+#[sub]   - `miter` query returns the double directly via
+#[sub]     ScriptValue::real. Default 4.0.
+#[sub]   - `stroke_opacity` query same shape. Default 1.0.
+#[sub]   - No clamp, no negative-refusal — matches set_stroke_width.
+#[sub]   - Universal across SceneNode subtypes.
+#[sub]   - The canvas-observable arc's appearance branch is now
+#[sub]     CLOSED on all six StrokeStyle fields plus the fill
+#[sub]     axis. Six fields addressable; remaining work is
+#[sub]     gradient and swatch bindings.
+#[sub]
+#[sub] Pre-stated: 16 pass / 0 fail / 0 error.
+#[sub]
+#[sub] What's still NOT covered (backlog):
+#[sub]   - Gradient tokens on fill or stroke. Same scope-limit
+#[sub]     as s238 / s239 / s240.
+#[sub]   - Swatch / style binding via script.
+#[sub]   - mutate_appearance alignment decision.
+#[sub]   - cap_to_string / decode_cap / join_to_string /
+#[sub]     decode_join pump-pair promotion to curvz_utils (two
+#[sub]     callers, third would justify lift).
+#[sub]   - SceneNode::stroke.miter vs style::Style::stroke.miter_limit
+#[sub]     field-name alignment. Backlog item this session.
+#[sub]   - Undo / redo exercise.

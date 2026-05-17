@@ -1,0 +1,377 @@
+# 39_objects_set_stroke_cap_join — closes the appearance branch's
+# enum-token sub-axis.
+#
+# s239 m1 + m2 shipped the colour-and-thickness axis (set_fill,
+# set_stroke, set_stroke_width). s240 m1 ships the paired enum-
+# token verbs that round out stroke's vocabulary: cap and join.
+# Both are fields on StrokeStyle (SceneNode.hpp:76-77) — three-
+# value enums surfaced as lowercase string tokens:
+#
+#   LineCap  : "butt" / "round" / "square"
+#   LineJoin : "miter" / "round" / "bevel"
+#
+# These match SVG's stroke-linecap / stroke-linejoin attribute
+# conventions exactly; no translation table needed at the export
+# seam. Same posture as StylesScriptable::stroke_cap / stroke_join
+# (s225 m1) — that's also where the decode_cap / decode_join /
+# cap_to_string / join_to_string helpers come from, lifted in
+# shape into ObjectsScriptable's anon namespace this session.
+#
+# Material differences from set_stroke_width (m2):
+#   - Enum token args, not numeric. The anon namespace gains four
+#     helpers (two pump-pair pairs): decode_cap + cap_to_string
+#     for LineCap, decode_join + join_to_string for LineJoin.
+#     Encode + decode live next to each other in the same file
+#     (Unix-pump convention). Two callers of this shape now
+#     (StylesScriptable + ObjectsScriptable); three would justify
+#     a lift to curvz_utils. Logged as backlog this session.
+#   - Unknown-token policy: SILENT NO-OP, not a degrade to a
+#     safe default. set_fill / set_stroke degrade unknown colour
+#     tokens to CurrentColor (a documented safe default for
+#     paint). Cap / join have no equivalent safe default — there's
+#     no "default cap" the way CurrentColor is a default paint —
+#     so an unknown cap or join token is a silent no-op and the
+#     model state stays where it was. Matches
+#     StylesScriptable::stroke_cap's posture exactly. Phase 8
+#     exercises this specifically.
+#   - Partial binding-clear: clears bound_style (a cap or join
+#     edit is a direct appearance edit that breaks the style
+#     binding), preserves both fill_swatch_id and stroke_swatch_id
+#     (swatch bindings represent paint references; cap/join
+#     edits don't touch paint, so neither swatch binding is
+#     disturbed). Same convention set_stroke_width established.
+#   - Universal across SceneNode subtypes. cap and join are
+#     fields on StrokeStyle, which every SceneNode has. Group /
+#     Compound / etc. accept the verb without refusal.
+#
+# Verify-before-assume's SEVENTH and EIGHTH "fits unmodified"
+# cases in a row. EditAppearanceCommand's whole-StrokeStyle
+# capture covers cap and join along with paint / width / miter /
+# opacity without modification. Three sessions in a row
+# (s238 / s239 / s240) of "the command we have already fits the
+# next verb at the same seam" — the verify-before-assume tail
+# observation has now landed five applications (set_fill at
+# s238 m1, set_stroke at s239 m1, set_stroke_width at s239 m2,
+# set_stroke_cap and set_stroke_join at s240 m1).
+#
+# ── Owns-its-conditions structure (CANON) ────────────────────────────────
+#
+# BUILD UP / VALIDATE / TEAR DOWN. The smoke mints its own test
+# layer and three test objects (a Path `p` for the cap/join
+# matrix, a Group `g` for the universal-class probe, a second
+# Path `v` for the visual-close phase), validates the new surface
+# end-to-end, and tears everything back down. Net structural
+# change to the doc: zero. Side effects on the undo stack:
+# AddNodeCommand entries for the mints, EditPathCommand for
+# geometry sets, EditAppearanceCommand entries for the cap / join
+# / fill / stroke / stroke_width calls, DeleteObjectCommand pairs
+# for the teardown.
+#
+# ── Pre-stated count ─────────────────────────────────────────────────────
+#
+# Expected: 16 pass / 0 fail / 0 error.
+#
+# Breakdown:
+#   Phase 1 (REGISTRY):                                       → 0 asserts.
+#   Phase 2 (DISPATCH — baseline count):                      → 0 asserts.
+#   Phase 3 (BUILD UP — mint test_layer, mint `p` as Path,
+#            geometry, baseline cap and join defaults):
+#     p type == "path"                                         → 1 assert.
+#     p cap == "butt"  (LineCap::Butt struct default)          → 1 assert.
+#     p join == "miter" (LineJoin::Miter struct default)       → 1 assert.
+#   Phase 4 (SET cap "round"):
+#     p cap == "round"                                         → 1 assert.
+#   Phase 5 (SET cap "square"):
+#     p cap == "square"                                        → 1 assert.
+#   Phase 6 (SET join "round"):
+#     p join == "round"                                        → 1 assert.
+#   Phase 7 (SET join "bevel"):
+#     p join == "bevel"                                        → 1 assert.
+#   Phase 8 (UNKNOWN-TOKEN SILENT NO-OP — cap stays "square"
+#            from Phase 5):
+#     p cap == "square"                                        → 1 assert.
+#   Phase 9 (UNIVERSAL — cap and join on a Group are NOT refused):
+#     g type == "group",
+#     g cap == "round",
+#     g join == "bevel"                                        → 3 asserts.
+#   Phase 10 (VISUAL CLOSE — fat stroke with cap=round and
+#             join=round on a polygon `v`; visible blue outline
+#             with bulging ends and bevelled corners):
+#     v stroke_width == 40.0,
+#     v cap == "round",
+#     v join == "round"                                        → 3 asserts.
+#   Phase 11 (CROSS-CHECK — find_by_type "path" still resolves):
+#     found_path type == "path"                                → 1 assert.
+#   Phase 12 (TEAR DOWN — round-trip count):
+#     objects count == count_before                            → 1 assert.
+#
+# Total: 0 + 0 + 3 + 1 + 1 + 1 + 1 + 1 + 3 + 3 + 1 + 1 = 16.
+#
+# ── On the unknown-token Phase 8 ─────────────────────────────────────────
+#
+# Phase 8 calls `set_stroke_cap "trapezoidal"` — a deliberately
+# nonsense token. The decode_cap helper returns std::nullopt;
+# the verb's early-return clause hits before any command push,
+# so the model state stays exactly where Phase 5 left it
+# (cap == "square"). The trace assert verifies the no-op
+# behaviour directly. This is the key behavioural difference
+# from set_fill / set_stroke (which would degrade an unknown
+# token to CurrentColor); the divergence is documented at the
+# verb body and at the file header.
+#
+# Why no equivalent unknown-token phase for join: the divergence
+# is exactly parallel to cap; one assertion covers the class.
+# A future expansion of the smoke could add `set_stroke_join
+# "octagonal"` symmetrically — the count would go to 17, the
+# new behaviour confirmed would be identical. Holding to one
+# unknown-token assertion this milestone for parsimony.
+#
+# ── On the visual-close Phase 10 ─────────────────────────────────────────
+#
+# This is the milestone's payoff phase. The smoke mints a
+# second path `v` (separate from `p` to keep the cap/join
+# matrix on `p` clean), sets its geometry to a 200x200 square,
+# layers all the appearance values needed for the visual to
+# read: fill=none (transparent interior so the corners are
+# clearly visible), stroke=blue (the outline colour), stroke_width
+# = 40.0 (fat enough for cap and join effects to register at
+# default zoom — recall Scott's "4px reads as a hairline"
+# observation from s239 m2), cap = "round" (bulging stroke
+# ends), join = "round" (smooth bevelled corners).
+#
+# The trace asserts the three new fields independently; the
+# VISUAL channel is "Scott looks at the canvas and sees a
+# 200x200 square outlined in fat blue stroke with rounded
+# corners." Three-channel acceptance for the milestone hinges
+# on this phase's visual behaviour. If the trace passes but the
+# corners render as sharp miters (or the ends render as flat
+# butts), the milestone has not landed.
+#
+# Three-channel acceptance for s240 m1 = trace pass (16 asserts)
+# + clean build + VISIBLE rounded-corner rounded-end fat outline
+# after Phase 10.
+#
+# ── Canvas-observable (three-channel acceptance) ─────────────────────────
+#
+# Trace channel: the 16 asserts above.
+# Visual channel: AFTER Phase 10, the document shows a 200x200
+#   square at user-origin (300, 0) with NO fill, a 40-pixel BLUE
+#   outline, ROUNDED corners (no sharp angles) and ROUNDED stroke
+#   ends. Visually distinct from the s239 m2 visual-close shape
+#   (which had sharp miter corners and flat butt ends).
+# Build channel: Scott's compile.
+
+#[sub] === Phase 1: REGISTRY ===
+#[sub] `objects` should appear in the registry list — baseline.
+
+list
+
+#[sub] === Phase 2: DISPATCH — baseline count ===
+#[sub] Captures the pre-mint object count to compare against after
+#[sub] teardown.
+
+get objects count
+set count_before to result
+
+#[sub] === Phase 3: BUILD UP — mint test layer, Path, geometry ===
+#[sub] Mint a sentinel-named test layer, activate it, mint `p` as a
+#[sub] Path, set its geometry. A freshly-minted Path has
+#[sub] stroke.cap defaulting to LineCap::Butt and stroke.join
+#[sub] defaulting to LineJoin::Miter (SceneNode.hpp:76-77 struct
+#[sub] defaults). The baseline queries return "butt" and "miter"
+#[sub] before any set_stroke_cap / set_stroke_join call.
+
+layers new
+set test_layer to result
+layers.test_layer rename "objects_set_stroke_cap_join_smoke_s240_m1"
+layers.test_layer activate
+
+objects new "path"
+set p to result
+objects.p set_path_data "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+
+assert objects.p type == "path"
+assert objects.p cap == "butt"
+assert objects.p join == "miter"
+
+#[sub] === Phase 4: SET cap "round" ===
+#[sub] decode_cap("round") returns LineCap::Round; the verb writes
+#[sub] node->stroke.cap = Round, pushes EditAppearanceCommand with
+#[sub] whole-StrokeStyle before/after (only cap differs). The
+#[sub] cap_to_string helper round-trips the enum back through the
+#[sub] query.
+
+objects.p set_stroke_cap "round"
+assert objects.p cap == "round"
+
+#[sub] === Phase 5: SET cap "square" ===
+#[sub] Third vocabulary value. The smoke sweeps the three-token
+#[sub] vocabulary at cap (butt baseline in Phase 3, round in
+#[sub] Phase 4, square here). join's three-token sweep follows in
+#[sub] Phases 6-7 — only two phases there because the baseline
+#[sub] (miter) was already asserted in Phase 3.
+
+objects.p set_stroke_cap "square"
+assert objects.p cap == "square"
+
+#[sub] === Phase 6: SET join "round" ===
+#[sub] decode_join("round") returns LineJoin::Round. Note: the
+#[sub] string "round" is valid vocabulary for BOTH cap and join —
+#[sub] LineCap and LineJoin happen to overlap on that one token.
+#[sub] decode_cap and decode_join are SEPARATE helpers that don't
+#[sub] share state; "round" maps to LineCap::Round on the cap
+#[sub] side and LineJoin::Round on the join side. Two enums, same
+#[sub] string, different values.
+
+objects.p set_stroke_join "round"
+assert objects.p join == "round"
+
+#[sub] === Phase 7: SET join "bevel" ===
+#[sub] Third vocabulary value at the join axis. "bevel" is unique
+#[sub] to LineJoin (not a LineCap value), so this token also
+#[sub] verifies that set_stroke_cap "bevel" would be a no-op (the
+#[sub] vocabularies don't cross-contaminate). A direct assertion
+#[sub] for the cross-contamination case is not in this smoke; the
+#[sub] guarantee comes from decode_cap's switch statement only
+#[sub] mapping "butt" / "round" / "square".
+
+objects.p set_stroke_join "bevel"
+assert objects.p join == "bevel"
+
+#[sub] === Phase 8: UNKNOWN-TOKEN SILENT NO-OP ===
+#[sub] `set_stroke_cap "trapezoidal"` is a deliberately nonsense
+#[sub] token. decode_cap returns std::nullopt; the verb's
+#[sub] early-return clause hits before any command push. The
+#[sub] model state stays at what Phase 5 left it: cap == "square".
+#[sub] No command on the undo stack, no notify_doc_changed.
+#[sub]
+#[sub] Key behavioural divergence from set_fill / set_stroke:
+#[sub] those degrade unknown tokens to CurrentColor (a documented
+#[sub] safe-default for paint). Cap and join have no equivalent
+#[sub] safe-default — there is no "default cap" the way CurrentColor
+#[sub] is a default paint. So the silent-no-op posture is the
+#[sub] correct read, matching StylesScriptable::stroke_cap's
+#[sub] convention.
+
+objects.p set_stroke_cap "trapezoidal"
+assert objects.p cap == "square"
+
+#[sub] === Phase 9: UNIVERSAL — cap and join on a Group are NOT refused ===
+#[sub] Same universal posture as set_fill / set_stroke /
+#[sub] set_stroke_width. Appearance lives on every SceneNode
+#[sub] subtype, including container types that don't draw a
+#[sub] stroked region directly. The model field update lands;
+#[sub] the visual effect on the Group depends on the container's
+#[sub] render path (style inheritance / per-child effects).
+
+objects new "group"
+set g to result
+objects.g set_stroke_cap "round"
+objects.g set_stroke_join "bevel"
+
+assert objects.g type == "group"
+assert objects.g cap == "round"
+assert objects.g join == "bevel"
+
+#[sub] === Phase 10: VISUAL CLOSE ===
+#[sub] The appearance branch's enum-token sub-axis payoff phase.
+#[sub] Mint a second Path `v`, set its geometry to a 200x200
+#[sub] square offset to user-origin (300, 0) so it doesn't overlap
+#[sub] the layout of any earlier test object. Layer the appearance
+#[sub] values needed for the visual to read clearly:
+#[sub]   - fill = "none" (transparent interior; corners visible
+#[sub]     without competing fill colour).
+#[sub]   - stroke = "blue" (clear outline colour).
+#[sub]   - stroke_width = 40.0 (fat enough for cap and join
+#[sub]     effects to register at default zoom; recall Scott's
+#[sub]     "4px reads as a hairline" observation from s239 m2).
+#[sub]   - cap = "round" (bulging stroke ends — though closed
+#[sub]     paths don't have ends in the geometric sense, the
+#[sub]     setting is still observable on the model).
+#[sub]   - join = "round" (smooth bevelled corners — the dominant
+#[sub]     visual cue, since a closed square has four corners).
+#[sub] The trace asserts the three new fields independently; the
+#[sub] VISUAL channel — Scott looking at the canvas — shows a
+#[sub] 200x200 blue-outlined square with rounded corners.
+
+objects new "path"
+set v to result
+objects.v set_path_data "M 300 0 L 500 0 L 500 200 L 300 200 Z"
+objects.v set_fill "none"
+objects.v set_stroke "blue"
+objects.v set_stroke_width 40.0
+objects.v set_stroke_cap "round"
+objects.v set_stroke_join "round"
+
+assert objects.v stroke_width == 40.0
+assert objects.v cap == "round"
+assert objects.v join == "round"
+
+#[sub] === Phase 11: CROSS-CHECK — find_by_type "path" still resolves ===
+#[sub] Sanity check that the appearance work didn't disturb the iid
+#[sub] index. Same shape smokes 36 / 37 / 38 used. `p` and `v` are
+#[sub] both Paths; first-hit returns one of them.
+
+objects find_by_type "path"
+set found_path to result
+assert objects.found_path type == "path"
+
+#[sub] === Phase 12: TEAR DOWN ===
+#[sub] Four mints (test_layer, p, g, v) — four matching deletes.
+#[sub] count returns to count_before — round-trip baseline.
+
+objects delete p
+objects delete g
+objects delete v
+layers delete test_layer
+
+get objects count
+assert objects count == count_before
+
+#[sub] === Final list — registry sanity ===
+#[sub] `objects` still present; no transient proxies registered.
+
+list
+
+#[sub] Done. The s240 m1 surface is validated:
+#[sub]   - `objects.<iid> set_stroke_cap "<token>"` accepts the
+#[sub]     LineCap vocabulary ("butt" / "round" / "square"), writes
+#[sub]     the value directly onto SceneNode::stroke.cap, clears
+#[sub]     bound_style (style binding break), preserves
+#[sub]     fill_swatch_id and stroke_swatch_id (paint bindings
+#[sub]     don't disturb on a cap edit), pushes EditAppearanceCommand
+#[sub]     with whole-StrokeStyle before/after (only cap differs).
+#[sub]   - `objects.<iid> set_stroke_join "<token>"` accepts the
+#[sub]     LineJoin vocabulary ("miter" / "round" / "bevel"); same
+#[sub]     shape and binding-clear convention as set_stroke_cap.
+#[sub]   - `cap` and `join` queries return text tokens via the
+#[sub]     cap_to_string / join_to_string anon-namespace helpers.
+#[sub]   - Unknown token = silent no-op (NOT CurrentColor-degrade).
+#[sub]   - Universal across SceneNode subtypes.
+#[sub]   - The canvas-observable arc's appearance branch closes
+#[sub]     its enum-token sub-axis. With s239 m1 + m2 (colour and
+#[sub]     thickness) and s240 m1 (cap and join), the stroke axis
+#[sub]     is addressable from scripts on four of its six fields;
+#[sub]     remaining miter / opacity are numeric and reuse
+#[sub]     arg_as_double from s239 m2 — scheduled for s241.
+#[sub]
+#[sub] Pre-stated: 16 pass / 0 fail / 0 error.
+#[sub]
+#[sub] What's still NOT covered by s240 m1 (and that's by design):
+#[sub]   - stroke_miter and stroke_opacity verbs. Both numeric,
+#[sub]     both reuse arg_as_double; scheduled for s241.
+#[sub]   - Gradient tokens on fill or stroke. Same scope-limit as
+#[sub]     s238 / s239.
+#[sub]   - Swatch / style binding via script. Same scope-limit.
+#[sub]   - Whether to align script-side binding-clear with
+#[sub]     mutate_appearance's broader convention (both swatch
+#[sub]     bindings cleared on ANY appearance edit) — backlog
+#[sub]     item carried over from s239 m2.
+#[sub]   - Promotion of decode_cap / cap_to_string / decode_join /
+#[sub]     join_to_string from anon-namespace duplication
+#[sub]     (StylesScriptable + ObjectsScriptable) to a curvz_utils
+#[sub]     pump pair. Two callers is duplication, not yet a
+#[sub]     pattern; three is the threshold. Backlog item this
+#[sub]     session.
+#[sub]   - Undo / redo exercise. Three-channel acceptance for
+#[sub]     Scott visually after Phase 10.

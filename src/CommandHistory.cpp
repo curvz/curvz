@@ -2402,4 +2402,311 @@ int CommandHistory::scrub_command_history(const SceneNode* target) {
     return dropped;
 }
 
+// ── GroupNodesCommand bodies (s242 m1) ───────────────────────────────
+//
+// First new structural command in the iid-migrated capture shape.
+// Add/Delete/Insert remain in legacy raw-SceneNode* shape; this command
+// (and UngroupNodeCommand below) demonstrates the migrated pattern for
+// structural ops.
+//
+// Atomic posture: if ANY captured iid fails to resolve (parent gone, any
+// target gone), the command no-ops. Partial group/ungroup would leave
+// the doc in a semantically-mangled state — better to fall through than
+// half-apply.
+//
+// invalidate_iid_indexes is called both at execute() entry (to ensure
+// the resolve walks a fresh tree) and after the mutation completes
+// (because we change the tree's structure — Group children move under a
+// new parent, the new Group enters the tree). Same pattern other
+// structural commands follow.
+
+void GroupNodesCommand::execute() {
+    if (!proj) {
+        LOG_INFO("[IIDDIAG] Group::exec proj=NULL desc='{}'", desc);
+        return;
+    }
+    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
+
+    auto* parent = curvz::utils::find_by_iid(*proj, parent_iid);
+    if (!parent) {
+        LOG_INFO("[IIDDIAG] Group::exec parent_iid='{}' resolved=nullptr "
+                 "(gone) — no-op", parent_iid);
+        return;
+    }
+
+    // Atomic check: every target must still be present in parent's
+    // children. Resolve each iid and verify ownership. Collect raw
+    // pointers in z-order for the move step.
+    std::vector<SceneNode*> targets;
+    targets.reserve(target_iids.size());
+    for (const auto& iid : target_iids) {
+        auto* t = curvz::utils::find_by_iid(*proj, iid);
+        if (!t) {
+            LOG_INFO("[IIDDIAG] Group::exec target iid='{}' resolved=nullptr "
+                     "— bailing (atomic)", iid);
+            return;
+        }
+        // Verify ownership: target must currently be a direct child of
+        // parent. If a prior op moved it elsewhere, we bail (the
+        // captured indices wouldn't make sense for restoration anyway).
+        bool found_in_parent = false;
+        for (const auto& ch : parent->children) {
+            if (ch.get() == t) { found_in_parent = true; break; }
+        }
+        if (!found_in_parent) {
+            LOG_INFO("[IIDDIAG] Group::exec target iid='{}' no longer a child "
+                     "of parent — bailing (atomic)", iid);
+            return;
+        }
+        targets.push_back(t);
+    }
+
+    // Create the new Group with captured iid + name. Reusing the
+    // captured iid means redo lands at the same iid as the original
+    // execute, so any external state (selection, undo-stack references
+    // by iid) stays consistent.
+    auto group = std::make_unique<SceneNode>();
+    group->type = SceneNode::Type::Group;
+    group->internal_id = group_iid;
+    group->name = group_name;
+
+    // Move each target into the new Group. Walk targets vector
+    // (already in parent z-order); for each one, find its slot in
+    // parent->children by pointer, move out, erase. Same shape as
+    // Canvas::group_selection's loop modulo the matching style.
+    for (SceneNode* t : targets) {
+        for (auto it = parent->children.begin();
+             it != parent->children.end(); ++it) {
+            if (it->get() == t) {
+                group->children.push_back(std::move(*it));
+                parent->children.erase(it);
+                break;
+            }
+        }
+    }
+
+    // Insert the new Group at group_insert_index, clamped to the
+    // (now-shrunk) parent->children size.
+    int ins = std::clamp(group_insert_index, 0,
+                         (int)parent->children.size());
+    parent->children.insert(parent->children.begin() + ins,
+                            std::move(group));
+
+    invalidate_iid_indexes(proj);
+    LOG_INFO("Group::exec parent_iid='{}' grouped {} objects → '{}' (iid={})",
+             parent_iid, target_iids.size(), group_name, group_iid);
+}
+
+void GroupNodesCommand::undo() {
+    if (!proj) {
+        LOG_INFO("[IIDDIAG] Group::undo proj=NULL desc='{}'", desc);
+        return;
+    }
+    invalidate_iid_indexes(proj);
+
+    auto* parent = curvz::utils::find_by_iid(*proj, parent_iid);
+    if (!parent) {
+        LOG_INFO("[IIDDIAG] Group::undo parent_iid='{}' resolved=nullptr — no-op",
+                 parent_iid);
+        return;
+    }
+    auto* group = curvz::utils::find_by_iid(*proj, group_iid);
+    if (!group || group->type != SceneNode::Type::Group) {
+        LOG_INFO("[IIDDIAG] Group::undo group_iid='{}' resolved=nullptr or "
+                 "wrong type — no-op", group_iid);
+        return;
+    }
+
+    // Locate the Group's index in parent->children.
+    int gidx = -1;
+    for (int i = 0; i < (int)parent->children.size(); ++i) {
+        if (parent->children[i].get() == group) { gidx = i; break; }
+    }
+    if (gidx < 0) {
+        LOG_INFO("[IIDDIAG] Group::undo group iid='{}' not found in parent — no-op",
+                 group_iid);
+        return;
+    }
+
+    // Build an index-paired list so we can move children in ascending-
+    // original-index order. target_indices_before[i] pairs with
+    // target_iids[i] which is the order children landed in the group.
+    // We need to insert them back at their original parent indices;
+    // doing it in ascending order means each insertion's index is valid
+    // (no shift surprises).
+    struct Restore {
+        int target_idx_before;
+        std::unique_ptr<SceneNode> node;
+    };
+    std::vector<Restore> restores;
+    restores.reserve(target_iids.size());
+    for (size_t i = 0; i < target_iids.size(); ++i) {
+        // The child sits in group->children in the same order as
+        // target_iids (we moved them in that order on execute).
+        if (i >= group->children.size()) break;  // defensive
+        restores.push_back({ target_indices_before[i],
+                             std::move(group->children[i]) });
+    }
+    // Sort restores by target_idx_before ascending (the order we
+    // captured them is already parent-z-order, but the indices may
+    // not be strictly ascending if there were intervening non-targets;
+    // safer to sort explicitly).
+    std::sort(restores.begin(), restores.end(),
+              [](const Restore& a, const Restore& b) {
+                  return a.target_idx_before < b.target_idx_before;
+              });
+
+    // Erase the now-empty Group from parent first; this shifts all
+    // subsequent indices down by 1. The captured target_indices_before
+    // were taken BEFORE the group existed, so they're already relative
+    // to a parent that doesn't contain the group — erasing now restores
+    // the baseline parent the indices were captured against.
+    parent->children.erase(parent->children.begin() + gidx);
+
+    // Now insert each restore at its captured original index, clamped
+    // to the current size.
+    for (auto& r : restores) {
+        int ins = std::clamp(r.target_idx_before, 0,
+                             (int)parent->children.size());
+        parent->children.insert(parent->children.begin() + ins,
+                                std::move(r.node));
+    }
+
+    invalidate_iid_indexes(proj);
+    LOG_INFO("Group::undo parent_iid='{}' dissolved Group iid='{}' → restored {} children",
+             parent_iid, group_iid, restores.size());
+}
+
+// ── UngroupNodeCommand bodies (s242 m1) ──────────────────────────────
+
+void UngroupNodeCommand::execute() {
+    if (!proj) {
+        LOG_INFO("[IIDDIAG] Ungroup::exec proj=NULL desc='{}'", desc);
+        return;
+    }
+    invalidate_iid_indexes(proj);
+
+    auto* group = curvz::utils::find_by_iid(*proj, group_iid);
+    if (!group || group->type != SceneNode::Type::Group) {
+        LOG_INFO("[IIDDIAG] Ungroup::exec group_iid='{}' resolved=nullptr or "
+                 "wrong type — no-op", group_iid);
+        return;
+    }
+    auto* parent = curvz::utils::find_by_iid(*proj, parent_iid);
+    if (!parent) {
+        LOG_INFO("[IIDDIAG] Ungroup::exec parent_iid='{}' resolved=nullptr — no-op",
+                 parent_iid);
+        return;
+    }
+
+    // Locate the Group's CURRENT index in parent->children (the
+    // captured group_index_before may have shifted if other ops
+    // re-ordered the parent between capture and execute — typically
+    // for an immediate execute() right after the push, this matches
+    // exactly; for redo after intervening ops, the find protects us).
+    int gidx = -1;
+    for (int i = 0; i < (int)parent->children.size(); ++i) {
+        if (parent->children[i].get() == group) { gidx = i; break; }
+    }
+    if (gidx < 0) {
+        LOG_INFO("[IIDDIAG] Ungroup::exec group iid='{}' not a child of parent_iid='{}' — no-op",
+                 group_iid, parent_iid);
+        return;
+    }
+
+    // Move children OUT of the group into parent at gidx + position.
+    // Walk in REVERSE order so each insertion lands ahead of the
+    // already-inserted ones, matching Canvas::ungroup_selection's
+    // reverse loop (which preserves z-order through the insertion-at-
+    // same-index trick).
+    std::vector<std::unique_ptr<SceneNode>> children;
+    children.reserve(group->children.size());
+    for (auto& c : group->children) children.push_back(std::move(c));
+    group->children.clear();
+
+    // Erase the now-empty Group from parent first. After this, gidx
+    // is the slot where the first child lands.
+    parent->children.erase(parent->children.begin() + gidx);
+
+    // Insert children in reverse order at gidx so they end up in
+    // their original z-order at slots [gidx, gidx+1, ..., gidx+N-1].
+    for (int i = (int)children.size() - 1; i >= 0; --i) {
+        parent->children.insert(parent->children.begin() + gidx,
+                                std::move(children[i]));
+    }
+
+    invalidate_iid_indexes(proj);
+    LOG_INFO("Ungroup::exec group_iid='{}' dissolved → {} children promoted",
+             group_iid, child_iids.size());
+}
+
+void UngroupNodeCommand::undo() {
+    if (!proj) {
+        LOG_INFO("[IIDDIAG] Ungroup::undo proj=NULL desc='{}'", desc);
+        return;
+    }
+    invalidate_iid_indexes(proj);
+
+    auto* parent = curvz::utils::find_by_iid(*proj, parent_iid);
+    if (!parent) {
+        LOG_INFO("[IIDDIAG] Ungroup::undo parent_iid='{}' resolved=nullptr — no-op",
+                 parent_iid);
+        return;
+    }
+
+    // Atomic check: every captured child iid must still be a direct
+    // child of parent (the execute promoted them there; if anything
+    // moved them, we bail).
+    std::vector<SceneNode*> children_ptrs;
+    children_ptrs.reserve(child_iids.size());
+    for (const auto& cid : child_iids) {
+        auto* c = curvz::utils::find_by_iid(*proj, cid);
+        if (!c) {
+            LOG_INFO("[IIDDIAG] Ungroup::undo child iid='{}' resolved=nullptr — bailing",
+                     cid);
+            return;
+        }
+        bool in_parent = false;
+        for (const auto& pc : parent->children) {
+            if (pc.get() == c) { in_parent = true; break; }
+        }
+        if (!in_parent) {
+            LOG_INFO("[IIDDIAG] Ungroup::undo child iid='{}' no longer in parent — bailing",
+                     cid);
+            return;
+        }
+        children_ptrs.push_back(c);
+    }
+
+    // Re-create the Group with captured iid + name.
+    auto group = std::make_unique<SceneNode>();
+    group->type = SceneNode::Type::Group;
+    group->internal_id = group_iid;
+    group->name = group_name;
+
+    // Move each child from parent into the new Group. Walk in
+    // ASCENDING child_iids order to preserve the group's internal
+    // stacking.
+    for (SceneNode* c : children_ptrs) {
+        for (auto it = parent->children.begin();
+             it != parent->children.end(); ++it) {
+            if (it->get() == c) {
+                group->children.push_back(std::move(*it));
+                parent->children.erase(it);
+                break;
+            }
+        }
+    }
+
+    // Insert the Group at group_index_before, clamped.
+    int ins = std::clamp(group_index_before, 0,
+                         (int)parent->children.size());
+    parent->children.insert(parent->children.begin() + ins,
+                            std::move(group));
+
+    invalidate_iid_indexes(proj);
+    LOG_INFO("Ungroup::undo restored Group iid='{}' name='{}' with {} children",
+             group_iid, group_name, children_ptrs.size());
+}
+
 } // namespace Curvz

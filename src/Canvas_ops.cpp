@@ -2162,61 +2162,71 @@ void Canvas::group_selection() {
   if (!parent)
     return;
 
-  // Generate group name via the document funnel (gap-fill, document-wide
-  // unique). The SVG `id` is now derived from name + iid by SvgWriter, so
-  // we no longer need to set group->id explicitly here.
-  std::string gname = m_doc->next_default_name(CurvzDocument::NameKind::Group);
+  // s242 m1 — migrated to push GroupNodesCommand. The capture happens
+  // here (parent_iid, target_iids in parent z-order, original indices,
+  // insertion index, fresh group iid+name); execute() does the mutation;
+  // undo() reverses it cleanly. Canvas-side side-effects (selection
+  // update, signal emit, macro record, log) stay on this side, around
+  // the push.
 
-  // Create the group
-  auto group = std::make_unique<SceneNode>();
-  group->type = SceneNode::Type::Group;
-  group->internal_id = generate_internal_id();
-  group->name = gname;
-
-  // Find the highest z-position (lowest index) of any selected object in parent
-  int insert_idx = (int)parent->children.size();
-  for (SceneNode *obj : m_selection) {
-    for (int i = 0; i < (int)parent->children.size(); ++i) {
-      if (parent->children[i].get() == obj)
-        insert_idx = std::min(insert_idx, i);
-    }
-  }
-
-  // Move selected objects into group in PARENT Z-ORDER, not selection order.
-  //
-  // Pre-fix: the loop iterated m_selection, which is the order the user
-  // clicked. Selecting a back object first then a top object produced a
-  // group whose children were [back, top] — visually fine, but if the user
-  // had clicked the top first then the back, the group came out [top, back],
-  // reversing the layer's stacking. Same input geometry, different group
-  // because of click order. Comment said "in original order" but the
-  // author meant "in user's click order" which is not what feels original
-  // to the user.
-  //
-  // Fix: walk parent->children once and pluck anything that's in the
-  // selection. This preserves the layer's existing z-relationship inside
-  // the group regardless of how the user assembled the selection. Same
-  // pattern make_compound_path already uses (Canvas.cpp ~3357 — Phase 3
-  // builds the compound in parent z-order).
+  // Build the target set in PARENT Z-ORDER (not selection order). Same
+  // shape the legacy method used; see the long comment above the old
+  // implementation for the rationale.
   std::set<SceneNode *> sel_set(m_selection.begin(), m_selection.end());
-  for (auto it = parent->children.begin(); it != parent->children.end();) {
-    if (sel_set.count(it->get())) {
-      group->children.push_back(std::move(*it));
-      it = parent->children.erase(it);
-    } else {
-      ++it;
+  std::vector<std::string> target_iids;
+  std::vector<int>         target_indices_before;
+  target_iids.reserve(m_selection.size());
+  target_indices_before.reserve(m_selection.size());
+  int insert_idx = (int)parent->children.size();
+  for (int i = 0; i < (int)parent->children.size(); ++i) {
+    if (sel_set.count(parent->children[i].get())) {
+      target_iids.push_back(parent->children[i]->internal_id);
+      target_indices_before.push_back(i);
+      insert_idx = std::min(insert_idx, i);
     }
   }
+  if (target_iids.size() < 2) return;  // defensive: nothing to group
 
-  // Insert group at the position of the topmost selected object
-  insert_idx = std::min(insert_idx, (int)parent->children.size());
-  SceneNode *gptr = group.get();
-  parent->children.insert(parent->children.begin() + insert_idx,
-                          std::move(group));
+  // Generate the group's name and iid here so the captured command can
+  // reuse them across execute/undo/redo cycles.
+  std::string gname = m_doc->next_default_name(CurvzDocument::NameKind::Group);
+  std::string giid  = generate_internal_id();
 
-  // Select the new group
-  m_selected = gptr;
-  m_selection = {gptr};
+  if (!m_history || !project()) {
+    LOG_WARN("Canvas::group_selection: no history or project — skipping");
+    return;
+  }
+
+  auto cmd = std::make_unique<GroupNodesCommand>(
+      project(),
+      parent->internal_id,
+      std::move(target_iids),
+      std::move(target_indices_before),
+      insert_idx,
+      giid,
+      gname,
+      "Group objects");
+  cmd->execute();  // direct execute first, then push (matches existing
+                   // structural-command pattern: the command is the
+                   // record of what we just did, not a deferred action).
+
+  // After execute(), the new group lives at giid. Resolve it for the
+  // selection update.
+  SceneNode *gptr = nullptr;
+  for (const auto& ch : parent->children) {
+    if (ch && ch->internal_id == giid) { gptr = ch.get(); break; }
+  }
+
+  m_history->push(std::move(cmd));
+
+  if (gptr) {
+    m_selected = gptr;
+    m_selection = {gptr};
+  } else {
+    // Defensive: if the group somehow didn't land, clear selection.
+    m_selected = nullptr;
+    m_selection.clear();
+  }
   notify_object_selection_changed();
   m_sig_doc_changed.emit();
   queue_draw();
@@ -2225,7 +2235,8 @@ void Canvas::group_selection() {
     s.op = MacroStep::Op::Group;
     record_step_if_recording(s);
   }
-  LOG_INFO("Canvas: grouped {} objects → '{}'", m_selection.size(), gname);
+  LOG_INFO("Canvas: grouped {} objects → '{}' (iid={})",
+           m_selection.size(), gname, giid);
 }
 
 void Canvas::ungroup_selection() {
@@ -2237,24 +2248,50 @@ void Canvas::ungroup_selection() {
   if (!parent)
     return;
 
-  // Collect children to move out
-  std::vector<std::unique_ptr<SceneNode>> children;
-  for (auto &child : m_selected->children)
-    children.push_back(std::move(child));
+  // s242 m1 — migrated to push UngroupNodeCommand. Capture happens here
+  // (group iid, parent iid, group's current index, group name, child
+  // iids in their group-children order); execute() does the mutation;
+  // undo() reverses cleanly.
 
-  // Remove the group from parent
-  parent->children.erase(parent->children.begin() + group_idx);
+  SceneNode* group_node = m_selected;
+  std::string giid = group_node->internal_id;
+  std::string gname = group_node->name;
 
-  // Insert children at the group's position
-  std::vector<SceneNode *> new_selection;
-  for (int i = (int)children.size() - 1; i >= 0; --i) {
-    SceneNode *ptr = children[i].get();
-    new_selection.push_back(ptr);
-    parent->children.insert(parent->children.begin() + group_idx,
-                            std::move(children[i]));
+  std::vector<std::string> child_iids;
+  child_iids.reserve(group_node->children.size());
+  for (const auto& c : group_node->children) {
+    child_iids.push_back(c->internal_id);
+  }
+  if (child_iids.empty()) return;  // defensive: nothing to ungroup
+
+  if (!m_history || !project()) {
+    LOG_WARN("Canvas::ungroup_selection: no history or project — skipping");
+    return;
   }
 
-  // Select the ungrouped objects
+  auto cmd = std::make_unique<UngroupNodeCommand>(
+      project(),
+      giid,
+      parent->internal_id,
+      group_idx,
+      gname,
+      child_iids,            // copy, not move — we need it for selection rebuild
+      "Ungroup");
+  cmd->execute();
+  m_history->push(std::move(cmd));
+
+  // After execute, the children are direct children of parent at
+  // [group_idx, group_idx+1, ...]. Rebuild selection as the resolved
+  // children pointers, in REVERSE order (matching the legacy behaviour
+  // — see commit history; reverse order keeps front-most selected
+  // first, matching how the user perceives the ungroup result).
+  std::vector<SceneNode*> new_selection;
+  new_selection.reserve(child_iids.size());
+  for (int i = (int)child_iids.size() - 1; i >= 0; --i) {
+    auto* c = curvz::utils::find_by_iid(*project(), child_iids[i]);
+    if (c) new_selection.push_back(c);
+  }
+
   m_selection = new_selection;
   m_selected = m_selection.empty() ? nullptr : m_selection.front();
   notify_object_selection_changed();
@@ -2265,7 +2302,8 @@ void Canvas::ungroup_selection() {
     s.op = MacroStep::Op::Ungroup;
     record_step_if_recording(s);
   }
-  LOG_INFO("Canvas: ungrouped → {} objects", new_selection.size());
+  LOG_INFO("Canvas: ungrouped Group iid='{}' → {} objects",
+           giid, new_selection.size());
 }
 
 // ── align_anchor (validator-on-read)

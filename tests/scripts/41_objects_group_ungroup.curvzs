@@ -1,0 +1,324 @@
+# 41_objects_group_ungroup — closes the `objects` arc's m5
+# (collection-level grouping) and the canvas-observable arc.
+#
+# s242 m1 shipped the GroupNodesCommand / UngroupNodeCommand
+# infrastructure (iid-migrated structural commands; first new
+# structural commands built in the migrated capture shape) and
+# migrated Canvas::group_selection / Canvas::ungroup_selection to
+# push them. Both group and ungroup are now properly undoable from
+# the canvas side — a pre-existing architectural gap closed in m1.
+#
+# s242 m2 (this smoke) ships the script-side wrap:
+#   - `objects group <iid1> <iid2> ...` — wraps two or more
+#     sibling scene objects in a new Group. Returns the Group's
+#     iid as text (so callers can `set g to result` and address
+#     the group via `objects.g` from then on). Pushes
+#     GroupNodesCommand.
+#   - `objects ungroup <iid>` — dissolves the named Group,
+#     promoting its children to the parent. Returns null. Pushes
+#     UngroupNodeCommand.
+#
+# This is the canvas-observable arc's m5 close. With group +
+# ungroup landing, every collection-level structural verb the
+# canvas surface has is now also addressable from scripts (new /
+# delete / find_by_name / find_by_type / group / ungroup) plus the
+# proxy-side mutating and structural verbs from m3 and m4. The
+# `objects` Tier 3 entry now books — eleventh "fits unmodified"
+# would apply EXCEPT this milestone shipped the commands itself
+# rather than reusing existing ones, so the verify-before-assume
+# streak takes a different kind of step here: the commands were
+# DESIGNED for these verbs, so the "fit" is by construction rather
+# than coincidence. Different shape, same outcome.
+#
+# Material differences from the m3/m4 element verbs:
+#   - Collection-level invoke, not proxy-level. group and ungroup
+#     live on the `objects` Scriptable directly, same surface as
+#     new / delete / find_by_name / find_by_type. The DSL grammar
+#     is `objects group <iid> <iid> ...` (no proxy chain), same
+#     shape as `objects new "path"`.
+#   - Variadic args on group. Earlier verbs took 0 or 1 args; group
+#     takes 2..N. The args.size() < 2 guard is the new vocabulary
+#     this milestone introduces. ungroup is 1-arg like delete.
+#   - Atomic siblings-check on group. Before doing anything, the
+#     verb walks every supplied iid and verifies (a) each resolves
+#     to an in-scope scene object, (b) each is a direct child (not
+#     in a non-children slot like clip_shape), (c) all share the
+#     SAME parent. Cross-parent grouping is refused; the verb
+#     returns "" and no command is pushed. Same atomic posture
+#     GroupNodesCommand uses on execute.
+#   - Parent-z-order capture. The order the script lists iids in
+#     doesn't determine the group's internal stacking — the verb
+#     walks the parent's children once and plucks the matched
+#     ones in that order. Same rule Canvas::group_selection
+#     enforces. A script that writes `objects group p3 p1 p2`
+#     gets a group whose children are in parent-z-order, not
+#     [p3, p1, p2].
+#   - Both verbs push commands via the s242 m1 iid-migrated
+#     structural commands. Ctrl+Z dissolves the group; Ctrl+Y
+#     re-wraps with the SAME group iid (so any script-side
+#     variable holding the group iid stays consistent across
+#     undo/redo cycles).
+#
+# ── Owns-its-conditions structure (CANON) ────────────────────────────────
+#
+# BUILD UP / VALIDATE / TEAR DOWN. The smoke mints its own test
+# layer and three test Paths, validates the group / ungroup
+# surface end-to-end, and tears everything back down. Net
+# structural change to the doc: zero. Side effects on the undo
+# stack: AddNodeCommand for the mints, EditPathCommand for the
+# geometry sets, GroupNodesCommand / UngroupNodeCommand for the
+# grouping ops, DeleteObjectCommand for the teardown.
+#
+# ── Pre-stated count ─────────────────────────────────────────────────────
+#
+# Expected: 15 pass / 0 fail / 0 error.
+#
+# Breakdown:
+#   Phase 1 (REGISTRY):                                       → 0 asserts.
+#   Phase 2 (DISPATCH — baseline count):                      → 0 asserts.
+#   Phase 3 (BUILD UP — mint test_layer, three Paths):
+#     p1 type == "path"                                        → 1 assert.
+#   Phase 4 (GROUP — wrap p1+p2+p3 into a new Group g):
+#     g type == "group",
+#     g child_count == 3                                       → 2 asserts.
+#   Phase 5 (VERIFY children parented to g):
+#     p1 parent_iid == g,
+#     p2 parent_iid == g,
+#     p3 parent_iid == g                                       → 3 asserts.
+#   Phase 6 (UNGROUP — dissolve g, children back to test_layer):
+#     p1 parent_iid == test_layer,
+#     p2 parent_iid == test_layer,
+#     p3 parent_iid == test_layer                              → 3 asserts.
+#   Phase 7 (NEGATIVE — group with single arg refused; p1 stays
+#            where it was):
+#     p1 parent_iid == test_layer                              → 1 assert.
+#   Phase 8 (NEGATIVE — ungroup wrong-type refused; p1 is a Path
+#            not a Group, command refuses, p1 stays a Path under
+#            test_layer):
+#     p1 type == "path"                                        → 1 assert.
+#   Phase 9 (REGROUP — re-wrap to confirm the verb's repeatable):
+#     g2 type == "group",
+#     g2 child_count == 3                                      → 2 asserts.
+#   Phase 10 (CROSS-CHECK — find_by_type "group" resolves):
+#     found_group type == "group"                              → 1 assert.
+#   Phase 11 (TEAR DOWN — round-trip count via subtree-delete):
+#     objects count == count_before                            → 1 assert.
+#
+# Total: 0 + 0 + 1 + 2 + 3 + 3 + 1 + 1 + 2 + 1 + 1 = 15.
+#
+# ── On the parent-z-order rule (Phase 4) ─────────────────────────────────
+#
+# The smoke mints p1, p2, p3 in that order — `objects new` inserts
+# at the front of children (z-top), so after the three mints the
+# parent's children are [p3, p2, p1] (p3 is z-top). The script then
+# calls `objects group p1 p2 p3` (selection-order). The verb walks
+# parent->children once, plucks p3 (idx 0), p2 (idx 1), p1 (idx 2)
+# in that order, and the group lands with children [p3, p2, p1].
+# Phase 4's `child_count == 3` doesn't expose the order, but
+# Phase 5's three parent_iid asserts are order-independent —
+# whichever way the children landed in the group, each one's
+# parent_iid is g.
+#
+# ── On the variadic-args grammar (Phase 4) ───────────────────────────────
+#
+# The DSL parses `objects group p1 p2 p3` as four tokens after
+# `objects`: the verb name `group` and three string-shaped args.
+# Each arg passes through arg_as_string. Same way `objects new
+# "path"` parses with one arg; same way `find_by_type "group"`
+# parses with one arg. Variadic >2 is the new shape this verb
+# introduces.
+#
+# ── On the cross-parent refusal (NOT tested here) ────────────────────────
+#
+# A future expansion of this smoke would mint a second test layer,
+# place an object on it, then attempt `objects group <obj_on_layer_1>
+# <obj_on_layer_2>` and assert the empty-string return. This
+# milestone keeps the smoke focused on the happy path plus the two
+# negative cases that don't require multi-layer setup (too-few
+# args, wrong-type to ungroup). Cross-parent coverage is logged
+# for a future smoke-expansion milestone.
+#
+# ── Canvas-observable (three-channel acceptance) ─────────────────────────
+#
+# Trace channel: the 15 asserts above.
+# Visual channel: the layers panel SHOULD show the group / ungroup
+#   transitions in real time as the smoke runs — three Rectangle
+#   rows under "objects_group_ungroup_smoke_s242_m2" briefly,
+#   then those three indented one level deeper under a new "Group
+#   N" row (Phase 4), then the group dissolves and they un-indent
+#   (Phase 6), then they re-indent under "Group N+1" (Phase 9),
+#   then everything cleans up (Phase 11). m1's manual canvas test
+#   already confirmed the panel does this correctly for group /
+#   ungroup; this smoke just exercises the same path from script.
+# Build channel: Scott's compile.
+
+#[sub] === Phase 1: REGISTRY ===
+#[sub] `objects` should appear in the registry list — baseline.
+
+list
+
+#[sub] === Phase 2: DISPATCH — baseline count ===
+#[sub] Captures the pre-mint object count to compare against after
+#[sub] teardown.
+
+get objects count
+set count_before to result
+
+#[sub] === Phase 3: BUILD UP — mint test layer, three Paths ===
+#[sub] Mint a sentinel-named test layer, activate it, mint three
+#[sub] Path objects with geometry. They'll be the targets for the
+#[sub] grouping ops.
+
+layers new
+set test_layer to result
+layers.test_layer rename "objects_group_ungroup_smoke_s242_m2"
+layers.test_layer activate
+
+objects new "path"
+set p1 to result
+objects.p1 set_path_data "M 0 0 L 100 0 L 100 100 L 0 100 Z"
+
+objects new "path"
+set p2 to result
+objects.p2 set_path_data "M 150 0 L 250 0 L 250 100 L 150 100 Z"
+
+objects new "path"
+set p3 to result
+objects.p3 set_path_data "M 300 0 L 400 0 L 400 100 L 300 100 Z"
+
+assert objects.p1 type == "path"
+
+#[sub] === Phase 4: GROUP — wrap p1+p2+p3 into a new Group g ===
+#[sub] `objects group p1 p2 p3` wraps the three paths in a new
+#[sub] Group. The verb returns the new Group's iid as text; bind
+#[sub] it to `g` so subsequent phases can address it.
+#[sub]
+#[sub] g child_count == 3 confirms all three children landed in
+#[sub] the group; the order of children inside the group is
+#[sub] parent-z-order (not selection order), but order isn't
+#[sub] asserted here — Phase 5's parent_iid asserts are order-
+#[sub] independent.
+
+objects group p1 p2 p3
+set g to result
+
+assert objects.g type == "group"
+assert objects.g child_count == 3
+
+#[sub] === Phase 5: VERIFY children parented to g ===
+#[sub] Each child's parent_iid should now resolve to g (the new
+#[sub] Group's iid). This confirms the children actually moved
+#[sub] into the group rather than just having the group inserted
+#[sub] alongside them — a regression in the verb's tree-mutation
+#[sub] could conceivably create the group without re-parenting,
+#[sub] which the count and child_count asserts wouldn't catch but
+#[sub] this would.
+
+assert objects.p1 parent_iid == g
+assert objects.p2 parent_iid == g
+assert objects.p3 parent_iid == g
+
+#[sub] === Phase 6: UNGROUP — dissolve g, children back to test_layer ===
+#[sub] `objects ungroup g` dissolves the Group, promoting its
+#[sub] children to the parent (test_layer) at the Group's original
+#[sub] index. After this, each child's parent_iid resolves to
+#[sub] test_layer again.
+
+objects ungroup g
+
+assert objects.p1 parent_iid == test_layer
+assert objects.p2 parent_iid == test_layer
+assert objects.p3 parent_iid == test_layer
+
+#[sub] === Phase 7: NEGATIVE — group single-arg refused ===
+#[sub] The verb requires args.size() >= 2 (matching Canvas's
+#[sub] "group ≥ 2 selected" convention). Single-arg group is a
+#[sub] silent no-op; the verb returns "" and no command is pushed.
+#[sub] The assert verifies p1 is still parented to test_layer
+#[sub] (it didn't get accidentally wrapped in a 1-child group).
+
+objects group p1
+
+assert objects.p1 parent_iid == test_layer
+
+#[sub] === Phase 8: NEGATIVE — ungroup wrong-type refused ===
+#[sub] `objects ungroup p1` attempts to ungroup a Path. The verb
+#[sub] checks node->type == Group and refuses if not — p1 stays
+#[sub] a Path under test_layer. Same shape as set_path_data's
+#[sub] non-Path refusal, just on the structural side.
+
+objects ungroup p1
+
+assert objects.p1 type == "path"
+
+#[sub] === Phase 9: REGROUP — re-wrap to confirm the verb is repeatable ===
+#[sub] After Phase 6's ungroup, the children are siblings under
+#[sub] test_layer again. Group them again — the new Group g2 gets
+#[sub] a FRESH iid (the old g's iid is gone from the live tree —
+#[sub] only re-resurrectable via Ctrl+Z, which scripts don't do).
+#[sub] This phase confirms the verb is purely repeatable; nothing
+#[sub] in the first round left state that prevents a second round.
+
+objects group p1 p2 p3
+set g2 to result
+
+assert objects.g2 type == "group"
+assert objects.g2 child_count == 3
+
+#[sub] === Phase 10: CROSS-CHECK — find_by_type "group" resolves ===
+#[sub] Sanity check that the new group is addressable via the
+#[sub] standard tree-walking surface. find_by_type "group" walks
+#[sub] depth-first and returns the first hit's iid; with g2 the
+#[sub] only group in scope, the first hit IS g2.
+
+objects find_by_type "group"
+set found_group to result
+assert objects.found_group type == "group"
+
+#[sub] === Phase 11: TEAR DOWN — subtree-delete the group ===
+#[sub] `objects delete g2` removes the group AND its children in
+#[sub] one shot (DeleteObjectCommand erases the parent's unique_ptr
+#[sub] to g2, which owns the whole subtree). Then delete the test
+#[sub] layer.
+
+objects delete g2
+layers delete test_layer
+
+get objects count
+assert objects count == count_before
+
+#[sub] === Final list — registry sanity ===
+#[sub] `objects` still present; no transient proxies registered.
+
+list
+
+#[sub] Done. The s242 m2 surface is validated:
+#[sub]   - `objects group <iid1> <iid2> ...` accepts 2+ iids, all
+#[sub]     must be siblings, returns the new Group's iid as text.
+#[sub]     Pushes GroupNodesCommand (s242 m1 iid-migrated structural
+#[sub]     command). Cross-parent and single-arg cases refuse
+#[sub]     atomically with "" return.
+#[sub]   - `objects ungroup <iid>` accepts 1 iid that must resolve
+#[sub]     to a Group, dissolves it, returns null. Pushes
+#[sub]     UngroupNodeCommand. Non-Group and empty-Group cases
+#[sub]     refuse silently.
+#[sub]   - Both verbs are now advertised in ObjectsScriptable::verbs().
+#[sub]   - The canvas-observable arc's m5 close lands. The `objects`
+#[sub]     Tier 3 entry now books. Six scriptables → seven.
+#[sub]
+#[sub] Pre-stated: 15 pass / 0 fail / 0 error.
+#[sub]
+#[sub] What's still NOT covered by s242 m2 (backlog):
+#[sub]   - Cross-parent refusal (mint a second layer, place objects
+#[sub]     across both, try to group across). Smoke-expansion item.
+#[sub]   - Group containing a Group (nested grouping). Should work
+#[sub]     by construction — a Group is in-scope and can be one of
+#[sub]     the targets — but not explicitly exercised here.
+#[sub]   - Undo / redo from script. The DSL has no undo verb; canvas-
+#[sub]     side manual testing (s242 m1) confirmed both directions.
+#[sub]   - Element-level group manipulation (move a child INTO an
+#[sub]     existing group via script). Adjacent surface; future
+#[sub]     work.
+#[sub]   - Gradient / swatch bindings (carry-over from s238-s241
+#[sub]     backlog).
+#[sub]   - mutate_appearance alignment decision (carry-over).

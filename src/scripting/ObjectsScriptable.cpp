@@ -407,6 +407,93 @@
 // join, miter, opacity) and gradient / swatch bindings stay on
 // the backlog.
 //
+// s240 m1 — closes the appearance branch's ENUM-TOKEN sub-axis.
+// Adds the paired verbs `set_stroke_cap "<token>"` and
+// `set_stroke_join "<token>"` plus the matching `cap` and
+// `join` read queries to ObjectProxy. First enum-token verbs on
+// this proxy — earlier verbs took strings (path data, names),
+// colour tokens (set_fill, set_stroke via fill_attr_to_fill_style),
+// or numeric values (set_stroke_width via arg_as_double). The
+// vocabulary here is the LineCap / LineJoin enums surfaced as
+// lowercase strings ("butt" / "round" / "square" for cap;
+// "miter" / "round" / "bevel" for join) — matches SVG's
+// stroke-linecap / stroke-linejoin attribute conventions
+// exactly.
+//
+// Same EditAppearanceCommand ride as set_fill / set_stroke /
+// set_stroke_width — SEVENTH and EIGHTH "fits unmodified" cases
+// in a row for verify-before-assume (fourth and fifth in two
+// sessions on EditAppearanceCommand). The command's whole-
+// StrokeStyle capture covers cap and join along with paint /
+// width / miter / opacity without modification; both fields are
+// already on StrokeStyle (SceneNode.hpp:76-77), so the existing
+// capture shape covers cap-only and join-only edits by
+// construction.
+//
+// Anon namespace gains four helpers, lifted in shape from
+// StylesScriptable.cpp's anon-namespace helpers of the same
+// names (s225 m1 vintage): decode_cap / cap_to_string and
+// decode_join / join_to_string. Encode + decode live next to
+// each other in the same file (Unix-pump convention). Logged
+// as a candidate pump pair for promotion to curvz_utils when
+// a third caller appears — backlog item this session. Two
+// callers (StylesScriptable + ObjectsScriptable) is duplication
+// but not yet a pattern; three is the threshold for lifting.
+//
+// Unknown-token policy diverges from set_fill / set_stroke: an
+// unknown cap or join token is a SILENT NO-OP, not a degrade to
+// a safe default. Cap and join have no documented safe-default
+// the way colour has CurrentColor; matching
+// StylesScriptable::stroke_cap's "unknown vocab" early return
+// is the right read. The model state stays where it was; no
+// command pushed, no notify_doc_changed.
+//
+// Partial binding-clear: clears bound_style on the after side
+// (style binding break, mirroring every other appearance verb),
+// preserves both fill_swatch_id and stroke_swatch_id (swatch
+// bindings represent paint references, cap/join edits don't
+// touch paint). Same convention set_stroke_width established.
+//
+// Visual: with a stroke wide enough to read (40px+ from s239 m2's
+// vocabulary) and a polygon with visible corners (rect / star /
+// etc.), join = "round" bevels corners into smooth arcs; join =
+// "bevel" cuts them as straight diagonals; cap = "round" makes
+// stroke ends bulge into half-circles. Immediately observable on
+// canvas. The appearance branch's enum-token sub-axis closes
+// here; remaining stroke fields (miter, opacity) are numeric
+// and reuse arg_as_double from s239 m2 — scheduled for s241.
+//
+// s241 m1 — closes the appearance branch's remaining stroke
+// axis. Adds `set_stroke_miter <number>` and `set_stroke_opacity
+// <number>` plus the matching `miter` and `stroke_opacity` read
+// queries. Both verbs reuse arg_as_double from s239 m2 — no
+// new helper this milestone, no new pump pair, no new command.
+// NINTH and TENTH "fits unmodified" applications of verify-
+// before-assume in a row (sixth and seventh in three sessions
+// on EditAppearanceCommand). The appearance branch is now
+// CLOSED on all six StrokeStyle fields: paint (s239 m1) +
+// width (s239 m2) + cap (s240 m1) + join (s240 m1) + miter
+// (s241 m1) + opacity (s241 m1). Plus the fill axis (s238 m1).
+// Remaining stroke / fill work is gradient and swatch bindings;
+// neither is on this milestone's path.
+//
+// Naming divergence noted: SceneNode::stroke.miter (this file)
+// vs style::Style::stroke.miter_limit (StylesScriptable). Both
+// default to 4.0; same concept, different field names. The
+// SceneNode field's shorter name wins for the verb / query
+// here (`set_stroke_miter` / `miter`); the styles surface keeps
+// `stroke_miter_limit` because its proxy IS a Style, where
+// stroke_* / shadow_* / fill_* prefixes disambiguate across
+// the surface. Backlog item: whether to align the field names
+// across the two structs.
+//
+// VISUAL: miter only matters at acute corners with miter join;
+// opacity is observable as alpha multiplier on the resolved
+// stroke paint. Phase 10 of smoke 40 layers a hairpin polygon
+// (sharp angle, miter join, miter=100 to extend the point)
+// with stroke_opacity=0.5 so the fill colour shows through
+// the outline — both effects visible in the same shape.
+//
 // ── Command pushes (s231 m2) ─────────────────────────────────────────────
 //
 // `new` pushes an AddNodeCommand; `delete` pushes a DeleteObjectCommand.
@@ -502,6 +589,8 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -616,6 +705,63 @@ double arg_as_double(const ScriptValue& v, double fallback) {
         case ValueKind::Int:    return static_cast<double>(v.i);
         default:                return fallback;
     }
+}
+
+// ── LineCap / LineJoin string enums ──────────────────────────────────────
+//
+// s240 m1. Lifted in shape from StylesScriptable.cpp's anon-namespace
+// helpers of the same name (s225 m1 vintage). The C++ enums are
+// surfaced as lowercase strings:
+//
+//   LineCap : "butt" / "round" / "square"
+//   LineJoin: "miter" / "round" / "bevel"
+//
+// encode_* is total (every enum value maps); decode_* returns
+// nullopt for unknown / mis-cased input. Verb-side treats nullopt
+// as no-op — silent rejection, NOT the CurrentColor-degrade
+// pattern of set_fill / set_stroke. Cap and join have no
+// documented safe-default to fall back to; an unknown token is a
+// no-op and the model state stays where it was. Matches
+// StylesScriptable::stroke_cap's "unknown vocab" early return.
+//
+// Why lowercase: matches SVG attribute conventions and is
+// consistent with how `cap` / `join` would round-trip through SVG
+// export. No translation table needed at the export seam.
+//
+// Pump-shape: encode + decode live next to each other in the same
+// file, Unix-pump convention. Logged candidate for promotion to
+// `curvz_utils` as a `cap_join_strings` pump pair when a second
+// caller appears — backlog item this session.
+const char* cap_to_string(Curvz::LineCap c) {
+    switch (c) {
+        case Curvz::LineCap::Butt:   return "butt";
+        case Curvz::LineCap::Round:  return "round";
+        case Curvz::LineCap::Square: return "square";
+    }
+    return "butt";  // unreachable; satisfies the compiler
+}
+
+std::optional<Curvz::LineCap> decode_cap(const std::string& s) {
+    if (s == "butt")   return Curvz::LineCap::Butt;
+    if (s == "round")  return Curvz::LineCap::Round;
+    if (s == "square") return Curvz::LineCap::Square;
+    return std::nullopt;
+}
+
+const char* join_to_string(Curvz::LineJoin j) {
+    switch (j) {
+        case Curvz::LineJoin::Miter: return "miter";
+        case Curvz::LineJoin::Round: return "round";
+        case Curvz::LineJoin::Bevel: return "bevel";
+    }
+    return "miter";  // unreachable
+}
+
+std::optional<Curvz::LineJoin> decode_join(const std::string& s) {
+    if (s == "miter") return Curvz::LineJoin::Miter;
+    if (s == "round") return Curvz::LineJoin::Round;
+    if (s == "bevel") return Curvz::LineJoin::Bevel;
+    return std::nullopt;
 }
 
 // ── Scene-tree walker ────────────────────────────────────────────────────
@@ -1624,6 +1770,363 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
         return ScriptValue::null();
     }
 
+    // ── set_stroke_cap "<token>" (s240 m1) ───────────────────────────────
+    //
+    // Closes the appearance branch's enum-token sub-axis (paired with
+    // set_stroke_join below). First enum-token verb on ObjectProxy;
+    // earlier verbs took strings (set_path_data, rename), colour
+    // tokens via fill_attr_to_fill_style (set_fill, set_stroke),
+    // or numbers via arg_as_double (set_stroke_width). The
+    // vocabulary here is the LineCap enum's three values surfaced
+    // as the lowercase strings "butt" / "round" / "square" —
+    // matches SVG's stroke-linecap attribute conventions exactly.
+    //
+    // Same EditAppearanceCommand ride as set_fill / set_stroke /
+    // set_stroke_width — SEVENTH "fits unmodified" case in a row
+    // for verify-before-assume (fourth in two sessions on
+    // EditAppearanceCommand). The command's whole-StrokeStyle
+    // capture covers cap and join along with paint / width /
+    // miter / opacity without modification. Both `stroke_before`
+    // and `stroke_after` are whole structs; cap is a field on
+    // StrokeStyle (SceneNode.hpp:76), so the existing capture
+    // shape covers a cap-only edit by construction.
+    //
+    // Architectural shape (parallels set_stroke_width):
+    //   1. args.empty() → no-op return.
+    //   2. Project lookup → no-op on miss.
+    //   3. Parse arg via decode_cap (anon-namespace helper added
+    //      this session, lifted from StylesScriptable). Returns
+    //      std::optional<Curvz::LineCap>; nullopt on unknown
+    //      token. UNLIKE set_fill / set_stroke, an unknown token
+    //      is NOT degraded to a safe default — it's a silent
+    //      no-op. Cap/join have no documented safe-default the
+    //      way colour has CurrentColor; matching
+    //      StylesScriptable::stroke_cap's posture is the right
+    //      read.
+    //   4. Same-value early return on `*parsed == cap_before`.
+    //   5. Pre-edit snapshot (same shape as set_stroke_width).
+    //   6. Build stroke_new from stroke_before with only `cap`
+    //      overwritten. paint / width / join / miter / opacity
+    //      self-preserve.
+    //   7. Direct mutation precedes the push.
+    //   8. Push EditAppearanceCommand with fill_before echoed
+    //      into both fb/fa slots, stroke_before/stroke_new on
+    //      the stroke axis, fsib/ssib echoed into fsia/ssia
+    //      (swatch bindings preserved — see binding-clear note
+    //      below).
+    //
+    // Partial binding-clear convention. set_stroke_cap clears
+    // bound_style (a cap edit is a direct appearance edit that
+    // breaks the style binding, mirroring set_fill / set_stroke /
+    // set_stroke_width / inspector). Does NOT clear
+    // fill_swatch_id or stroke_swatch_id (swatch bindings
+    // represent PAINT references; cap edits don't touch paint,
+    // so neither swatch binding is disturbed). Matches the
+    // partial-clear convention set_stroke_width established —
+    // width and cap both live on StrokeStyle but neither
+    // touches StrokeStyle::paint, so neither clears stroke_swatch_id.
+    //
+    // Universal across SceneNode subtypes. Appearance lives on
+    // every node; cap is a field on StrokeStyle which every
+    // SceneNode has. Group / Compound / etc. accept the verb;
+    // visual effect depends on the container's render path.
+    if (verb == "set_stroke_cap") {
+        if (args.empty()) return ScriptValue::null();
+
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+
+        auto parsed = decode_cap(arg_as_string(args[0]));
+        if (!parsed) {
+            // Unknown vocab — silent no-op. Matches
+            // StylesScriptable::stroke_cap. NOT a degrade to a
+            // safe default (no such default exists for cap).
+            return ScriptValue::null();
+        }
+        Curvz::LineCap cap_before = node->stroke.cap;
+        if (*parsed == cap_before) {
+            // Same cap as the current state — no command, no
+            // notify. Same-value early-return.
+            return ScriptValue::null();
+        }
+
+        // Pre-edit snapshot. Same shape as set_stroke_width's
+        // snapshot: both axes captured whole, plus all three
+        // binding fields.
+        Curvz::FillStyle   fill_before   = node->fill;
+        Curvz::StrokeStyle stroke_before = node->stroke;
+        std::string        fsib          = node->fill_swatch_id;
+        std::string        ssib          = node->stroke_swatch_id;
+        std::string        bsb           = node->bound_style;
+
+        // Build stroke_new from stroke_before with only cap
+        // overwritten. paint / width / join / miter / opacity
+        // all self-preserve through the command.
+        Curvz::StrokeStyle stroke_new = stroke_before;
+        stroke_new.cap = *parsed;
+
+        // Direct mutation precedes the push. Same shape as
+        // set_stroke_width. Swatch ids preserved (cap edits
+        // don't touch paint).
+        node->stroke      = stroke_new;
+        node->bound_style = "";   // break the style binding
+
+        if (m_history) {
+            auto cmd = std::make_unique<Curvz::EditAppearanceCommand>(
+                proj, m_iid,
+                /*fb=*/fill_before,
+                /*sb=*/std::move(stroke_before),
+                /*fa=*/fill_before,              // fill unchanged
+                /*sa=*/stroke_new,
+                /*fsib=*/fsib,
+                /*ssib=*/ssib,
+                /*fsia=*/fsib,                   // fill swatch unchanged
+                /*ssia=*/ssib,                   // stroke swatch unchanged
+                /*bsb=*/std::move(bsb),
+                /*bsa=*/std::string{},           // style binding cleared
+                "Set stroke cap (script)");
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::null();
+    }
+
+    // ── set_stroke_join "<token>" (s240 m1) ──────────────────────────────
+    //
+    // Symmetric paired verb to set_stroke_cap. Vocabulary is the
+    // LineJoin enum's three values as lowercase strings:
+    // "miter" / "round" / "bevel". Same SVG conventions; same
+    // anon-namespace decode helper shape (decode_join);
+    // EIGHTH "fits unmodified" case in a row for verify-before-
+    // assume.
+    //
+    // Architectural shape, partial binding-clear convention,
+    // unknown-token policy, and universality posture all
+    // identical to set_stroke_cap — see the narrative there. The
+    // only difference is the field touched (StrokeStyle::join
+    // vs StrokeStyle::cap) and the enum vocabulary.
+    //
+    // Visual effect: with a stroke wide enough to read (40px+
+    // from set_stroke_width's vocabulary) and a polygon with
+    // visible corners (rect / star / etc.), join = "round"
+    // bevels the corners into smooth arcs; join = "bevel" cuts
+    // them as straight diagonals; join = "miter" extends the
+    // edges to meet at the corner point (the default).
+    // Immediately observable on canvas without further work.
+    if (verb == "set_stroke_join") {
+        if (args.empty()) return ScriptValue::null();
+
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+
+        auto parsed = decode_join(arg_as_string(args[0]));
+        if (!parsed) {
+            // Unknown vocab — silent no-op. Same posture as
+            // set_stroke_cap.
+            return ScriptValue::null();
+        }
+        Curvz::LineJoin join_before = node->stroke.join;
+        if (*parsed == join_before) {
+            return ScriptValue::null();
+        }
+
+        // Pre-edit snapshot. Same shape as set_stroke_cap.
+        Curvz::FillStyle   fill_before   = node->fill;
+        Curvz::StrokeStyle stroke_before = node->stroke;
+        std::string        fsib          = node->fill_swatch_id;
+        std::string        ssib          = node->stroke_swatch_id;
+        std::string        bsb           = node->bound_style;
+
+        // Build stroke_new from stroke_before with only join
+        // overwritten. paint / width / cap / miter / opacity
+        // all self-preserve.
+        Curvz::StrokeStyle stroke_new = stroke_before;
+        stroke_new.join = *parsed;
+
+        node->stroke      = stroke_new;
+        node->bound_style = "";   // break the style binding
+
+        if (m_history) {
+            auto cmd = std::make_unique<Curvz::EditAppearanceCommand>(
+                proj, m_iid,
+                /*fb=*/fill_before,
+                /*sb=*/std::move(stroke_before),
+                /*fa=*/fill_before,              // fill unchanged
+                /*sa=*/stroke_new,
+                /*fsib=*/fsib,
+                /*ssib=*/ssib,
+                /*fsia=*/fsib,                   // fill swatch unchanged
+                /*ssia=*/ssib,                   // stroke swatch unchanged
+                /*bsb=*/std::move(bsb),
+                /*bsa=*/std::string{},           // style binding cleared
+                "Set stroke join (script)");
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::null();
+    }
+
+    // ── set_stroke_miter <number> (s241 m1) ──────────────────────────────
+    //
+    // Numeric scalar verb on stroke's miter-limit field. Reuses
+    // arg_as_double from s239 m2's anon-namespace helper — no new
+    // helper this milestone, no new pump pair, no new command.
+    // NINTH "fits unmodified" application of verify-before-assume
+    // (EditAppearanceCommand's whole-StrokeStyle capture covers
+    // miter along with everything else).
+    //
+    // NAMING NOTE: the SceneNode field is `stroke.miter`
+    // (SceneNode.hpp:78); the style::Style field is
+    // `stroke.miter_limit` (style/Style.hpp:142). Both default to
+    // 4.0. This is a latent inconsistency in the codebase
+    // (different field names for the same concept on two
+    // closely-related structs); ObjectsScriptable surfaces the
+    // verb as `set_stroke_miter` to match the SceneNode field —
+    // shorter, and the verb operates on SceneNode::stroke
+    // directly, not on style::Style::stroke. StylesScriptable
+    // (s225 m1) surfaces its setter as `stroke_miter_limit`
+    // because it operates on style::Style. Whether to align the
+    // field names across the two structs is a backlog item.
+    //
+    // Material similarity to set_stroke_width (s239 m2):
+    // identical shape modulo the field touched. Snapshot pattern,
+    // arg_as_double coercion (Int → Double via static_cast),
+    // same-value early-return, partial binding-clear (clear
+    // bound_style only; preserve both swatch ids — miter edits
+    // don't touch paint), no clamp / no negative-refusal. Group
+    // accepts the verb (universal across SceneNode subtypes).
+    //
+    // VISUAL EFFECT: miter only matters when join == "miter"
+    // AND the corner is acute enough that extending the edges
+    // to a point would exceed miter * stroke_width. At that
+    // threshold the corner is "miter-clipped" — a flat bevel
+    // replaces the sharp point. So set_stroke_miter is the
+    // dial that decides "how sharp before we bevel." On a
+    // rect (90° corners) the threshold rarely triggers; on a
+    // star or hairpin polygon it's immediately observable.
+    if (verb == "set_stroke_miter") {
+        if (args.empty()) return ScriptValue::null();
+
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+
+        double miter_before = node->stroke.miter;
+        double miter_new    = arg_as_double(args[0], miter_before);
+        if (miter_new == miter_before) {
+            // Same miter as current state — also catches the
+            // non-numeric-arg case via arg_as_double's fallback.
+            return ScriptValue::null();
+        }
+
+        // Pre-edit snapshot. Same shape as set_stroke_width /
+        // set_stroke_cap / set_stroke_join.
+        Curvz::FillStyle   fill_before   = node->fill;
+        Curvz::StrokeStyle stroke_before = node->stroke;
+        std::string        fsib          = node->fill_swatch_id;
+        std::string        ssib          = node->stroke_swatch_id;
+        std::string        bsb           = node->bound_style;
+
+        // Build stroke_new with only miter overwritten. paint /
+        // width / cap / join / opacity self-preserve.
+        Curvz::StrokeStyle stroke_new = stroke_before;
+        stroke_new.miter = miter_new;
+
+        node->stroke      = stroke_new;
+        node->bound_style = "";   // break the style binding
+
+        if (m_history) {
+            auto cmd = std::make_unique<Curvz::EditAppearanceCommand>(
+                proj, m_iid,
+                /*fb=*/fill_before,
+                /*sb=*/std::move(stroke_before),
+                /*fa=*/fill_before,              // fill unchanged
+                /*sa=*/stroke_new,
+                /*fsib=*/fsib,
+                /*ssib=*/ssib,
+                /*fsia=*/fsib,                   // fill swatch unchanged
+                /*ssia=*/ssib,                   // stroke swatch unchanged
+                /*bsb=*/std::move(bsb),
+                /*bsa=*/std::string{},           // style binding cleared
+                "Set stroke miter (script)");
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::null();
+    }
+
+    // ── set_stroke_opacity <number> (s241 m1) ────────────────────────────
+    //
+    // Numeric scalar verb on stroke's opacity field. Same shape
+    // as set_stroke_miter modulo the field touched (opacity vs
+    // miter). TENTH "fits unmodified" application of verify-
+    // before-assume.
+    //
+    // StylesScriptable does NOT surface a stroke_opacity verb
+    // (it surfaces shadow_opacity for the drop-shadow's alpha,
+    // but stroke opacity stays at the FillStyle/Solid alpha or
+    // the path-level opacity multiplier — different mechanism
+    // at the style surface). ObjectsScriptable adds the direct
+    // SceneNode::stroke.opacity dial here without a styles-side
+    // counterpart. New verb name (`set_stroke_opacity`),
+    // matching the field name directly.
+    //
+    // VISUAL EFFECT: stroke.opacity is a 0.0-1.0 alpha multiplier
+    // applied to the resolved stroke paint at the Cairo seam.
+    // 1.0 = fully opaque (default), 0.0 = invisible (no outline
+    // rendered), 0.5 = half-transparent (the fill colour shows
+    // through the outline; visible on a coloured fill).
+    //
+    // No clamp / no refusal. Matches set_stroke_width's
+    // convention: the model accepts whatever the script supplies;
+    // the renderer handles edge cases. Negative opacity zeros
+    // out at Cairo's clamp; values > 1.0 saturate at 1.0.
+    if (verb == "set_stroke_opacity") {
+        if (args.empty()) return ScriptValue::null();
+
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+
+        double opacity_before = node->stroke.opacity;
+        double opacity_new    = arg_as_double(args[0], opacity_before);
+        if (opacity_new == opacity_before) {
+            return ScriptValue::null();
+        }
+
+        // Pre-edit snapshot. Same shape as set_stroke_miter.
+        Curvz::FillStyle   fill_before   = node->fill;
+        Curvz::StrokeStyle stroke_before = node->stroke;
+        std::string        fsib          = node->fill_swatch_id;
+        std::string        ssib          = node->stroke_swatch_id;
+        std::string        bsb           = node->bound_style;
+
+        // Build stroke_new with only opacity overwritten. paint /
+        // width / cap / join / miter self-preserve.
+        Curvz::StrokeStyle stroke_new = stroke_before;
+        stroke_new.opacity = opacity_new;
+
+        node->stroke      = stroke_new;
+        node->bound_style = "";   // break the style binding
+
+        if (m_history) {
+            auto cmd = std::make_unique<Curvz::EditAppearanceCommand>(
+                proj, m_iid,
+                /*fb=*/fill_before,
+                /*sb=*/std::move(stroke_before),
+                /*fa=*/fill_before,              // fill unchanged
+                /*sa=*/stroke_new,
+                /*fsib=*/fsib,
+                /*ssib=*/ssib,
+                /*fsia=*/fsib,                   // fill swatch unchanged
+                /*ssia=*/ssib,                   // stroke swatch unchanged
+                /*bsb=*/std::move(bsb),
+                /*bsa=*/std::string{},           // style binding cleared
+                "Set stroke opacity (script)");
+            m_history->push(std::move(cmd));
+        }
+        notify_doc_changed();
+        return ScriptValue::null();
+    }
+
     // ── move "<direction>" (s234 m4) ─────────────────────────────────────
     //
     // Reorder within the parent's `children` vector. Direction token
@@ -2028,6 +2531,66 @@ ScriptValue ObjectProxy::query(std::string_view property) const {
         return ScriptValue::real(node->stroke.width);
     }
 
+    // cap (s240 m1) — text token for stroke.cap via the anon-
+    // namespace cap_to_string helper. Symmetric observable for
+    // set_stroke_cap. Vocabulary: "butt" / "round" / "square"
+    // (matches StylesScriptable::cap's text query).
+    //
+    // For a fresh-mint Path: stroke.cap defaults to LineCap::Butt
+    // (SceneNode.hpp:76 struct default), so the baseline `cap`
+    // query returns "butt" before any set_stroke_cap call.
+    //
+    // ScriptValue strict-equality: the query returns ScriptValue::text
+    // and the assert RHS literal must be a quoted string
+    // ("butt" / "round" / "square"). Same kind-cleanness rules
+    // as the `stroke` query.
+    if (property == "cap") {
+        return ScriptValue::text(cap_to_string(node->stroke.cap));
+    }
+
+    // join (s240 m1) — text token for stroke.join via
+    // join_to_string. Symmetric observable for set_stroke_join.
+    // Vocabulary: "miter" / "round" / "bevel". Default is
+    // LineJoin::Miter (SceneNode.hpp:77 struct default), so
+    // baseline returns "miter".
+    if (property == "join") {
+        return ScriptValue::text(join_to_string(node->stroke.join));
+    }
+
+    // miter (s241 m1) — numeric observable for set_stroke_miter.
+    // Returns the double-valued node->stroke.miter directly via
+    // ScriptValue::real. Same shape as stroke_width. Default is
+    // 4.0 (SceneNode.hpp:78 struct default). ScriptValue
+    // strict-equality means asserts use Double literals
+    // (`== 4.0`, not `== 4`).
+    //
+    // Naming note: the query is `miter`, matching the SceneNode
+    // field name. The verb is `set_stroke_miter`; the query name
+    // drops the `stroke_` prefix to match the proxy's "the
+    // proxy IS an object, you query its surface" naming
+    // convention (same as `cap` and `join` queries, where the
+    // proxy doesn't need to repeat its context in the
+    // observable name). StylesScriptable surfaces both sides as
+    // `stroke_miter_limit` because the proxy there is a Style,
+    // not a SceneNode, and stroke_* prefixes disambiguate from
+    // shadow_* / fill_* on the same surface.
+    if (property == "miter") {
+        return ScriptValue::real(node->stroke.miter);
+    }
+
+    // stroke_opacity (s241 m1) — numeric observable for
+    // set_stroke_opacity. Returns the double-valued
+    // node->stroke.opacity directly. Default is 1.0
+    // (SceneNode.hpp:79 struct default — fully opaque).
+    //
+    // Naming note: kept as `stroke_opacity` rather than
+    // `opacity` because `opacity` could be confused with a
+    // node-level opacity multiplier (LayersProxy uses `opacity`
+    // for that meaning). Explicit `stroke_opacity` disambiguates.
+    if (property == "stroke_opacity") {
+        return ScriptValue::real(node->stroke.opacity);
+    }
+
     return ScriptValue::null();
 }
 
@@ -2077,6 +2640,28 @@ std::vector<std::string> ObjectProxy::verbs() const {
         // refusal — matches StylesScriptable::stroke_width's
         // convention.
         "set_stroke_width",
+        // s240 m1 — paired enum-token verbs closing the appearance
+        // branch's enum-token sub-axis. set_stroke_cap takes one of
+        // "butt" / "round" / "square"; set_stroke_join takes one of
+        // "miter" / "round" / "bevel". Same EditAppearanceCommand
+        // ride (SEVENTH and EIGHTH "fits unmodified" cases in a
+        // row). Unknown tokens silent no-op — no CurrentColor-style
+        // safe-default for these enum vocabularies. Universal
+        // across SceneNode subtypes.
+        "set_stroke_cap",
+        "set_stroke_join",
+        // s241 m1 — closes the appearance branch's remaining
+        // numeric stroke fields. set_stroke_miter takes a
+        // positive double (4.0 default per StrokeStyle); only
+        // matters at sharp corners with miter join. set_stroke_opacity
+        // takes a 0.0-1.0 double (1.0 default); alpha multiplier
+        // on the resolved stroke paint at the Cairo seam. Both
+        // reuse arg_as_double; both ride EditAppearanceCommand
+        // (NINTH and TENTH "fits unmodified" cases). No clamp /
+        // no refusal — matches set_stroke_width's convention.
+        // Universal across SceneNode subtypes.
+        "set_stroke_miter",
+        "set_stroke_opacity",
         // s234 m4 — three element structural verbs. `move` pushes
         // MoveNodeIndexCommand (new in m4); `reparent` pushes
         // MoveObjectToLayerCommand (existing); `duplicate` pushes
@@ -2118,6 +2703,20 @@ std::vector<std::string> ObjectProxy::properties() const {
         // counts or String tokens). Asserts on the script side need
         // Double-kind RHS literals (`== 2.0` not `== 2`).
         "stroke_width",
+        // s240 m1 — enum-token stroke observables. cap returns
+        // "butt" / "round" / "square" via cap_to_string; join
+        // returns "miter" / "round" / "bevel" via join_to_string.
+        // Symmetric paired observables for set_stroke_cap and
+        // set_stroke_join.
+        "cap",
+        "join",
+        // s241 m1 — numeric stroke observables. `miter` returns
+        // node->stroke.miter directly (matches SceneNode field
+        // name; default 4.0). `stroke_opacity` returns
+        // node->stroke.opacity (default 1.0; explicit stroke_
+        // prefix disambiguates from layer-level opacity meanings).
+        "miter",
+        "stroke_opacity",
     };
 }
 
@@ -2376,6 +2975,211 @@ ScriptValue ObjectsScriptable::invoke(std::string_view verb,
         return ScriptValue::null();
     }
 
+    // ── group <iid1> <iid2> ... (s242 m2) ────────────────────────────────
+    //
+    // Wraps two or more in-scope scene objects in a new Group node.
+    // The targets must be SIBLINGS — direct children of the same
+    // parent container (a Layer, or another Group / Compound /
+    // ClipGroup). The new Group lands at the topmost target's
+    // original z-position (lowest index in parent->children); the
+    // targets become its children in parent z-order, matching
+    // Canvas::group_selection's preservation rule (the group's
+    // internal stacking matches the layer's existing stacking,
+    // regardless of how the script listed the targets).
+    //
+    // Pushes a GroupNodesCommand (s242 m1) which captures the
+    // operation by iid + index. Ctrl+Z dissolves the group and
+    // restores the targets to their original positions; redo
+    // re-wraps them under a new Group with the SAME iid (so script-
+    // side state referring to the group iid stays consistent
+    // across undo/redo cycles).
+    //
+    // Returns: the new Group's iid as a text ScriptValue (so the
+    // caller can `set g to result` and address the group via
+    // `objects.g` from then on). Returns "" on any failure
+    // condition (atomic posture — no partial group ever lands).
+    //
+    // No-op returns (text("")):
+    //   - args.size() < 2 — need at least two iids to form a group.
+    //   - any arg is not a string-shaped ScriptValue, or is empty.
+    //   - any iid doesn't resolve to an in-scope scene object
+    //     (already deleted, never existed, or names an out-of-
+    //     scope type like layer/guide).
+    //   - the targets don't all share a parent (cross-container
+    //     grouping is not in scope; matches Canvas::group_selection's
+    //     posture of refusing if find_parent on the first target
+    //     fails or the targets came from different layers).
+    //   - any target is in a non-children slot (clip_shape, blend
+    //     sources, warp source) — those are structural inputs to
+    //     their containers, not free siblings.
+    //
+    // Why not refuse on a single-iid call: a single-target group
+    // is a valid operation in principle (wraps one object in a
+    // 1-child Group, useful for forcing a group context). But
+    // Canvas::group_selection requires >= 2 by convention; this
+    // verb matches the canvas-side rule. A future "wrap" verb
+    // could surface the 1-target case if a script need arises.
+    if (verb == "group") {
+        if (args.size() < 2) return ScriptValue::text("");
+
+        // First pass — resolve every iid to an in-scope scene object,
+        // and verify they all share a parent. Build parallel vectors
+        // of pointer + iid; the parent comes from the first target
+        // and every subsequent target must match.
+        std::vector<Curvz::SceneNode*> target_nodes;
+        std::vector<std::string>       target_iids;
+        target_nodes.reserve(args.size());
+        target_iids.reserve(args.size());
+
+        Curvz::SceneNode* common_parent = nullptr;
+        for (size_t i = 0; i < args.size(); ++i) {
+            std::string iid = arg_as_string(args[i]);
+            if (iid.empty()) return ScriptValue::text("");
+            auto* node = curvz::utils::find_by_iid(*proj, iid);
+            if (!is_scene_object(node)) return ScriptValue::text("");
+            ParentSlot slot = find_parent_node_in_project(proj, node);
+            if (!slot.parent) return ScriptValue::text("");
+            // Refuse non-children-owned targets — same rule as
+            // `delete`. A clip_shape / blend source / warp source
+            // is structural input, not a free sibling.
+            if (slot.child_index < 0) return ScriptValue::text("");
+            if (i == 0) {
+                common_parent = slot.parent;
+            } else if (slot.parent != common_parent) {
+                // Cross-parent grouping — refuse atomically.
+                return ScriptValue::text("");
+            }
+            target_nodes.push_back(node);
+            target_iids.push_back(std::move(iid));
+        }
+        if (!common_parent) return ScriptValue::text("");
+
+        // Build the capture in PARENT Z-ORDER. Walk common_parent's
+        // children once and pluck the targets in order. This matches
+        // Canvas::group_selection's preservation rule.
+        std::set<Curvz::SceneNode*> target_set(target_nodes.begin(),
+                                               target_nodes.end());
+        std::vector<std::string> ordered_iids;
+        std::vector<int>         ordered_indices_before;
+        ordered_iids.reserve(target_nodes.size());
+        ordered_indices_before.reserve(target_nodes.size());
+        int insert_idx = (int)common_parent->children.size();
+        for (int i = 0; i < (int)common_parent->children.size(); ++i) {
+            auto* c = common_parent->children[i].get();
+            if (target_set.count(c)) {
+                ordered_iids.push_back(c->internal_id);
+                ordered_indices_before.push_back(i);
+                insert_idx = std::min(insert_idx, i);
+            }
+        }
+        // Defensive: every target must have been found via the walk.
+        // If the count doesn't match, something's off (e.g. duplicate
+        // iids in args, or a target wasn't actually a child of
+        // common_parent despite ParentSlot saying so — shouldn't
+        // happen, but bail safely).
+        if (ordered_iids.size() != target_nodes.size()) {
+            return ScriptValue::text("");
+        }
+
+        // Get the doc that owns common_parent so we can mint a fresh
+        // default name. Resolve via find_doc_by_iid on the parent's
+        // iid.
+        auto* owning_doc = curvz::utils::find_doc_by_iid(
+            *proj, common_parent->internal_id);
+        if (!owning_doc) return ScriptValue::text("");
+
+        std::string gname = owning_doc->next_default_name(
+            Curvz::CurvzDocument::NameKind::Group);
+        std::string giid = Curvz::generate_internal_id();
+
+        // Build the command. execute() runs synchronously here (same
+        // pattern as the structural verbs above and as Canvas's
+        // migrated group/ungroup methods — the command IS the record
+        // of what we did, not a deferred action).
+        auto cmd = std::make_unique<Curvz::GroupNodesCommand>(
+            proj,
+            common_parent->internal_id,
+            std::move(ordered_iids),
+            std::move(ordered_indices_before),
+            insert_idx,
+            giid,
+            gname,
+            "Group objects (script)");
+        cmd->execute();
+
+        if (m_history) {
+            m_history->push(std::move(cmd));
+        }
+        if (m_notify_doc_changed) m_notify_doc_changed();
+        return ScriptValue::text(giid);
+    }
+
+    // ── ungroup <iid> (s242 m2) ──────────────────────────────────────────
+    //
+    // Dissolves the Group identified by iid: removes it from its
+    // parent, promotes its children to the parent's children vector
+    // at the Group's original index. Pushes an UngroupNodeCommand
+    // (s242 m1) so Ctrl+Z re-creates the Group with the same iid
+    // and the same children.
+    //
+    // Returns: null on success or failure (the operation is
+    // structural; the script doesn't need an iid back — the
+    // children kept their iids and are still addressable).
+    //
+    // No-op returns (null):
+    //   - args.empty() — caller didn't supply an iid.
+    //   - args[0] is not a string-shaped ScriptValue, or is empty.
+    //   - iid doesn't resolve, or resolves to a non-Group SceneNode.
+    //   - the target Group has no parent (e.g. it's a top-level
+    //     layer, but layers are filtered out by is_scene_object;
+    //     defensive).
+    //   - the target Group is owned by a non-children slot (e.g. a
+    //     ClipGroup's clip_shape — refused for the same reason
+    //     `delete` refuses these).
+    //   - the target Group is empty (no children to promote;
+    //     dissolving an empty group is a delete, and a delete-
+    //     shaped op should use `delete`, not `ungroup`).
+    if (verb == "ungroup") {
+        if (args.empty()) return ScriptValue::null();
+        std::string target_iid = arg_as_string(args[0]);
+        if (target_iid.empty()) return ScriptValue::null();
+        auto* node = curvz::utils::find_by_iid(*proj, target_iid);
+        if (!is_scene_object(node)) return ScriptValue::null();
+        if (node->type != Curvz::SceneNode::Type::Group) {
+            return ScriptValue::null();
+        }
+        ParentSlot slot = find_parent_node_in_project(proj, node);
+        if (!slot.parent) return ScriptValue::null();
+        if (slot.child_index < 0) return ScriptValue::null();
+        if (node->children.empty()) return ScriptValue::null();
+
+        // Capture the children's iids in their group-children order.
+        std::vector<std::string> child_iids;
+        child_iids.reserve(node->children.size());
+        for (const auto& c : node->children) {
+            child_iids.push_back(c->internal_id);
+        }
+
+        std::string gname = node->name;
+        std::string giid  = node->internal_id;
+
+        auto cmd = std::make_unique<Curvz::UngroupNodeCommand>(
+            proj,
+            giid,
+            slot.parent->internal_id,
+            slot.child_index,
+            gname,
+            std::move(child_iids),
+            "Ungroup (script)");
+        cmd->execute();
+
+        if (m_history) {
+            m_history->push(std::move(cmd));
+        }
+        if (m_notify_doc_changed) m_notify_doc_changed();
+        return ScriptValue::null();
+    }
+
     return ScriptValue::null();
 }
 
@@ -2439,12 +3243,22 @@ std::vector<std::string> ObjectsScriptable::verbs() const {
         // global undo stack on success.
         "new",
         "delete",
+        // s242 m2 — collection-level grouping verbs. `group` wraps
+        // two or more siblings in a new Group (returns the group's
+        // iid); `ungroup` dissolves a Group and promotes its children
+        // to the parent. Both push the s242 m1 iid-migrated structural
+        // commands (GroupNodesCommand / UngroupNodeCommand) so Ctrl+Z
+        // round-trips cleanly. This is the m5 close — the
+        // canvas-observable arc's collection-level branch lands here,
+        // and the `objects` Tier 3 entry now books.
+        "group",
+        "ungroup",
         // Element mutating verbs live on the proxy, not the
         // collection — see ObjectProxy::verbs(). m3 added them
         // (toggle_visible / set_visible / toggle_locked /
-        // set_locked / rename). m4 will add element structural
-        // verbs (move, reparent, duplicate); m5 closes with
-        // collection-level grouping verbs here (group, ungroup).
+        // set_locked / rename). m4 added element structural verbs
+        // (move, reparent, duplicate). m5 closes here with the
+        // collection-level grouping verbs above.
     };
 }
 
