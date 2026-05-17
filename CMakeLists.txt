@@ -459,6 +459,12 @@ set(SOURCES
     src/scripting/WidgetNameResolver.cpp
     src/scripting/ScriptListener.cpp
     src/scripting/ScripterWindow.cpp
+    # s244 m1 — path containment utility for sensitive scripted verbs.
+    # Free functions in curvz::scripting; init_roots() runs once at
+    # Application::on_startup, path_is_safe() is called by every
+    # headless-verb singleton (m5b) before accepting a path argument.
+    # See CANON.md "Path containment for sensitive verbs."
+    src/scripting/path_is_safe.cpp
     # First concrete PanelScriptable subclass — wraps StylesPanel under
     # abbrev "pnl_styles".
     src/scripting/StylesPanelScriptable.cpp

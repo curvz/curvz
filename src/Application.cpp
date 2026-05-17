@@ -6,6 +6,7 @@
 #include "RecentProjects.hpp"  // s144 m3 — load recents list at startup
 #include "TemplateLibrary.hpp"
 #include "color/SwatchLibrary.hpp"  // color::load_app_defaults (s69 M2)
+#include "scripting/path_is_safe.hpp"  // s244 m1 — path containment init at startup
 // s219 m1 — ScripterWindow include removed; the Scripter lives in
 // MainWindow now. <filesystem> stays for any future Application-side
 // path work; glibmm/main.h stays for the GLib main-loop warmup below.
@@ -189,6 +190,21 @@ void Application::on_startup() {
         return g_log_writer_default(log_level, fields, n_fields, user_data);
       },
       nullptr, nullptr);
+
+  // s244 m1 — initialise path containment for sensitive scripted verbs.
+  // Resolves $HOME and $TMPDIR through realpath() and caches the
+  // absolute symlink-resolved roots for the process's lifetime.
+  // Must run before any scripted verb that takes a path argument
+  // can dispatch; on_startup is the canonical "process start" hook.
+  // See scripting/path_is_safe.hpp for the contract and CANON.md
+  // "Path containment for sensitive verbs" for the rationale.
+  //
+  // A failure here (e.g. $HOME unset on a malformed CI environment)
+  // is logged but does NOT abort startup — the utility itself
+  // refuses every path until init succeeds, which is the safe
+  // default. Users in normal environments see successful init in
+  // the log.
+  curvz::scripting::init_roots();
 
   auto bind = [this](const char *action,
                      std::vector<Glib::ustring> accels) {
