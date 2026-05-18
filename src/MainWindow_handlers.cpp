@@ -100,36 +100,92 @@ void MainWindow::on_new_project() {
 
 void MainWindow::on_close_project() {
   check_unsaved_then([this]() {
-    // Clear config so next launch doesn't reopen this project
-    std::string cfg = config_path();
-    if (std::filesystem::exists(cfg))
-      std::filesystem::remove(cfg);
-
-    // Drop the project — leave the app in an empty waiting state
-    m_project.reset();
-    m_history = CommandHistory{};
-
-    // Clear all panels
-    m_canvas.set_document(nullptr);
-    m_canvas.set_history(nullptr);
-    m_preview.set_document(nullptr);
-    m_layers.set_document(nullptr);
-    m_layers.set_project(nullptr);  // s171 m1 — match project lifecycle
-    m_library.set_document(nullptr);
-    m_themes.set_project(nullptr); // s147 m3
-    m_doc_tabs.set_project(nullptr);
-    m_doc_tabs.refresh();
-    m_gallery.set_project(nullptr);
-    m_properties.set_project(nullptr);
-    Glib::signal_idle().connect_once([this]() {
-      if (!m_closing)
-        m_properties.show_empty();
-    });
-
-    update_project_sensitive();
-    update_title();
-    LOG_INFO("Project closed");
+    do_close_project();
   });
+}
+
+
+// s248 m1 — extracted from on_close_project's check_unsaved_then
+// lambda body. The teardown work is unchanged from what the lambda
+// used to do; lifting it to a method gives script_close_project a
+// single source of truth to call without duplicating the panel-
+// surgery boilerplate. Same pump-at-the-seam pattern as do_save_as
+// (s247 m1's bool-returning lift).
+//
+// Preconditions are the caller's responsibility — this method
+// unconditionally tears down whatever state exists. on_close_project
+// gates via check_unsaved_then (modal Save/Discard/Cancel);
+// script_close_project gates via its enum-returning structural
+// refusals (NoProject / Dragging / Dirty). Either way, by the time
+// do_close_project is called, the caller has decided the teardown
+// is the right thing to do.
+//
+// Side effects: m_project becomes null, m_history reset to empty,
+// every panel cleared of its project / document references, the
+// idle-queued show_empty() on the properties panel fires after the
+// current event loop turn (guarded against m_closing for the
+// app-shutdown case), config file removed so next launch starts
+// empty, project-sensitive actions disabled, title bar refreshed,
+// LOG_INFO line emitted.
+void MainWindow::do_close_project() {
+  // s249 m1 fix — null-out panel library pointers BEFORE m_project.reset().
+  //
+  // Same root cause as the update_all_panels fix (see that function's
+  // banner): m_canvas.set_document(nullptr) synchronously fires
+  // notify_object_selection_changed, which triggers
+  // StylesPanel::refresh, which dereferences m_library. If m_project
+  // has already been reset by the time the signal fires, m_library
+  // still points at the just-freed m_project->styles — crash.
+  //
+  // Two safe orderings exist:
+  //   (A) Drop library pointers (nullptr) BEFORE resetting m_project.
+  //       Panels handle nullptr in refresh() (StylesPanel::refresh
+  //       short-circuits at line 432 when m_library is null).
+  //   (B) Reset m_project AFTER all signal-emitting nullptr setters.
+  //
+  // Choosing (A): it matches update_all_panels's "Group A then
+  // Group B" structure, and a panel sitting with a null library
+  // pointer for the brief window between Group A and m_project.reset()
+  // is harmless (no signals fire in that window).
+
+  // Clear config so next launch doesn't reopen this project
+  std::string cfg = config_path();
+  if (std::filesystem::exists(cfg))
+    std::filesystem::remove(cfg);
+
+  // ── GROUP A: null out per-panel pointers (no signals fired here) ─
+  m_canvas.set_swatch_library(nullptr);
+  m_canvas.set_style_library(nullptr);
+  m_canvas.set_project(nullptr);
+  m_swatches.set_library(nullptr);
+  m_styles.set_library(nullptr);
+  m_styles.set_swatch_library(nullptr);
+  m_themes.set_project(nullptr); // s147 m3
+  m_toolbar.set_swatch_library(nullptr);
+  m_layers.set_project(nullptr);  // s171 m1 — match project lifecycle
+
+  // Drop the project — safe now that no panel holds a pointer into it.
+  m_project.reset();
+  m_history = CommandHistory{};
+
+  // ── GROUP B: null document/canvas pointers (signal-emitting) ─
+  m_canvas.set_document(nullptr);
+  m_canvas.set_history(nullptr);
+  m_preview.set_document(nullptr);
+  m_layers.set_document(nullptr);
+  m_library.set_document(nullptr);
+  m_doc_tabs.set_project(nullptr);
+  m_doc_tabs.refresh();
+  m_gallery.set_project(nullptr);
+  m_properties.set_project(nullptr);
+  Glib::signal_idle().connect_once([this]() {
+    if (!m_closing)
+      m_properties.show_empty();
+  });
+
+  update_project_sensitive();
+  update_title();
+  LOG_INFO("Project closed");
 }
 
 
@@ -241,6 +297,228 @@ void MainWindow::on_save() {
   } else {
     LOG_ERROR("on_save: failed");
   }
+}
+
+
+// s246 m1 — script-side counterpart to on_save. See the design block
+// in MainWindow.hpp at ScriptSaveResult / script_save_project for the
+// enum's contract.
+//
+// The body mirrors on_save's four-case structure exactly, except:
+//
+//   - The "empty directory" case here returns NoPath instead of
+//     falling through to on_save_as. CANON's headless-verb-singletons
+//     rule forbids scripts from summoning modals, so the picker
+//     fallthrough is converted to a structured refusal that the
+//     Scriptable surfaces as "use 'proj save_as <path>' first (s247)".
+//
+//   - The "drag in flight" case here returns Dragging instead of
+//     scheduling a deferred retry. A Scriptable verb returning ok
+//     synchronously while a deferred save fires later would lie about
+//     its result; let the script re-issue cleanly instead.
+//
+// The success and IO-failure paths are identical to on_save's — same
+// update_title() call, same LOG_INFO / LOG_ERROR lines (with a
+// "proj save" prefix so log readers can tell which entry point fired).
+MainWindow::ScriptSaveResult MainWindow::script_save_project() {
+  if (!m_project) {
+    return ScriptSaveResult::NoProject;
+  }
+  if (m_project->directory.empty()) {
+    return ScriptSaveResult::NoPath;
+  }
+  if (m_canvas.is_dragging()) {
+    return ScriptSaveResult::Dragging;
+  }
+  if (m_project->save()) {
+    update_title();
+    LOG_INFO("proj save: saved '{}'", m_project->directory);
+    return ScriptSaveResult::Ok;
+  }
+  LOG_ERROR("proj save: failed");
+  return ScriptSaveResult::IoFailed;
+}
+
+
+// s246 m1 — script-side accessor for the project's current directory.
+// Returns empty string if no project is loaded OR the project has
+// never been saved. The empty / non-empty distinction is what
+// ProjScriptable's `path` and `has_path` queries surface to the DSL.
+std::string MainWindow::script_project_path() const {
+  if (!m_project) return std::string();
+  return m_project->directory;
+}
+
+
+// s247 m1 — script-side counterpart to on_save_as. See the design
+// block in MainWindow.hpp at ScriptSaveAsResult / script_save_project_as
+// for the enum's contract.
+//
+// The `path` argument is assumed pre-validated by the caller through
+// curvz::scripting::path_is_safe. This helper does NOT re-check —
+// separation of concerns: path containment is the Scriptable's
+// pre-flight (it owns the DSL-facing refusal string when the path is
+// outside $HOME/$TMPDIR); project-state checks are this helper's.
+//
+// The body mirrors script_save_project's three structural checks
+// (project, drag, write success) — minus NoPath (the path IS the
+// argument), minus the NoPath/save-as picker bridge (the script
+// supplied the path directly, leapfrogging the picker per CANON's
+// headless-verb-singletons rule). Delegates to do_save_as() for the
+// actual writer work; do_save_as returns bool as of s247 so this
+// helper can map the outcome to Ok or IoFailed honestly.
+MainWindow::ScriptSaveAsResult
+MainWindow::script_save_project_as(const std::string& path) {
+  if (!m_project) {
+    return ScriptSaveAsResult::NoProject;
+  }
+  if (m_canvas.is_dragging()) {
+    return ScriptSaveAsResult::Dragging;
+  }
+  // do_save_as assigns m_project->directory, calls CurvzProject::save(),
+  // and on success calls save_config() + update_title(). It returns
+  // false iff the save call itself failed (LOG_ERROR was already
+  // emitted by do_save_as in that case).
+  if (do_save_as(path)) {
+    LOG_INFO("proj save_as: saved '{}'", path);
+    return ScriptSaveAsResult::Ok;
+  }
+  // do_save_as already emitted its own LOG_ERROR. We don't log a
+  // second time — one entry per failure is enough, and the
+  // do_save_as prefix is the canonical one.
+  return ScriptSaveAsResult::IoFailed;
+}
+
+
+// s248 m1 — script-side counterpart to on_close_project. See the
+// design block in MainWindow.hpp at ScriptCloseResult /
+// script_close_project for the enum's contract.
+//
+// The body mirrors what on_close_project's check_unsaved_then guard
+// does (project loaded? dirty?) plus the standard drag check (same
+// as save / save_as) — except every refusal becomes a structured
+// enum value the Scriptable surfaces as a DSL error, never a modal.
+// The teardown work itself lives in do_close_project() so both
+// callers share a single source of truth (same pump-at-the-seam
+// pattern as do_save_as).
+//
+// The ordering of refusals matters in only one direction: NoProject
+// MUST come before the can_undo() check because m_history is a value
+// member of MainWindow whose lifetime is independent of m_project's.
+// Although do_close_project resets m_history alongside m_project so
+// the normal post-close state is "no project, clean history," nothing
+// structurally guarantees the invariant — and NoProject is the
+// structurally honest answer whenever m_project is null. The drag
+// check after NoProject is order-insensitive (is_dragging only reads
+// canvas flags, never touches project state).
+MainWindow::ScriptCloseResult
+MainWindow::script_close_project() {
+  if (!m_project) {
+    return ScriptCloseResult::NoProject;
+  }
+  if (m_canvas.is_dragging()) {
+    return ScriptCloseResult::Dragging;
+  }
+  if (m_history.can_undo()) {
+    // The GUI's check_unsaved_then prompts Save/Discard/Cancel here.
+    // Scripts can't summon modals; refuse instead and let the script
+    // author make the save/discard choice explicit.
+    return ScriptCloseResult::Dirty;
+  }
+  // All preconditions cleared. do_close_project does the teardown
+  // (panels, history, config file, title) and logs the standard
+  // "Project closed" line. Nothing more to do here — the close
+  // is unconditional once preconditions hold.
+  do_close_project();
+  LOG_INFO("proj close: project closed");
+  return ScriptCloseResult::Ok;
+}
+
+
+// s248 m1 — script-side dirty signal. Uses the same proxy
+// on_close_project's check_unsaved_then uses (m_history.can_undo()).
+// See the design block in MainWindow.hpp at script_project_dirty.
+//
+// Two-clause body: false when no project (nothing to be dirty
+// about), otherwise the undo-stack proxy. When a true project-level
+// dirty bit on CurvzProject lands (backlog), this body changes to
+// read that bit; the public contract is unchanged.
+bool MainWindow::script_project_dirty() const {
+  if (!m_project) return false;
+  return m_history.can_undo();
+}
+
+
+// s249 m1 — script-side counterpart to on_open. See the design
+// block in MainWindow.hpp at ScriptLoadResult / script_load_project
+// for the enum's contract.
+//
+// The `path` argument is assumed pre-validated by the caller through
+// curvz::scripting::path_is_safe. This helper does NOT re-check —
+// separation of concerns matches save_as exactly: path containment
+// is the Scriptable's pre-flight; project-state + I/O is this
+// helper's.
+//
+// Body — drag check, dirty check, open, swap:
+//
+//   - Drag check first. Same posture as every project-lifecycle
+//     helper. Note: with no project loaded the drag check is
+//     trivially false (no canvas content to drag), so this only
+//     meaningfully fires when load is REPLACING an existing
+//     project. Still wired for symmetry; doesn't hurt.
+//
+//   - Dirty check second. STRICTER than on_open (which does not
+//     check_unsaved_then before replacing the project — arguably
+//     a GUI bug, logged as separate backlog item). The script-
+//     side stricter posture is deliberate: GUI replacement is
+//     visually obvious (title bar changes, panels redraw); a
+//     script silently destroying mid-automation is not. See
+//     ProjScriptable.hpp's verb-surface block at `load` for the
+//     full rationale.
+//
+//   - CurvzProject::open(path) — same call on_open's lambda
+//     makes after the file dialog returns. Null means "directory
+//     missing, not a .curvz, or parse failed" — open() doesn't
+//     distinguish these today. A single OpenFailed bucket matches
+//     the underlying surface honestly; when open() grows
+//     distinguishable error returns, the enum (and this helper)
+//     can split without breaking the existing Ok path.
+//
+//   - load_project(std::move(project)) — same orchestrator on_open
+//     calls. This is the PUMP: panel sync, history reset,
+//     recent-projects bump, config save, title refresh, LOG_INFO
+//     line. We don't need a do_load_project lift like s247's
+//     do_save_as or s248's do_close_project because the pump
+//     already exists at the helper-orchestrator boundary — the
+//     GUI path also goes through load_project, so the single
+//     source of truth is already in place. This is the same
+//     pump-at-the-seam discipline; the seam just happens to be
+//     one layer deeper than the do_-lift cases.
+MainWindow::ScriptLoadResult
+MainWindow::script_load_project(const std::string& path) {
+  if (m_canvas.is_dragging()) {
+    return ScriptLoadResult::Dragging;
+  }
+  if (m_history.can_undo()) {
+    // The script-side stricter posture (see header). on_open
+    // silently replaces; we refuse and let the script author make
+    // the save/discard choice explicit. A future force_load verb
+    // (s250+) gives the discard path.
+    return ScriptLoadResult::Dirty;
+  }
+  auto project = CurvzProject::open(path);
+  if (!project) {
+    // Mirrors on_open's LOG_ERROR path. Conflates the three
+    // disk-side failure causes (see header for the catalogue).
+    LOG_ERROR("proj load: open failed for '{}'", path);
+    return ScriptLoadResult::OpenFailed;
+  }
+  load_project(std::move(project));
+  // load_project itself emits the canonical "Project loaded: '{}'"
+  // LOG_INFO line and the recent-projects bump. No additional log
+  // here — one entry per success is enough, and load_project's
+  // line is the right one (matches on_open's success path).
+  return ScriptLoadResult::Ok;
 }
 
 

@@ -158,6 +158,7 @@ namespace curvz::scripting { class StylesScriptable; }
 namespace curvz::scripting { class ThemesScriptable; }
 namespace curvz::scripting { class ObjectsScriptable; }
 namespace curvz::scripting { class InspectorScriptable; }
+namespace curvz::scripting { class ProjScriptable; }  // s246 m1 — first headless-verb singleton
 namespace curvz::scripting { class ScripterWindow; }
 
 namespace Curvz {
@@ -167,14 +168,15 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
-    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s243 m2 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
+    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s243 m2 / s246 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
     // unique_ptr<curvz::scripting::GuidesScriptable>,
     // unique_ptr<curvz::scripting::SwatchesScriptable>,
     // unique_ptr<curvz::scripting::PalettesScriptable>,
     // unique_ptr<curvz::scripting::StylesScriptable>,
     // unique_ptr<curvz::scripting::ThemesScriptable>,
-    // unique_ptr<curvz::scripting::ObjectsScriptable>, and
-    // unique_ptr<curvz::scripting::InspectorScriptable> can hold incomplete
+    // unique_ptr<curvz::scripting::ObjectsScriptable>,
+    // unique_ptr<curvz::scripting::InspectorScriptable>, and
+    // unique_ptr<curvz::scripting::ProjScriptable> can hold incomplete
     // types at the header level. Implementation lives in MainWindow.cpp
     // alongside the construction. No longer gated as of s219 m1.
     ~MainWindow();
@@ -303,6 +305,318 @@ public:
     // re-asserts the transient relationship; hide is just a visibility
     // flip.
     void show_scripter(bool visible);
+
+    // ── s246 m1 — script-side proj save helpers ───────────────────────
+    //
+    // ProjScriptable (curvz::scripting::ProjScriptable) needs to invoke
+    // the same save path the GUI Save action runs, AND it needs to know
+    // the project's current directory path for its `path` / `has_path`
+    // queries. Both touch private state (m_project, m_canvas) on this
+    // class. Rather than friending the Scriptable or exposing the raw
+    // members, two small public helpers package the access here.
+    //
+    // The split keeps the Scriptable thin (just DSL-facing string
+    // formatting on the invoke side) and keeps the decisions about
+    // window state inside MainWindow's API surface where they
+    // naturally belong. See ProjScriptable.cpp for the enum-to-error
+    // mapping on the script side and CANON's "Headless-verb singletons"
+    // entry for why save's argument is implicit in the project state
+    // rather than supplied by the script.
+
+    // Outcome of a script-driven save attempt. The Scriptable maps
+    // each non-Ok value to a structured DSL error so the script
+    // author can see why nothing was written.
+    //
+    //   Ok          — CurvzProject::save() returned true. The helper
+    //                 has already called update_title() and emitted a
+    //                 LOG_INFO line, mirroring on_save's success path.
+    //   NoProject   — m_project is null. Rare edge case; can occur
+    //                 transiently between document close and open.
+    //   NoPath      — m_project is loaded but its directory is empty
+    //                 (the project has never been saved). The GUI's
+    //                 on_save falls through to on_save_as in this
+    //                 case, opening a picker; a Scriptable can't
+    //                 summon a modal, so the helper refuses and the
+    //                 Scriptable surfaces the "use save_as <path>"
+    //                 hint pointing to s247's future verb.
+    //   Dragging    — m_canvas.is_dragging() is true. The GUI handler
+    //                 defers via 100ms signal_timeout in this case;
+    //                 the Scriptable refuses synchronously rather
+    //                 than return ok and fire a deferred save later.
+    //   IoFailed    — CurvzProject::save() returned false. Mirrors
+    //                 the GUI handler's LOG_ERROR path.
+    enum class ScriptSaveResult {
+        Ok,
+        NoProject,
+        NoPath,
+        Dragging,
+        IoFailed,
+    };
+
+    // Run the save flow on behalf of a script caller. Mirrors the
+    // body of on_save except the picker-fallthrough (Save As) is
+    // converted to a NoPath refusal — scripts can't summon modals,
+    // and CANON's Scripter line lists "proj save_as <arbitrary>"
+    // as out-of-scope for the in-app DSL playground.
+    //
+    // Side effects on Ok: project written to disk via
+    // CurvzProject::save(), update_title() called, LOG_INFO line
+    // emitted. No side effects on any other return value (no
+    // partial state).
+    ScriptSaveResult script_save_project();
+
+    // Read-only accessor for the project's current directory path.
+    // Returns an empty string if no project is loaded or the project
+    // has never been saved. Used by ProjScriptable's `path` and
+    // `has_path` queries; the empty / non-empty distinction is the
+    // only state the queries need to surface.
+    std::string script_project_path() const;
+
+    // ── s247 m1 — script-side proj save_as helper ─────────────────────
+    //
+    // Sibling to script_save_project() above. The Scriptable calls
+    // this helper from ProjScriptable's `save_as` verb branch AFTER
+    // pre-validating the path through curvz::scripting::path_is_safe.
+    // The split is deliberate: path-safety pre-validation lives in the
+    // Scriptable (it owns the DSL-facing refusal string), and this
+    // helper only runs once the path has cleared that gate. From the
+    // helper's point of view, `path` is already vetted to be inside
+    // $HOME or $TMPDIR; it only worries about project state.
+    //
+    // No NoPath case (compare ScriptSaveResult above) — the path IS
+    // the argument here. No PathUnsafe case either — that refusal is
+    // structurally upstream, the helper never sees an unsafe path.
+    // What remains is the same three structural conditions Save flows
+    // share: project loaded? mid-drag? did the actual write succeed?
+    //
+    //   Ok          — Project's directory was set to `path` and
+    //                 CurvzProject::save() returned true. The helper
+    //                 has already called save_config() and update_title()
+    //                 (mirroring do_save_as's success path).
+    //   NoProject   — m_project is null. Same edge case as save.
+    //   Dragging    — m_canvas.is_dragging() is true. Same refusal
+    //                 rationale as save: a synchronous ok-echo while
+    //                 a deferred write fires later would lie about
+    //                 the result.
+    //   IoFailed    — CurvzProject::save() returned false. Same as
+    //                 do_save_as's LOG_ERROR path; project state is
+    //                 left as-is (directory was already assigned the
+    //                 new path before save attempted, matching
+    //                 do_save_as's existing posture — a half-written
+    //                 file is rarer than a directory-stamp-without-
+    //                 successful-write, and the latter is recoverable
+    //                 by re-trying the save).
+    enum class ScriptSaveAsResult {
+        Ok,
+        NoProject,
+        Dragging,
+        IoFailed,
+    };
+
+    // Run the save_as flow on behalf of a script caller. The supplied
+    // `path` is assumed already vetted by path_is_safe; the helper
+    // does not re-check (separation of concerns: path containment is
+    // the Scriptable's pre-flight, project-state checks are this
+    // helper's). Body is the same three checks the save helper does
+    // (skipping NoPath, since `path` IS the path), followed by a
+    // delegated call to do_save_as() — the existing on_save_as
+    // success-tail helper that updates m_project->directory, saves,
+    // updates last-folder config, and refreshes the title.
+    //
+    // Side effects on Ok: m_project->directory := path, project
+    // written to disk via do_save_as → CurvzProject::save(),
+    // save_config() and update_title() called. No side effects on
+    // NoProject or Dragging. On IoFailed, m_project->directory has
+    // been assigned the new path (matching do_save_as's pre-existing
+    // behaviour — the assignment happens before the save attempt).
+    ScriptSaveAsResult script_save_project_as(const std::string& path);
+
+    // ── s248 m1 — script-side proj close helpers ──────────────────────
+    //
+    // Sibling to script_save_project / script_save_project_as. The
+    // Scriptable calls script_close_project from ProjScriptable's
+    // `close` verb branch. The split is the same pattern: state-check
+    // and writer/teardown in MainWindow, DSL-facing error formatting
+    // in the Scriptable.
+    //
+    // The close flow has an extra wrinkle relative to save:
+    // on_close_project wraps its body in check_unsaved_then(), which
+    // summons a Save/Discard/Cancel modal when m_history.can_undo() is
+    // true. A Scriptable can't summon modals — same picker-fallthrough
+    // problem the s246 m1 NoPath refusal solved for `save`. Solution
+    // is symmetric: refuse with Dirty when can_undo() is true, point
+    // the script author at `proj save` (or `proj save_as <path>`) as
+    // the remedy. The script author who genuinely wants to discard
+    // unsaved work waits for a future `force_close` verb or an arg
+    // flag on close — out of m1 scope.
+    //
+    // Outcome of a script-driven close attempt. The Scriptable maps
+    // each non-Ok value to a structured DSL error.
+    //
+    //   Ok          — Project was closed. Teardown ran via
+    //                 do_close_project(): panels cleared, command
+    //                 history dropped, config-path file removed,
+    //                 update_project_sensitive + update_title fired,
+    //                 LOG_INFO line emitted.
+    //   NoProject   — m_project was already null. There is nothing to
+    //                 close. Refuse so the script author sees that
+    //                 their assumption ("a project is loaded") was
+    //                 wrong; otherwise a no-op close would silently
+    //                 succeed and hide the bug.
+    //   Dragging    — m_canvas.is_dragging() is true. Same rationale
+    //                 as save / save_as: a synchronous ok-echo while a
+    //                 deferred teardown fires later would lie about
+    //                 the result.
+    //   Dirty       — Project has work on the undo stack
+    //                 (m_history.can_undo()). The GUI handler prompts
+    //                 Save/Discard/Cancel via check_unsaved_then; a
+    //                 Scriptable can't summon modals. Refuse instead
+    //                 and let the script author make the save/discard
+    //                 choice explicit (today: call `proj save` first
+    //                 to clear the dirty signal, then re-call `proj
+    //                 close`; tomorrow: a future force_close verb
+    //                 for the discard branch).
+    enum class ScriptCloseResult {
+        Ok,
+        NoProject,
+        Dragging,
+        Dirty,
+    };
+
+    // Run the close flow on behalf of a script caller. Mirrors
+    // on_close_project's state checks (project loaded, canvas not
+    // dragging) plus the dirty-prompt that on_close_project handles
+    // via check_unsaved_then — except the modal is converted to a
+    // Dirty refusal (scripts can't summon modals). On Ok, delegates
+    // to do_close_project() for the actual teardown work — the same
+    // method on_close_project's lambda body now lives in.
+    //
+    // Side effects on Ok: m_project becomes null, command history
+    // emptied, all panels cleared, config file removed (so next
+    // launch starts empty), update_project_sensitive + update_title
+    // fired. No side effects on any other return value.
+    ScriptCloseResult script_close_project();
+
+    // s248 m1 — script-side accessor for the project's "dirty" signal.
+    //
+    // Uses the same proxy on_close_project's check_unsaved_then uses:
+    // m_history.can_undo(). Curvz does not (yet) have a true project-
+    // level dirty bit on CurvzProject (every command push would set
+    // it, every save would clear it — real infrastructure work; see
+    // backlog). Until that ships, "is the undo stack non-empty?" is
+    // the dirty signal the entire GUI uses, end to end — and reusing
+    // it for the script-side `dirty` query keeps the script's
+    // semantic in lock-step with the GUI's.
+    //
+    // Returns false if no project is loaded (nothing to be dirty
+    // about) or the project's command history is empty. Returns true
+    // iff a project is loaded AND the history has at least one
+    // undoable command on it. The query is the smoke 46 precondition
+    // assertable observable; without it the smoke can only operator-
+    // visual its way through the dirty-branch test.
+    //
+    // When the real project-level dirty bit lands, this helper's
+    // body changes to read that bit; the public contract stays
+    // identical, so script code keeps working unchanged.
+    bool script_project_dirty() const;
+
+    // ── s249 m1 — script-side proj load helper ────────────────────────
+    //
+    // Sibling to script_save_project_as and script_close_project. The
+    // Scriptable calls this from ProjScriptable's `load` verb branch
+    // AFTER pre-validating the path through path_is_safe (same split
+    // as save_as: path-containment in the Scriptable, project-state +
+    // I/O in this helper).
+    //
+    // `load` is a destructive-replacement verb: success swaps the
+    // current project out and the supplied one in. The
+    // surface-preservation rule (s248 m1, articulated in
+    // ProjScriptable.hpp's `close` block) says any verb that destroys
+    // the project state the script reasons about is TestRunner-only.
+    // load is the SECOND instance of that rule (close was the first;
+    // save_as is sibling-under-the-path-containment-rule rather than
+    // surface preservation, even though both rules land at the same
+    // TestRunner-only mask).
+    //
+    //   Ok          — CurvzProject::open(path) succeeded and
+    //                 load_project() was called. The orchestrator
+    //                 did the panel sync, recent-projects bump,
+    //                 update_title, and LOG_INFO line. No NoProject
+    //                 case is needed — load is the one project-
+    //                 lifecycle verb that's legitimate to call from
+    //                 the no-project state (it's how you GET into a
+    //                 loaded state).
+    //   Dragging    — m_canvas.is_dragging() is true. Same refusal
+    //                 rationale as save / save_as / close: a
+    //                 synchronous ok-echo while the project swap
+    //                 fires later would lie. Note that this is the
+    //                 only project-lifecycle helper where the check
+    //                 only meaningfully fires when a project is
+    //                 ALREADY loaded — there can't be a canvas drag
+    //                 against no document. Still wired for symmetry
+    //                 with the close / save / save_as flows and for
+    //                 the "load while existing project mid-drag"
+    //                 case (real and reachable from TestRunner).
+    //   Dirty       — m_history.can_undo() is true. Refuse rather
+    //                 than silently destroy the user's unsaved work.
+    //                 NOTE: this is STRICTER than the GUI's on_open,
+    //                 which currently does NOT run through
+    //                 check_unsaved_then — the GUI silently replaces
+    //                 the project. The script-side stricter posture
+    //                 is deliberate: the GUI shows visible feedback
+    //                 (title bar changes, panels redraw) that makes
+    //                 the destruction observable; a script silently
+    //                 dropping work in the middle of an automation
+    //                 run would not. The script author who genuinely
+    //                 wants to discard waits for a future
+    //                 force_load verb or arg flag (s250+); for now,
+    //                 refusing rather than silently dropping is the
+    //                 safer default. The GUI's missing
+    //                 check_unsaved_then is logged as a separate
+    //                 backlog item — when the GUI gains the
+    //                 check, the script and GUI postures align;
+    //                 until then the script is the safer of the two.
+    //   OpenFailed  — CurvzProject::open(path) returned null. This
+    //                 conflates several disk-side failures (directory
+    //                 doesn't exist, isn't a .curvz, parse failure)
+    //                 because CurvzProject::open itself doesn't
+    //                 distinguish them today — a single OpenFailed
+    //                 matches the underlying surface honestly. When
+    //                 open() grows distinguishable error returns, the
+    //                 enum can split (NoFile / NotProject /
+    //                 ParseFailed) without breaking the existing Ok
+    //                 path; for now, OpenFailed is the single failure
+    //                 bucket.
+    enum class ScriptLoadResult {
+        Ok,
+        Dragging,
+        Dirty,
+        OpenFailed,
+    };
+
+    // Run the load flow on behalf of a script caller. The supplied
+    // `path` is assumed already vetted by path_is_safe; the helper
+    // does not re-check (separation of concerns: path containment is
+    // the Scriptable's pre-flight, project-state + I/O is this
+    // helper's).
+    //
+    // Body: drag check → dirty check → CurvzProject::open(path) →
+    // load_project(). No do_load_project lift is needed (compare
+    // do_save_as in s247, do_close_project in s248) because
+    // load_project() already IS the orchestrator the GUI's on_open
+    // delegates to; both callers share that single source of truth
+    // already. Same pump-at-the-seam principle, applied at the
+    // helper-orchestrator boundary rather than the
+    // handler-helper boundary.
+    //
+    // Side effects on Ok: m_project replaced with the freshly-opened
+    // project, m_history reset, every panel re-seeded to the new
+    // project (panels, recents bumped, config saved, title
+    // refreshed, LOG_INFO line). No side effects on any other return
+    // value. On OpenFailed in particular the existing project is
+    // left intact — the open() call returns null without mutating
+    // any of MainWindow's state.
+    ScriptLoadResult script_load_project(const std::string& path);
 
 private:
     void setup_headerbar();  // category: zone: headerbar
@@ -465,7 +779,26 @@ private:
     void on_macro_manager();  // category: handler: macros
     void on_run_macro(const std::string& macro_id);  // category: handler: macros
     void on_quit();  // category: handler: documents
-    void do_save_as(const std::string& dir);  // category: helper: save flow
+    // s247 m1 — return type bool (was void). True iff
+    // CurvzProject::save() returned true and save_config /
+    // update_title ran. Existing GUI call sites in on_save_as discard
+    // the return; the script-side caller (script_save_project_as)
+    // uses it to surface IoFailed honestly to the DSL. The semantics
+    // for both callers are unchanged: on failure, the project's
+    // directory has already been mutated (assignment happens before
+    // the save attempt) and a LOG_ERROR line has been emitted.
+    bool do_save_as(const std::string& dir);  // category: helper: save flow
+    // s248 m1 — extracted from on_close_project's check_unsaved_then
+    // lambda body. The teardown work (drop project, clear command
+    // history, clear every panel, remove config file, refresh title
+    // and project-sensitive actions, log) lives here as a single
+    // method so on_close_project and script_close_project can both
+    // call it from a single source of truth. Same pump-at-the-seam
+    // pattern as do_save_as (s247 m1). No args, no return — the
+    // teardown is unconditionally successful once preconditions
+    // (project loaded, not dragging, not dirty) have been verified by
+    // the caller.
+    void do_close_project();  // category: helper: project lifecycle
     void on_tool_changed(ActiveTool tool);  // category: glue
     void on_doc_activated(int index);  // category: glue
     void cycle_doc(int delta);  // category: glue
@@ -767,6 +1100,23 @@ private:
     // block (in particular, why this isn't a verb on pnl_styles or a
     // PropertiesPanel-only Scriptable).
     std::unique_ptr<curvz::scripting::InspectorScriptable> m_inspector_scriptable;
+
+    // s246 m1 — `proj` Scriptable, first headless-verb singleton from
+    // ARC m5b (Tier 4). Sibling of InspectorScriptable in shape — flat
+    // verb surface, no proxy routing, MainWindow-pointer constructor —
+    // but wraps a different concern (the project-level save outcome
+    // rather than the inspector-area section orchestration). m1 ships
+    // one verb (`save`) and two queries (`path`, `has_path`); save_as /
+    // load / new / close land in s247+. Same lifetime / dtor story as
+    // the Scriptables above; the dtor stays out-of-line so the
+    // unique_ptr can hold an incomplete type. See ProjScriptable.hpp
+    // for the verb surface, the three-branch refusal contract on
+    // `save`, and the RunContext mask rationale (Scripter | TestRunner;
+    // Macro is OUT per CANON's RunContext pseudocode). Also the
+    // second consumer of Scriptable::context_mask() — when a third
+    // consumer earns the refactor, the virtual-method-per-Scriptable
+    // shape promotes to a central register_verb(name, mask) table.
+    std::unique_ptr<curvz::scripting::ProjScriptable> m_proj_scriptable;
 
     // s219 m1 — Scripter window. Owned by MainWindow as a unique_ptr
     // member, matching the pattern of every other persistent floating

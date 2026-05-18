@@ -1,0 +1,235 @@
+# 47_proj_load_smoke — fourth verb on the proj headless-verb singleton
+# (s249 m1). First destructive-replacement verb on the project surface;
+# second verb under the surface-preservation rule articulated by
+# s248 m1 (close was the first); second live exercise of
+# curvz::scripting::path_is_safe under user-supplied input (save_as
+# was the first).
+#
+# Tier 4 row remains at 1/~4-5: same singleton, fourth verb; no tick.
+# Surface widening: proj verb count 3 → 4. Query count unchanged.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Scripter context refuses load at the dispatcher BEFORE the verb's
+# body runs. load is declared as ctx::TestRunner only in
+# ProjScriptable::context_mask — by the surface-preservation rule
+# (load destroys the project the script's trace refers to AND seeds
+# a different one in its place; either half alone would justify
+# TestRunner-only). Same dispatcher layer as smokes 45 and 46 refuse
+# their respective verbs.
+#
+# What this smoke CAN observe from Scripter:
+#
+#   - Every load call refuses with the standard RunContext refusal
+#     message, regardless of the path argument. The path-safety
+#     check wired inside the verb body is structurally unreachable
+#     from Scripter (the gate fires first). Same pattern as smoke 45
+#     for save_as.
+#
+#   - The project's path is unchanged after every refused call. The
+#     RunContext gate is a structured early-return; no state mutation
+#     happens. The `proj has_path` and `proj path` queries before and
+#     after each refusal are the assertable observable.
+#
+# What this smoke CANNOT observe from Scripter:
+#
+#   - path_is_safe's accept/refuse split as exercised through the
+#     load verb body. The verb body is wired with the path-safety
+#     pre-flight live (any TestRunner caller will exercise it), but
+#     from this caller the body never runs. Live path_is_safe
+#     coverage for load waits for the future CLI test runner. Same
+#     coverage-deferral note as smoke 45.
+#
+#   - The dirty refusal (script_load_project's structurally stricter
+#     posture than on_open's silent replace). The script-side
+#     load refuses on can_undo() == true rather than silently
+#     destroying unsaved work; from Scripter context, the dispatcher
+#     refuses first, so this branch is unreachable here too. Logged
+#     for when the test runner lands; the analogue will assert
+#     dirty-then-refuse behaviour explicitly.
+#
+# Three refuse cases are exercised below to demonstrate that the gate
+# fires regardless of what path was supplied:
+#
+#   - A safe path that COULD be a real .curvz directory under /tmp
+#     (the path WOULD be accepted by path_is_safe if the body ran;
+#     the gate refuses anyway, and even if the gate were absent,
+#     the helper would fail at CurvzProject::open with OpenFailed
+#     because no such file exists — but the gate refuses upstream
+#     of that too).
+#   - An unsafe path under /etc (the path WOULD be refused by
+#     path_is_safe; the gate refuses first).
+#   - An empty path (the path WOULD be refused by path_is_safe and
+#     by the arg-validation guard; the gate refuses first).
+#
+# All three observable outcomes are identical from the dispatcher's
+# perspective: same structured refusal line, no project mutation,
+# no body execution. That uniformity IS the structural property
+# the smoke confirms.
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# This smoke runs through ScripterWindow's listener, m_context =
+# RunContext::Scripter (set in ScripterWindow's ctor, see s244 m2
+# wiring). load declares its mask as ctx::TestRunner only, so the
+# dispatcher's context_allows check returns false on every load
+# invoke from this caller.
+#
+# Fifth consumer of Scriptable::context_mask() in the codebase
+# (Inspector + proj.save + proj.save_as + proj.close + proj.load).
+# Registry-promotion clock at 5/n; STILL HELD by design (s249 m1
+# decision — see ProjScriptable.hpp's context_mask block).
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# Fully non-destructive. Every load call refuses at the dispatcher
+# gate before any state touches the project — m_project is not
+# replaced, m_history is not reset, no panels are re-seeded, no
+# config is rewritten. The smoke does NOT read from disk — the
+# /tmp/curvz_smoke_47_test.curvz path named below is never actually
+# opened for reading because the gate refuses first. Repeatable
+# without setup or teardown; safe to run against any project state
+# Scott has loaded.
+#
+# Contrast with smoke 44 (proj save), which DOES write to disk —
+# the dispatcher accepts `save` from Scripter (its mask includes
+# Scripter), so the verb body runs and the project file's
+# last-saved timestamp is refreshed. Smoke 47 does no such write
+# (it doesn't write; it reads — but the gate prevents even that).
+
+#[sub] === Phase 1: project state precondition ===
+
+#[sub] Get the project's current directory path. Operator-visual:
+#[sub] this should be the .curvz directory Scott has open right now.
+#[sub] The has_path assertion below confirms the precondition for
+#[sub] the post-refusal sanity checks (path unchanged after each
+#[sub] refused call) — if has_path is false here, the sanity checks
+#[sub] are meaningless because there's no path to be unchanged.
+#[sub]
+#[sub] Note that load is the ONE project-lifecycle verb where
+#[sub] has_path == false would be a legitimate caller state (no
+#[sub] project loaded yet, ready to load one). The smoke runs from
+#[sub] a loaded-project state to ensure the post-refusal path-
+#[sub] unchanged assertion is meaningful.
+
+get proj path
+
+assert proj has_path == true
+
+#[sub] === Phase 2: RunContext refusal — safe path ===
+
+#[sub] Call load with a path that path_is_safe WOULD accept if
+#[sub] the body ran (under /tmp, the canonical safe scratch
+#[sub] location). The expected trace line is:
+#[sub]
+#[sub]   error invoke refused: verb 'load' on 'proj' not
+#[sub]   permitted in scripter context
+#[sub]
+#[sub] Operator-visual on the refusal: read the line below this
+#[sub] comment in the trace and confirm the structured refusal
+#[sub] appears. The DSL's `assert` is equality-only on query
+#[sub] results and can't directly compare against the listener's
+#[sub] error line; same convention as smokes 45 and 46.
+
+proj load "/tmp/curvz_smoke_47_test.curvz"
+
+#[sub] === Phase 3: post-refusal sanity (path unchanged) ===
+
+#[sub] After the refused invoke, the project's directory is
+#[sub] unchanged. The RunContext gate is a structured early-return
+#[sub] (the verb body never ran), so no project replacement happened.
+#[sub] Same structural property smokes 45 and 46 confirmed for
+#[sub] save_as and close respectively: refusal means zero side
+#[sub] effects.
+
+assert proj has_path == true
+
+#[sub] === Phase 4: RunContext refusal — unsafe path ===
+
+#[sub] Call load with a path that path_is_safe WOULD refuse if the
+#[sub] body ran (under /etc, outside both $HOME and $TMPDIR). From
+#[sub] Scripter context, the dispatcher refuses first — the
+#[sub] path_is_safe check inside the verb body is never reached.
+#[sub] Same refusal line text as Phase 2; the path argument doesn't
+#[sub] affect the gate's decision.
+#[sub]
+#[sub] This is the structural property the smoke is here to confirm:
+#[sub] the RunContext gate fires independent of path safety. Same
+#[sub] property smoke 45 confirms for save_as.
+
+proj load "/etc/curvz_smoke_47_test.curvz"
+
+#[sub] === Phase 5: RunContext refusal — empty path ===
+
+#[sub] Call load with an empty path. Same refusal at the gate; the
+#[sub] verb body's argument-validation guard ("path argument is
+#[sub] empty or not a string") is also unreached. Three different
+#[sub] argument shapes, three identical structured refusals.
+
+proj load ""
+
+#[sub] === Phase 6: post-refusal sanity ===
+
+#[sub] Final sanity assertion: the project's path is still unchanged
+#[sub] after all three refusals. Confirms the dispatcher's
+#[sub] refuse-without-touching-state contract held across multiple
+#[sub] gate fires in a row.
+
+assert proj has_path == true
+
+#[sub] s249 m1 smoke complete. Expected summary line:
+#[sub]
+#[sub]   7 lines, 3 pass, 0 fail, 3 error
+#[sub]
+#[sub] - 3 PASS  : has_path == true at Phases 1, 3, 6 (path unchanged
+#[sub]             across the refusals)
+#[sub] - 3 error : the three load RunContext refusals at Phases
+#[sub]             2, 4, 5 (intentional — the gate working as
+#[sub]             designed, one error per refused call per
+#[sub]             ScriptListener's ++m_stats.errors at the gating
+#[sub]             site)
+#[sub] - 1 operator-visual : the `get proj path` echo at Phase 1
+#[sub]             (shows which .curvz directory Scott has open)
+#[sub] - 3 operator-visual refusals : the structured `error invoke
+#[sub]             refused: verb 'load' on 'proj' not permitted in
+#[sub]             scripter context` line under each refused load
+#[sub]             call. Read in trace to confirm the refusal text
+#[sub]             matches across all three.
+#[sub]
+#[sub] Tier 4 row stays at 1/~4-5 (no tick — same singleton, fourth
+#[sub] verb). Surface widening: `proj` Scriptable verb count goes
+#[sub] 3 → 4; path_is_safe gains its second production call site
+#[sub] (live in the verb body even if Scripter context never reaches
+#[sub] it); context_mask() consumer count goes 4 → 5 (registry-
+#[sub] promotion clock held at 5/n by design).
+
+#[sub] ── Manual exercise for the verb body ──────────────────────
+#[sub]
+#[sub] To exercise the load verb body's accept and refuse paths
+#[sub] (path_is_safe live, drag check, dirty check,
+#[sub] CurvzProject::open accept and refuse, load_project swap),
+#[sub] the script needs to run under RunContext::TestRunner. No
+#[sub] CLI test runner exists today; this is a backlog item.
+#[sub]
+#[sub] When the test runner lands, an analogue of this smoke will
+#[sub] flip Phases 2/4/5 from operator-visual refusal observations
+#[sub] to assertable accept/refuse observations on the resulting
+#[sub] project path. Additional coverage worth queueing for the
+#[sub] TestRunner analogue:
+#[sub]
+#[sub]   - Dirty refusal: load while can_undo() == true. The
+#[sub]     stricter-than-GUI posture is structurally distinct
+#[sub]     from on_open's silent-replace and worth asserting
+#[sub]     explicitly. Logged as "GUI on_open should also
+#[sub]     check_unsaved_then" in the backlog — when the GUI
+#[sub]     gains the check, the two paths re-align.
+#[sub]
+#[sub]   - OpenFailed: load a path that exists and is safe but is
+#[sub]     not a .curvz directory (e.g., a regular file or an
+#[sub]     empty directory). Asserts the error refusal vs the
+#[sub]     RunContext refusal vs the path-safety refusal as
+#[sub]     three distinct structured error shapes.
+#[sub]
+#[sub]   - Ok: load a legitimate .curvz from a safe scratch
+#[sub]     directory. Post-load, `proj path` should match the
+#[sub]     loaded path and `proj has_path` should be true.

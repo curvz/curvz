@@ -823,23 +823,67 @@ void MainWindow::apply_motif_to_window() {
 
 void MainWindow::update_all_panels() {
   auto *doc = m_project->active_doc();
-  m_canvas.set_document(doc);
-  m_canvas.set_zoom(m_project->zoom);
-  m_canvas.set_history(&m_history);
+  // s249 m1 fix — pointer-refresh ordering matters here.
+  //
+  // m_canvas.set_document(doc) synchronously fires
+  // notify_object_selection_changed (Canvas.cpp:1148, added in s160 m2).
+  // Listeners of that signal — including StylesPanel::set_canvas's
+  // lambda — call refresh() and dereference per-panel m_library /
+  // m_swatch_library pointers. If those pointers still point at the
+  // PREVIOUS m_project's embedded library (which was freed when the
+  // unique_ptr-move replaced m_project in load_project), the signal
+  // path reads freed memory and crashes inside
+  // StyleLibrary::app_categories.
+  //
+  // Diagnosed by gdb backtrace under s249 m1 testing:
+  //   StylesPanel::m_library held a pointer into the previous
+  //   m_project->styles (now destroyed); m_canvas.set_document(doc)
+  //   fired notify_object_selection_changed BEFORE
+  //   m_styles.set_library(...) below could update the pointer.
+  //
+  // Fix: refresh every panel pointer that any signal listener might
+  // touch BEFORE firing any setter that emits signals. Two groups:
+  //
+  //   GROUP A (refresh first, no signals emitted):
+  //     Per-project library/project pointer assignments. These are
+  //     plain setter calls that just store a pointer; they don't
+  //     emit any signal that downstream panels listen to.
+  //
+  //   GROUP B (then the canvas + document setters):
+  //     m_canvas.set_document, set_zoom, set_history etc. These
+  //     fire notify_object_selection_changed and other signals
+  //     that downstream panels respond to — and the responders
+  //     need their library/project pointers already-refreshed by
+  //     Group A.
+  //
+  // Pre-fix order (the bug):  set_document → set_library
+  // Post-fix order (correct): set_library → set_document
+  //
+  // The post-fix order also matches the implicit contract every
+  // project-switch path expects: "by the time anyone reads project
+  // state, the pointer is current." The fix makes that contract
+  // explicit at the seam where it can be violated.
+
+  // ── GROUP A: refresh all per-project pointers (no signals fired) ─
   m_canvas.set_swatch_library(&m_project->swatches); // Phase 5 M3
   m_canvas.set_style_library(&m_project->styles);    // S78 m3d
   m_canvas.set_project(m_project.get()); // s116 m6 — workspace appearance reads
-  m_preview.set_document(doc);
-  m_layers.set_document(doc);
-  // s171 m1 — re-bind project pointer; m_history is a stable member
-  // address so that wiring (in MainWindow_zones) doesn't need refreshing.
-  m_layers.set_project(m_project.get());
-  m_library.set_document(doc);
   m_swatches.set_library(&m_project->swatches);
   m_styles.set_library(&m_project->styles);           // S80 m4c
   m_styles.set_swatch_library(&m_project->swatches);  // S85 cont-3
   m_themes.set_project(m_project.get());              // s147 m3
   m_toolbar.set_swatch_library(&m_project->swatches); // S91
+  // s171 m1 — re-bind project pointer; m_history is a stable member
+  // address so that wiring (in MainWindow_zones) doesn't need refreshing.
+  m_layers.set_project(m_project.get());
+
+  // ── GROUP B: setters that fire signals (now safe — Group A done) ─
+  m_canvas.set_document(doc);
+  m_canvas.set_zoom(m_project->zoom);
+  m_canvas.set_history(&m_history);
+  m_preview.set_document(doc);
+  m_layers.set_document(doc);
+  m_library.set_document(doc);
   // s141: refresh library so the freshly-seeded m_expanded (set by
   // load_project's m_library.set_project call) takes visual effect.
   // Without this, the panel still shows the previous project's
@@ -1304,14 +1348,23 @@ void MainWindow::exit_preview_mode() {
 }
 
 
-void MainWindow::do_save_as(const std::string &dir) {
+// s247 m1 — return type bool (was void). The new script-side caller
+// (script_save_project_as) needs to observe the success/failure
+// outcome of CurvzProject::save() to surface IoFailed to the DSL.
+// Existing GUI call sites in on_save_as ignore the return; their
+// behaviour is unchanged. On failure, m_project->directory has
+// already been assigned the new path (this is the pre-existing
+// posture — directory stamp happens before save attempt), and a
+// LOG_ERROR line has been emitted as before.
+bool MainWindow::do_save_as(const std::string &dir) {
   m_project->directory = dir;
   if (!m_project->save()) {
     LOG_ERROR("do_save_as: failed");
-    return;
+    return false;
   }
   save_config();
   update_title();
+  return true;
 }
 
 
