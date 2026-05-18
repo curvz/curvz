@@ -47,6 +47,7 @@
 #include <ctime>    // s125 m1c — strftime/localtime for mtime in info dialog
 #include <fstream>  // s125 m1c — std::ifstream for IHDR parser
 #include <functional>
+#include <random>  // s259 — std::mt19937 for Welzl shuffle in selection_true_center
 #include <glib.h> // g_uuid_string_random via generate_internal_id()
 #include <glibmm/main.h>
 #include <gtkmm/gestureclick.h>
@@ -4668,6 +4669,184 @@ bool Canvas::selection_bbox_center(double &cx, double &cy) const {
     return false;
   cx = x + w * 0.5;
   cy = y + h * 0.5;
+  return true;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// selection_true_center — s259
+//
+// Computes the centre of the minimum enclosing circle ("smallest bounding
+// circle", "Welzl's circle") of the union of all extremal points across
+// the current selection. For each leaf in the selection:
+//
+//   - Path leaves contribute their anchor positions (transformed by the
+//     leaf's `transform`). Handle positions are excluded — for typical
+//     shapes the anchors are the extremes, and including handles can
+//     pull the centre toward off-shape control points on heavily
+//     curved paths.
+//   - Image / Text leaves contribute their four bbox corners (using
+//     object_bbox, which already accounts for transforms).
+//
+// Welzl's algorithm runs in expected linear time. We use an iterative
+// formulation that operates on a shuffled point copy, maintaining the
+// invariant that the current circle encloses all visited points and
+// is determined by 0-3 boundary points.
+//
+// For shapes whose bounding box centre equals their centroid (rect,
+// ellipse, regular polygon, regular star), the min-enclosing-circle
+// centre coincides with the bbox centre and there is no visible change.
+// For irregular shapes (a hand-drawn closed curve, an edited star with
+// one tip dragged out, a glyph outline) it gives a no-wobble rotation
+// pivot — rotation around the min-enclosing-circle centre keeps the
+// shape inside the same disc throughout, where the bbox centre would
+// swing extremes out past their starting positions.
+// ──────────────────────────────────────────────────────────────────────────────
+namespace {
+
+struct Pt2 { double x, y; };
+
+static double pt_dist_sq(Pt2 a, Pt2 b) {
+  double dx = a.x - b.x, dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+// Circle = (cx, cy, r). Empty circle: r < 0.
+struct MecCircle { double cx = 0, cy = 0, r2 = -1.0; };
+
+static bool circle_contains(const MecCircle &c, Pt2 p) {
+  if (c.r2 < 0) return false;
+  // Small epsilon to tolerate floating-point drift on boundary points.
+  return pt_dist_sq({c.cx, c.cy}, p) <= c.r2 + 1e-10;
+}
+
+static MecCircle circle_from_2(Pt2 a, Pt2 b) {
+  MecCircle c;
+  c.cx = 0.5 * (a.x + b.x);
+  c.cy = 0.5 * (a.y + b.y);
+  double dx = a.x - b.x, dy = a.y - b.y;
+  c.r2 = 0.25 * (dx * dx + dy * dy);
+  return c;
+}
+
+static MecCircle circle_from_3(Pt2 a, Pt2 b, Pt2 c) {
+  // Circumcircle of triangle abc. If the three points are collinear the
+  // determinant goes to zero — caller should handle that by falling
+  // back to the 2-point circle of the diameter pair.
+  double ax = a.x, ay = a.y;
+  double bx = b.x, by = b.y;
+  double cx = c.x, cy = c.y;
+  double d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+  if (std::abs(d) < 1e-20) {
+    // Degenerate — return empty so caller falls through.
+    MecCircle bad; bad.r2 = -1.0; return bad;
+  }
+  double ux = ((ax * ax + ay * ay) * (by - cy) +
+               (bx * bx + by * by) * (cy - ay) +
+               (cx * cx + cy * cy) * (ay - by)) / d;
+  double uy = ((ax * ax + ay * ay) * (cx - bx) +
+               (bx * bx + by * by) * (ax - cx) +
+               (cx * cx + cy * cy) * (bx - ax)) / d;
+  MecCircle out;
+  out.cx = ux;
+  out.cy = uy;
+  double dx = ax - ux, dy = ay - uy;
+  out.r2 = dx * dx + dy * dy;
+  return out;
+}
+
+// Trivial circle through ≤ 3 boundary points.
+static MecCircle trivial_circle(const std::vector<Pt2> &R) {
+  if (R.empty()) return MecCircle{};
+  if (R.size() == 1) {
+    MecCircle c; c.cx = R[0].x; c.cy = R[0].y; c.r2 = 0.0; return c;
+  }
+  if (R.size() == 2) return circle_from_2(R[0], R[1]);
+  // 3 — try circumcircle; if degenerate (collinear), the MEC is the
+  // 2-point circle of the diameter pair.
+  MecCircle c = circle_from_3(R[0], R[1], R[2]);
+  if (c.r2 >= 0) return c;
+  // Pick the diameter pair = the two points furthest apart.
+  double d01 = pt_dist_sq(R[0], R[1]);
+  double d02 = pt_dist_sq(R[0], R[2]);
+  double d12 = pt_dist_sq(R[1], R[2]);
+  if (d01 >= d02 && d01 >= d12) return circle_from_2(R[0], R[1]);
+  if (d02 >= d12)               return circle_from_2(R[0], R[2]);
+  return circle_from_2(R[1], R[2]);
+}
+
+// Welzl's algorithm — iterative form with shuffled input.
+static MecCircle min_enclosing_circle(std::vector<Pt2> pts) {
+  if (pts.empty()) return MecCircle{};
+  // Shuffle for expected-linear-time. Deterministic seed so the same
+  // input gives the same output across runs (no jitter on repeated
+  // calls during a drag).
+  std::mt19937 rng(0xC0FFEEu);
+  std::shuffle(pts.begin(), pts.end(), rng);
+
+  MecCircle c = trivial_circle({pts[0]});
+  for (size_t i = 1; i < pts.size(); ++i) {
+    if (circle_contains(c, pts[i])) continue;
+    // pts[i] is on the boundary of the new MEC. Find MEC of pts[0..i]
+    // with pts[i] on boundary.
+    c = trivial_circle({pts[i]});
+    for (size_t j = 0; j < i; ++j) {
+      if (circle_contains(c, pts[j])) continue;
+      // pts[j] also on boundary now.
+      c = circle_from_2(pts[i], pts[j]);
+      for (size_t k = 0; k < j; ++k) {
+        if (circle_contains(c, pts[k])) continue;
+        // pts[i], pts[j], pts[k] all on boundary — try circumcircle.
+        MecCircle cc = circle_from_3(pts[i], pts[j], pts[k]);
+        if (cc.r2 >= 0 && cc.r2 >= c.r2 - 1e-10) c = cc;
+        else c = trivial_circle({pts[i], pts[j], pts[k]});
+      }
+    }
+  }
+  return c;
+}
+
+// Apply 2D affine transform (SVG matrix(a,b,c,d,e,f)) to a point.
+static Pt2 apply_xform(const Transform &t, double x, double y) {
+  return { t.a * x + t.c * y + t.e,
+           t.b * x + t.d * y + t.f };
+}
+
+} // anonymous namespace
+
+bool Canvas::selection_true_center(double &cx, double &cy) const {
+  if (m_selection.empty()) return false;
+  std::vector<Pt2> pts;
+  pts.reserve(64);
+  for (SceneNode *obj : m_selection) {
+    std::vector<SceneNode *> leaves;
+    collect_paths(obj, leaves);
+    for (SceneNode *leaf : leaves) {
+      if (!leaf->path) continue;
+      for (const auto &nd : leaf->path->nodes) {
+        pts.push_back(apply_xform(leaf->transform, nd.x, nd.y));
+      }
+    }
+    // For non-path leaves (Image, Text — not collected by collect_paths),
+    // fall back to bbox corners. object_bbox accounts for transforms.
+    if (obj->is_image() || obj->type == SceneNode::Type::Text) {
+      auto bb = object_bbox(*obj, /*include_stroke=*/false);
+      if (bb) {
+        pts.push_back({bb->x,             bb->y});
+        pts.push_back({bb->x + bb->w,     bb->y});
+        pts.push_back({bb->x + bb->w,     bb->y + bb->h});
+        pts.push_back({bb->x,             bb->y + bb->h});
+      }
+    }
+  }
+  if (pts.empty()) {
+    // No path vertices and no non-path leaves we could read — fall back
+    // to bbox centre so callers always get *some* answer.
+    return selection_bbox_center(cx, cy);
+  }
+  MecCircle c = min_enclosing_circle(std::move(pts));
+  if (c.r2 < 0) return selection_bbox_center(cx, cy);
+  cx = c.cx;
+  cy = c.cy;
   return true;
 }
 

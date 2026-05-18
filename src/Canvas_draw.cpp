@@ -3242,6 +3242,41 @@ void Canvas::draw_selection_handles(const Cairo::RefPtr<Cairo::Context> &cr) {
     cr->stroke();
   }
 
+  // s259 — Weighted ("true") centre marker. Drawn whenever a selection
+  // exists, no custom pivot is active, and no drag is in progress (the
+  // marker would jitter mid-drag as the geometry mutates). The custom-
+  // pivot crosshair below takes precedence when set.
+  //
+  // The marker indicates the no-wobble pivot — the centre of the
+  // selection's minimum enclosing circle. For regular shapes (rect,
+  // ellipse, regular polygon / star) it sits at the bbox centre. For
+  // irregular shapes it sits at the visual middle, distinct from the
+  // bbox centre.
+  //
+  // Style: small white dot (3 px radius) with a black halo (1 px outer
+  // ring). Smaller and quieter than the orange custom-pivot crosshair —
+  // a passive indicator, not an interaction target.
+  const bool draw_sr_preview = m_sr_preview_active;
+  const bool dragging        = m_moving || (m_handle_drag != HandleKind::None);
+  if (!m_has_custom_pivot && !m_r_held && !draw_sr_preview && !dragging) {
+    double tcx, tcy;
+    if (selection_true_center(tcx, tcy)) {
+      double tsx, tsy;
+      doc_to_screen(tcx, tcy, tsx, tsy);
+      const double dot_r = 3.0;
+      const double halo  = 1.0;
+      // Halo (black ring)
+      cr->set_source_rgba(0.0, 0.0, 0.0, 0.65);
+      cr->set_line_width(halo * 2.0);
+      cr->arc(tsx, tsy, dot_r + halo * 0.5, 0, 2 * M_PI);
+      cr->stroke();
+      // Fill (white)
+      cr->set_source_rgba(1.0, 1.0, 1.0, 1.0);
+      cr->arc(tsx, tsy, dot_r, 0, 2 * M_PI);
+      cr->fill();
+    }
+  }
+
   // Draw custom pivot point if set (or R held showing default), or if the
   // Step-and-Repeat dialog is showing its pivot preview.
   const bool draw_sr = m_sr_preview_active;

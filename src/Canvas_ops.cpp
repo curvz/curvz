@@ -3428,6 +3428,16 @@ void Canvas::offset_path_op(double distance, OffsetSide side,
       continue;
     }
 
+    // s262 — All Clipper2 loops are retained, including inner-hole
+    // boundaries from self-crossing inputs. Filtering by winding would
+    // misrepresent the offset: when a self-crossing path's outward
+    // offset produces enclosed holes, those holes are part of the true
+    // offset region. Dropping them silently would lie about the geometry.
+    //
+    // The topology-wrap rule (1 → Path, N≥2 → Compound) handles whatever
+    // Clipper2 returns: Outside/Inside/Both all flow through the same
+    // pipeline. Compound's even-odd fill renders the result faithfully.
+
     // Capture style before any mutation (obj may dangle after erase)
     FillStyle saved_fill = obj->fill;
     StrokeStyle saved_stroke = obj->stroke;
@@ -3435,6 +3445,14 @@ void Canvas::offset_path_op(double distance, OffsetSide side,
 
     if (keep_original) {
       // ── Keep original: insert result above original, undo via AddNodeCommand
+      //
+      // Multi-result offsets in keep_original mode stay as independent
+      // sibling Paths (no Compound wrapping). The non-destructive variant
+      // is meant for "I want to keep both, edit them separately"; binding
+      // them into a Compound would lose that affordance and force the user
+      // to Split before editing. The consume branch below DOES wrap multi-
+      // results in a Compound, because in that mode the original is being
+      // replaced and the offset result is the user's new editable shape.
       for (int ri = 0; ri < (int)results.size(); ++ri) {
         auto rnode = std::make_unique<SceneNode>();
         rnode->type = SceneNode::Type::Path;
@@ -3459,6 +3477,18 @@ void Canvas::offset_path_op(double distance, OffsetSide side,
       }
     } else {
       // ── Consume original: replace with result, undo via BooleanOpCommand
+      //
+      // s261 — Result topology rule:
+      //   results.size() == 1  → single Path node.
+      //   results.size() >= 2  → Compound containing N subpath children
+      //                          (even-odd fill: outer envelope minus
+      //                          inner-hole boundaries renders as the
+      //                          band geometry the user asked for).
+      //
+      // This unifies the math/topology story for Offset Path and Expand
+      // Stroke: both produce filled-band geometry whose subpaths render
+      // as one shape via Compound's even-odd fill rule, never as detached
+      // siblings.
       std::vector<BooleanOpCommand::Original> originals;
       originals.push_back({clone_node(*obj), idx});
 
@@ -3467,23 +3497,57 @@ void Canvas::offset_path_op(double distance, OffsetSide side,
 
       parent->children.erase(parent->children.begin() + idx);
 
-      for (int ri = 0; ri < (int)results.size(); ++ri) {
+      std::unique_ptr<SceneNode> to_insert;
+      if (results.size() == 1) {
+        // Single Path — inherit source style directly.
         auto rnode = std::make_unique<SceneNode>();
         rnode->type = SceneNode::Type::Path;
         rnode->id = next_id();
+        rnode->internal_id = generate_internal_id();
         rnode->name = m_doc->uniquify_name(std::string("Offset ") + side_name);
         rnode->fill = saved_fill;
         rnode->stroke = saved_stroke;
         rnode->opacity = saved_opacity;
         rnode->visible = true;
         rnode->locked = false;
-        rnode->path = std::make_unique<PathData>(results[ri]);
-
-        int insert_at = std::clamp(ins + ri, 0, (int)parent->children.size());
-        parent->children.insert(parent->children.begin() + insert_at,
-                                std::move(rnode));
-        result_snaps.push_back(clone_node(*parent->children[insert_at]));
+        rnode->path = std::make_unique<PathData>(std::move(results[0]));
+        to_insert = std::move(rnode);
+      } else {
+        // Multi-result — Compound with one Path child per result.
+        // Compound owns the appearance (S58d/S58g convention — Compound's
+        // fill/stroke is what renders). Per-child fill is set redundantly
+        // so a future Split Compound preserves colour.
+        auto compound = std::make_unique<SceneNode>();
+        compound->type = SceneNode::Type::Compound;
+        compound->id = next_id();
+        compound->internal_id = generate_internal_id();
+        compound->name = m_doc->uniquify_name(std::string("Offset ") + side_name);
+        compound->fill = saved_fill;
+        compound->stroke = saved_stroke;
+        compound->opacity = saved_opacity;
+        compound->visible = true;
+        compound->locked = false;
+        for (int ri = 0; ri < (int)results.size(); ++ri) {
+          auto child = std::make_unique<SceneNode>();
+          child->type = SceneNode::Type::Path;
+          child->id = next_id();
+          child->internal_id = generate_internal_id();
+          child->name = (ri == 0) ? "Outer" : "Inner";
+          child->fill = saved_fill;
+          child->stroke.paint.type = FillStyle::Type::None;
+          child->opacity = 1.0;
+          child->visible = true;
+          child->locked = false;
+          child->path = std::make_unique<PathData>(std::move(results[ri]));
+          compound->children.push_back(std::move(child));
+        }
+        to_insert = std::move(compound);
       }
+
+      int insert_at = std::clamp(ins, 0, (int)parent->children.size());
+      parent->children.insert(parent->children.begin() + insert_at,
+                              std::move(to_insert));
+      result_snaps.push_back(clone_node(*parent->children[insert_at]));
 
       if (m_history)
         m_history->push(std::make_unique<BooleanOpCommand>(
@@ -4126,41 +4190,46 @@ void Canvas::expand_stroke_op() {
     }
 
     double half = obj->stroke.width * 0.5;
-    bool is_open = !obj->path->closed;
 
-    std::vector<PathData> outline_pd;
-    std::vector<PathData> outer_pd, inner_pd;
-
-    if (is_open) {
-      outline_pd = Curvz::offset_path(*obj->path, half, OffsetSide::Both);
-      if (outline_pd.empty()) {
-        ++skipped;
-        continue;
-      }
-    } else {
-      outer_pd = Curvz::offset_path(*obj->path, half, OffsetSide::Outside);
-      inner_pd = Curvz::offset_path(*obj->path, half, OffsetSide::Inside);
-      if (outer_pd.empty() || inner_pd.empty()) {
-        ++skipped;
-        continue;
-      }
+    // s262 — Closed-path Expand Stroke is now ONE offset_path(half, Both)
+    // call. Both passes all Clipper2 loops through without the envelope-
+    // only filter, so the result includes outer envelope + inner hole
+    // boundaries when the source's topology has self-crossings. Compound-
+    // wrapping the full loop set with even-odd fill renders exactly the
+    // "what the stroke would paint" region, including any holes the
+    // stroke's geometry implies.
+    //
+    // Open paths still pass through the legacy single-PathData path —
+    // offset_path returns one closed outline that already represents the
+    // stroke band (butt caps joined at endpoints), so no Compound is
+    // needed.
+    // s263 — Honor source's stroke cap, join, and miter limit so the
+    // expanded geometry matches the visible stroke. Pre-s263 these were
+    // hardcoded as Butt + Miter + 4.0 in the Clipper2 layer, so round-
+    // capped or beveled strokes expanded with the wrong end / corner
+    // treatment regardless of the source's stroke style.
+    std::vector<PathData> results = Curvz::offset_path(
+        *obj->path, half, OffsetSide::Both,
+        obj->stroke.cap, obj->stroke.join, obj->stroke.miter);
+    if (results.empty()) {
+      ++skipped;
+      continue;
     }
 
     FillStyle result_fill = obj->stroke.paint;
     double saved_opacity = obj->opacity;
 
-    std::vector<BooleanOpCommand::Original> originals;
-    originals.push_back({clone_node(*obj), idx});
-    parent->children.erase(parent->children.begin() + idx);
+    // s261 — Expand Stroke is non-destructive: keep the source path
+    // intact and insert the expanded geometry ABOVE (in front of) it.
+    int insert_at = std::clamp(idx + 1, 0, (int)parent->children.size());
 
-    int insert_at = std::clamp(idx, 0, (int)parent->children.size());
-
-    if (is_open) {
-      // Open path -> single closed filled Path
+    if (results.size() == 1) {
+      // Single PathData (open-path stroke band, or a degenerate closed
+      // case) → one filled Path.
       auto result_node = std::make_unique<SceneNode>();
       result_node->type = SceneNode::Type::Path;
       result_node->id = next_id();
-      result_node->internal_id = last_iid();
+      result_node->internal_id = generate_internal_id();
       result_node->name =
           m_doc->next_default_name(CurvzDocument::NameKind::ExpandedStroke);
       result_node->fill = result_fill;
@@ -4168,64 +4237,49 @@ void Canvas::expand_stroke_op() {
       result_node->opacity = saved_opacity;
       result_node->visible = true;
       result_node->locked = false;
-      result_node->path = std::make_unique<PathData>(outline_pd[0]);
+      result_node->path = std::make_unique<PathData>(std::move(results[0]));
       parent->children.insert(parent->children.begin() + insert_at,
                               std::move(result_node));
     } else {
-      // Closed path -> compound (outer + inner, even-odd)
-      auto outer_node = std::make_unique<SceneNode>();
-      outer_node->type = SceneNode::Type::Path;
-      outer_node->id = next_id();
-      outer_node->internal_id = last_iid();
-      outer_node->name = "Outer";
-      outer_node->fill = result_fill;
-      outer_node->stroke.paint.type = FillStyle::Type::None;
-      outer_node->opacity = 1.0;
-      outer_node->visible = true;
-      outer_node->locked = false;
-      outer_node->path = std::make_unique<PathData>(outer_pd[0]);
-
-      auto inner_node = std::make_unique<SceneNode>();
-      inner_node->type = SceneNode::Type::Path;
-      inner_node->id = next_id();
-      inner_node->internal_id = last_iid();
-      inner_node->name = "Inner";
-      inner_node->fill = result_fill;
-      inner_node->stroke.paint.type = FillStyle::Type::None;
-      inner_node->opacity = 1.0;
-      inner_node->visible = true;
-      inner_node->locked = false;
-      inner_node->path = std::make_unique<PathData>(inner_pd[0]);
-
+      // N PathDatas → Compound with N subpath children. Even-odd fill
+      // renders outer envelopes filled and inner-hole boundaries as
+      // holes within them.
       auto compound = std::make_unique<SceneNode>();
       compound->type = SceneNode::Type::Compound;
+      compound->id = next_id();
       compound->internal_id = generate_internal_id();
-      compound->name = m_doc->next_default_name(CurvzDocument::NameKind::ExpandedStroke);
-      // S58g: Compound owns its paint per the S58d rule — set the expanded
-      // stroke's target colour on the Compound itself so the canvas renderer
-      // (which reads Compound.fill) picks it up. The per-child fills we
-      // also set above are now redundant for rendering but kept intact so
-      // that if the Compound is ever split back into plain paths, the
-      // children carry the right colour.
+      compound->name =
+          m_doc->next_default_name(CurvzDocument::NameKind::ExpandedStroke);
+      // S58g: Compound owns its paint — set the expanded-stroke target
+      // colour on the Compound itself so the canvas renderer (which
+      // reads Compound.fill) picks it up. Per-child fills are set
+      // redundantly so a future Split Compound preserves colour.
       compound->fill = result_fill;
       compound->stroke.paint.type = FillStyle::Type::None;
       compound->opacity = saved_opacity;
       compound->visible = true;
       compound->locked = false;
-      compound->children.push_back(std::move(outer_node));
-      compound->children.push_back(std::move(inner_node));
+      for (int ri = 0; ri < (int)results.size(); ++ri) {
+        auto child = std::make_unique<SceneNode>();
+        child->type = SceneNode::Type::Path;
+        child->id = next_id();
+        child->internal_id = generate_internal_id();
+        child->name = (ri == 0) ? "Outer" : "Inner";
+        child->fill = result_fill;
+        child->stroke.paint.type = FillStyle::Type::None;
+        child->opacity = 1.0;
+        child->visible = true;
+        child->locked = false;
+        child->path = std::make_unique<PathData>(std::move(results[ri]));
+        compound->children.push_back(std::move(child));
+      }
       parent->children.insert(parent->children.begin() + insert_at,
                               std::move(compound));
     }
 
-    std::vector<std::unique_ptr<SceneNode>> result_snaps;
-    result_snaps.push_back(clone_node(*parent->children[insert_at]));
-
     if (m_history)
-      m_history->push(std::make_unique<BooleanOpCommand>(
-          project(), parent->internal_id,
-          std::move(originals), std::move(result_snaps), idx,
-          "Expand Stroke"));
+      m_history->push(std::make_unique<AddNodeCommand>(
+          parent, clone_node(*parent->children[insert_at])));
 
     ++applied;
   }

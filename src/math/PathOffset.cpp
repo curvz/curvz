@@ -1,11 +1,13 @@
 #include "math/PathOffset.hpp"
 #include "math/BezierPath.hpp"
+#include "math/BooleanOpsClipper.hpp"  // s260 — offset_path_clipper_polylines
 #include "math/CubicSegment.hpp"
 #include "math/Vec2.hpp"
 #include "CurvzLog.hpp"
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <optional>
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PathOffset — Phase A rewrite (S55)
@@ -584,15 +586,499 @@ static PathData join_open_as_closed(PathData outer, PathData inner_rev) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// §5b · Regular-shape detection
+//
+// A closed path whose on-curve vertices form a regular polygon or regular
+// n-pointed star can be offset by uniform radial scaling from the centre.
+// The Tiller-Hanson offset path used for general curves applies a per-vertex
+// averaging join that visibly slumps the tips of stars and rounds the
+// corners of polygons — it solves the general problem but loses the regular
+// shapes' symmetries. The fast path here is exact: tips stay sharp, notches
+// stay sharp, proportions are preserved.
+//
+// Detection runs on vertex POSITIONS (BezierNode.x/y), ignoring handles.
+// Two acceptance criteria:
+//
+//   (a) Regular polygon — all N vertices share a single radius from the
+//       centroid C, with uniform angular spacing 2π/N around C.
+//
+//   (b) Regular star — 2N vertices partition by path order into two
+//       interleaved groups (even-indexed = outer, odd-indexed = inner).
+//       Each group has uniform radius and uniform 2π/N angular spacing
+//       within the group; the angular offset between the two groups is
+//       π/N (half a step).
+//
+// Tolerances: 1% of the mean radius for distance equality, 1% of the
+// angular step for angular equality. Tight enough to reject hand-drawn
+// near-regular shapes, loose enough to accept floating-point drift from
+// round-trip transforms.
+//
+// Why geometric detection over a parametric NodeSet flag: stars and
+// polygons emitted by the shape tool today carry no NodeSet metadata
+// (the Polygon and Star kinds in the enum are declared but never created
+// — see SceneNode.hpp). Even if they were, NodeSets don't invalidate on
+// node drag, so a user who edits a vertex leaves stale parametric data.
+// The geometric test gives a correct answer regardless of construction
+// history.
+// ──────────────────────────────────────────────────────────────────────────────
+struct RegularShape {
+    Vec2  center;
+    bool  is_star;       // false → polygon, true → star
+    double r_outer = 0;  // polygon: the single radius; star: outer-tip radius
+    double r_inner = 0;  // star only: notch radius
+    int   point_count = 0; // polygon: N; star: number of outer points (N)
+    // angle_offset is the angle of node 0 from centre (radians, atan2 convention).
+    double angle_offset = 0.0;
+};
+
+static double wrap_to_pi(double a) {
+    // Wrap to (-π, π].
+    while (a >   M_PI) a -= 2.0 * M_PI;
+    while (a <= -M_PI) a += 2.0 * M_PI;
+    return a;
+}
+
+static bool angular_step_uniform(const std::vector<double>& angles_in_path_order,
+                                 double expected_step,
+                                 double angle_tol) {
+    // angles_in_path_order: angles of consecutive vertices in PATH order
+    // (not sorted by angle). Their successive differences should each equal
+    // expected_step modulo 2π, with sign consistent (all positive or all
+    // negative — handles both winding directions). Tolerance is absolute
+    // in radians.
+    int n = (int)angles_in_path_order.size();
+    if (n < 2) return false;
+    // Determine sign of step from first delta.
+    double first_delta = wrap_to_pi(angles_in_path_order[1] - angles_in_path_order[0]);
+    double signed_step = (first_delta > 0.0) ? expected_step : -expected_step;
+    for (int i = 0; i < n; ++i) {
+        int j = (i + 1) % n;
+        double delta = wrap_to_pi(angles_in_path_order[j] - angles_in_path_order[i]);
+        if (std::abs(delta - signed_step) > angle_tol) return false;
+    }
+    return true;
+}
+
+static std::optional<RegularShape> detect_regular_shape(const PathData& path) {
+    if (!path.closed) return std::nullopt;
+    int n = (int)path.nodes.size();
+    if (n < 3) return std::nullopt;
+
+    // Centroid: arithmetic mean of vertex positions. For regular shapes
+    // this coincides with the geometric centre by symmetry; using the
+    // mean avoids needing area / weighted formulas.
+    double cx = 0.0, cy = 0.0;
+    for (const auto& nd : path.nodes) { cx += nd.x; cy += nd.y; }
+    cx /= n; cy /= n;
+    Vec2 C{cx, cy};
+
+    // Per-vertex radius and angle from C.
+    std::vector<double> r(n), a(n);
+    double r_mean = 0.0;
+    for (int i = 0; i < n; ++i) {
+        double dx = path.nodes[i].x - cx;
+        double dy = path.nodes[i].y - cy;
+        r[i] = std::sqrt(dx * dx + dy * dy);
+        a[i] = std::atan2(dy, dx);
+        r_mean += r[i];
+    }
+    r_mean /= n;
+    if (r_mean < 1e-9) return std::nullopt; // degenerate — all vertices on top of each other
+
+    // Radius tolerance: 1% of mean radius.
+    double r_tol = 0.01 * r_mean;
+
+    // Case A — regular polygon: all radii equal.
+    bool all_eq = true;
+    for (int i = 0; i < n; ++i) {
+        if (std::abs(r[i] - r_mean) > r_tol) { all_eq = false; break; }
+    }
+    if (all_eq) {
+        double step = 2.0 * M_PI / n;
+        double angle_tol = 0.01 * step;
+        if (angular_step_uniform(a, step, angle_tol)) {
+            RegularShape rs;
+            rs.center = C;
+            rs.is_star = false;
+            rs.r_outer = r_mean;
+            rs.r_inner = r_mean;
+            rs.point_count = n;
+            rs.angle_offset = a[0];
+            return rs;
+        }
+        return std::nullopt;
+    }
+
+    // Case B — regular star: even N ≥ 6, two interleaved radius groups,
+    // each group uniformly spaced.
+    if (n < 6 || (n % 2) != 0) return std::nullopt;
+    int n_points = n / 2;
+
+    // Partition by path index parity.
+    double r_even_mean = 0.0, r_odd_mean = 0.0;
+    for (int i = 0; i < n; ++i) {
+        if (i % 2 == 0) r_even_mean += r[i]; else r_odd_mean += r[i];
+    }
+    r_even_mean /= n_points;
+    r_odd_mean  /= n_points;
+
+    // Within each group all radii must match the group mean.
+    for (int i = 0; i < n; ++i) {
+        double target = (i % 2 == 0) ? r_even_mean : r_odd_mean;
+        if (std::abs(r[i] - target) > r_tol) return std::nullopt;
+    }
+
+    // The two groups must have distinguishable radii — otherwise the
+    // shape is actually a regular polygon-with-extra-vertices that
+    // happened to pass the all-equal check above. We already rejected
+    // that branch, but a near-equal radii configuration here is suspicious.
+    if (std::abs(r_even_mean - r_odd_mean) < r_tol) return std::nullopt;
+
+    // Build per-group angle lists in path order.
+    std::vector<double> a_even, a_odd;
+    a_even.reserve(n_points);
+    a_odd.reserve(n_points);
+    for (int i = 0; i < n; ++i) {
+        if (i % 2 == 0) a_even.push_back(a[i]);
+        else            a_odd.push_back(a[i]);
+    }
+
+    double group_step = 2.0 * M_PI / n_points;
+    double angle_tol  = 0.01 * group_step;
+    if (!angular_step_uniform(a_even, group_step, angle_tol)) return std::nullopt;
+    if (!angular_step_uniform(a_odd,  group_step, angle_tol)) return std::nullopt;
+
+    // Outer = the larger radius group. Identify which.
+    bool even_is_outer = (r_even_mean >= r_odd_mean);
+    RegularShape rs;
+    rs.center = C;
+    rs.is_star = true;
+    rs.r_outer = even_is_outer ? r_even_mean : r_odd_mean;
+    rs.r_inner = even_is_outer ? r_odd_mean  : r_even_mean;
+    rs.point_count = n_points;
+    rs.angle_offset = a[0];
+    return rs;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// §5c · Regular-shape offsetters (fast path)
+//
+// For a regular polygon or star, "offset by d" is implemented as a
+// uniform scale-from-centre by the single factor (r_outer + d) / r_outer.
+// Every anchor and every handle moves through the same scale relative
+// to the centroid. Consequences:
+//
+//   - The outermost vertices (the only ones the user can directly see
+//     reaching the edge of the bounding box) move by exactly d.
+//   - Inner vertices move proportionally, keeping the star's inflection
+//     ratio r_inner / r_outer invariant. The result looks like the
+//     original star made bigger, not a different-shaped star.
+//   - All angular positions are preserved, so the n-fold rotational
+//     symmetry is exact.
+//
+// This is NOT the textbook path-offset operation (Minkowski sum with a
+// disk of radius d), which would move every point on the path along its
+// local outward normal by d. The textbook offset at a sharp convex
+// corner moves the vertex by d / sin(θ/2) along the bisector — and
+// at a sharp concave corner (a star's inner notch) it would move the
+// vertex inward by d / sin(θ/2) which can shoot past the centre on
+// large offsets. CAD apps tame the convex spike with a miter limit
+// and handle the concave case by boolean-union-with-self. For regular
+// shapes specifically, the scale-from-centre alternative is cleaner:
+// the result is still a regular shape of the same type, with the
+// inflection ratio preserved, which is what users actually want when
+// they "make a star bigger."
+//
+// History: the first draft of this function used a per-vertex offset
+// (each vertex moved by d outward along its own radial direction).
+// That preserved tip sharpness and notch sharpness, but visibly
+// shifted the inflection ratio — see scale_regular's inline note for
+// the numeric example. Scott caught it on the first visual; the fix
+// was to scale every vertex by ONE shape-wide factor instead of
+// offsetting each vertex by d.
+//
+// Winding sign: at this layer d > 0 means "outward from centre",
+// resolved by the public-API dispatch above. The fast path is winding-
+// agnostic because it scales from the centroid rather than along the
+// path tangent.
+//
+// Collapse guard: with uniform scale, the only failure mode is
+// d <= -r_outer, where the scale factor reaches zero or flips sign.
+// Standard CAD apps refuse this; so do we. The inner-notch-collapse
+// case from the earlier per-vertex variant doesn't exist anymore —
+// inner notches scale with everything else.
+// ──────────────────────────────────────────────────────────────────────────────
+static bool regular_offset_fits(const RegularShape& rs, double d) {
+    // The offset is a uniform scale-from-centre with factor
+    // (r_outer + d) / r_outer. The shape collapses through zero when
+    // d <= -r_outer (the outer tips reach the centre; everything else
+    // is already inside them and reaches the centre simultaneously).
+    // For d > 0 there's no limit.
+    if (d >= 0.0) return true;
+    return (-d) < rs.r_outer - 1e-9;
+}
+
+static PathData scale_regular(const PathData& path, const RegularShape& rs, double d) {
+    PathData out = path;
+    // Uniform scale-from-centre. ONE scale factor for every point in the
+    // path, derived from r_outer so that "offset d" means "the outermost
+    // extent of the shape moved by d." All other vertices, handles, and
+    // intermediate points scale by the same factor, which preserves:
+    //
+    //   - The star's inflection ratio r_inner / r_outer (the shape looks
+    //     like the original made bigger, not a different-shaped star).
+    //   - Angular positions of every vertex (rotational symmetry kept).
+    //   - Bezier handle lengths relative to anchor distances (curves
+    //     keep their shape; a circle that snuck through detection
+    //     because it lost its Ellipse NodeSet still scales correctly).
+    //
+    // Earlier draft of this function used per-vertex offset (each vertex
+    // moves outward by d along its own radial), which is the textbook
+    // path-offset operation. But that visibly shifts the star's inflection
+    // ratio — a 5-star with r_inner/r_outer = 0.4 offset by +d=0.2*r_outer
+    // ends up with ratio 0.6/1.2 = 0.5, looking noticeably fatter than the
+    // original. The user-meaningful intent of "offset path on a star" is
+    // "make this star bigger," so we scale instead.
+    double scale = (rs.r_outer + d) / rs.r_outer;
+    int n = (int)out.nodes.size();
+    for (int i = 0; i < n; ++i) {
+        BezierNode& nd = out.nodes[i];
+        auto scale_pt = [&](double& px, double& py) {
+            px = rs.center.x + (px - rs.center.x) * scale;
+            py = rs.center.y + (py - rs.center.y) * scale;
+        };
+        scale_pt(nd.x,   nd.y);
+        scale_pt(nd.cx1, nd.cy1);
+        scale_pt(nd.cx2, nd.cy2);
+    }
+    // No NodeSet update: polygon / star NodeSet kinds are declared in the
+    // enum but no code reads or writes them today, so the result carries
+    // none. If a Polygon/Star NodeSet contract is added later, this is
+    // where to hydrate it from `rs`.
+    return out;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// §5d · Rect / Ellipse NodeSet offsetters (parametric fast path)
+//
+// Both shapes carry a NodeSet from their generator (rect_to_path /
+// ellipse_to_path) with parameters describing the canonical form. Offset
+// by d:
+//
+//   Rect   — w → w + 2d,  h → h + 2d  (cx,cy unchanged).
+//            Rounded:  rx → rx + d,   ry → ry + d  (clamped to half new w/h).
+//   Ellipse — rx → rx + d,  ry → ry + d  (cx,cy unchanged).
+//
+// We rebuild the PathData from scratch via the existing rect_to_path /
+// ellipse_to_path generators, which gives us correct handle geometry
+// and a fresh NodeSet with the new params — so the result is fully
+// editable as a Rect / Ellipse after offset.
+//
+// Inward-offset guards (negative d):
+//   Rect    — w + 2d > 0 and h + 2d > 0.
+//   Ellipse — rx + d > 0 and ry + d > 0.
+// ──────────────────────────────────────────────────────────────────────────────
+static std::optional<PathData> offset_rect_ns(const PathData& path, double d) {
+    if (path.node_sets.empty()) return std::nullopt;
+    const NodeSet& ns = path.node_sets[0];
+    if (ns.kind != NodeSet::Kind::Rect) return std::nullopt;
+    double cx = ns.params[0];
+    double cy = ns.params[1];
+    double w  = ns.params[2];
+    double h  = ns.params[3];
+    double rx = ns.params[4];
+    double ry = ns.params[5];
+    double new_w = w + 2.0 * d;
+    double new_h = h + 2.0 * d;
+    if (new_w < 1e-9 || new_h < 1e-9) return std::nullopt; // would collapse
+    double new_rx = std::max(0.0, rx + d);
+    double new_ry = std::max(0.0, ry + d);
+    return rect_to_path(cx - new_w * 0.5, cy - new_h * 0.5, new_w, new_h,
+                        new_rx, new_ry);
+}
+
+static std::optional<PathData> offset_ellipse_ns(const PathData& path, double d) {
+    if (path.node_sets.empty()) return std::nullopt;
+    const NodeSet& ns = path.node_sets[0];
+    if (ns.kind != NodeSet::Kind::Ellipse) return std::nullopt;
+    double cx = ns.params[0];
+    double cy = ns.params[1];
+    double rx = ns.params[2];
+    double ry = ns.params[3];
+    double new_rx = rx + d;
+    double new_ry = ry + d;
+    if (new_rx < 1e-9 || new_ry < 1e-9) return std::nullopt; // would collapse
+    return ellipse_to_path(cx, cy, new_rx, new_ry);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// §5e · Clipper2 polyline → Bézier passthrough (s260)
+//
+// Clipper2's InflatePaths is a polygon engine: every output vertex is the
+// junction of two straight line segments. We pass each polyline vertex
+// through directly as a Corner-type BezierNode with handles degenerate
+// at the anchor — i.e. the result is geometrically a polygon, stored in
+// the codebase's BezierNode representation (a straight-cubic-with-
+// colocated-handles is exactly equivalent to a straight line segment).
+//
+// Why no smart refit:
+//
+// Clipper2 has no notion of "this vertex is on a smooth curve, that one
+// is a real corner" — every vertex looks the same. Reconstructing curve
+// vs. corner from the polygon is a heuristic, and any heuristic risks
+// introducing visual error (oversmooth a real corner, or undersample a
+// smooth run and chord-cut across its wiggle). The polygon output is
+// geometrically faithful to what InflatePaths produced; users who want
+// fewer nodes can decimate manually via the Node tool or a future
+// Simplify Path operation, where they retain full control.
+//
+// At normal zoom the flatten tolerance (FLATTEN_TOL_DOC = 0.1 doc units)
+// produces sub-pixel segments — the polygon renders as a smooth curve
+// without visible faceting.
+// ──────────────────────────────────────────────────────────────────────────────
+static PathData polyline_to_bezier_path(const std::vector<Vec2>& poly, bool closed) {
+    PathData pd;
+    pd.closed = closed;
+    int n = (int)poly.size();
+    if (n < 3) return pd;
+    pd.nodes.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        BezierNode nd;
+        nd.x   = poly[i].x;
+        nd.y   = poly[i].y;
+        nd.cx1 = poly[i].x;
+        nd.cy1 = poly[i].y;
+        nd.cx2 = poly[i].x;
+        nd.cy2 = poly[i].y;
+        nd.type = BezierNode::Type::Corner;
+        pd.nodes.push_back(nd);
+    }
+    return pd;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // §6 · Public API
 // ──────────────────────────────────────────────────────────────────────────────
 std::vector<PathData> offset_path(const PathData& path,
                                   double           distance,
-                                  OffsetSide       side) {
+                                  OffsetSide       side,
+                                  LineCap          cap,
+                                  LineJoin         join,
+                                  double           miter_limit_ratio) {
     if ((int)path.nodes.size() < 2) {
         LOG_WARN("PathOffset: path has fewer than 2 nodes");
         return {};
     }
+
+    // ── Fast paths for regular / parametric shapes (closed only) ────────────
+    // Sign rule: d > 0 means "move outward from centre", independent of
+    // winding. (Unlike Tiller-Hanson, which fights winding because it works
+    // in tangent-perpendicular space.) So for the fast paths,
+    // d_out = +distance and d_in = -distance regardless of area sign.
+    //
+    // Dispatch is two-stage:
+    //   1. Detect shape category once. Categories tried in order:
+    //        - Rect NodeSet     (parametric rebuild)
+    //        - Ellipse NodeSet  (parametric rebuild)
+    //        - Regular polygon  (radial scale from centroid)
+    //        - Regular star     (radial scale from centroid)
+    //   2. If detected, commit to the fast path. An impossible request
+    //      (inward offset through the centre) returns empty rather than
+    //      falling through to Tiller-Hanson — T-H on an impossible inward
+    //      offset produces an inverted / self-intersecting geometry that
+    //      lies about the answer.
+    //   3. Un-detected (irregular) paths fall through to T-H below.
+    if (path.closed) {
+        bool is_rect    = !path.node_sets.empty()
+                          && path.node_sets[0].kind == NodeSet::Kind::Rect;
+        bool is_ellipse = !path.node_sets.empty()
+                          && path.node_sets[0].kind == NodeSet::Kind::Ellipse;
+        std::optional<RegularShape> rs;
+        if (!is_rect && !is_ellipse) rs = detect_regular_shape(path);
+
+        if (is_rect || is_ellipse || rs.has_value()) {
+            const char* kind = is_rect    ? "Rect"
+                             : is_ellipse ? "Ellipse"
+                             : rs->is_star ? "Star" : "Polygon";
+            LOG_DEBUG("PathOffset: fast path ({}) distance={}", kind, distance);
+
+            auto fast = [&](double d) -> std::optional<PathData> {
+                if (is_rect)    return offset_rect_ns(path, d);
+                if (is_ellipse) return offset_ellipse_ns(path, d);
+                if (!regular_offset_fits(*rs, d)) {
+                    LOG_WARN("PathOffset: regular-shape inward offset "
+                             "would collapse through centre (d={}, r_min={})",
+                             d, rs->is_star ? rs->r_inner : rs->r_outer);
+                    return std::nullopt;
+                }
+                return scale_regular(path, *rs, d);
+            };
+
+            if (side == OffsetSide::Outside) {
+                auto pd = fast(+distance);
+                return pd ? std::vector<PathData>{*pd} : std::vector<PathData>{};
+            }
+            if (side == OffsetSide::Inside) {
+                auto pd = fast(-distance);
+                return pd ? std::vector<PathData>{*pd} : std::vector<PathData>{};
+            }
+            // Both — produce TWO independent PathDatas, outer at +d and
+            // inner at -d. The Offset Path dialog reaches this via its
+            // "Both sides" dropdown; offset_path_op (Canvas_ops.cpp) walks
+            // the returned vector and creates one SceneNode per result, so
+            // the user ends up with two concentric stars / polygons /
+            // rects / ellipses surrounding the original. We don't stitch
+            // them into a single closed band for closed inputs — that
+            // would be the stroke-expand outline shape, which the stroke-
+            // outliner builds itself by calling Outside and Inside
+            // separately (see expand_stroke_op).
+            std::vector<PathData> results;
+            if (auto pd = fast(+distance)) results.push_back(*pd);
+            if (auto pd = fast(-distance)) results.push_back(*pd);
+            return results;
+        }
+    }
+
+    // ── Clipper2 path (irregular shapes) — s260 ─────────────────────────────
+    // All paths that didn't match a regular-shape fast path go through
+    // Clipper2's InflatePaths. This is the "stroke-then-trace" approach:
+    // the input's filled region is grown (or shrunk) by `distance` and
+    // we trace the boundary of the result. Self-intersections in the
+    // input are resolved by Clipper2's pre-clean Union step, so a self-
+    // crossing path produces a clean offset with any topological holes
+    // emerging as separate output loops. Each output loop becomes one
+    // PathData.
+    //
+    // Anchor selection: corner+apex detection on the polyline output.
+    // Polyline vertices where the turn angle exceeds OFFSET_CORNER_RAD
+    // (sharp corners — original-anchor preserves, plus miter spikes
+    // Clipper2 inserts at sharp originals) become anchors. Polyline
+    // vertices that are LOCAL MAXIMA of turn angle within a window
+    // (the apex of smooth curves) also become anchors. Everything else
+    // is dense-sampling noise from the flatten step and is dropped.
+    //
+    // Bézier emission: between two consecutive anchors A and B, place
+    // handles along the polyline tangents at A and B, with handle length
+    // proportional to the arc-length between them. This produces a
+    // smooth-curve refit between corners and a clean cubic per smooth
+    // arc. T-H below remains as defensive fallback for empty Clipper2
+    // output (degenerate inputs).
+    {
+        auto polys = offset_path_clipper_polylines(
+            path, distance, side, cap, join, miter_limit_ratio);
+        if (!polys.empty()) {
+            std::vector<PathData> results;
+            results.reserve(polys.size());
+            for (const auto& poly : polys) {
+                PathData pd = polyline_to_bezier_path(poly, /*closed=*/path.closed);
+                if (!pd.nodes.empty()) results.push_back(std::move(pd));
+            }
+            if (!results.empty()) return results;
+        }
+        LOG_WARN("PathOffset: Clipper2 produced no output, falling through to T-H");
+    }
+
+    // ── Tiller-Hanson fallback (general curves) ─────────────────────────────
     BezierPath bp = BezierPath::from_path_data(path);
 
     // Shoelace sign: doc space is Y-down, positive area = CW winding.

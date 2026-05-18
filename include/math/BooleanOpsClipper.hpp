@@ -1,6 +1,8 @@
 #pragma once
 #include "BooleanOps.hpp"
 #include "BezierPath.hpp"
+#include "Vec2.hpp"        // s260 — offset_path_clipper_polylines return type
+#include "PathOffset.hpp"  // s260 — OffsetSide enum
 #include "../SceneNode.hpp"
 #include <vector>
 
@@ -58,5 +60,41 @@ std::vector<PathData> boolean_op_clipper(
     const std::vector<BezierPath>& A,
     const std::vector<BezierPath>& B,
     BooleanOpType op);
+
+// ── s260 — Path offset via Clipper2's InflatePaths ───────────────────────────
+//
+// Offset an irregular path by `distance` on the chosen side. Internally:
+//   1. Flatten input cubics to a polyline (reuses the boolean-op machinery).
+//   2. Pre-clean: union the polyline with itself to resolve any self-
+//      intersections — gives a self-crossing input a well-defined filled
+//      region (the user's "stroke-then-trace" mental model).
+//   3. Resolve sign: positive `distance` always means outward, regardless
+//      of input winding.
+//   4. InflatePaths(±distance, Miter join, Polygon end for closed inputs).
+//   5. Return the raw output polylines, one vector<Vec2> per loop. For
+//      OffsetSide::Outside on a simple closed input that's one outer-
+//      envelope loop. For self-intersecting inputs, additional loops may
+//      appear (each closed boundary of the inflated region is one entry).
+//
+// Returns polylines rather than PathData so the caller can do its own
+// anchor selection and Bézier refit. PathOffset.cpp uses corner+apex
+// detection on the polylines, runs the s258 regularity check on the
+// selected anchors (to catch offsets that come out regular), and emits
+// Bézier paths only after these decisions are made.
+//
+// Returns empty vector if input has < 2 nodes or Clipper2 produces no
+// output (e.g. inward offset that erodes everything).
+//
+// s263 — cap/join parameters honored from caller. Defaults match the
+// pre-s263 hardcoded behavior (Butt caps, Miter joins, limit 4.0) so
+// existing callers (Offset Path dialog) keep their semantics unchanged.
+// Expand Stroke reads them off the source's StrokeStyle.
+std::vector<std::vector<Vec2>> offset_path_clipper_polylines(
+    const PathData& path,
+    double          distance,
+    OffsetSide      side,
+    LineCap         cap               = LineCap::Butt,
+    LineJoin        join              = LineJoin::Miter,
+    double          miter_limit_ratio = 4.0);
 
 } // namespace Curvz

@@ -39,8 +39,15 @@ enum class OffsetSide {
 // Returns one PathData for Outside/Inside, one PathData for Both
 // (the assembled stroke shape as a single closed path).
 // Returns empty vector if path is open or has fewer than 2 nodes.
+//
+// s263 — cap and join parameters honored when the path flows through
+// the Clipper2 path (i.e. irregular shapes that don't hit a regular-
+// shape fast path). Defaults preserve pre-s263 behavior.
 std::vector<PathData> offset_path(const PathData& path,
                                   double           distance,
-                                  OffsetSide       side);
+                                  OffsetSide       side,
+                                  LineCap          cap               = LineCap::Butt,
+                                  LineJoin         join              = LineJoin::Miter,
+                                  double           miter_limit_ratio = 4.0);
 
 } // namespace Curvz

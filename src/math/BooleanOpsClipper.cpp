@@ -375,4 +375,202 @@ std::vector<PathData> boolean_op_clipper(
     return boolean_op_clipper(operands, op);
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// s260 — offset_path_clipper_polylines
+//
+// Path offset for irregular shapes via Clipper2's InflatePaths. Returns
+// raw output polylines (one per output loop). Caller (PathOffset.cpp)
+// does anchor selection and Bézier refit.
+//
+// Pipeline:
+//   1. Flatten the input PathData to a PathD using the existing boolean-
+//      op flatten machinery (FLATTEN_TOL_DOC tolerance).
+//   2. Pre-clean: Clipper2::Union the path with an empty clip set. This
+//      resolves any self-intersections in the input — a self-crossing
+//      path gets a well-defined filled-region representation, which is
+//      exactly the user's "stroke-then-trace" mental model for offset.
+//   3. Sign convention: positive `distance` always means outward growth.
+//      Clipper2's InflatePaths grows in the direction of positive
+//      winding; if the cleaned region has negative winding (Clipper2's
+//      IsPositive returns false) we flip the delta sign.
+//   4. Call InflatePaths(±distance, Miter join, Polygon/Butt end).
+//   5. Convert each output PathD into a vector<Vec2> and return.
+//
+// For OffsetSide::Both: the function returns outer (positive delta)
+// loops followed by inner (negative delta) loops. Caller can distinguish
+// by ordering if needed, but typically just emits all loops as separate
+// PathDatas.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Inflate one PathsD (already pre-cleaned via union) by `delta` doc units.
+// Returns the resulting polylines as Curvz Vec2 vectors. Clipper2 emits
+// every boundary loop of the inflated region — outer envelopes AND
+// inner hole boundaries. We return them all; caller decides what to do
+// with each.
+//
+// Cap and join control:
+//   - `cap` applies only to open inputs (closed inputs always use
+//     EndType::Polygon, which doesn't cap because there are no endpoints).
+//   - `join` and `miter_limit` apply to all corner joins along the path.
+//
+// Cap mapping:
+//     LineCap::Butt   → EndType::Butt    (flat ends flush with endpoint)
+//     LineCap::Square → EndType::Square  (square ends extending past endpoint by delta)
+//     LineCap::Round  → EndType::Round   (semicircular ends)
+//
+// Join mapping:
+//     LineJoin::Miter → JoinType::Miter  (sharp pointed, with limit)
+//     LineJoin::Round → JoinType::Round  (arc-tolerance controlled)
+//     LineJoin::Bevel → JoinType::Square (chopped corner — Clipper2's "Square"
+//                                         join is SVG's "Bevel"; the naming
+//                                         is a Clipper2 quirk worth flagging)
+static std::vector<std::vector<Vec2>>
+inflate_one_side(const Clipper2Lib::PathsD& cleaned,
+                 double   delta,
+                 bool     closed_input,
+                 LineCap  cap,
+                 LineJoin join,
+                 double   miter_limit_ratio)
+{
+    std::vector<std::vector<Vec2>> out;
+    if (cleaned.empty() || std::abs(delta) < 1e-9) return out;
+
+    // ── Map Curvz LineCap → Clipper2 EndType.
+    // Closed inputs override: no endpoints to cap, use EndType::Polygon.
+    Clipper2Lib::EndType et = Clipper2Lib::EndType::Polygon;
+    if (!closed_input) {
+        switch (cap) {
+            case LineCap::Butt:   et = Clipper2Lib::EndType::Butt;   break;
+            case LineCap::Square: et = Clipper2Lib::EndType::Square; break;
+            case LineCap::Round:  et = Clipper2Lib::EndType::Round;  break;
+        }
+    }
+
+    // ── Map Curvz LineJoin → Clipper2 JoinType.
+    // Note: Clipper2's JoinType::Square is what SVG calls Bevel.
+    Clipper2Lib::JoinType jt = Clipper2Lib::JoinType::Miter;
+    switch (join) {
+        case LineJoin::Miter: jt = Clipper2Lib::JoinType::Miter;  break;
+        case LineJoin::Round: jt = Clipper2Lib::JoinType::Round;  break;
+        case LineJoin::Bevel: jt = Clipper2Lib::JoinType::Square; break;
+    }
+
+    Clipper2Lib::PathsD inflated;
+    try {
+        inflated = Clipper2Lib::InflatePaths(
+            cleaned, delta, jt, et, miter_limit_ratio, DECIMAL_PREC);
+    } catch (const std::exception& e) {
+        LOG_WARN("offset_path_clipper: InflatePaths threw: {}", e.what());
+        return out;
+    }
+
+    out.reserve(inflated.size());
+    for (const auto& loop : inflated) {
+        if (loop.size() < 3) continue;
+        std::vector<Vec2> verts;
+        verts.reserve(loop.size());
+        for (const auto& p : loop) verts.push_back({p.x, p.y});
+        out.push_back(std::move(verts));
+    }
+    return out;
+}
+
+std::vector<std::vector<Vec2>> offset_path_clipper_polylines(
+    const PathData& path,
+    double          distance,
+    OffsetSide      side,
+    LineCap         cap,
+    LineJoin        join,
+    double          miter_limit_ratio)
+{
+    std::vector<std::vector<Vec2>> result;
+    if (path.nodes.size() < 2) return result;
+
+    // ── Step 1 — flatten input.
+    // Reuse the boolean-op flatten by going through BezierPath. The
+    // existing flatten_subpath is static to this file so we can call
+    // it directly.
+    BezierPath bp = BezierPath::from_path_data(path);
+    Clipper2Lib::PathD raw = flatten_subpath(bp);
+    if (raw.size() < 3) {
+        LOG_WARN("offset_path_clipper: flatten produced <3 points");
+        return result;
+    }
+
+    Clipper2Lib::PathsD raw_paths;
+    raw_paths.push_back(std::move(raw));
+
+    // ── Step 2 — pre-clean via union-with-self.
+    // Closed inputs: Union(raw, empty) under NonZero (single-subpath) cleans
+    // self-intersections into a well-defined filled region. Open inputs
+    // skip this step — open polylines don't have a filled interior to
+    // resolve; InflatePaths handles them directly with EndType::Butt.
+    Clipper2Lib::PathsD cleaned;
+    if (path.closed) {
+        try {
+            Clipper2Lib::PathsD empty_clips;
+            cleaned = Clipper2Lib::Union(
+                raw_paths, empty_clips,
+                Clipper2Lib::FillRule::NonZero,
+                DECIMAL_PREC);
+        } catch (const std::exception& e) {
+            LOG_WARN("offset_path_clipper: pre-clean Union threw: {}", e.what());
+            return result;
+        }
+        if (cleaned.empty()) {
+            // Degenerate input (zero-area). Bail.
+            return result;
+        }
+    } else {
+        // Open path — feed raw polyline directly to InflatePaths.
+        cleaned = std::move(raw_paths);
+    }
+
+    // ── Step 3 — sign convention.
+    // distance > 0 = outward at the API boundary. For closed paths,
+    // Clipper2's InflatePaths grows in the positive-winding direction;
+    // we test the first cleaned loop's IsPositive and flip the delta if
+    // necessary so the user-facing semantics are winding-independent.
+    // Open paths have no inside/outside so the sign is just literal.
+    double sign_flip = 1.0;
+    if (path.closed && !cleaned.empty() &&
+        !Clipper2Lib::IsPositive(cleaned.front())) {
+        sign_flip = -1.0;
+    }
+
+    // ── Step 4 — inflate and collect.
+    //
+    // Closed inputs:
+    //   OffsetSide::Outside → one batch at +distance.
+    //   OffsetSide::Inside  → one batch at -distance.
+    //   OffsetSide::Both    → outer batch then inner batch, concatenated.
+    //
+    // Open inputs: the side parameter is meaningless — an open polyline
+    // has no inside or outside. A single InflatePaths call at +distance
+    // produces one closed loop that IS the stroke band around the
+    // polyline (with the requested cap at the endpoints). Any OffsetSide
+    // value the caller passes is treated as this single stroke-band
+    // call.
+    auto append = [&](double delta) {
+        auto loops = inflate_one_side(cleaned, delta * sign_flip,
+                                      path.closed, cap, join,
+                                      miter_limit_ratio);
+        for (auto& l : loops) result.push_back(std::move(l));
+    };
+
+    if (!path.closed) {
+        // Open path: one call, regardless of side. Cap and join are
+        // honored from the source's StrokeStyle via the function args.
+        append(+distance);
+    } else if (side == OffsetSide::Outside) {
+        append(+distance);
+    } else if (side == OffsetSide::Inside) {
+        append(-distance);
+    } else {
+        append(+distance);
+        append(-distance);
+    }
+    return result;
+}
+
 } // namespace Curvz

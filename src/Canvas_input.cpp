@@ -340,30 +340,16 @@ void Canvas::notify_r_pressed() {
   }
 
   m_r_held = true;
-  // Default pivot to BBX center if not already set
+  // s259 — Default pivot is the selection's weighted (true) centre, which
+  // matches bbox centre for regular shapes (rect / ellipse / regular
+  // polygon-or-star) and gives a no-wobble rotation pivot for everything
+  // else. Falls back to bbox centre internally if no points are
+  // extractable from the selection.
   if (!m_has_custom_pivot) {
-    bool found = false;
-    double bx1 = 0, by1 = 0, bx2 = 0, by2 = 0;
-    for (SceneNode *obj : m_selection) {
-      auto bb = object_bbox(*obj);
-      if (!bb)
-        continue;
-      if (!found) {
-        bx1 = bb->x;
-        by1 = bb->y;
-        bx2 = bb->x + bb->w;
-        by2 = bb->y + bb->h;
-        found = true;
-      } else {
-        bx1 = std::min(bx1, bb->x);
-        by1 = std::min(by1, bb->y);
-        bx2 = std::max(bx2, bb->x + bb->w);
-        by2 = std::max(by2, bb->y + bb->h);
-      }
-    }
-    if (found) {
-      m_custom_pivot_x = (bx1 + bx2) * 0.5;
-      m_custom_pivot_y = (by1 + by2) * 0.5;
+    double tcx = 0.0, tcy = 0.0;
+    if (selection_true_center(tcx, tcy)) {
+      m_custom_pivot_x = tcx;
+      m_custom_pivot_y = tcy;
     }
   }
   set_cursor("crosshair");
@@ -973,7 +959,31 @@ void Canvas::on_draw_begin(double x, double y) {
       on_pivot_dialog(dx, dy);
       return;
     }
-    if (m_has_custom_pivot) {
+    // s259 — Rotate-handle clicks escape the pivot intercept. Two
+    // sources of rotation:
+    //   1. The dedicated rotate rings outside the bbox corners
+    //      (handle_hit_test returns HandleKind::RotateNW/NE/SE/SW
+    //      regardless of R state).
+    //   2. In pivot mode, the corner scale handles ALSO act as rotate
+    //      handles (the handle-hit-test branch below remaps NW/NE/SE/SW
+    //      to RotateNW/NE/SE/SW when m_r_held).
+    // A click on either source means "start rotating," not "place the
+    // pivot here." Pre-s259 the pivot was seeded at the bbox centre,
+    // which was rarely near the rotate handles, so this collision was
+    // uncommon. With s259's weighted centre seed, the pivot lands on
+    // the object — and pre-this-fix any click (including on a rotate
+    // handle) was claimed by the pivot intercept, blocking rotation.
+    HandleKind r_held_hk = handle_hit_test(x, y);
+    bool clicking_rotate_handle =
+        (r_held_hk == HandleKind::RotateNW || r_held_hk == HandleKind::RotateNE ||
+         r_held_hk == HandleKind::RotateSE || r_held_hk == HandleKind::RotateSW ||
+         r_held_hk == HandleKind::NW       || r_held_hk == HandleKind::NE ||
+         r_held_hk == HandleKind::SE       || r_held_hk == HandleKind::SW);
+    if (clicking_rotate_handle) {
+      // Fall through to the normal handle-drag path below. The pivot
+      // stays where it was seeded (or wherever the user last placed it);
+      // the rotate operation uses it as the rotation centre.
+    } else if (m_has_custom_pivot) {
       // Only grab the pivot if click is within ~12px of the crosshair
       double pvsx, pvsy;
       doc_to_screen(m_custom_pivot_x, m_custom_pivot_y, pvsx, pvsy);
@@ -2180,10 +2190,20 @@ void Canvas::on_select_begin(double x, double y) {
         m_handle_drag = hk;
         m_handle_start_bb = {bx1, by1, bx2 - bx1, by2 - by1};
 
-        // Pivot = opposite corner (Alt = center)
+        // Pivot = opposite corner (Alt = weighted/true centre — s259).
+        // True centre coincides with bbox centre for regular shapes
+        // (rect, ellipse, regular polygon / star) and is the no-wobble
+        // pivot for irregulars. Falls back to bbox centre if the helper
+        // returns false.
         if (m_mod_alt) {
-          m_handle_pivot_x = bx1 + (bx2 - bx1) * 0.5;
-          m_handle_pivot_y = by1 + (by2 - by1) * 0.5;
+          double tcx, tcy;
+          if (selection_true_center(tcx, tcy)) {
+            m_handle_pivot_x = tcx;
+            m_handle_pivot_y = tcy;
+          } else {
+            m_handle_pivot_x = bx1 + (bx2 - bx1) * 0.5;
+            m_handle_pivot_y = by1 + (by2 - by1) * 0.5;
+          }
         } else {
           switch (hk) {
           case HandleKind::NW:
@@ -2241,8 +2261,9 @@ void Canvas::on_select_begin(double x, double y) {
         // For rotate kinds, record the starting angle from pivot to cursor
         if (hk == HandleKind::RotateNW || hk == HandleKind::RotateNE ||
             hk == HandleKind::RotateSE || hk == HandleKind::RotateSW) {
-          // Use custom pivot if set (rotate-from-point), otherwise
-          // BBX center (or Alt = opposite corner).
+          // Use custom pivot if set (rotate-from-point); else Alt = opposite
+          // corner; else weighted/true centre (s259 — no-wobble rotation
+          // for irregulars, matches bbox centre for regular shapes).
           double rpx, rpy;
           if (m_has_custom_pivot) {
             rpx = m_custom_pivot_x;
@@ -2271,8 +2292,10 @@ void Canvas::on_select_begin(double x, double y) {
               break;
             }
           } else {
-            rpx = (bx1 + bx2) * 0.5;
-            rpy = (by1 + by2) * 0.5;
+            if (!selection_true_center(rpx, rpy)) {
+              rpx = (bx1 + bx2) * 0.5;
+              rpy = (by1 + by2) * 0.5;
+            }
           }
           m_handle_pivot_x = rpx;
           m_handle_pivot_y = rpy;

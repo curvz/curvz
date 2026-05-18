@@ -527,6 +527,29 @@ public:
   bool selection_bbox(double &x, double &y, double &w, double &h) const;
   bool selection_bbox_center(double &cx, double &cy) const;
 
+  // s259 — Weighted ("true") center of the selection, computed as the
+  // centre of the minimum enclosing circle of all path-vertex and image-
+  // corner points in the selection (in doc coords, with each leaf's
+  // transform applied). For rectangles, ellipses, regular polygons /
+  // stars, and circles, this coincides with the bbox centre. For
+  // irregular shapes it gives the no-wobble rotation pivot — rotation
+  // around this point keeps the shape inside the same bounding disc
+  // throughout the rotation, where bbox-centre rotation would visibly
+  // swing the shape's extremes out past their start positions.
+  //
+  // Used as the default pivot for:
+  //   - R-key pivot mode seed (notify_r_pressed)
+  //   - Alt-modified scale handle drag (symmetric scale about centre)
+  //   - Corner-handle rotate drag with no custom pivot
+  //   - Programmatic rotate_selection_by / scale_selection_by fallbacks
+  //
+  // NOT used for direct-manipulation scale (corner-handle drag without
+  // Alt) — that path keeps the opposite-corner pivot so the dragged
+  // handle tracks the cursor.
+  //
+  // Returns false on empty selection or no extractable points.
+  bool selection_true_center(double &cx, double &cy) const;
+
   // Temporary crosshair overlay for dialogs (Step and Repeat pivot preview).
   // Separate from m_custom_pivot_x/y so it doesn't collide with the
   // rotate-from-point system. When active, crosshair renders at (px, py) in
