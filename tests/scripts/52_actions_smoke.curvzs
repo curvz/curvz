@@ -1,0 +1,224 @@
+# 52_actions_smoke — first move on Tier 2 action wrappers (s254 m2).
+# Validates the `curvz::Action` plumbing landed at s254 m2 by
+# exercising the five wrap-now win.* actions migrated to scripted
+# actions: undo / redo / select-all / deselect-all / zoom-fit.
+#
+# **Conservative-shape smoke.** This is a verb-presence + invocation-
+# no-throw smoke, not a full observable-confirmation smoke. The five
+# m1 first-batch actions have NO scriptable observables today —
+# undo/redo affect the command history (no Scriptable property
+# exposes its depth), select-all/deselect-all affect canvas selection
+# (no Scriptable property exposes selection count), and zoom-fit
+# affects the canvas zoom (no Scriptable property exposes zoom).
+# Adding those properties is m3+ territory; m2's smoke proves the
+# wrapper-side dispatch lands and the actions are addressable from
+# script. Convergent-evidence acceptance: trace shows the five
+# invocations land cleanly (no `error invoke threw:` lines), plus
+# Scott's visual confirmation that menu Edit ▸ Undo / Redo / Select
+# All / Deselect All and View ▸ Zoom to Fit still behave identically
+# to before (the wrapper is structurally invariant — same callback
+# chain runs on script-driven invoke as on menu click).
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Six observables across the wrapper-side surface:
+#
+#   Phase 1: `list` — confirm `win` appears in the registered-
+#            Scriptables enumeration. Operator-visual; the trace
+#            should include a line `  win  (...)` somewhere in the
+#            list output. Negative case: `win` missing means the
+#            ActionGroupScriptable's ctor never ran or never reached
+#            the registry, and m2 is broken at the foundation.
+#
+#   Phases 2-6: each of the five wrap-now verbs invoked once.
+#            Operator-visual on each `ok` echo. Negative case: any
+#            `error invoke threw:` line means the verb isn't in
+#            m_actions (helper didn't register), the verb threw at
+#            invocation (callback couldn't be adapted), or the
+#            wrapper-side mask refused (which would be a mask-setup
+#            bug — these are all default Scripter | TestRunner).
+#
+#            Each invoke also fires the underlying Gio action's
+#            callback. Side effects ARE present (the canvas does
+#            do undo / redo / select-all / etc.) — but they're not
+#            assertable from script today. Scott's visual report is
+#            the second channel.
+#
+# Phases 7-8: refusal coverage. Confirms the wrapper refuses unknown
+#            verbs and refuses argument-bearing invocations of
+#            parameterless verbs (per the invoke()-body contract).
+#            Both are `error invoke threw:` lines; operator-visual
+#            on the refusal text.
+#
+# ── Caller context ────────────────────────────────────────────────────────
+#
+# This smoke runs through ScripterWindow's listener, m_context =
+# RunContext::Scripter. All five m1 first-batch verbs declare their
+# mask as Scripter | TestRunner per the wrap-now posture (matches the
+# m5b proj.save / export.svg / export.png / export.theme convention).
+# Macro is OUT — the m1 first batch is observable-mutating but not
+# observable-recordable in any safe way today. The wrap-now actions
+# that DO record cleanly (`undo` / `redo` would replay fine in a
+# macro) are excluded from Macro on the same posture as proj.save:
+# the canon's "default is widest reasonable" rule reads "Scripter +
+# TestRunner" as the wrap-now reasonable default; promoting verbs to
+# Macro happens when a specific recording use case names the need.
+#
+# This is the FIRST consumer of context_mask() with a per-verb
+# mask catalogue inside a single Scriptable (the registry-promotion
+# clock counter — see LEDGER's Tier 4 row — gets one tick per
+# Scriptable, not per verb; ActionGroupScriptable adds the eighth
+# consumer to that clock). The wrap-now batch lands five verbs all
+# at the same mask, but the wrapper accepts per-verb declaration
+# from the start so stricter masks (e.g. for `clear` once it lands)
+# can override the default without surgery.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# This smoke MUTATES canvas state via undo / redo / select-all /
+# deselect-all / zoom-fit. The mutations are:
+#
+#   - `win undo` — pops one entry off the command history if the
+#                  stack is non-empty. **No-op if empty.** That's
+#                  the safe shape for the smoke — running on an
+#                  empty history does nothing observable and doesn't
+#                  throw.
+#   - `win redo` — pushes the last undone entry back on if any. No-op
+#                  if the undo stack is at its head. Also safe-empty.
+#   - `win select-all` — selects every visible object in the active
+#                  layer. Idempotent.
+#   - `win deselect-all` — clears selection. Idempotent.
+#   - `win zoom-fit` — pans + zooms canvas to fit all objects. Idempotent
+#                  on identical content.
+#
+# After the smoke runs:
+#   - Command history is at the same position (undo+redo cancel out).
+#   - Selection is empty (final deselect-all).
+#   - Canvas zoom is whatever zoom-fit produced for the doc — likely
+#     different from where the user had it. Scott will need to ⌘0 /
+#     zoom-reset manually if this is disruptive.
+#
+# No project content is added, removed, or edited. Safe to run
+# repeatedly.
+#
+# ── Precondition reminders ────────────────────────────────────────────────
+#
+# This smoke assumes:
+#   1. Curvz is running with at least one project + one document
+#      open (every smoke assumes this).
+#   2. The active doc has at least one object visible (so select-all
+#      / zoom-fit have something to act on; the actions themselves
+#      don't refuse on empty docs, but the visual confirmation channel
+#      is more legible with content).
+#
+# Both preconditions are the standard "any session with anything on
+# screen" baseline — same as smokes 26 / 41 / 49 / 51.
+
+#[sub] === Phase 1: registry-presence — `win` Scriptable is registered ===
+
+#[sub] `list` enumerates every registered Scriptable. The output
+#[sub] should include a `win` line — the ActionGroupScriptable that
+#[sub] m_action_group_scriptable was constructed as in MainWindow's
+#[sub] ctor, BEFORE setup_menu() ran. If `win` is missing here, the
+#[sub] ctor's construction step never landed or the registration
+#[sub] silently failed; nothing below can pass.
+
+list
+
+#[sub] === Phase 2: undo verb is addressable ===
+
+#[sub] First wrapped verb. Invoke; no error means the helper
+#[sub] correctly registered the action and the wrapper's invoke()
+#[sub] resolved the verb name and called activate() on the
+#[sub] underlying SimpleAction. If the command history is empty,
+#[sub] this is a clean no-op at the canvas layer.
+#[sub]
+#[sub] Negative case: `error invoke threw: win undo: unknown verb`
+#[sub] means register_action() never landed for this verb.
+
+win undo
+
+#[sub] === Phase 3: redo verb is addressable ===
+
+#[sub] Sibling to undo. Symmetric registration test.
+
+win redo
+
+#[sub] === Phase 4: select-all verb is addressable ===
+
+#[sub] Third wrapped verb. Calls m_canvas.select_all(); visual
+#[sub] confirmation: all objects in active layer should select.
+
+win select-all
+
+#[sub] === Phase 5: deselect-all verb is addressable ===
+
+#[sub] Fourth wrapped verb. Calls m_canvas.clear_selection(); visual
+#[sub] confirmation: selection clears. Leaves the canvas in a clean
+#[sub] selection-empty state for the final zoom-fit.
+
+win deselect-all
+
+#[sub] === Phase 6: zoom-fit verb is addressable ===
+
+#[sub] Fifth and final wrapped verb. Calls m_canvas.zoom_to_all_objects();
+#[sub] visual confirmation: canvas reframes to fit content. This is
+#[sub] the most visually-obvious of the five — Scott's eyes-channel
+#[sub] confirmation is most reliable on this one.
+
+win zoom-fit
+
+#[sub] === Phase 7: unknown-verb refusal ===
+
+#[sub] The wrapper refuses verbs that aren't in m_actions. The five
+#[sub] migrated verbs are present; the other 44 wrap-now and 25 don't-
+#[sub] wrap actions are NOT — they're either still in the un-migrated
+#[sub] Gio-only state (the 44 remaining wrap-now, future milestones)
+#[sub] or decided-not-deferred and never going to be wrapped (the
+#[sub] don't-wrap buckets).
+#[sub]
+#[sub] `win quit` is a bucket-C action (future `app.quit` singleton);
+#[sub] it's a clean test of the unknown-verb refusal because it's a
+#[sub] real Gio action (so the menu still works) but NOT in the
+#[sub] wrapper's verb surface. The refusal message names the verb
+#[sub] and points the script author at the audit doc.
+
+win quit
+
+#[sub] === Phase 8: extra-argument refusal ===
+
+#[sub] All five m1 first-batch verbs are parameterless. Passing an
+#[sub] argument should refuse — silently dropping args would mask
+#[sub] scripts that think they're parameterising a verb that doesn't
+#[sub] accept parameters.
+
+win undo "argument"
+
+#[sub] === Predicted observables ───────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   8 lines, 0 pass, 0 fail, 2 error
+#[sub]
+#[sub] - 0 PASS  : no `assert` lines in this smoke (the m1 first batch
+#[sub]             has no scriptable observables; assertions land in
+#[sub]             m3 once view-toggle bool state or undo-stack depth
+#[sub]             gain scriptable surfaces).
+#[sub] - 2 error : Phases 7 and 8 — intentional refusals (unknown
+#[sub]             verb, extra arguments).
+#[sub] - 1 operator-visual : Phase 1's `list` output block (multi-
+#[sub]             line; counted as one trace line for the summary).
+#[sub] - 5 operator-visual `ok` echoes : Phases 2-6, one per wrapped
+#[sub]             verb's successful invocation.
+#[sub] - 2 operator-visual refusal lines : the structured
+#[sub]             `error invoke threw:` lines under Phases 7 and 8.
+#[sub]
+#[sub] The 8-line / 0-pass count is the conservative-smoke signature.
+#[sub] Smokes 49 / 50 / 51 each landed 8 pass on their respective
+#[sub] format-verbs because those Scriptables had observables
+#[sub] (last_ok / last_path); m1's first batch doesn't, so the line
+#[sub] count moves to the trace channel and the visual channel.
+#[sub]
+#[sub] Tier 2 row ticks 0/49 → 5/49 after this smoke lands. Headline %
+#[sub] moves from ~75% to ~76% — small step, but the first non-zero
+#[sub] Tier 2 reading on the scoreboard.

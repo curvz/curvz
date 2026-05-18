@@ -160,6 +160,7 @@ namespace curvz::scripting { class ObjectsScriptable; }
 namespace curvz::scripting { class InspectorScriptable; }
 namespace curvz::scripting { class ProjScriptable; }  // s246 m1 — first headless-verb singleton
 namespace curvz::scripting { class ExportScriptable; }  // s251 m1 — second headless-verb singleton
+namespace curvz::scripting { class ActionGroupScriptable; }  // s254 m2 — Tier 2 action-wrapper Scriptable
 namespace curvz::scripting { class ScripterWindow; }
 
 namespace Curvz {
@@ -169,7 +170,7 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
-    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s243 m2 / s246 m1 / s251 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
+    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s243 m2 / s246 m1 / s251 m1 / s254 m2 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
     // unique_ptr<curvz::scripting::GuidesScriptable>,
     // unique_ptr<curvz::scripting::SwatchesScriptable>,
     // unique_ptr<curvz::scripting::PalettesScriptable>,
@@ -177,8 +178,9 @@ public:
     // unique_ptr<curvz::scripting::ThemesScriptable>,
     // unique_ptr<curvz::scripting::ObjectsScriptable>,
     // unique_ptr<curvz::scripting::InspectorScriptable>,
-    // unique_ptr<curvz::scripting::ProjScriptable>, and
-    // unique_ptr<curvz::scripting::ExportScriptable> can hold incomplete
+    // unique_ptr<curvz::scripting::ProjScriptable>,
+    // unique_ptr<curvz::scripting::ExportScriptable>, and
+    // unique_ptr<curvz::scripting::ActionGroupScriptable> can hold incomplete
     // types at the header level. Implementation lives in MainWindow.cpp
     // alongside the construction. No longer gated as of s219 m1.
     ~MainWindow();
@@ -1531,6 +1533,33 @@ private:
     // consumer of Scriptable::context_mask() — registry-promotion
     // clock at 7/n, still held by design.
     std::unique_ptr<curvz::scripting::ExportScriptable> m_export_scriptable;
+
+    // s254 m2 — `win` ActionGroupScriptable, first move on Tier 2 action
+    // wrappers. Holds the wrap-now subset of MainWindow's win.* actions
+    // (the 49 actions classified as wrap-now in s254 m1's
+    // tier2_action_audit.md), exposing them as Scriptable verbs so
+    // scripts can address `win.undo`, `win.zoom-fit`, etc. through the
+    // dispatcher. m2 ships the wrapper plumbing plus the first five
+    // wrap-now actions migrated (`undo`, `redo`, `select-all`,
+    // `deselect-all`, `zoom-fit`) as proof; subsequent milestones
+    // sweep the remaining 44 by menu domain. Same lifetime / dtor
+    // story as the Scriptables above; the dtor stays out-of-line so
+    // the unique_ptr can hold an incomplete type. Constructed BEFORE
+    // create_actions runs (in MainWindow's ctor) so the wrap-now
+    // sites in zones can register against a live group_scriptable.
+    // See scripting/Action.hpp for the wrapper-class contract, the
+    // one-Scriptable-per-action-group mapping rationale, and the
+    // helper-replaces-three-line-pattern motivation. The
+    // ActionGroupScriptable adds an eighth consumer of context_mask()
+    // — registry-promotion clock now at 8+/n (the per-verb mask
+    // catalogue inside this Scriptable's m_actions map is the larger
+    // contributor; each wrapped action declares its own mask). Still
+    // held by design — see the audit doc's Forks section for the
+    // mask-shape posture (default Scripter | TestRunner for wrap-now
+    // actions; the unsafe bucket C entries are decided-not-deferred
+    // and stay GUI-only without appearing in the wrapper's verb
+    // surface at all).
+    std::unique_ptr<curvz::scripting::ActionGroupScriptable> m_action_group_scriptable;
 
     // s219 m1 — Scripter window. Owned by MainWindow as a unique_ptr
     // member, matching the pattern of every other persistent floating

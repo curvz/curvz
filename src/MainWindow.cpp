@@ -21,6 +21,7 @@
 #include "scripting/InspectorScriptable.hpp"  // s222 m2 — inspector area Scriptable
 #include "scripting/ProjScriptable.hpp"      // s246 m1 — first headless-verb singleton
 #include "scripting/ExportScriptable.hpp"    // s251 m1 — second headless-verb singleton
+#include "scripting/Action.hpp"               // s254 m2 — Tier 2 action wrappers
 #include "scripting/ScripterWindow.hpp"    // s219 m1 — apply_scripter_pref present/hide
 #include "curvz/widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
 #include "Application.hpp"                  // s219 m1 — Curvz::Application (main_window only)
@@ -201,6 +202,19 @@ MainWindow::MainWindow(Application & /*app*/) {
   // the window when the CSD wrapper + headerbar resolve their style
   // the first time, so they pick up the light tokens directly.
   setup_project();
+
+  // s254 m2 — Construct the `win` ActionGroupScriptable BEFORE
+  // setup_menu() runs, because setup_menu()'s action declarations
+  // call add_scripted_action() for the wrap-now subset, and that
+  // helper registers each wrapped action against this Scriptable.
+  // The Scriptable's registry entry IS the script-side `win`
+  // handle. See scripting/Action.hpp for the wrapper-class design
+  // and the helper-replaces-three-line-pattern motivation; see
+  // tier2_action_audit.md for the wrap-now classification of all
+  // 74 win.* actions.
+  m_action_group_scriptable =
+      std::make_unique<curvz::scripting::ActionGroupScriptable>("win");
+
   setup_headerbar();
   setup_menu();
   setup_layout();

@@ -14,6 +14,7 @@
 #include "ThemeEditDialog.hpp" // s183 m2 — Edit-theme dialog wiring
 #include "curvz/widgets/ToggleButton.hpp" // s190 m2 / s219 m1 — substrate-routed Scripter toggle
 #include "scripting/ScripterWindow.hpp" // s190 m2 / s219 m1 — present/get_visible/property_visible
+#include "scripting/Action.hpp"        // s254 m2 — add_scripted_action helper
 #include <functional>
 #include <giomm/simpleactiongroup.h> // s144 m3 — recents action group
 #include <gtkmm/application.h>
@@ -837,15 +838,20 @@ void MainWindow::setup_menu() {
   add_action(act_print);
 
   // Edit
-  auto act_undo = Gio::SimpleAction::create("undo");
-  act_undo->signal_activate().connect(
-      [this](const Glib::VariantBase &) { on_undo(); });
-  add_action(act_undo);
+  // s254 m2 — Edit-menu undo/redo migrated to scripted actions. First
+  // two of the m1 first-batch (undo/redo/select-all/deselect-all/zoom-
+  // fit); all under the default Scripter | TestRunner mask per the
+  // wrap-now posture. The helper preserves the Gio side (these still
+  // appear in win.* and the menu can invoke them) and adds the
+  // wrapper-side mapping so scripts can address them as `win undo` /
+  // `win redo`. See scripting/Action.hpp for the helper contract.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "undo", "act_undo", [this] { on_undo(); });
 
-  auto act_redo = Gio::SimpleAction::create("redo");
-  act_redo->signal_activate().connect(
-      [this](const Glib::VariantBase &) { on_redo(); });
-  add_action(act_redo);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "redo", "act_redo", [this] { on_redo(); });
 
   auto act_cut = Gio::SimpleAction::create("cut");
   act_cut->signal_activate().connect(
@@ -891,15 +897,18 @@ void MainWindow::setup_menu() {
   // key handler — set_accels_for_action is cosmetic in this codebase
   // (per the hotkey-dispatch convention). These actions exist so the
   // menu entries have something to invoke.
-  auto act_select_all = Gio::SimpleAction::create("select-all");
-  act_select_all->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.select_all(); });
-  add_action(act_select_all);
+  //
+  // s254 m2 — migrated to scripted actions (third + fourth of the
+  // m1 first batch).
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "select-all", "act_select_all",
+      [this] { m_canvas.select_all(); });
 
-  auto act_deselect_all = Gio::SimpleAction::create("deselect-all");
-  act_deselect_all->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.clear_selection(); });
-  add_action(act_deselect_all);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "deselect-all", "act_deselect_all",
+      [this] { m_canvas.clear_selection(); });
 
   // s203 m1: View Clipboard… — Edit menu entry. Opens a mini floating
   // window that shows the current system clipboard contents so the user
@@ -1275,10 +1284,14 @@ void MainWindow::setup_menu() {
   });
   add_action(act_zoom_out);
 
-  auto act_zoom_fit = Gio::SimpleAction::create("zoom-fit");
-  act_zoom_fit->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.zoom_to_all_objects(); });
-  add_action(act_zoom_fit);
+  // s254 m2 — fifth and final of the m1 first batch. Selected over
+  // zoom-in / zoom-out / zoom-100 / zoom-200 because zoom_to_all_objects
+  // has a stable observable (canvas zoom matches fit value when the
+  // canvas has bounded content), making it cheap to smoke-test.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "zoom-fit", "act_zoom_fit",
+      [this] { m_canvas.zoom_to_all_objects(); });
 
   // s138 fix: action name is "zoom-100" to match the three call sites
   // (menu item, accel binding, update_project_sensitive enable list).

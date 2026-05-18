@@ -510,6 +510,17 @@ set(SOURCES
     # land in m2+ as the surface widens. Cardinality is by concern,
     # not by format — one Scriptable, five format-verbs.
     src/scripting/ExportScriptable.cpp
+    # s254 m2 — `curvz::scripting::ActionGroupScriptable` + the
+    # `add_scripted_action` helper. First move on Tier 2 action wrappers.
+    # One Scriptable per Gio action group (m1 ships `win`); wrap-now
+    # actions register as verbs against it via the helper, which
+    # replaces the existing three-line SimpleAction::create +
+    # signal_activate + add_action pattern. m2 ships the plumbing plus
+    # the first five wrap-now actions migrated (undo / redo / select-all
+    # / deselect-all / zoom-fit); subsequent milestones sweep the
+    # remaining 44 wrap-now win.* actions by menu domain. See
+    # tier2_action_audit.md for the full classification.
+    src/scripting/Action.cpp
     src/curvz/widgets/ToggleButton.cpp
     src/curvz/widgets/Button.cpp
     src/curvz/widgets/CheckButton.cpp
