@@ -1,0 +1,168 @@
+# 57_actions_align_smoke — Tier 2 m7 Align/Distribute sweep (s255).
+# Validates the eight wrap-now Align/Distribute verbs migrated from raw
+# `add_action` to `add_scripted_action`:
+#   - Align:      align-left / align-center-h / align-right
+#                 align-top / align-center-v / align-bottom
+#   - Distribute: distribute-h / distribute-v
+#
+# Sibling smoke to 52 / 53 / 54 / 55 / 56, same conservative-shape posture.
+# Largest m-batch in the sweep (8 verbs); test is correspondingly longer.
+#
+# **Why conservative.** No scriptable observables for align/distribute
+# today. Each verb shifts the geometric position of selected objects;
+# `objects` doesn't expose bounding-box / position fields. Trace
+# channel: invocations land cleanly. Visual channel: Scott confirms
+# menu items / toolbar popover still align identically.
+#
+# ── Disabled-action-fires-anyway shape (continued from m5) ────────────────
+#
+# Like the m5 boolean ops, all eight align/distribute verbs are
+# member-stored `m_act_align_*` / `m_act_distribute_*` with a
+# sensitivity pump (update_align_btn, extended in s135 m1) that
+# disables them on selections of < 2 objects.
+#
+# Same script-can-fire-disabled-action shape as m5: invocation hits
+# the canvas-side handler regardless of enabled state. The canvas
+# handler m_canvas.align_selection() guards against bad input.
+# Trace channel always `ok`; visual channel depends on selection.
+#
+# Most legible visual channel: select 3+ objects before running so
+# all align AND distribute verbs have visible effect.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Eleven observables across the wrapper-side surface:
+#
+#   Phase 1: `list` — confirm `win` is still registered.
+#   Phases 2-9: each of the eight align/distribute verbs invoked once.
+#   Phases 10-11: refusal coverage.
+#
+# ── Caller context ────────────────────────────────────────────────────────
+#
+# Runs through ScripterWindow's listener, m_context = RunContext::Scripter.
+# All eight m7-batch verbs declare Scripter | TestRunner. Macro is OUT.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# Mutations to canvas state, applied in order to whatever's selected:
+#
+#   - `win align-left`     — selection's leftmost edges align.
+#   - `win align-center-h` — selection's horizontal centers align.
+#                            (After phase 2's align-left, this re-centers.)
+#   - `win align-right`    — selection's right edges align.
+#   - `win align-top`      — selection's top edges align.
+#   - `win align-center-v` — selection's vertical centers align.
+#   - `win align-bottom`   — selection's bottom edges align.
+#   - `win distribute-h`   — selection's objects distribute horizontally.
+#   - `win distribute-v`   — selection's objects distribute vertically.
+#
+# After the smoke runs: with a multi-object selection, the objects
+# have been re-aligned six times then distributed both ways. Net
+# effect: objects sit on a horizontal line at the same Y as the
+# bottom alignment, evenly spaced horizontally and vertically. Scott
+# may want ⌘Z several times to restore. Safe to run repeatedly.
+#
+# ── Precondition reminders ────────────────────────────────────────────────
+#
+# This smoke assumes:
+#   1. Curvz is running with at least one project + one document open.
+#   2. For visual-channel legibility: select 3+ objects (e.g., draw three
+#      rectangles, select all three). Trace channel passes regardless.
+
+#[sub] === Phase 1: registry sanity-check — `win` is still registered ===
+
+list
+
+#[sub] === Phase 2: align-left verb is addressable ===
+
+#[sub] First m7-batch verb. Calls m_canvas.align_selection(AlignLeft);
+#[sub] visual: leftmost edges of selection align to the leftmost edge.
+
+win align-left
+
+#[sub] === Phase 3: align-center-h verb is addressable ===
+
+#[sub] Second m7-batch verb. Calls m_canvas.align_selection(AlignCenterH);
+#[sub] visual: horizontal centers align (vertical line of object centers).
+
+win align-center-h
+
+#[sub] === Phase 4: align-right verb is addressable ===
+
+#[sub] Third m7-batch verb. Calls m_canvas.align_selection(AlignRight);
+#[sub] visual: right edges align.
+
+win align-right
+
+#[sub] === Phase 5: align-top verb is addressable ===
+
+#[sub] Fourth m7-batch verb. Calls m_canvas.align_selection(AlignTop);
+#[sub] visual: top edges align.
+
+win align-top
+
+#[sub] === Phase 6: align-center-v verb is addressable ===
+
+#[sub] Fifth m7-batch verb. Calls m_canvas.align_selection(AlignCenterV);
+#[sub] visual: vertical centers align (horizontal line of object centers).
+
+win align-center-v
+
+#[sub] === Phase 7: align-bottom verb is addressable ===
+
+#[sub] Sixth m7-batch verb. Calls m_canvas.align_selection(AlignBottom);
+#[sub] visual: bottom edges align.
+
+win align-bottom
+
+#[sub] === Phase 8: distribute-h verb is addressable ===
+
+#[sub] Seventh m7-batch verb. Calls m_canvas.align_selection(DistributeH);
+#[sub] visual: with 3+ objects, horizontal spacing equalizes.
+
+win distribute-h
+
+#[sub] === Phase 9: distribute-v verb is addressable ===
+
+#[sub] Eighth and final m7-batch verb. Calls
+#[sub] m_canvas.align_selection(DistributeV); visual: with 3+ objects,
+#[sub] vertical spacing equalizes.
+
+win distribute-v
+
+#[sub] === Phase 10: unknown-verb refusal ===
+
+win quit
+
+#[sub] === Phase 11: extra-argument refusal ===
+
+#[sub] Use one of the new m7 verbs for refusal coverage.
+
+win align-left "argument"
+
+#[sub] === Predicted observables ───────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   11 lines, 0 pass, 0 fail, 2 error
+#[sub]
+#[sub] - 0 PASS  : no `assert` lines.
+#[sub] - 2 error : Phases 10 and 11 — intentional refusals.
+#[sub] - 1 operator-visual : Phase 1's `list` output block.
+#[sub] - 8 operator-visual `ok` echoes : Phases 2-9.
+#[sub] - 2 operator-visual refusal lines : Phases 10 and 11.
+#[sub]
+#[sub] Largest Tier 2 smoke to date (11 lines vs 7-9 prior). 0-pass /
+#[sub] 2-error invariants hold.
+#[sub]
+#[sub] Tier 2 row ticks 24 -> 32. Denominator may be 49 or 48 per the
+#[sub] m6 audit-error reconciliation (still pending). Headline % moves
+#[sub] from ~80% to ~82% on the corrected (48) denominator.
+#[sub]
+#[sub] Align (6/6) + Distribute (2/2) reach full migration. After m7,
+#[sub] only ~16 wrap-now actions remain across the m8+ horizon: Group
+#[sub] (group-make/break), Warp (warp-flatten — has sensitivity pump),
+#[sub] Object (offset-path, translate which takes parameters and may
+#[sub] need fork-3 treatment), Show* dialogs (show-shortcuts, show-help,
+#[sub] show-templates, etc.), File (new-doc, save-as, close-doc, ...),
+#[sub] and miscellaneous singletons.

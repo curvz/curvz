@@ -1,0 +1,200 @@
+# 61_actions_view_toggle_smoke — Tier 2 m11 View-toggle bool sweep (s256).
+# Validates the two wrap-now stateful-bool verbs migrated from raw
+# `Gio::SimpleAction::create_bool + activate handler` to
+# `add_scripted_bool_action`:
+#   - toggle-rulers
+#   - toggle-outline
+#
+# **First PASS-observable smoke in Tier 2.** Smokes 52-60 all landed
+# 0 PASS by design — the m1 first-batch and m3-m10 sweeps had no
+# scriptable observables (canvas state isn't directly queryable from
+# the wrapper). The stateful-bool helper opens a `<verb>_state` query
+# per the audit fork 10 default (carry-forward 2 in the s255→s256
+# handoff ratified YES on the readback question). This smoke uses
+# the readback to assert flip semantics via the 4-phase shape
+# (read-initial / flip / read-flipped / flip-back) named in the
+# handoff.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Eleven observables: 1 list + 8 trace lines (4 asserts + 4 invokes
+# across the two verbs) + 2 refusals.
+#
+# Per verb, the 4-phase shape:
+#   1. assert initial state (PASS)
+#   2. flip via parameterless invoke (trace `ok`)
+#   3. assert flipped state (PASS)
+#   4. flip back via parameterless invoke (trace `ok`)
+#
+# Total PASS observables: 4 (two per verb × two verbs).
+#
+# ── Caller / mask ─────────────────────────────────────────────────────────
+#
+# ScripterWindow listener, RunContext::Scripter. Both verbs declare
+# Scripter | TestRunner per wrap-now default. Macro is OUT — view
+# toggles are user-preference-level, not part of a recordable macro
+# story; matches the m1 first-batch posture.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# Each verb's 4-phase ends with the state flipped back to its initial
+# value — the smoke is idempotent. Side effects during the smoke:
+#
+#   - `win toggle-rulers` — phase 2 hides rulers, phase 4 shows them
+#     again (assuming initial=visible). Visual channel: rulers and
+#     corner widget flicker off then back on across the smoke.
+#   - `win toggle-outline` — phase 2 switches preview→outline mode,
+#     phase 4 switches outline→preview. Visual channel: canvas
+#     rendering style flips for one beat.
+#
+# **Outline-mode caveat.** The setter refuses outline→preview at
+# unsafe zoom (drop-shadow Cairo buffer threshold; see Canvas.hpp
+# preview_safe_at_current_zoom). If Scott runs this smoke at extreme
+# zoom (>~50× on a 1000² doc), phase 4 will alert + refuse, and
+# the assertion in phase 5 (state should be back to initial false)
+# will FAIL because the canvas is still in outline mode. Run from
+# a normal zoom level — the precondition is "ordinary view," same
+# baseline as smokes 52-60.
+#
+# ── Precondition reminders ────────────────────────────────────────────────
+#
+# 1. Curvz running with project + doc open.
+# 2. Rulers VISIBLE (default state) — smoke assumes initial
+#    `toggle-rulers_state == true`. If rulers are hidden at smoke
+#    start, the first assert fails and the rest of the smoke produces
+#    misleading reads. Check View → Rulers before running; if hidden,
+#    show them.
+# 3. Outline mode OFF (default state) — smoke assumes initial
+#    `toggle-outline_state == false`. Same fix if it's on: View →
+#    Outline Mode to turn off before the smoke.
+# 4. Zoom at a normal level (not >~50×) so the outline→preview
+#    transition in phase 8 doesn't trigger the safety refusal.
+
+#[sub] === Phase 1: registry sanity-check — `win` is still registered ===
+
+#[sub] `list` enumerates every registered Scriptable. The output should
+#[sub] include a `win` line, same as smokes 52-60. The new `toggle-
+#[sub] rulers_state` and `toggle-outline_state` properties don't appear
+#[sub] in `list` output (which is Scriptables, not properties), but
+#[sub] they're queryable via `query` per phases 2 / 4 / 6 / 8.
+
+list
+
+#[sub] === Phase 2: toggle-rulers initial-state read (PASS) ===
+
+#[sub] First PASS observable in Tier 2. The `<verb>_state` property
+#[sub] resolves via ActionGroupScriptable::query() — it strips the
+#[sub] `_state` suffix, looks the verb up in m_actions, and returns
+#[sub] ScriptValue::boolean of the action's current state IF the
+#[sub] entry is StatefulBool. Stateless entries return null and the
+#[sub] assert fails with a kind-mismatch (not an `error invoke threw`
+#[sub] but a proper PASS/FAIL slot — first one for this Scriptable).
+
+assert win toggle-rulers_state == true
+
+#[sub] === Phase 3: toggle-rulers flip via parameterless activate ===
+
+#[sub] Zero-arg invocation routes through ActionGroupScriptable::invoke's
+#[sub] StatefulBool branch → entry.action->activate() → helper's
+#[sub] activate lambda reads current=true, calls setter(false) → setter
+#[sub] hides rulers, set_state(false). Trace channel: `ok`.
+
+win toggle-rulers
+
+#[sub] === Phase 4: toggle-rulers flipped-state read (PASS) ===
+
+#[sub] State should now be false. Confirms the flip semantics work
+#[sub] end-to-end: activate → helper lambda → setter → set_state →
+#[sub] query reads back.
+
+assert win toggle-rulers_state == false
+
+#[sub] === Phase 5: toggle-rulers flip back to leave state idempotent ===
+
+#[sub] Final flip restores the initial state. Smoke is replay-safe.
+
+win toggle-rulers
+
+#[sub] === Phase 6: toggle-outline initial-state read (PASS) ===
+
+#[sub] Symmetric to phase 2 for the outline verb. Initial state
+#[sub] expected: false (preview mode is the default).
+
+assert win toggle-outline_state == false
+
+#[sub] === Phase 7: toggle-outline flip — preview→outline ===
+
+#[sub] Always-safe direction (outline mode is safe at any zoom).
+#[sub] Setter: is_outline_mode==false, v==true → flips, signal fires,
+#[sub] sync wire calls set_state(true).
+
+win toggle-outline
+
+#[sub] === Phase 8: toggle-outline flipped-state read (PASS) ===
+
+#[sub] State should now be true. Same end-to-end confirmation as
+#[sub] phase 4 but via the signal-driven sync path (the outline setter
+#[sub] doesn't call set_state itself; the canvas signal does).
+
+assert win toggle-outline_state == true
+
+#[sub] === Phase 9: toggle-outline flip back — outline→preview ===
+
+#[sub] Safety-gated direction. At normal zoom this is fine; if Scott's
+#[sub] zoom is over the threshold, the setter refuses (alert, return
+#[sub] early) and the action state stays at true. See precondition #4.
+
+win toggle-outline
+
+#[sub] === Phase 10: unknown-verb refusal ===
+
+#[sub] Same shape as every Tier 2 smoke's refusal phase. `win quit` is
+#[sub] bucket-C (future app.quit) and not in the wrapper's verb surface.
+
+win quit
+
+#[sub] === Phase 11: wrong-shape argument refusal ===
+
+#[sub] Stateful bool invoke accepts 0 args (toggle) or 1 Bool arg (set
+#[sub] explicitly). A string argument is neither shape; the StatefulBool
+#[sub] invoke branch refuses with "takes 0 args (toggle) or 1 bool arg
+#[sub] (set explicitly)."
+
+win toggle-rulers "not a bool"
+
+#[sub] === Predicted observables ───────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   11 lines, 4 pass, 0 fail, 2 error
+#[sub]
+#[sub] - 4 PASS  : phases 2, 4, 6, 8 — the 4-phase shape across two
+#[sub]             stateful-bool verbs. **First non-zero PASS count in
+#[sub]             any Tier 2 smoke.**
+#[sub] - 0 fail  : all asserts predict TRUE for initial / FALSE after
+#[sub]             flip / FALSE for initial / TRUE after flip.
+#[sub] - 2 error : phases 10 and 11 — unknown verb, wrong-shape arg.
+#[sub] - 1 operator-visual list block (phase 1).
+#[sub] - 4 operator-visual `ok` echoes from the four invokes (phases
+#[sub]             3, 5, 7, 9).
+#[sub] - 2 operator-visual refusal lines (phases 10, 11).
+#[sub]
+#[sub] **What the prediction depends on:**
+#[sub]
+#[sub] - Preconditions met (rulers visible, outline off, normal zoom).
+#[sub] - The helper's activate lambda correctly reads current state
+#[sub]   and inverts (phase 3 + phase 5).
+#[sub] - The setter for rulers writes m_rulers_visible AND calls
+#[sub]   set_state (no signal-driven sync exists for rulers).
+#[sub] - The setter for outline DOESN'T call set_state — the canvas
+#[sub]   signal does (signal_outline_mode_changed in
+#[sub]   MainWindow_bindings.cpp:1449).
+#[sub] - The query layer correctly handles the `<verb>_state` suffix
+#[sub]   (suffix-strip and StatefulBool kind-check before reading
+#[sub]   action state).
+#[sub]
+#[sub] Tier 2 row ticks 5/49 → 46/48 = 95.8% with this smoke and the
+#[sub] s256 m1 audit correction (denominator drops 49 → 48). **First
+#[sub] non-zero PASS reading on the Tier 2 row.** Remaining 2 open
+#[sub] are fork-3 (translate-dialog) awaiting Scott's A-vs-B
+#[sub] ratification.

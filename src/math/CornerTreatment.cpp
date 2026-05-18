@@ -358,12 +358,36 @@ PathData apply_corner_treatment(
         // P2 = corner + out_dir * r (on the outgoing segment, r after corner)
         Vec2 P2 = Vec2{src.x, src.y} + c.out_dir * r;
 
-        // The included angle at the corner (between the two segment directions)
-        // in radians — used for kappa calculation
+        // The deflection at the corner, in radians: the turn the path makes.
+        // 0 = straight, π/2 = 90° corner, approaches π for very sharp corners.
+        //
+        // The inscribed circle at the corner is the unique circle tangent to
+        // both segments such that the tangent points are at distance r (the
+        // user's backoff) from the corner. Its radius is:
+        //
+        //   R_arc = r · tan(θ_interior / 2)
+        //
+        // where θ_interior = π - deflection. The arc that replaces the corner
+        // is the corner-facing arc of that circle — subtending exactly the
+        // deflection angle, with tangent points P1 and P2 on the segments.
+        //
+        // The cubic Bézier that approximates that arc has handle length:
+        //
+        //   L = (4/3) · tan(deflection/4) · R_arc
+        //
+        // — the standard arc-approximation kappa times the actual arc radius.
+        //
+        // (s257 m1 history.) An earlier pass shipped a kappa fix
+        // (`arc_span_rad = between_rad` rather than `π - between_rad`) which
+        // got the *shape* right but kept handle length proportional to r
+        // rather than R_arc. That made the curve correctly proportioned at
+        // 90° (where R_arc == r) and increasingly too flat at gentle corners
+        // (where R_arc >> r). This pass scales by R_arc, so the cubic
+        // traces the proper inscribed arc at every corner angle.
         double dot          = std::clamp(c.in_dir.dot(c.out_dir), -1.0, 1.0);
-        double between_rad  = std::acos(dot); // angle between in_dir and out_dir
-        // The arc spans (π - between_rad) at the corner
-        double arc_span_rad = M_PI - between_rad;
+        double between_rad  = std::acos(dot);             // deflection
+        double interior_rad = M_PI - between_rad;         // interior angle
+        double R_arc        = r * std::tan(interior_rad / 2.0);
 
         switch (type) {
 
@@ -387,9 +411,11 @@ PathData apply_corner_treatment(
         }
 
         case CornerType::Round: {
-            // Tangent-continuous arc: handles point along the incoming/outgoing
-            // segment directions, sized by kappa * r.
-            double k = kappa_for_angle(arc_span_rad) * r;
+            // Tangent-continuous arc tracing the inscribed circle at the
+            // corner. Handles point along the incoming/outgoing segment
+            // directions, sized by the kappa-for-arc formula at the
+            // deflection angle, scaled by the inscribed arc radius.
+            double k = kappa_for_angle(between_rad) * R_arc;
 
             BezierNode n1;
             n1.x   = P1.x; n1.y   = P1.y;
@@ -419,7 +445,12 @@ PathData apply_corner_treatment(
             // P2's in-handle points in the direction P1 is offset = -in_dir.
             // This gives the correct tangent for the inscribed circle arc
             // regardless of corner angle.
-            double k = kappa_for_angle(arc_span_rad) * r;
+            //
+            // (s257 m1.) Same handle-length scaling as Round — kappa for
+            // the deflection angle, scaled by inscribed arc radius. If
+            // the concave-arc geometry calls for a different scale, that's
+            // a separate followup.
+            double k = kappa_for_angle(between_rad) * R_arc;
 
             BezierNode n1;
             n1.x   = P1.x; n1.y   = P1.y;

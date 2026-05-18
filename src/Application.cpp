@@ -319,8 +319,40 @@ void Application::on_activate() {
   auto icon_theme =
       Gtk::IconTheme::get_for_display(Gdk::Display::get_default());
   icon_theme->add_resource_path("/com/curvz/app/icons");
-  LOG_INFO("Icon theme has curvz-select-symbolic: {}",
-           icon_theme->has_icon("curvz-select-symbolic"));
+  // s255 diagnostic — Scott reported spiral / blend / warp / union /
+  // subtract / intersect missing and polygon rendering as a solid star.
+  // The .svg files are present in resources/icons/ and the freshly
+  // compiled gresource bundles them at the right path; whatever's
+  // failing happens inside GTK's IconTheme. has_icon() asks GTK
+  // directly. Compare the failing names against known-good controls
+  // (select = always-worked, step-repeat = same author batch + same
+  // 48×48 root shape as the failing transforms-section icons).
+  for (const char* name : {
+           // controls
+           "curvz-select-symbolic",
+           "curvz-step-repeat-symbolic",
+           "curvz-align-bottom-symbolic",
+           // reported broken
+           "curvz-polygon-symbolic",
+           "curvz-spiral-symbolic",
+           "curvz-blend-symbolic",
+           "curvz-warp-symbolic",
+           "curvz-union-symbolic",
+           "curvz-subtract-symbolic",
+           "curvz-intersect-symbolic",
+       }) {
+    LOG_INFO("Icon theme has {}: {}", name, icon_theme->has_icon(name));
+  }
+  // Also dump the search-path list so we can see if anything outside
+  // the gresource path is in scope.
+  auto search_paths = icon_theme->get_search_path();
+  for (const auto& p : search_paths) {
+    LOG_INFO("Icon theme search path: {}", std::string(p));
+  }
+  auto resource_paths = icon_theme->get_resource_path();
+  for (const auto& p : resource_paths) {
+    LOG_INFO("Icon theme resource path: {}", std::string(p));
+  }
 
   // s139 m2 (moved earlier in s145 m1): load app-tier preferences before
   // the GTK settings block so the tooltip-delay pref can be applied below.

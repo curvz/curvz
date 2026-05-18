@@ -1,0 +1,182 @@
+# 55_actions_transform_bool_smoke — Tier 2 m5 Transforms + Booleans
+# sweep (s255). Validates the five wrap-now verbs migrated from raw
+# `add_action` to `add_scripted_action`:
+#   - Transforms: flip-horizontal / flip-vertical
+#   - Booleans:   bool-union / bool-subtract / bool-intersect
+#
+# Sibling smoke to 52 / 53 / 54, same conservative-shape posture:
+# verb-presence + invocation-no-throw + refusal coverage.
+#
+# **Why conservative.** No scriptable observables exist today for flip
+# (selection transform — no `objects` bounding-box / transform-matrix
+# property) or for boolean ops (their effect is the canvas mutating
+# from N selected paths to 1 fused path; `objects` doesn't expose
+# selection-count). Trace channel: invocations land cleanly. Visual
+# channel: Scott confirms the menu items still perform the operations
+# identically.
+#
+# ── Boolean ops and the disabled-action quirk ─────────────────────────────
+#
+# bool-union / bool-subtract / bool-intersect are stored as MainWindow
+# members (`m_act_bool_*`) and managed by `update_bool_actions_sensitive()`
+# — the s122 m2 sensitivity pump that disables them unless exactly 2
+# closed paths are selected. **The disabled flag is a UI gate, not a
+# programmatic gate.** `Gio::SimpleAction::activate()` (which is what
+# the wrapper calls) fires the signal regardless of enabled state.
+#
+# So a script `win bool-union` with an empty / wrong selection will:
+#   - Trace channel: still `ok`. The wrapper isn't refusing.
+#   - Canvas channel: `m_canvas.boolean_op()` runs with bad input and
+#                     does whatever it does on bad input (likely a no-op
+#                     or an early-return guard; not a crash).
+#   - Visual channel: nothing changes (no selection of 2 closed paths
+#                     to fuse).
+#
+# This is NOT a wrapper-side bug. The wrapper is structurally invariant
+# at the dispatch layer (white-box reads, black-box writes, per
+# Scriptable.hpp). Selection-validity is canvas-side business. If a
+# future `selection` Scriptable exposes `count` / `closed_count`,
+# scripts can self-gate. Today, scripts trust the underlying handler.
+#
+# **For the smoke:** the three boolean ops fire `ok` regardless of
+# selection state. The trace channel pass. Scott's visual channel is
+# the second axis and is most legible if the smoke is run with exactly
+# 2 closed paths selected — then bool-union fuses them, and the
+# subsequent bool-subtract / bool-intersect operate on whatever
+# the fuse left selected (which may not satisfy exactly-2 anymore;
+# net effect is a small visual surprise but no crash).
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Eight observables across the wrapper-side surface:
+#
+#   Phase 1: `list` — confirm `win` is still registered.
+#
+#   Phases 2-3: flip verbs invoked once each. Visual: selection
+#            mirrors across X (flip-horizontal) or Y (flip-vertical).
+#            Two flips on the same axis cancel out.
+#
+#   Phases 4-6: boolean verbs invoked once each. See the disabled-
+#            action note above; trace channel passes regardless of
+#            selection state.
+#
+#   Phases 7-8: refusal coverage. Unknown-verb + extra-argument
+#            refusals.
+#
+# ── Caller context ────────────────────────────────────────────────────────
+#
+# Runs through ScripterWindow's listener, m_context = RunContext::Scripter.
+# All five m5-batch verbs declare Scripter | TestRunner. Macro is OUT.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# Mutations to canvas state:
+#
+#   - `win flip-horizontal` — selection mirrors across X.
+#   - `win flip-vertical`   — selection mirrors across Y.
+#                             Net of phases 2+3: selection rotated 180°
+#                             (flip-X then flip-Y = rotate-180 around
+#                             selection center).
+#   - `win bool-union`      — if exactly 2 closed paths selected,
+#                             fuses them. Otherwise no-op (canvas-side).
+#   - `win bool-subtract`   — if the post-union selection is a valid
+#                             2-path config (probably not — bool-union
+#                             leaves 1 path selected), no-op.
+#   - `win bool-intersect`  — same as bool-subtract.
+#
+# After the smoke runs:
+#   - If pre-run state was 2 closed paths selected: post-run is 1 fused
+#     path, rotated 180° relative to the original midpoint between them.
+#   - Otherwise: just the 180° rotation from the two flips, no boolean
+#     effect. Scott may want a few ⌘Z presses to restore.
+#
+# Safe to run repeatedly. Not idempotent in the multi-path case.
+#
+# ── Precondition reminders ────────────────────────────────────────────────
+#
+# This smoke assumes:
+#   1. Curvz is running with at least one project + one document open.
+#   2. Recommended for visual-channel legibility: select exactly 2 closed
+#      paths (e.g., draw two rectangles with the rect tool, select both)
+#      so phase 4's bool-union has a visible effect. The trace channel
+#      passes either way.
+
+#[sub] === Phase 1: registry sanity-check — `win` is still registered ===
+
+#[sub] Re-confirms m2/m3/m4 plumbing didn't regress.
+
+list
+
+#[sub] === Phase 2: flip-horizontal verb is addressable ===
+
+#[sub] First m5-batch verb. Calls m_canvas.flip_selection(true);
+#[sub] visual: selection mirrors across vertical axis.
+
+win flip-horizontal
+
+#[sub] === Phase 3: flip-vertical verb is addressable ===
+
+#[sub] Second m5-batch verb. Calls m_canvas.flip_selection(false);
+#[sub] visual: selection mirrors across horizontal axis. Combined
+#[sub] with phase 2 = 180° rotation around selection center.
+
+win flip-vertical
+
+#[sub] === Phase 4: bool-union verb is addressable ===
+
+#[sub] Third m5-batch verb. Calls m_canvas.boolean_op(Union); visual:
+#[sub] if exactly 2 closed paths selected, they fuse into one. The
+#[sub] wrapper fires regardless of selection state (see disabled-action
+#[sub] note in the smoke preamble).
+
+win bool-union
+
+#[sub] === Phase 5: bool-subtract verb is addressable ===
+
+#[sub] Fourth m5-batch verb. Calls m_canvas.boolean_op(Subtract);
+#[sub] visual: A minus B if exactly 2 closed paths selected. After
+#[sub] phase 4's union, selection is likely the single fused path, so
+#[sub] this is a no-op at the canvas layer. Wrapper still fires `ok`.
+
+win bool-subtract
+
+#[sub] === Phase 6: bool-intersect verb is addressable ===
+
+#[sub] Fifth and final m5-batch verb. Calls m_canvas.boolean_op(Intersect);
+#[sub] same disabled-action-fires-anyway shape as phases 4/5.
+
+win bool-intersect
+
+#[sub] === Phase 7: unknown-verb refusal ===
+
+#[sub] Same refusal smoke as 52/53/54.
+
+win quit
+
+#[sub] === Phase 8: extra-argument refusal ===
+
+#[sub] Use one of the new m5 verbs for refusal coverage.
+
+win flip-horizontal "argument"
+
+#[sub] === Predicted observables ───────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   8 lines, 0 pass, 0 fail, 2 error
+#[sub]
+#[sub] - 0 PASS  : no `assert` lines.
+#[sub] - 2 error : Phases 7 and 8 — intentional refusals.
+#[sub] - 1 operator-visual : Phase 1's `list` output block.
+#[sub] - 5 operator-visual `ok` echoes : Phases 2-6.
+#[sub] - 2 operator-visual refusal lines : Phases 7 and 8.
+#[sub]
+#[sub] Same line count as smoke 52 (8 lines) with one fewer ok phase
+#[sub] (5 vs 5 — actually same; difference is smoke 52 had ZERO
+#[sub] sensitivity-pump-managed verbs and smoke 55 has THREE).
+#[sub] 0-pass / 2-error invariants hold.
+#[sub]
+#[sub] Tier 2 row ticks 15/49 -> 20/49 after this smoke lands. Headline %
+#[sub] moves from ~78% to ~79%. Transforms (2/2) + Booleans (3/3) reach
+#[sub] full migration; m6 batch (Path ops — expand-stroke, make-compound,
+#[sub] split-compound, text-to-path, clear) is unblocked.

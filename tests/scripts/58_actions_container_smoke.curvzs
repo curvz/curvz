@@ -1,0 +1,102 @@
+# 58_actions_container_smoke — Tier 2 m8 Container ops sweep (s255).
+# Validates the six wrap-now Container-ops verbs migrated from raw
+# `add_action` to `add_scripted_action`:
+#   - Clip:  clip-make / clip-release
+#   - Blend: blend-make / blend-release
+#   - Warp:  warp-make / warp-release
+#
+# Sibling smoke to 52-57, same conservative-shape posture. All six
+# are member-stored with sensitivity pumps (clip uses defensive
+# canvas-side guards rather than a pump; blend has the exactly-2
+# pump per s122-style; warp uses update_warp_action_sensitive). The
+# disabled-action-fires-anyway shape applies (documented in m5).
+#
+# **Per audit note (line 148-152):** group-make / group-release are
+# bucket B (covered by `objects.group` / `objects.ungroup`) and are
+# NOT in this sweep. The six verbs above are the audit's full
+# "Container ops not in objects" set.
+#
+# **warp-edit / warp-flatten are bucket C** per fork #7 (slated for
+# deprecation when the inspector subsumes them) and stay raw.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Nine observables: 1 list + 6 invocations + 2 refusals.
+#
+# ── Caller / mask ─────────────────────────────────────────────────────────
+#
+# ScripterWindow listener, RunContext::Scripter. All six verbs declare
+# Scripter | TestRunner. Macro is OUT.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# Mutations applied to whatever's selected, in order:
+#
+#   - `win clip-make`     — if 2+ selected, top object becomes clip
+#                           mask over the rest.
+#   - `win clip-release`  — if a clip group selected, releases it.
+#                           After phase 2, this likely reverses it.
+#   - `win blend-make`    — if exactly 2 selected, makes blend node.
+#                           Otherwise no-op at canvas layer.
+#   - `win blend-release` — if a blend selected, releases it.
+#   - `win warp-make`     — if eligible selection, creates a warp.
+#                           on_warp_make may open a popover/dialog;
+#                           the trace channel still says `ok`.
+#   - `win warp-release`  — releases warp if one selected.
+#
+# Visual channel needs varied state to be fully legible. Safe to run
+# on any state — all six canvas-side handlers defend against bad input.
+#
+# ── Precondition reminders ────────────────────────────────────────────────
+#
+# 1. Curvz running with project + doc open.
+# 2. For visual: select 2+ objects (clip / blend) or an existing
+#    container (release verbs). Trace channel passes regardless.
+
+#[sub] === Phase 1: registry sanity-check — `win` is still registered ===
+
+list
+
+#[sub] === Phase 2: clip-make verb is addressable ===
+
+win clip-make
+
+#[sub] === Phase 3: clip-release verb is addressable ===
+
+win clip-release
+
+#[sub] === Phase 4: blend-make verb is addressable ===
+
+win blend-make
+
+#[sub] === Phase 5: blend-release verb is addressable ===
+
+win blend-release
+
+#[sub] === Phase 6: warp-make verb is addressable ===
+
+#[sub] Note: on_warp_make may open a dialog/popover depending on
+#[sub] selection state. Trace channel passes regardless; visual
+#[sub] channel may show a UI element pop up.
+
+win warp-make
+
+#[sub] === Phase 7: warp-release verb is addressable ===
+
+win warp-release
+
+#[sub] === Phase 8: unknown-verb refusal ===
+
+win quit
+
+#[sub] === Phase 9: extra-argument refusal ===
+
+win clip-make "argument"
+
+#[sub] === Predicted observables ───────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   9 lines, 0 pass, 0 fail, 2 error
+#[sub]
+#[sub] Same shape as smoke 53 (Edit m3 — 6 invocations + 2 refusals + 1 list).

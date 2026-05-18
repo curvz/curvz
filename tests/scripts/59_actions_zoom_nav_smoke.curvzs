@@ -1,0 +1,94 @@
+# 59_actions_zoom_nav_smoke — Tier 2 m9 View / Zoom / doc-nav sweep (s255).
+# Validates the seven wrap-now zoom + document-navigation verbs migrated
+# from raw `add_action` to `add_scripted_action`:
+#   - Zoom: zoom-in / zoom-out / zoom-100 / zoom-200 / zoom-selection
+#   - Nav:  doc-next / doc-prev
+#
+# Sibling smoke to 52-58, same conservative-shape posture. All seven are
+# parameterless (no member storage, no sensitivity pump). Same shape as
+# m3 / m4 / m6.
+#
+# **zoom-fit was already migrated in m2** (smoke 52 phase 6) — not
+# repeated here. **toggle-rulers and toggle-outline are stateful bool
+# actions** (`Gio::SimpleAction::create_bool`) and need wrapper-signature
+# design work to support `win.toggle-rulers true`-style invocation;
+# they're a fixture, NOT in this mechanical sweep.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Ten observables: 1 list + 7 invocations + 2 refusals.
+#
+# ── Caller / mask ─────────────────────────────────────────────────────────
+#
+# ScripterWindow listener, RunContext::Scripter. All seven verbs declare
+# Scripter | TestRunner. Macro is OUT.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# Mutations:
+#   - `win zoom-in`        — toolbar zoom-step +1.
+#   - `win zoom-out`       — toolbar zoom-step -1. Cancels phase 2.
+#   - `win zoom-100`       — zoom to 1× (artboard fits viewport).
+#   - `win zoom-200`       — zoom to 2×.
+#   - `win zoom-selection` — zoom to fit current selection (or no-op
+#                            on empty selection).
+#   - `win doc-next`       — cycles to next open doc (wraparound).
+#   - `win doc-prev`       — cycles to prev (cancels phase 7).
+#
+# Net: after the run, zoom is at 2× then re-fit to selection, and the
+# active doc is back to whatever it started as (next + prev cycle).
+# Safe to run repeatedly. The first two pairs (in/out, next/prev) are
+# internally idempotent; zoom-100 / zoom-200 / zoom-selection mutate
+# zoom level but don't compound across runs.
+#
+# ── Precondition reminders ────────────────────────────────────────────────
+#
+# 1. Curvz running with project + doc open.
+# 2. doc-next / doc-prev are most legible if 2+ docs are open in
+#    the project. Trace channel passes either way.
+
+#[sub] === Phase 1: registry sanity-check — `win` is still registered ===
+
+list
+
+#[sub] === Phase 2: zoom-in verb is addressable ===
+
+win zoom-in
+
+#[sub] === Phase 3: zoom-out verb is addressable ===
+
+win zoom-out
+
+#[sub] === Phase 4: zoom-100 verb is addressable ===
+
+win zoom-100
+
+#[sub] === Phase 5: zoom-200 verb is addressable ===
+
+win zoom-200
+
+#[sub] === Phase 6: zoom-selection verb is addressable ===
+
+win zoom-selection
+
+#[sub] === Phase 7: doc-next verb is addressable ===
+
+win doc-next
+
+#[sub] === Phase 8: doc-prev verb is addressable ===
+
+win doc-prev
+
+#[sub] === Phase 9: unknown-verb refusal ===
+
+win quit
+
+#[sub] === Phase 10: extra-argument refusal ===
+
+win zoom-in "argument"
+
+#[sub] === Predicted observables ───────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   10 lines, 0 pass, 0 fail, 2 error

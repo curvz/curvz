@@ -1,0 +1,150 @@
+# 56_actions_path_ops_smoke — Tier 2 m6 Path ops sweep (s255).
+# Validates the four wrap-now Path-ops verbs migrated from raw
+# `add_action` to `add_scripted_action`: expand-stroke / make-compound
+# / split-compound / text-to-path. Sibling smoke to 52 / 53 / 54 / 55,
+# same conservative-shape posture.
+#
+# **Audit discrepancy noted at m6 scoping:** tier2_action_audit.md
+# listed FIVE Path-ops verbs (the four above plus `clear`), and the
+# Tier 2 wrap-now denominator was set at 49 on that basis. **No
+# `win.clear` action exists in the codebase.** A grep for
+# `SimpleAction::create("clear"` finds only `m_recents_clear_action`,
+# which lives in the `recents` action group, not `win`. No `win.clear`
+# action is added anywhere; the only `clear` reachable is
+# `recents.clear`. The audit's 5-verb count for Path ops is wrong;
+# the real count is 4, and the corrected denominator is 48.
+#
+# This smoke ships the 4 real verbs. The denominator-correction
+# question is surfaced in the m6 wrap-up; whether to amend
+# `tier2_action_audit.md` and re-denominator the LEDGER Tier 2 row
+# (49 -> 48) is Scott's call at the session close.
+#
+# **Why conservative.** None of the four path-op verbs has a
+# scriptable observable today. expand-stroke / make-compound /
+# split-compound / text-to-path all mutate the scene graph — converting
+# stroke geometry to filled paths, fusing N paths into one compound,
+# exploding a compound back to its children, or converting text glyphs
+# to outlined paths. `objects` doesn't expose path-data shape or
+# child-count. Trace channel: invocations land cleanly. Visual channel:
+# Scott confirms menu items still perform the operations identically.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Seven observables across the wrapper-side surface:
+#
+#   Phase 1: `list` — confirm `win` is still registered.
+#   Phases 2-5: each of the four path-op verbs invoked once.
+#   Phases 6-7: refusal coverage.
+#
+# ── Caller context ────────────────────────────────────────────────────────
+#
+# Runs through ScripterWindow's listener, m_context = RunContext::Scripter.
+# All four m6-batch verbs declare Scripter | TestRunner. Macro is OUT.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# Mutations to canvas state, applied in order to whatever's selected:
+#
+#   - `win expand-stroke`   — converts stroked geometry of selection
+#                             to filled outline paths. If selection
+#                             has no stroke, likely no-op (canvas-side
+#                             guard).
+#   - `win make-compound`   — fuses N >= 2 selected paths into one
+#                             compound path. If selection has < 2 paths,
+#                             no-op.
+#   - `win split-compound`  — explodes a compound path back to its
+#                             constituent children. After phase 3's
+#                             make-compound, this likely reverses the
+#                             previous step.
+#   - `win text-to-path`    — if a text node is selected, converts its
+#                             glyphs to outlined paths. Otherwise no-op.
+#
+# After the smoke runs: depending on initial selection, the canvas
+# may have transformed stroke->fill, then fused-then-exploded paths,
+# and converted any selected text to paths. Net effect is roughly
+# "selection now contains outlined geometry where stroke / text used
+# to be." Scott may want ⌘Z multiple times to restore.
+#
+# Safe to run repeatedly. Not idempotent — text-to-path is irreversible
+# at the canvas layer (the text node is replaced by path nodes;
+# undoable via the command stack but the second run wouldn't have
+# a text node to operate on).
+#
+# ── Precondition reminders ────────────────────────────────────────────────
+#
+# This smoke assumes:
+#   1. Curvz is running with at least one project + one document open.
+#   2. For visual-channel legibility, the document should contain at
+#      least: one stroked path (for expand-stroke), two paths selected
+#      together (for make-compound's effect), and ideally a text node
+#      (for text-to-path's effect). The trace channel passes regardless
+#      of canvas content — all four canvas-side handlers guard against
+#      bad selection.
+
+#[sub] === Phase 1: registry sanity-check — `win` is still registered ===
+
+list
+
+#[sub] === Phase 2: expand-stroke verb is addressable ===
+
+#[sub] First m6-batch verb. Calls m_canvas.expand_stroke_op(); visual:
+#[sub] selection's stroke geometry converts to filled outline paths.
+
+win expand-stroke
+
+#[sub] === Phase 3: make-compound verb is addressable ===
+
+#[sub] Second m6-batch verb. Calls m_canvas.make_compound_path();
+#[sub] visual: if N >= 2 paths selected, they fuse into one compound.
+
+win make-compound
+
+#[sub] === Phase 4: split-compound verb is addressable ===
+
+#[sub] Third m6-batch verb. Calls m_canvas.split_compound_path();
+#[sub] visual: if a compound is selected, it explodes back to children.
+#[sub] After phase 3's make-compound, this likely reverses it.
+
+win split-compound
+
+#[sub] === Phase 5: text-to-path verb is addressable ===
+
+#[sub] Fourth and final m6-batch verb. Calls m_canvas.text_to_paths_op();
+#[sub] visual: if a text node is selected, its glyphs convert to
+#[sub] outlined paths. Otherwise no-op at canvas layer.
+
+win text-to-path
+
+#[sub] === Phase 6: unknown-verb refusal ===
+
+win quit
+
+#[sub] === Phase 7: extra-argument refusal ===
+
+#[sub] Use one of the new m6 verbs for refusal coverage.
+
+win expand-stroke "argument"
+
+#[sub] === Predicted observables ───────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   7 lines, 0 pass, 0 fail, 2 error
+#[sub]
+#[sub] - 0 PASS  : no `assert` lines.
+#[sub] - 2 error : Phases 6 and 7 — intentional refusals.
+#[sub] - 1 operator-visual : Phase 1's `list` output block.
+#[sub] - 4 operator-visual `ok` echoes : Phases 2-5.
+#[sub] - 2 operator-visual refusal lines : Phases 6 and 7.
+#[sub]
+#[sub] Same shape as smoke 54 (Z-order m4). 0-pass / 2-error invariants
+#[sub] hold.
+#[sub]
+#[sub] Tier 2 row ticks 20/49 -> 24/49 after this smoke lands. Pending
+#[sub] audit-error reconciliation (see preamble): the real denominator
+#[sub] may be 48 after the `win.clear` phantom is dropped from the
+#[sub] audit, in which case the row reads 24/48 and headline moves
+#[sub] from ~79% to ~80%.
+#[sub]
+#[sub] Path ops menu reaches 4/4 (corrected denominator). m7 batch
+#[sub] (Align / distribute — 8 verbs) is unblocked.

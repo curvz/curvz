@@ -1,0 +1,211 @@
+# 53_actions_edit_smoke — Tier 2 m3 Edit-menu sweep (s255).
+# Validates the six additional Edit-menu actions migrated from raw
+# `add_action` to `add_scripted_action`: cut / copy / paste / duplicate
+# / delete-selected / duplicate-in-place. Sibling smoke to 52, same
+# conservative-shape posture: verb-presence + invocation-no-throw +
+# refusal coverage.
+#
+# **Why conservative.** None of the six Edit verbs has a scriptable
+# observable today. Clipboard contents aren't exposed (future `clip`
+# singleton territory; bucket C item `win.view-clipboard` is the
+# launcher-equivalent for the human-readable variant). Selection
+# count isn't exposed on `objects` yet (would help test
+# delete-selected / duplicate / duplicate-in-place). Per the handoff,
+# the wrap-now plumbing was proved at m2; m3 widens the batch on the
+# same proven plumbing. Trace channel: invocations land cleanly (no
+# `error invoke threw:` lines). Visual channel: Scott confirms menu
+# Edit ▸ Cut / Copy / Paste / Duplicate / Duplicate in Place / Delete
+# still behave identically.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Nine observables across the wrapper-side surface:
+#
+#   Phase 1: `list` — confirm `win` is still registered (sanity-check;
+#            m2 already validated this, but the smoke is the wrap-now
+#            batch's own test, so it re-confirms instead of assuming).
+#
+#   Phases 2-7: each of the six new wrap-now verbs invoked once.
+#            Operator-visual on each `ok` echo. Negative case for any
+#            phase: `error invoke threw: win <verb>: unknown verb`
+#            means the helper's register_action() never landed for that
+#            verb (the m3 migration site is broken).
+#
+#            Each invoke fires the underlying Gio action's callback.
+#            Side effects ARE present at the canvas layer (cut empties
+#            selection AND populates clipboard; paste round-trips
+#            clipboard content back; duplicate inserts a new node;
+#            delete-selected removes the selection; duplicate-in-place
+#            zero-offsets it) — none assertable from script today.
+#            Scott's visual channel is the second axis of evidence.
+#
+#   Phases 8-9: refusal coverage, parallel to smoke 52's last two phases.
+#            Confirms the wrapper still refuses unknown verbs and
+#            argument-bearing invocations of parameterless verbs. The
+#            refusals are wrapper-wide invariants, not per-verb, so
+#            one of each is sufficient — but re-exercising them in
+#            each Tier 2 smoke prevents drift if the invoke() body
+#            ever loses the refusal branches.
+#
+# ── Caller context ────────────────────────────────────────────────────────
+#
+# Runs through ScripterWindow's listener, m_context = RunContext::Scripter.
+# All six m3-batch verbs declare their mask as Scripter | TestRunner per
+# the wrap-now posture. Macro is OUT — see smoke 52's preamble for the
+# rationale (clipboard verbs in a macro replay would interact with the
+# user's actual system clipboard, which the Macro context is not
+# permissioned to do).
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# This smoke MUTATES canvas state via the six Edit verbs. The mutations,
+# in order, are designed to leave the canvas in approximately the same
+# state it started in:
+#
+#   - `win cut` — clipboard <- current selection; selection removed.
+#                 **If selection is empty, no-op.** Doesn't throw.
+#   - `win copy` — clipboard <- current selection (no removal).
+#                 **No-op on empty selection.**
+#   - `win paste` — selection <- clipboard contents at offset. After
+#                 the preceding cut+copy, the clipboard holds the
+#                 cut-set; this round-trips it back onto the canvas.
+#                 Net effect of cut+paste: selection content moves by
+#                 the paste offset (intended behaviour of Cut+Paste).
+#   - `win duplicate` — selection duplicated at offset. Inserts new
+#                 nodes adjacent to original selection.
+#   - `win delete-selected` — removes everything currently selected.
+#                 After `duplicate`, selection is the new copies; this
+#                 deletes them, undoing the duplicate's structural
+#                 effect. The cut+paste offset remains.
+#   - `win duplicate-in-place` — zero-offset duplicate. After
+#                 delete-selected the selection is empty (delete
+#                 clears it as a side effect), so this is a no-op.
+#
+# After the smoke runs:
+#   - Canvas content has shifted by the paste offset (cut+paste is
+#     net = move-by-offset). NOT idempotent; running twice doubles
+#     the shift. Scott may want to ⌘Z a few times to restore.
+#   - The actual clipboard content holds whatever was last cut/copied.
+#     If Scott had something else there before, it's overwritten.
+#
+# This is the conservative-isolation posture: each verb fires, the
+# net state mutation is small and easily undone via ⌘Z. The smoke is
+# safe to run repeatedly but not perfectly idempotent — flagged here
+# so the visual channel knows to expect a small content shift after
+# the run.
+#
+# ── Precondition reminders ────────────────────────────────────────────────
+#
+# This smoke assumes:
+#   1. Curvz is running with at least one project + one document open.
+#   2. The active doc has at least one object selected (or selectable;
+#      the smoke does not auto-select before cut, so the clipboard
+#      verbs no-op cleanly on empty selection — but selecting something
+#      first makes the visual channel legible).
+#
+# Pre-run setup (recommended): in the canvas, drag-select one or two
+# small objects so cut / copy / paste / duplicate / delete-selected /
+# duplicate-in-place all have content to act on.
+
+#[sub] === Phase 1: registry sanity-check — `win` is still registered ===
+
+#[sub] Re-confirms the m2 plumbing didn't regress. Should be redundant
+#[sub] with smoke 52 phase 1, but Tier 2 smokes are self-contained.
+
+list
+
+#[sub] === Phase 2: cut verb is addressable ===
+
+#[sub] First m3-batch verb. Invoke; no error means the helper
+#[sub] registered the action. Calls m_canvas.cut_selected();
+#[sub] visual: current selection vanishes (moves to clipboard).
+#[sub]
+#[sub] Negative case: `error invoke threw: win cut: unknown verb`
+#[sub] means register_action() never landed.
+
+win cut
+
+#[sub] === Phase 3: copy verb is addressable ===
+
+#[sub] Second m3-batch verb. Calls m_canvas.copy_selected(); visual:
+#[sub] nothing visible changes (copy is silent on the canvas; clipboard
+#[sub] is the affected substrate).
+
+win copy
+
+#[sub] === Phase 4: paste verb is addressable ===
+
+#[sub] Third m3-batch verb. Calls m_canvas.paste_clipboard(); visual:
+#[sub] the cut content (from phase 2's clipboard payload) reappears
+#[sub] on canvas at the paste offset.
+
+win paste
+
+#[sub] === Phase 5: duplicate verb is addressable ===
+
+#[sub] Fourth m3-batch verb. Calls m_canvas.duplicate_selected();
+#[sub] visual: selection content appears twice (original + offset
+#[sub] copy). Distinct from `objects.duplicate "name"` (per audit
+#[sub] fork 1): this operates on current selection, not a named
+#[sub] object.
+
+win duplicate
+
+#[sub] === Phase 6: delete-selected verb is addressable ===
+
+#[sub] Fifth m3-batch verb. Calls m_canvas.delete_selected(); visual:
+#[sub] the just-duplicated copies vanish. Distinct from
+#[sub] `objects.delete <name>` (per audit fork 2).
+
+win delete-selected
+
+#[sub] === Phase 7: duplicate-in-place verb is addressable ===
+
+#[sub] Sixth and final m3-batch verb. Calls
+#[sub] m_canvas.duplicate_in_place_selected(); visual: zero-offset
+#[sub] duplicate (the new copies overlap the originals). After
+#[sub] delete-selected cleared the selection, this is effectively
+#[sub] a no-op on empty selection — invocation still lands cleanly
+#[sub] at the wrapper layer.
+
+win duplicate-in-place
+
+#[sub] === Phase 8: unknown-verb refusal ===
+
+#[sub] Same refusal smoke as 52 phase 7 — confirms the wrapper still
+#[sub] rejects verbs outside the wrap-now subset. `win quit` is bucket
+#[sub] C (future `app.quit` singleton); real Gio action but NOT in the
+#[sub] wrapper's verb surface.
+
+win quit
+
+#[sub] === Phase 9: extra-argument refusal ===
+
+#[sub] Parallel to 52 phase 8. All six m3-batch verbs are parameterless;
+#[sub] passing an argument should refuse. `win cut "argument"` exercises
+#[sub] the invoke() body's args-empty check on one of the new verbs
+#[sub] (52 used `win undo`).
+
+win cut "argument"
+
+#[sub] === Predicted observables ───────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   9 lines, 0 pass, 0 fail, 2 error
+#[sub]
+#[sub] - 0 PASS  : no `assert` lines (no scriptable observables on the
+#[sub]             m3-batch verbs; same conservative posture as 52).
+#[sub] - 2 error : Phases 8 and 9 — intentional refusals.
+#[sub] - 1 operator-visual : Phase 1's `list` output block.
+#[sub] - 6 operator-visual `ok` echoes : Phases 2-7, one per wrapped
+#[sub]             verb's successful invocation.
+#[sub] - 2 operator-visual refusal lines : Phases 8 and 9.
+#[sub]
+#[sub] Same shape as smoke 52 with one more invocation phase
+#[sub] (8 lines -> 9 lines, 5 oks -> 6 oks). 0-pass / 2-error invariants
+#[sub] hold.
+#[sub]
+#[sub] Tier 2 row ticks 5/49 -> 11/49 after this smoke lands. Headline %
+#[sub] moves from ~76% to ~77%. Edit menu reaches 8/8 wrap-now actions
+#[sub] migrated; the m4 batch (Z-order) is unblocked.

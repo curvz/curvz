@@ -1,0 +1,162 @@
+# 54_actions_zorder_smoke — Tier 2 m4 Z-order sweep (s255).
+# Validates the four Z-order arrange actions migrated from raw
+# `add_action` to `add_scripted_action`: arrange-bring-front /
+# arrange-bring-forward / arrange-send-backward / arrange-send-back.
+# Sibling smoke to 52 / 53, same conservative-shape posture: verb-
+# presence + invocation-no-throw + refusal coverage.
+#
+# **Why conservative.** None of the four arrange verbs has a scriptable
+# observable today. Z-order is a property of the scene-graph child
+# ordering; `objects` doesn't expose per-object z-index, and the
+# operation itself acts on selection (not a named target). Adding a
+# z-index observable to `objects` is m3+-of-objects territory, separate
+# from the wrap-now sweep. Trace channel: invocations land cleanly.
+# Visual channel: Scott confirms menu Object ▸ Arrange ▸ Bring to Front
+# / Bring Forward / Send Backward / Send to Back (and any hotkeys
+# bound) still reorder the selection identically.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Seven observables across the wrapper-side surface:
+#
+#   Phase 1: `list` — confirm `win` is still registered. Same sanity-
+#            check pattern as 52 / 53.
+#
+#   Phases 2-5: each of the four arrange verbs invoked once. Operator-
+#            visual on each `ok` echo. Negative case: any
+#            `error invoke threw: win arrange-<x>: unknown verb` means
+#            the helper's register_action() never landed for that verb.
+#
+#            Each invoke fires m_canvas.arrange(Canvas::ArrangeOp::X)
+#            on the current selection. With a multi-object selection,
+#            the visual effect is reordering in the scene tree (front-
+#            most object draws last; back-most draws first). With a
+#            single-object selection in a layer that only holds one
+#            object, all four verbs are no-ops at the visible level
+#            but still fire cleanly at the wrapper.
+#
+#   Phases 6-7: refusal coverage, parallel to 52 / 53. Unknown-verb
+#            and extra-argument refusals. Re-exercised per Tier 2
+#            smoke to prevent drift.
+#
+# ── Caller context ────────────────────────────────────────────────────────
+#
+# Runs through ScripterWindow's listener, m_context = RunContext::Scripter.
+# All four m4-batch verbs declare their mask as Scripter | TestRunner
+# per the wrap-now posture. Macro is OUT — same posture as m3.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# This smoke MUTATES scene-graph child ordering via the four arrange
+# verbs. The mutations, applied to whatever the current selection is:
+#
+#   - `win arrange-bring-front`   — selection moves to the end of its
+#                                   parent's children list (front).
+#   - `win arrange-bring-forward` — selection swaps with the next-front
+#                                   sibling (one step toward front).
+#   - `win arrange-send-backward` — selection swaps with the next-back
+#                                   sibling (one step toward back).
+#   - `win arrange-send-back`     — selection moves to the start of its
+#                                   parent's children list (back).
+#
+# Net effect of front → forward → backward → back on the same
+# selection: depends on how many siblings exist. With ≥3 siblings,
+# the selection moves to back AND ends up at the back of the list.
+# With 2 siblings, it ends up at the back. With 1 sibling (or zero),
+# all four ops are no-ops at the visible level.
+#
+# After the smoke runs:
+#   - The selection is at the back of its parent's children list
+#     (assuming the sequence ran on a multi-sibling parent). Scott
+#     may want to ⌘Z four times to restore exact pre-run order, or
+#     Bring to Front manually.
+#   - No content added / removed / edited; only ordering.
+#
+# Safe to run repeatedly. Not idempotent — see m3 smoke's note on
+# the side-effecting Tier 2 smoke convention.
+#
+# ── Precondition reminders ────────────────────────────────────────────────
+#
+# This smoke assumes:
+#   1. Curvz is running with at least one project + one document open.
+#   2. The active doc has at least one object selected. The arrange
+#      operations no-op cleanly on empty selection (the action wrapper
+#      doesn't refuse; the canvas-side handler does nothing), so the
+#      trace channel passes either way — but the visual channel needs
+#      a selection (ideally in a layer with ≥2 objects) to confirm.
+
+#[sub] === Phase 1: registry sanity-check — `win` is still registered ===
+
+#[sub] Re-confirms the m2/m3 plumbing didn't regress.
+
+list
+
+#[sub] === Phase 2: arrange-bring-front verb is addressable ===
+
+#[sub] First m4-batch verb. Invoke; no error means the helper
+#[sub] registered the action. Calls m_canvas.arrange(BringToFront);
+#[sub] visual: selection draws on top of all its siblings.
+
+win arrange-bring-front
+
+#[sub] === Phase 3: arrange-bring-forward verb is addressable ===
+
+#[sub] Second m4-batch verb. Calls m_canvas.arrange(BringForward);
+#[sub] visual: selection swaps with the next-front sibling.
+#[sub] (After phase 2's bring-front, selection is already at front,
+#[sub] so this is a no-op at the visible level. Wrapper-side still
+#[sub] fires cleanly.)
+
+win arrange-bring-forward
+
+#[sub] === Phase 4: arrange-send-backward verb is addressable ===
+
+#[sub] Third m4-batch verb. Calls m_canvas.arrange(SendBackward);
+#[sub] visual: selection swaps with the next-back sibling (one step
+#[sub] back from the front position phase 2 left it at).
+
+win arrange-send-backward
+
+#[sub] === Phase 5: arrange-send-back verb is addressable ===
+
+#[sub] Fourth and final m4-batch verb. Calls
+#[sub] m_canvas.arrange(SendToBack); visual: selection moves to the
+#[sub] back of its parent's children list.
+
+win arrange-send-back
+
+#[sub] === Phase 6: unknown-verb refusal ===
+
+#[sub] Same refusal smoke as 52 phase 7 / 53 phase 8. `win quit`
+#[sub] remains the canonical bucket-C unknown-verb test target.
+
+win quit
+
+#[sub] === Phase 7: extra-argument refusal ===
+
+#[sub] Parallel to 52 phase 8 / 53 phase 9. Use one of the new
+#[sub] m4 verbs — `win arrange-bring-front "argument"` — exercises
+#[sub] the invoke() body's args-empty check on a new verb.
+
+win arrange-bring-front "argument"
+
+#[sub] === Predicted observables ───────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   7 lines, 0 pass, 0 fail, 2 error
+#[sub]
+#[sub] - 0 PASS  : no `assert` lines (no scriptable observables on the
+#[sub]             m4-batch verbs; same conservative posture as 52 / 53).
+#[sub] - 2 error : Phases 6 and 7 — intentional refusals.
+#[sub] - 1 operator-visual : Phase 1's `list` output block.
+#[sub] - 4 operator-visual `ok` echoes : Phases 2-5, one per wrapped
+#[sub]             verb's successful invocation.
+#[sub] - 2 operator-visual refusal lines : Phases 6 and 7.
+#[sub]
+#[sub] Two fewer invocation phases than smoke 53 (4 oks vs 6 oks).
+#[sub] 0-pass / 2-error invariants hold across the Tier 2 smoke series.
+#[sub]
+#[sub] Tier 2 row ticks 11/49 -> 15/49 after this smoke lands. Headline %
+#[sub] moves from ~77% to ~78%. Z-order menu reaches 4/4 wrap-now actions
+#[sub] migrated; the m5 batch (Transforms + Booleans) is unblocked.

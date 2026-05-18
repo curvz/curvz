@@ -1,0 +1,60 @@
+# 60_actions_step_repeat_smoke — Tier 2 m10 Step-and-repeat sweep (s255).
+# Validates the one wrap-now Step-and-repeat verb migrated from raw
+# `add_action` to `add_scripted_action`:
+#   - step-repeat
+#
+# Sibling smoke to 52-59, same conservative-shape posture. Parameterless;
+# default Scripter | TestRunner mask. Per audit fork #5: this is a
+# hand-off point to a future `selection.step_repeat(...)` parameterised
+# verb on a selection-Scriptable that doesn't exist yet; the action
+# launches a dialog whose Apply path does the work.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Four observables: 1 list + 1 invocation + 2 refusals.
+#
+# ── Caller / mask ─────────────────────────────────────────────────────────
+#
+# ScripterWindow listener, RunContext::Scripter. Macro is OUT.
+#
+# ── Test isolation ────────────────────────────────────────────────────────
+#
+# `win step-repeat` calls on_step_repeat() which launches the step-repeat
+# dialog. Trace channel says `ok` as soon as the dialog is shown
+# (synchronous launch); visual channel: dialog opens. The user / future
+# selection-Scriptable would then drive the dialog's Apply path. For
+# this smoke, the dialog opening IS the visual confirmation; close it
+# manually after the run.
+#
+# ── Precondition reminders ────────────────────────────────────────────────
+#
+# 1. Curvz running with project + doc open.
+# 2. A dialog will appear after phase 2 — close it before continuing
+#    other work. The smoke's remaining phases (refusals) run regardless.
+
+#[sub] === Phase 1: registry sanity-check — `win` is still registered ===
+
+list
+
+#[sub] === Phase 2: step-repeat verb is addressable ===
+
+#[sub] Calls on_step_repeat(); visual: step-repeat dialog opens.
+#[sub] Trace channel reports `ok` as soon as the dialog is presented.
+
+win step-repeat
+
+#[sub] === Phase 3: unknown-verb refusal ===
+
+win quit
+
+#[sub] === Phase 4: extra-argument refusal ===
+
+win step-repeat "argument"
+
+#[sub] === Predicted observables ───────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   4 lines, 0 pass, 0 fail, 2 error
+#[sub]
+#[sub] Smallest Tier 2 smoke to date (1 verb).

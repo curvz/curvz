@@ -853,25 +853,35 @@ void MainWindow::setup_menu() {
       this, m_action_group_scriptable.get(),
       "redo", "act_redo", [this] { on_redo(); });
 
-  auto act_cut = Gio::SimpleAction::create("cut");
-  act_cut->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.cut_selected(); });
-  add_action(act_cut);
+  // s255 m3 — Edit-menu sweep: cut / copy / paste / duplicate / delete-
+  // selected / duplicate-in-place migrated to scripted actions. Each is
+  // a bucket-A wrap-now action per tier2_action_audit.md (Edit menu
+  // section); none has a current Scriptable equivalent (clipboard verbs
+  // wait on future `clip` singleton, selection-targeted ops wait on
+  // future selection-Scriptable — forks 1 / 2 in the audit ratified
+  // these as A, not B). All parameterless; all under the default
+  // Scripter | TestRunner mask per the wrap-now posture. The Cmd-X / -C
+  // / -V / -D / Delete hotkeys dispatch through the CAPTURE-phase key
+  // controller in MainWindow.cpp and are unchanged.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "cut", "act_cut",
+      [this] { m_canvas.cut_selected(); });
 
-  auto act_copy = Gio::SimpleAction::create("copy");
-  act_copy->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.copy_selected(); });
-  add_action(act_copy);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "copy", "act_copy",
+      [this] { m_canvas.copy_selected(); });
 
-  auto act_paste = Gio::SimpleAction::create("paste");
-  act_paste->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.paste_clipboard(); });
-  add_action(act_paste);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "paste", "act_paste",
+      [this] { m_canvas.paste_clipboard(); });
 
-  auto act_duplicate = Gio::SimpleAction::create("duplicate");
-  act_duplicate->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.duplicate_selected(); });
-  add_action(act_duplicate);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "duplicate", "act_duplicate",
+      [this] { m_canvas.duplicate_selected(); });
 
   // s162 m3: delete-selected exposed as a Gio action so the right-click
   // context menu can invoke it. Today's Delete/Backspace handling lives
@@ -879,17 +889,26 @@ void MainWindow::setup_menu() {
   // m_canvas.delete_selected()) — that path is unchanged. This action
   // exists so menu items have something to invoke; menu/keyboard parity
   // for menus that drive operations on the current selection.
-  auto act_delete_selected = Gio::SimpleAction::create("delete-selected");
-  act_delete_selected->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.delete_selected(); });
-  add_action(act_delete_selected);
+  //
+  // s255 m3 — migrated to scripted action. Distinct from
+  // `objects.delete <name>` (per audit fork 2): this targets the current
+  // selection, `objects.delete` targets a named object.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "delete-selected", "act_delete_selected",
+      [this] { m_canvas.delete_selected(); });
 
   // s181: was "clone" / clone_selected. Renamed because the operation
   // never had source/instance semantics — it's a zero-offset duplicate.
-  auto act_duplicate_in_place = Gio::SimpleAction::create("duplicate-in-place");
-  act_duplicate_in_place->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.duplicate_in_place_selected(); });
-  add_action(act_duplicate_in_place);
+  //
+  // s255 m3 — migrated to scripted action. Distinct from
+  // `objects.duplicate "name"` (per audit fork 1): this duplicates the
+  // current selection in place (clipboard-mediated, zero offset),
+  // `objects.duplicate` duplicates a named object.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "duplicate-in-place", "act_duplicate_in_place",
+      [this] { m_canvas.duplicate_in_place_selected(); });
 
   // s136 m5: select-all and deselect-all promoted to actions so the Edit
   // menu can reach them. The hotkeys (Ctrl+A and Ctrl+Shift+A) are still
@@ -921,46 +940,60 @@ void MainWindow::setup_menu() {
       [this](const Glib::VariantBase &) { show_clipboard_view(); });
   add_action(act_view_clipboard);
 
-  auto act_step_repeat = Gio::SimpleAction::create("step-repeat");
-  act_step_repeat->signal_activate().connect(
-      [this](const Glib::VariantBase &) { on_step_repeat(); });
-  add_action(act_step_repeat);
+  // s255 m10 — Step-and-repeat sweep: step-repeat migrated to scripted
+  // action. Bucket A per tier2_action_audit.md (Step-and-repeat); fork
+  // #5 notes the action is a hand-off point to a future
+  // selection.step_repeat(...) parameterised verb on a selection-
+  // Scriptable that doesn't exist yet. The dialog Apply path is what
+  // does the work; scripts hit the dialog the same way today's UI does.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "step-repeat", "act_step_repeat",
+      [this] { on_step_repeat(); });
 
   // Flip
-  auto act_flip_h = Gio::SimpleAction::create("flip-horizontal");
-  act_flip_h->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.flip_selection(true); });
-  add_action(act_flip_h);
+  // s255 m5 — Transform sweep: flip-horizontal / flip-vertical migrated
+  // to scripted actions. Bucket A per tier2_action_audit.md (Transforms
+  // section). Parameterless; default Scripter | TestRunner mask. No
+  // sensitivity pump — flips no-op cleanly on empty selection.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "flip-horizontal", "act_flip_horizontal",
+      [this] { m_canvas.flip_selection(true); });
 
-  auto act_flip_v = Gio::SimpleAction::create("flip-vertical");
-  act_flip_v->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.flip_selection(false); });
-  add_action(act_flip_v);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "flip-vertical", "act_flip_vertical",
+      [this] { m_canvas.flip_selection(false); });
 
   // Arrange
-  auto act_bring_front = Gio::SimpleAction::create("arrange-bring-front");
-  act_bring_front->signal_activate().connect([this](const Glib::VariantBase &) {
-    m_canvas.arrange(Canvas::ArrangeOp::BringToFront);
-  });
-  add_action(act_bring_front);
+  // s255 m4 — Z-order sweep: arrange-bring-front / arrange-bring-forward
+  // / arrange-send-backward / arrange-send-back migrated to scripted
+  // actions. Each is bucket A per tier2_action_audit.md (Z-order /
+  // arrange section); no `objects`-side equivalent for selection-
+  // targeted z-order moves (objects.reorder operates on named objects;
+  // these operate on current selection — same shape distinction as
+  // duplicate / delete-selected in m3). All parameterless; all under
+  // the default Scripter | TestRunner mask.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "arrange-bring-front", "act_arrange_bring_front",
+      [this] { m_canvas.arrange(Canvas::ArrangeOp::BringToFront); });
 
-  auto act_bring_fwd = Gio::SimpleAction::create("arrange-bring-forward");
-  act_bring_fwd->signal_activate().connect([this](const Glib::VariantBase &) {
-    m_canvas.arrange(Canvas::ArrangeOp::BringForward);
-  });
-  add_action(act_bring_fwd);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "arrange-bring-forward", "act_arrange_bring_forward",
+      [this] { m_canvas.arrange(Canvas::ArrangeOp::BringForward); });
 
-  auto act_send_bwd = Gio::SimpleAction::create("arrange-send-backward");
-  act_send_bwd->signal_activate().connect([this](const Glib::VariantBase &) {
-    m_canvas.arrange(Canvas::ArrangeOp::SendBackward);
-  });
-  add_action(act_send_bwd);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "arrange-send-backward", "act_arrange_send_backward",
+      [this] { m_canvas.arrange(Canvas::ArrangeOp::SendBackward); });
 
-  auto act_send_back = Gio::SimpleAction::create("arrange-send-back");
-  act_send_back->signal_activate().connect([this](const Glib::VariantBase &) {
-    m_canvas.arrange(Canvas::ArrangeOp::SendToBack);
-  });
-  add_action(act_send_back);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "arrange-send-back", "act_arrange_send_back",
+      [this] { m_canvas.arrange(Canvas::ArrangeOp::SendToBack); });
 
   // Boolean path operations
   // s122 m2: stored as members so update_bool_actions_sensitive() can
@@ -968,96 +1001,101 @@ void MainWindow::setup_menu() {
   // iterative fold unreachable from the UI. Default-disabled (no
   // selection on startup); the sensitivity pump turns them on when
   // exactly 2 closed paths are selected.
-  m_act_bool_union = Gio::SimpleAction::create("bool-union");
-  m_act_bool_union->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        m_canvas.boolean_op(BooleanOpType::Union);
-      });
+  //
+  // s255 m5 — Boolean sweep: bool-union / bool-subtract / bool-intersect
+  // migrated to scripted actions. Bucket A per tier2_action_audit.md
+  // (Boolean ops section). The helper returns the SimpleAction RefPtr,
+  // which assigns to the existing member so update_bool_actions_sensitive
+  // continues to drive set_enabled() on the same object. The initial
+  // set_enabled(false) call still lands before the sensitivity pump's
+  // first invocation (which happens on the first selection change).
+  //
+  // Note: a script `win bool-union` on an invalid selection (not exactly
+  // 2 closed paths) WILL invoke the callback — Gio::SimpleAction::activate
+  // fires regardless of enabled state (the disabled flag is a UI gate,
+  // not a programmatic one). The canvas-side boolean_op() handles bad
+  // selection internally. The wrapper is structurally invariant.
+  m_act_bool_union = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "bool-union", "act_bool_union",
+      [this] { m_canvas.boolean_op(BooleanOpType::Union); });
   m_act_bool_union->set_enabled(false);
-  add_action(m_act_bool_union);
 
-  m_act_bool_subtract = Gio::SimpleAction::create("bool-subtract");
-  m_act_bool_subtract->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        m_canvas.boolean_op(BooleanOpType::Subtract);
-      });
+  m_act_bool_subtract = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "bool-subtract", "act_bool_subtract",
+      [this] { m_canvas.boolean_op(BooleanOpType::Subtract); });
   m_act_bool_subtract->set_enabled(false);
-  add_action(m_act_bool_subtract);
 
-  m_act_bool_intersect = Gio::SimpleAction::create("bool-intersect");
-  m_act_bool_intersect->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        m_canvas.boolean_op(BooleanOpType::Intersect);
-      });
+  m_act_bool_intersect = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "bool-intersect", "act_bool_intersect",
+      [this] { m_canvas.boolean_op(BooleanOpType::Intersect); });
   m_act_bool_intersect->set_enabled(false);
-  add_action(m_act_bool_intersect);
 
   // s135 m1: Align & Distribute actions. Same wire-up pattern as boolean ops:
   // stored on MainWindow so the update_align_btn predicate (extended below)
   // can toggle enabled state. Activate handler delegates to Canvas, exactly
   // mirroring what the toolbar popover already does via signal_align_requested.
-  m_act_align_left = Gio::SimpleAction::create("align-left");
-  m_act_align_left->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        m_canvas.align_selection(AlignOp::AlignLeft);
-      });
+  //
+  // s255 m7 — Align/Distribute sweep: all eight verbs migrated to scripted
+  // actions. Bucket A per tier2_action_audit.md (Align / Distribute section).
+  // Same member-assignment pattern as m5's boolean ops: the helper's return
+  // value populates the existing m_act_align_* / m_act_distribute_* members
+  // so the sensitivity pump (update_align_btn, extended in s135 m1) continues
+  // to drive set_enabled() on the same RefPtrs. Initial set_enabled(false)
+  // calls preserved.
+  //
+  // Disabled-action-fires-anyway shape (documented in m5): a script
+  // `win align-left` with insufficient selection (< 2 objects) still
+  // invokes the callback; m_canvas.align_selection() handles bad input.
+  m_act_align_left = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "align-left", "act_align_left",
+      [this] { m_canvas.align_selection(AlignOp::AlignLeft); });
   m_act_align_left->set_enabled(false);
-  add_action(m_act_align_left);
 
-  m_act_align_center_h = Gio::SimpleAction::create("align-center-h");
-  m_act_align_center_h->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        m_canvas.align_selection(AlignOp::AlignCenterH);
-      });
+  m_act_align_center_h = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "align-center-h", "act_align_center_h",
+      [this] { m_canvas.align_selection(AlignOp::AlignCenterH); });
   m_act_align_center_h->set_enabled(false);
-  add_action(m_act_align_center_h);
 
-  m_act_align_right = Gio::SimpleAction::create("align-right");
-  m_act_align_right->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        m_canvas.align_selection(AlignOp::AlignRight);
-      });
+  m_act_align_right = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "align-right", "act_align_right",
+      [this] { m_canvas.align_selection(AlignOp::AlignRight); });
   m_act_align_right->set_enabled(false);
-  add_action(m_act_align_right);
 
-  m_act_align_top = Gio::SimpleAction::create("align-top");
-  m_act_align_top->signal_activate().connect([this](const Glib::VariantBase &) {
-    m_canvas.align_selection(AlignOp::AlignTop);
-  });
+  m_act_align_top = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "align-top", "act_align_top",
+      [this] { m_canvas.align_selection(AlignOp::AlignTop); });
   m_act_align_top->set_enabled(false);
-  add_action(m_act_align_top);
 
-  m_act_align_center_v = Gio::SimpleAction::create("align-center-v");
-  m_act_align_center_v->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        m_canvas.align_selection(AlignOp::AlignCenterV);
-      });
+  m_act_align_center_v = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "align-center-v", "act_align_center_v",
+      [this] { m_canvas.align_selection(AlignOp::AlignCenterV); });
   m_act_align_center_v->set_enabled(false);
-  add_action(m_act_align_center_v);
 
-  m_act_align_bottom = Gio::SimpleAction::create("align-bottom");
-  m_act_align_bottom->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        m_canvas.align_selection(AlignOp::AlignBottom);
-      });
+  m_act_align_bottom = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "align-bottom", "act_align_bottom",
+      [this] { m_canvas.align_selection(AlignOp::AlignBottom); });
   m_act_align_bottom->set_enabled(false);
-  add_action(m_act_align_bottom);
 
-  m_act_distribute_h = Gio::SimpleAction::create("distribute-h");
-  m_act_distribute_h->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        m_canvas.align_selection(AlignOp::DistributeH);
-      });
+  m_act_distribute_h = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "distribute-h", "act_distribute_h",
+      [this] { m_canvas.align_selection(AlignOp::DistributeH); });
   m_act_distribute_h->set_enabled(false);
-  add_action(m_act_distribute_h);
 
-  m_act_distribute_v = Gio::SimpleAction::create("distribute-v");
-  m_act_distribute_v->signal_activate().connect(
-      [this](const Glib::VariantBase &) {
-        m_canvas.align_selection(AlignOp::DistributeV);
-      });
+  m_act_distribute_v = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "distribute-v", "act_distribute_v",
+      [this] { m_canvas.align_selection(AlignOp::DistributeV); });
   m_act_distribute_v->set_enabled(false);
-  add_action(m_act_distribute_v);
 
   auto act_offset_path = Gio::SimpleAction::create("offset-path");
   act_offset_path->signal_activate().connect([this](const Glib::VariantBase &) {
@@ -1086,20 +1124,25 @@ void MainWindow::setup_menu() {
   });
   add_action(act_translate);
 
-  auto act_expand_stroke = Gio::SimpleAction::create("expand-stroke");
-  act_expand_stroke->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.expand_stroke_op(); });
-  add_action(act_expand_stroke);
+  // s255 m6 — Path ops sweep: expand-stroke / make-compound /
+  // split-compound migrated to scripted actions. Bucket A per
+  // tier2_action_audit.md (Path operations section). Parameterless;
+  // default Scripter | TestRunner mask. text-to-path migrated in the
+  // same batch but lives further down the file (after the warp block).
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "expand-stroke", "act_expand_stroke",
+      [this] { m_canvas.expand_stroke_op(); });
 
-  auto act_make_compound = Gio::SimpleAction::create("make-compound");
-  act_make_compound->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.make_compound_path(); });
-  add_action(act_make_compound);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "make-compound", "act_make_compound",
+      [this] { m_canvas.make_compound_path(); });
 
-  auto act_split_compound = Gio::SimpleAction::create("split-compound");
-  act_split_compound->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.split_compound_path(); });
-  add_action(act_split_compound);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "split-compound", "act_split_compound",
+      [this] { m_canvas.split_compound_path(); });
 
   // Group / Ungroup (s138). Both wrap pre-existing Canvas methods that
   // were never reachable from the UI. Default-disabled; sensitivity is
@@ -1121,43 +1164,60 @@ void MainWindow::setup_menu() {
   // is deferred — the Canvas methods themselves are defensive (no-op on
   // invalid state, with LOG_INFO). Adding set_enabled() on a selection
   // signal is the natural next pass once UX confirms the flow.
-  m_act_clip_make = Gio::SimpleAction::create("clip-make");
-  m_act_clip_make->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.make_clip_group(); });
+  //
+  // s255 m8 — Container ops sweep: clip-make / clip-release migrated to
+  // scripted actions. Bucket A per tier2_action_audit.md (Container ops
+  // not in objects). Same member-RefPtr pattern as m5 booleans / m7
+  // align: helper return value assigned to existing m_act_clip_*
+  // members; set_enabled(false) preserved. Disabled-action-fires-anyway
+  // shape applies (canvas-side methods guard bad state).
+  m_act_clip_make = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "clip-make", "act_clip_make",
+      [this] { m_canvas.make_clip_group(); });
   m_act_clip_make->set_enabled(false);
-  add_action(m_act_clip_make);
 
-  m_act_clip_release = Gio::SimpleAction::create("clip-release");
-  m_act_clip_release->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.release_clip_group(); });
+  m_act_clip_release = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "clip-release", "act_clip_release",
+      [this] { m_canvas.release_clip_group(); });
   m_act_clip_release->set_enabled(false);
-  add_action(m_act_clip_release);
 
   // Blend — exactly 2 selected. Canvas::make_blend does final validation
   // and emits a user-visible error if preconditions aren't met; the
   // sensitivity hook below prevents the common "wrong count" case from
   // even hitting that path.
-  m_act_blend_make = Gio::SimpleAction::create("blend-make");
-  m_act_blend_make->signal_activate().connect(
-      [this](const Glib::VariantBase &) { on_blend(); });
+  //
+  // s255 m8 — Container ops sweep (continued): blend-make / blend-release.
+  // blend-make invokes on_blend() (a MainWindow helper, not a direct
+  // canvas call) — kept as-is in the lambda body.
+  m_act_blend_make = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "blend-make", "act_blend_make",
+      [this] { on_blend(); });
   m_act_blend_make->set_enabled(false);
-  add_action(m_act_blend_make);
 
-  m_act_blend_release = Gio::SimpleAction::create("blend-release");
-  m_act_blend_release->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.release_blend(); });
+  m_act_blend_release = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "blend-release", "act_blend_release",
+      [this] { m_canvas.release_blend(); });
   m_act_blend_release->set_enabled(false);
-  add_action(m_act_blend_release);
 
   // Warp — three actions: make, release, flatten. All default-disabled;
   // update_warp_action_sensitive turns them on based on selection. Make
   // goes through on_warp_make so M3b's dialog can intercept; release
   // and flatten are direct canvas-method dispatches (no UI to show).
-  m_act_warp_make = Gio::SimpleAction::create("warp-make");
-  m_act_warp_make->signal_activate().connect(
-      [this](const Glib::VariantBase &) { on_warp_make(); });
+  //
+  // s255 m8 — Container ops sweep (continued): warp-make / warp-release
+  // migrated. warp-edit and warp-flatten are bucket C per fork #7 of the
+  // audit (slated for deprecation when inspector subsumes them) — stay
+  // raw. The make/release pair are symmetric to clip-/blend-make/release
+  // per the audit's "Container ops" section.
+  m_act_warp_make = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "warp-make", "act_warp_make",
+      [this] { on_warp_make(); });
   m_act_warp_make->set_enabled(false);
-  add_action(m_act_warp_make);
 
   m_act_warp_edit = Gio::SimpleAction::create("warp-edit");
   m_act_warp_edit->signal_activate().connect(
@@ -1165,11 +1225,11 @@ void MainWindow::setup_menu() {
   m_act_warp_edit->set_enabled(false);
   add_action(m_act_warp_edit);
 
-  m_act_warp_release = Gio::SimpleAction::create("warp-release");
-  m_act_warp_release->signal_activate().connect(
-      [this](const Glib::VariantBase &) { on_warp_release(); });
+  m_act_warp_release = curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "warp-release", "act_warp_release",
+      [this] { on_warp_release(); });
   m_act_warp_release->set_enabled(false);
-  add_action(m_act_warp_release);
 
   m_act_warp_flatten = Gio::SimpleAction::create("warp-flatten");
   m_act_warp_flatten->signal_activate().connect(
@@ -1177,10 +1237,13 @@ void MainWindow::setup_menu() {
   m_act_warp_flatten->set_enabled(false);
   add_action(m_act_warp_flatten);
 
-  auto act_text_to_path = Gio::SimpleAction::create("text-to-path");
-  act_text_to_path->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.text_to_paths_op(); });
-  add_action(act_text_to_path);
+  // s255 m6 — Path ops sweep (continued): text-to-path migrated to
+  // scripted action. Sibling of expand-stroke / make-compound /
+  // split-compound above; bucket A per tier2_action_audit.md.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "text-to-path", "act_text_to_path",
+      [this] { m_canvas.text_to_paths_op(); });
 
   auto act_shortcuts = Gio::SimpleAction::create("show-shortcuts");
   act_shortcuts->signal_activate().connect(
@@ -1194,15 +1257,34 @@ void MainWindow::setup_menu() {
   add_action(act_help);
 
   // View — rulers toggle (stateful boolean action — shows checkmark)
-  auto act_rulers =
-      Gio::SimpleAction::create_bool("toggle-rulers", m_rulers_visible);
-  act_rulers->signal_activate().connect(
-      [this, act_rulers](const Glib::VariantBase &) {
-        m_rulers_visible = !m_rulers_visible;
-        act_rulers->set_state(Glib::Variant<bool>::create(m_rulers_visible));
-        toggle_rulers(m_rulers_visible);
+  // s256 m2 — migrated to add_scripted_bool_action. The setter takes
+  // the FINAL desired value (true=show rulers, false=hide) and owns
+  // both the side-effect (toggle_rulers helper) and the action state-
+  // sync. The activate path (menu click) reads current state and
+  // flips; the change_state path (script `win toggle-rulers true`)
+  // sets explicitly. Both routes hand the setter the final value, so
+  // the setter is the single source of truth for both axes.
+  //
+  // **State-sync via lookup_action.** The setter calls
+  // `lookup_action("toggle-rulers")` because the action RefPtr isn't
+  // in scope inside the lambda — same pattern the keyboard binding at
+  // MainWindow_bindings.cpp:2264 uses. We could capture the action by
+  // ref from the helper's return value, but the lookup pattern is
+  // already established for this exact sync seam (and is what the
+  // toggle-outline signal-driven sync uses too); preserving it keeps
+  // the diff shape consistent.
+  curvz::scripting::add_scripted_bool_action(
+      this, m_action_group_scriptable.get(),
+      "toggle-rulers", "act_toggle_rulers",
+      m_rulers_visible,
+      [this](bool v) {
+        m_rulers_visible = v;
+        toggle_rulers(v);
+        if (auto sa = std::dynamic_pointer_cast<Gio::SimpleAction>(
+                lookup_action("toggle-rulers"))) {
+          sa->set_state(Glib::Variant<bool>::create(v));
+        }
       });
-  add_action(act_rulers);
 
   // View — outline mode toggle (stateful)
   // s113 m2: gate the outline→preview transition when current zoom would
@@ -1212,10 +1294,38 @@ void MainWindow::setup_menu() {
   // s113 m3: action/statusbar sync now lives in the
   // signal_outline_mode_changed handler; this site just triggers the
   // toggle.
-  auto act_outline = Gio::SimpleAction::create_bool("toggle-outline", false);
-  act_outline->signal_activate().connect(
-      [this](const Glib::VariantBase &) { try_toggle_outline_safely(); });
-  add_action(act_outline);
+  // s256 m2: migrated to add_scripted_bool_action. The setter owns the
+  // safety-gate logic — `v` is the FINAL desired state, and if the
+  // requested transition is outline→preview at an unsafe zoom, the
+  // setter refuses early (shows alert, returns without flipping the
+  // canvas). State-sync flows through the existing
+  // signal_outline_mode_changed wire in MainWindow_bindings.cpp:1449 —
+  // when canvas actually flips, the signal fires and that handler
+  // calls set_state on the action by lookup; if the setter refuses,
+  // the canvas signal never fires and the action state stays where
+  // it was. Single source of truth via the signal.
+  curvz::scripting::add_scripted_bool_action(
+      this, m_action_group_scriptable.get(),
+      "toggle-outline", "act_toggle_outline",
+      false,
+      [this](bool v) {
+        if (m_canvas.is_outline_mode() == v) return;  // already there
+        // outline→preview only — gated by zoom safety; outline mode
+        // itself is safe at any zoom.
+        if (!v && !m_canvas.preview_safe_at_current_zoom()) {
+          curvz::utils::show_alert(
+              *this, "Zoom too high for preview mode",
+              "Switching to preview mode at this zoom level may crash "
+              "the app because of how preview rendering allocates memory "
+              "at high zoom. \n\n"
+              "Zoom out first, then switch to preview. Outline view "
+              "stays safe at any zoom.");
+          return;
+        }
+        m_canvas.toggle_outline_mode();
+        // signal_outline_mode_changed fires set_state for us; no
+        // manual set_state needed here.
+      });
 
   // Developer — Scripting toggle (s219 m1, stateful boolean action).
   // The action's state mirrors AppPreferences::scripter_enabled.
@@ -1272,17 +1382,28 @@ void MainWindow::setup_menu() {
     });
   }
 
-  auto act_zoom_in = Gio::SimpleAction::create("zoom-in");
-  act_zoom_in->signal_activate().connect([this](const Glib::VariantBase &) {
-    m_toolbar.signal_zoom_step().emit(+1.0);
-  });
-  add_action(act_zoom_in);
+  // s255 m9 — View / Zoom / doc-nav sweep: zoom-in / zoom-out migrated to
+  // scripted actions. Bucket A per tier2_action_audit.md (View toggles +
+  // zoom). Parameterless; default Scripter | TestRunner mask. Note that
+  // the lambda emits the toolbar's signal_zoom_step rather than calling
+  // a canvas method directly — that signal is the canonical zoom-step
+  // seam and the toolbar's zoom UI is its primary subscriber. Keeping
+  // the signal-emit shape preserves the existing dispatch chain.
+  //
+  // The two `toggle-*` view actions (toggle-rulers, toggle-outline) are
+  // stateful bool actions per the audit; they need wrapper signature
+  // work (e.g. `win.toggle-rulers true` style) and are NOT in this
+  // mechanical sweep — they're a fixture, design work for a later
+  // milestone.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "zoom-in", "act_zoom_in",
+      [this] { m_toolbar.signal_zoom_step().emit(+1.0); });
 
-  auto act_zoom_out = Gio::SimpleAction::create("zoom-out");
-  act_zoom_out->signal_activate().connect([this](const Glib::VariantBase &) {
-    m_toolbar.signal_zoom_step().emit(-1.0);
-  });
-  add_action(act_zoom_out);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "zoom-out", "act_zoom_out",
+      [this] { m_toolbar.signal_zoom_step().emit(-1.0); });
 
   // s254 m2 — fifth and final of the m1 first batch. Selected over
   // zoom-in / zoom-out / zoom-100 / zoom-200 because zoom_to_all_objects
@@ -1302,44 +1423,52 @@ void MainWindow::setup_menu() {
   // dispatched into the void. Caught when s138 m2 made the popover render
   // accels honestly — the disabled state was always there; the empty
   // accel column just hid it.
-  auto act_zoom_100 = Gio::SimpleAction::create("zoom-100");
-  act_zoom_100->signal_activate().connect([this](const Glib::VariantBase &) {
-    // 1× = fit-zoom (artboard fills viewport with margin)
-    double cx = m_canvas.get_width() / 2.0;
-    double cy = m_canvas.get_height() / 2.0;
-    double target = m_canvas.fit_zoom_value();
-    m_canvas.zoom_toward(cx, cy, target / m_canvas.zoom());
-  });
-  add_action(act_zoom_100);
+  //
+  // s255 m9 — migrated to scripted action. Multi-line lambda body
+  // preserved verbatim from the original (compute viewport center,
+  // compute target zoom from fit value, dispatch to zoom_toward).
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "zoom-100", "act_zoom_100",
+      [this] {
+        // 1× = fit-zoom (artboard fills viewport with margin)
+        double cx = m_canvas.get_width() / 2.0;
+        double cy = m_canvas.get_height() / 2.0;
+        double target = m_canvas.fit_zoom_value();
+        m_canvas.zoom_toward(cx, cy, target / m_canvas.zoom());
+      });
 
-  auto act_zoom_200 = Gio::SimpleAction::create("zoom-200");
-  act_zoom_200->signal_activate().connect([this](const Glib::VariantBase &) {
-    // 1× = fit-zoom (artboard fills viewport with margin)
-    double cx = m_canvas.get_width() / 2.0;
-    double cy = m_canvas.get_height() / 2.0;
-    double target = m_canvas.fit_zoom_value() * 2.0;
-    m_canvas.zoom_toward(cx, cy, target / m_canvas.zoom());
-  });
-  add_action(act_zoom_200);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "zoom-200", "act_zoom_200",
+      [this] {
+        // 1× = fit-zoom (artboard fills viewport with margin)
+        double cx = m_canvas.get_width() / 2.0;
+        double cy = m_canvas.get_height() / 2.0;
+        double target = m_canvas.fit_zoom_value() * 2.0;
+        m_canvas.zoom_toward(cx, cy, target / m_canvas.zoom());
+      });
 
-  auto act_zoom_sel = Gio::SimpleAction::create("zoom-selection");
-  act_zoom_sel->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.zoom_to_selection(); });
-  add_action(act_zoom_sel);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "zoom-selection", "act_zoom_selection",
+      [this] { m_canvas.zoom_to_selection(); });
 
   // ── Document navigation (s108 m7) ───────────────────────────────────────
   // Cycles through the project's documents — wraparound at both ends.
   // Funnels through on_doc_activated so the canvas/inspector/layers/
   // gallery/tabs all sync via the single canonical seam.
-  auto act_doc_next = Gio::SimpleAction::create("doc-next");
-  act_doc_next->signal_activate().connect(
-      [this](const Glib::VariantBase &) { cycle_doc(+1); });
-  add_action(act_doc_next);
+  //
+  // s255 m9 — migrated to scripted actions.
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "doc-next", "act_doc_next",
+      [this] { cycle_doc(+1); });
 
-  auto act_doc_prev = Gio::SimpleAction::create("doc-prev");
-  act_doc_prev->signal_activate().connect(
-      [this](const Glib::VariantBase &) { cycle_doc(-1); });
-  add_action(act_doc_prev);
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "doc-prev", "act_doc_prev",
+      [this] { cycle_doc(-1); });
 
   // Quit
   auto act_quit = Gio::SimpleAction::create("quit");
