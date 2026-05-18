@@ -1,0 +1,335 @@
+# 49_export_svg_smoke — second headless-verb singleton from ARC m5b
+# (s251 m1). Opens the second slot in the Tier 4 row: 1/~4-5 -> 2/~4-5.
+# Headline coverage moves accordingly — this is the first session in five
+# (since s246 m1) where the numerator on a tier row ticks up rather than
+# verbs accumulating on an existing singleton.
+#
+# `export` is the project's export-format singleton — one registry entry
+# per app session, no per-instance proxy. m1 ships one verb (`svg
+# <path>`) and two queries (`last_path`, `last_ok`); the remaining four
+# format-verbs (png / ico / refpt / gresource) land in m2+ as the
+# surface widens. Cardinality is by concern, not by format — one
+# Scriptable hosting five sibling format-verbs.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# `export svg <path>` has a six-case contract (see ExportScriptable.hpp
+# for the full design block):
+#
+#   Branch A (happy path):     project loaded + active doc + safe path
+#                              + write succeeds. Writes vanilla SVG to
+#                              disk, captures path + ok into per-attempt
+#                              observables, returns ok.
+#   Branch B (wrong args):     zero / multiple / non-string args. Refuses
+#                              with "expected exactly one path argument".
+#   Branch C (empty path):     empty string or non-string arg. Refuses
+#                              with "path argument is empty or not a
+#                              string". Same-shape as save_as.
+#   Branch D (unsafe path):    path_is_safe refused. Refuses with the
+#                              utility's reason string (outside $HOME
+#                              and $TMPDIR / realpath failed / etc).
+#                              Fourth production call site of
+#                              path_is_safe (after proj save_as / load /
+#                              new); FIRST call site on a non-proj
+#                              Scriptable.
+#   Branch E (NoProject):      m_project null. Refuses.
+#   Branch F (NoActiveDoc):    m_project loaded but active_doc() null.
+#                              Refuses. The post-doc-removal transient
+#                              state.
+#   Branch G (IoFailed):       SvgWriter::write_svg_file returned false.
+#                              Refuses. Rare; usually unreachable from
+#                              Scripter unless filesystem fault occurs.
+#
+# This smoke exercises Branch A twice (different paths) plus Branches C
+# and D as the assertable edge cases. Branches B / E / F / G are
+# documented at the bottom with the manual setup steps to reach them.
+#
+# Coverage shape (matches s236+ ObjectsScriptable smokes' BUILD UP /
+# VALIDATE / FIND EDGES discipline):
+#
+#   - BUILD UP   : Phase 1 inspects initial query state (last_ok ==
+#                  false, last_path == "") — the Scriptable starts
+#                  with no successful exports.
+#   - VALIDATE   : Phase 2 issues the happy-path export; Phase 3
+#                  asserts both observables flipped correctly
+#                  (last_ok == true, last_path == supplied path).
+#   - FIND EDGES : Phases 4-6 exercise refusal paths (empty path,
+#                  unsafe path), confirming each preserves last_path
+#                  (the prior success's observable survives a refusal)
+#                  while flipping last_ok back to false.
+#   - VALIDATE again : Phase 7 issues a second happy-path export to a
+#                      different file. Phase 8 confirms last_path
+#                      updated to the new path (last successful
+#                      export's path replaces the previous).
+#
+# The two refused calls produce listener-error lines but no project
+# state mutation — same property smokes 45-48 confirmed for the proj
+# refusals. Here the refusals are FROM THE VERB BODY (not the
+# RunContext dispatcher), so they exercise different machinery than
+# 45-48's gate-refusal pattern: Phase 4 hits the argument-validation
+# guard, Phase 6 hits the path_is_safe gate. Both surface as
+# `error invoke threw: <message>` lines via the Scriptable's
+# std::runtime_error throw, contrasting with the
+# `error invoke refused: ...` line shape the dispatcher emits.
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# This smoke runs through ScripterWindow's listener, m_context =
+# RunContext::Scripter (set in ScripterWindow's ctor, see s244 m2
+# wiring). `export svg` declares its mask as Scripter | TestRunner —
+# THE SAME MASK AS proj save, NOT proj save_as. So the dispatcher's
+# gating check passes and the verb body runs. This is the crucial
+# design call s251 m1 makes: export produces a SIDE ARTEFACT, it does
+# not rewrite the project's identity, so the trust boundary that
+# makes save_as TestRunner-only does NOT apply. CANON's Scripter-
+# in-scope list explicitly includes "/tmp writes for scratch and
+# diagnostic dumps" — exporting an SVG to /tmp for visual
+# inspection IS the canonical use case.
+#
+# Seventh consumer of Scriptable::context_mask() in the codebase
+# (Inspector + proj.{save, save_as, close, load, new} + export.svg).
+# Registry-promotion clock is at 7/n; STILL HELD by design — the
+# catalogue is growing more uniform (two distinct mask values across
+# seven verbs), which weakens rather than strengthens the dedup
+# argument that would drive a central register_verb table.
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# `export svg` WRITES TO DISK — produces side artefacts at the two
+# paths named below, both under /tmp. The smoke does NOT modify
+# project content (no objects added / removed / edited, no save /
+# save_as / close / load fired). Effect: two .svg files materialise
+# in /tmp. Both files are vanilla SVG (no data-curvz-export-* meta),
+# byte-identical to what File ▸ Save would produce minus the .curvz
+# wrapper.
+#
+# Manual teardown (the DSL has no `fs.remove` verb today):
+#
+#   rm /tmp/curvz_smoke_49_export.svg /tmp/curvz_smoke_49_export_v2.svg
+#
+# Safe to run repeatedly; each run overwrites the prior run's outputs
+# (write_svg_file uses std::ofstream's default truncate-on-open
+# behaviour, no append).
+
+#[sub] === Phase 1: initial-state precondition ===
+
+#[sub] Get the most-recent-successful-export path. At session start
+#[sub] (or before the first successful export this session), it's the
+#[sub] empty string — the Scriptable's m_last_path defaults to "" at
+#[sub] construction. Operator-visual on the empty echo; the assert
+#[sub] below makes it structural.
+#[sub]
+#[sub] NOTE: if you've already run this smoke once in the current
+#[sub] session, last_path will reflect the prior run's last successful
+#[sub] export (probably /tmp/curvz_smoke_49_export_v2.svg from Phase 7).
+#[sub] The two asserts below will fail in that case; the smoke is
+#[sub] designed to land cleanly on a fresh session. Same posture as
+#[sub] smoke 44's first-save assumption (runs against a loaded project
+#[sub] that's been saved at least once).
+
+get export last_path
+
+assert export last_ok == false
+assert export last_path == ""
+
+#[sub] === Phase 2: happy-path export (Branch A) ===
+
+#[sub] Issue the verb. Expected trace line:
+#[sub]
+#[sub]   > export svg "/tmp/curvz_smoke_49_export.svg"
+#[sub]   ok
+#[sub]
+#[sub] Operator-visual on the `ok` echo. Side effects:
+#[sub]   - SvgWriter::write_svg_file writes the active doc as vanilla
+#[sub]     SVG to /tmp/curvz_smoke_49_export.svg.
+#[sub]   - LOG_INFO line: "export svg: wrote '/tmp/curvz_smoke_49_export.svg'".
+#[sub]   - m_last_path updated to the supplied path.
+#[sub]   - m_last_ok flipped to true.
+#[sub]
+#[sub] No project-state mutation — m_project, m_history, the dirty
+#[sub] indicator on the title bar are all unchanged. Export produces a
+#[sub] side artefact; the project remains identifiable by its own
+#[sub] .curvz directory.
+
+export svg "/tmp/curvz_smoke_49_export.svg"
+
+#[sub] === Phase 3: post-success assertable observables ===
+
+#[sub] Both queries reflect the just-completed successful export.
+#[sub] These two asserts are THE STRUCTURAL PROOF that the verb body
+#[sub] ran to completion — the DSL's assert can't directly compare
+#[sub] against the listener's `ok` echo line (assert is equality-only
+#[sub] on query results), so the queries are the assertable observable
+#[sub] standing in for the ok echo.
+
+assert export last_ok == true
+assert export last_path == "/tmp/curvz_smoke_49_export.svg"
+
+#[sub] === Phase 4: empty-path refusal (Branch C) ===
+
+#[sub] Call svg with an empty path argument. The Scriptable's
+#[sub] argument-validation guard fires before path_is_safe and before
+#[sub] the helper:
+#[sub]
+#[sub]   > export svg ""
+#[sub]   error invoke threw: export svg: path argument is empty or not a string
+#[sub]
+#[sub] Operator-visual on the refusal text. The refusal:
+#[sub]   - Flips m_last_ok to false (no successful export just happened).
+#[sub]   - Does NOT clear m_last_path — it still points at the prior
+#[sub]     success's path. Design choice: a script that attempts
+#[sub]     export-then-fails wants to know which prior export's path
+#[sub]     it can still rely on. See ExportScriptable.hpp's design
+#[sub]     block on the "last successful export" semantics.
+
+export svg ""
+
+#[sub] === Phase 5: refusal preserves last_path, flips last_ok ===
+
+#[sub] The two structural properties the smoke is here to confirm
+#[sub] about refusal semantics. last_ok flipped to false (no current
+#[sub] success); last_path UNCHANGED from Phase 2's value (the prior
+#[sub] success's observable survives a refusal).
+#[sub]
+#[sub] This is the distinguishing behaviour from a "blank everything
+#[sub] on any failure" alternative — if last_path WERE blanked on
+#[sub] refusal, the Phase 4 refusal would render last_path empty here,
+#[sub] losing information about what the most recent good export was.
+
+assert export last_ok == false
+assert export last_path == "/tmp/curvz_smoke_49_export.svg"
+
+#[sub] === Phase 6: unsafe-path refusal (Branch D) ===
+
+#[sub] Call svg with a path outside $HOME and $TMPDIR. path_is_safe
+#[sub] refuses with the structured reason string:
+#[sub]
+#[sub]   > export svg "/etc/curvz_smoke_49_etc.svg"
+#[sub]   error invoke threw: export svg: outside $HOME and $TMPDIR
+#[sub]
+#[sub] Operator-visual on the refusal text. The reason string comes
+#[sub] from path_is_safe's reason_out parameter — same string the
+#[sub] proj save_as / load / new smokes would see if path_is_safe were
+#[sub] reachable from Scripter context for those verbs (it's structurally
+#[sub] unreachable for save_as / load / new from Scripter because the
+#[sub] RunContext gate refuses upstream of the path-safety check;
+#[sub] export svg's Scripter | TestRunner mask makes the gate
+#[sub] permissive enough that path_is_safe is the FIRST live refusal
+#[sub] this entire session has produced from a Scripter caller).
+#[sub]
+#[sub] FOURTH production call site of curvz::scripting::path_is_safe
+#[sub] (after save_as s247 m1, load s249 m1, new s250 m1); FIRST call
+#[sub] site on a Scriptable other than proj. The utility's "one
+#[sub] validator, many callers" design intent is now confirmed by a
+#[sub] cross-Scriptable application.
+#[sub]
+#[sub] No assertions follow this refusal — Phase 5's structural
+#[sub] properties (last_ok flips false, last_path preserved) already
+#[sub] established the contract; a second instance against the same
+#[sub] last_path adds no new information. The operator-visual on the
+#[sub] refusal text is the relevant observable for this phase.
+
+export svg "/etc/curvz_smoke_49_etc.svg"
+
+#[sub] === Phase 7: second happy-path export (different file) ===
+
+#[sub] Re-export to a DIFFERENT /tmp path. Two distinct successful
+#[sub] exports back-to-back exercise the "last_path updates on every
+#[sub] success" semantic — Phase 8's assertion is that last_path now
+#[sub] points at the NEW path, not the Phase-2 path. Without this
+#[sub] phase, the smoke can't distinguish "last_path captures the
+#[sub] first success" from "last_path captures the most recent
+#[sub] success"; the contract is the latter, and this phase makes
+#[sub] that assertable.
+
+export svg "/tmp/curvz_smoke_49_export_v2.svg"
+
+#[sub] === Phase 8: last_path updated to the new path ===
+
+#[sub] last_ok back to true (we just succeeded). last_path now equal
+#[sub] to the Phase-7 path, not the Phase-2 path. Structural proof
+#[sub] that consecutive successful exports correctly update the
+#[sub] observable to the most recent target.
+
+assert export last_ok == true
+assert export last_path == "/tmp/curvz_smoke_49_export_v2.svg"
+
+#[sub] s251 m1 smoke complete. Expected summary line:
+#[sub]
+#[sub]   13 lines, 8 pass, 0 fail, 2 error
+#[sub]
+#[sub] - 8 PASS  : 2 (Phase 1 initial state) + 2 (Phase 3 post-success)
+#[sub]             + 2 (Phase 5 refusal-preserves) + 2 (Phase 8 second-
+#[sub]             success-updates)
+#[sub] - 2 error : the two verb-body refusals at Phases 4 and 6
+#[sub]             (empty-path and unsafe-path; intentional — the
+#[sub]             argument-validation guard and path_is_safe gate
+#[sub]             working as designed)
+#[sub] - 1 operator-visual : the `get export last_path` echo at Phase 1
+#[sub]             (shows the empty initial state on a fresh session)
+#[sub] - 3 operator-visual `ok` echoes : the two successful exports at
+#[sub]             Phases 2 and 7, plus the `ok`-via-PASS echoes from
+#[sub]             the assertions (these don't count as separate lines
+#[sub]             — the assert itself IS the dispatch line)
+#[sub] - 2 operator-visual refusals : the structured `error invoke
+#[sub]             threw:` lines under each refused export. Read in
+#[sub]             trace to confirm the reason strings match
+#[sub]             expectations.
+#[sub]
+#[sub] Tier 4 row ticks 1/~4-5 -> 2/~4-5. Headline coverage % moves;
+#[sub] the proj-only static-percentage period (s246 through s250) ends.
+#[sub] Surface widening: new Scriptable "export" added to the registry,
+#[sub] one verb (svg) + two queries (last_path, last_ok). path_is_safe
+#[sub] gains its fourth production call site and first cross-Scriptable
+#[sub] application. context_mask() consumer count goes 6 -> 7
+#[sub] (registry-promotion clock held at 7/n by design — the catalogue
+#[sub] is becoming MORE uniform across consumers, not less).
+#[sub]
+#[sub] m5b proj-surface arc remains CLOSED at 5/5 (s250 m1 close); m5b
+#[sub] export-surface arc OPENS at 1/5 (svg shipped; png / ico / refpt
+#[sub] / gresource land in m2+). The third m5b singleton candidate
+#[sub] (`app` — quit / preferences / recent_clear) waits for the
+#[sub] export surface to close or for a use case to name it.
+
+#[sub] ── Manual exercise for the other branches ─────────────────────
+#[sub]
+#[sub] Branch B (wrong-args): call `export svg` with zero args or two
+#[sub] args, e.g.:
+#[sub]
+#[sub]   > export svg
+#[sub]   error invoke threw: export svg: expected exactly one path argument
+#[sub]
+#[sub]   > export svg "/tmp/a.svg" "/tmp/b.svg"
+#[sub]   error invoke threw: export svg: expected exactly one path argument
+#[sub]
+#[sub] The smoke skips both because the empty-path refusal (Phase 4)
+#[sub] already exercises the same arg-validation layer; wrong-cardinality
+#[sub] is a sibling failure mode of the same guard.
+#[sub]
+#[sub] Branch E (NoProject — no project loaded): rare; can occur
+#[sub] transiently during a project close sequence. Manually reachable
+#[sub] by File ▸ Close Project, then running an export verb in Scripter
+#[sub] before opening a new project. Expected refusal:
+#[sub]
+#[sub]   > export svg "/tmp/foo.svg"
+#[sub]   error invoke threw: export svg: no project loaded
+#[sub]
+#[sub] Branch F (NoActiveDoc — project loaded with no documents): more
+#[sub] reachable: open a project, remove every document via the
+#[sub] DocTabBar close buttons, then run an export verb. Expected
+#[sub] refusal:
+#[sub]
+#[sub]   > export svg "/tmp/foo.svg"
+#[sub]   error invoke threw: export svg: project has no active document
+#[sub]
+#[sub] Branch G (IoFailed): harder to exercise without filesystem fault
+#[sub] injection. Closest natural reach: chmod -w the target directory
+#[sub] before running the smoke; SvgWriter's ofstream open will fail
+#[sub] and the helper returns IoFailed. Expected refusal:
+#[sub]
+#[sub]   > export svg "/tmp/readonly_dir/foo.svg"
+#[sub]   error invoke threw: export svg: write failed
+#[sub]
+#[sub] All refusal branches share the listener's standard error-throw
+#[sub] convention: `error invoke threw: <message>` with the message
+#[sub] text matching the strings in ExportScriptable.cpp.

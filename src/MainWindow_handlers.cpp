@@ -611,6 +611,50 @@ MainWindow::script_new_project(const std::string& path) {
 }
 
 
+// s251 m1 — script_export_svg helper. Sibling shape to the other
+// script_* helpers in this file: takes an already-path-is-safe-vetted
+// path, returns an enum naming the outcome. Body wraps
+// SvgWriter::write_svg_file() with the same project-state pre-checks
+// the GUI's Export Documents dialog applies before its own writer call.
+//
+// Three pre-check refusal branches before the I/O:
+//   1. m_project is null         -> ScriptExportSvgResult::NoProject
+//   2. active_doc()  is nullptr  -> ScriptExportSvgResult::NoActiveDoc
+//   3. write_svg_file returns false -> ScriptExportSvgResult::IoFailed
+//
+// Happy path: write succeeded; LOG_INFO line emitted matching the
+// pattern other writer call sites use. No project-state mutation —
+// export produces a side artefact, m_project is unchanged. No
+// update_title() (the title bar reflects project saved-ness, not
+// export activity; an export to /tmp shouldn't change the dirty
+// indicator). No save_config() (the export doesn't change the
+// reopen-this-project-next-launch pointer).
+//
+// See MainWindow.hpp's ScriptExportSvgResult block for the enum
+// contract; see ExportScriptable.cpp's invoke() for the
+// Scriptable-side enum-to-error mapping.
+MainWindow::ScriptExportSvgResult
+MainWindow::script_export_svg(const std::string& path) {
+  if (!m_project) {
+    return ScriptExportSvgResult::NoProject;
+  }
+  auto* doc = m_project->active_doc();
+  if (!doc) {
+    return ScriptExportSvgResult::NoActiveDoc;
+  }
+  // SvgWriter::write_svg_file logs its own LOG_ERROR on open-fail
+  // (cannot open '<path>' for writing); the success-side log line
+  // here is our own — distinct LOG_INFO so script-driven exports are
+  // identifiable in the log apart from GUI Export Documents writes
+  // (which log through ExportDialog's own info lines).
+  if (!write_svg_file(*doc, path)) {
+    return ScriptExportSvgResult::IoFailed;
+  }
+  LOG_INFO("export svg: wrote '{}'", path);
+  return ScriptExportSvgResult::Ok;
+}
+
+
 void MainWindow::on_save_as() {
   auto dialog = Gtk::FileDialog::create();
   dialog->set_title("Save Project As — enter project name");

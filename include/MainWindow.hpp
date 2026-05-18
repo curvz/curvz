@@ -159,6 +159,7 @@ namespace curvz::scripting { class ThemesScriptable; }
 namespace curvz::scripting { class ObjectsScriptable; }
 namespace curvz::scripting { class InspectorScriptable; }
 namespace curvz::scripting { class ProjScriptable; }  // s246 m1 — first headless-verb singleton
+namespace curvz::scripting { class ExportScriptable; }  // s251 m1 — second headless-verb singleton
 namespace curvz::scripting { class ScripterWindow; }
 
 namespace Curvz {
@@ -168,15 +169,16 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
-    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s243 m2 / s246 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
+    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s243 m2 / s246 m1 / s251 m1 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
     // unique_ptr<curvz::scripting::GuidesScriptable>,
     // unique_ptr<curvz::scripting::SwatchesScriptable>,
     // unique_ptr<curvz::scripting::PalettesScriptable>,
     // unique_ptr<curvz::scripting::StylesScriptable>,
     // unique_ptr<curvz::scripting::ThemesScriptable>,
     // unique_ptr<curvz::scripting::ObjectsScriptable>,
-    // unique_ptr<curvz::scripting::InspectorScriptable>, and
-    // unique_ptr<curvz::scripting::ProjScriptable> can hold incomplete
+    // unique_ptr<curvz::scripting::InspectorScriptable>,
+    // unique_ptr<curvz::scripting::ProjScriptable>, and
+    // unique_ptr<curvz::scripting::ExportScriptable> can hold incomplete
     // types at the header level. Implementation lives in MainWindow.cpp
     // alongside the construction. No longer gated as of s219 m1.
     ~MainWindow();
@@ -734,6 +736,84 @@ public:
     // inspect, but MainWindow's in-memory state is unchanged.
     ScriptNewResult script_new_project(const std::string& path);
 
+    // ── s251 m1 — script-side export svg helper ──────────────────────
+    //
+    // Sibling helper to the script_save_project / script_save_project_as
+    // / script_close_project / script_load_project / script_new_project
+    // family — same shape (enum-naming-the-outcome return; takes
+    // already-path-is-safe-vetted path; touches m_project / m_canvas
+    // internals on this class's behalf).
+    //
+    // The helper writes the project's ACTIVE document as a standalone
+    // .svg file at `path`, using SvgWriter::write_svg_file() — the
+    // simplest of the five export-format writers. No size, units, or
+    // fit-side parameters at this layer; the vanilla SVG (no
+    // data-curvz-export-* metadata) is the right shape for the
+    // singleton-opening milestone. Future m2+ format helpers
+    // (script_export_png / script_export_ico / script_export_refpt /
+    // script_export_gresource) sit alongside this one as the
+    // ExportScriptable's verb surface widens.
+    //
+    // Path is assumed already vetted by curvz::scripting::path_is_safe;
+    // the helper does not re-check (separation of concerns matches
+    // every other script_* helper here exactly: path containment is
+    // the Scriptable's pre-flight, project-state + I/O is the
+    // helper's).
+    //
+    //   Ok           — Active doc was written to `path` via
+    //                  SvgWriter::write_svg_file(); LOG_INFO line
+    //                  emitted ("export svg: wrote '<path>'"). No
+    //                  side effects on m_project state — export
+    //                  produces a side artefact, the loaded project
+    //                  is unchanged. No update_title() (the title
+    //                  bar reflects project saved-ness, not export
+    //                  activity; an export to /tmp shouldn't clear
+    //                  the project's dirty indicator).
+    //   NoProject    — m_project is null. Same edge case as save's
+    //                  NoProject branch; rare but defensive.
+    //   NoActiveDoc  — m_project is loaded but active_doc() returns
+    //                  nullptr. The post-doc-removal transient
+    //                  state: a project can exist with zero
+    //                  documents after DocTabBar's close button
+    //                  erases the last one. Mirrors what the GUI's
+    //                  Export Documents menu item would show as
+    //                  insensitive in this state.
+    //   IoFailed     — SvgWriter::write_svg_file() returned false.
+    //                  Mirrors the writer's LOG_ERROR path (open
+    //                  failed, or close/flush failed). No partial
+    //                  state — write_svg_file's open-fail returns
+    //                  before any bytes go out; its successful-
+    //                  bytes-flush-fail path is rare and leaves an
+    //                  empty or partial file on disk that the
+    //                  script can detect via subsequent inspection
+    //                  if needed.
+    enum class ScriptExportSvgResult {
+        Ok,
+        NoProject,
+        NoActiveDoc,
+        IoFailed,
+    };
+
+    // Run the SVG-export flow on behalf of a script caller. The
+    // supplied `path` is assumed already vetted by path_is_safe; the
+    // helper does not re-check. Active doc is read through
+    // m_project->active_doc() at call time (no doc argument — the
+    // ACTIVE doc is the export target, matching the GUI's Export
+    // Documents dialog's default which targets the active doc).
+    //
+    // Side effects on Ok: a vanilla .svg file at `path`; LOG_INFO line
+    // "export svg: wrote '<path>'". No project state changes — the
+    // dirty indicator stays whatever it was, m_project->directory is
+    // unchanged, m_history is unchanged. The export is a side artefact;
+    // the project remains identifiable by its own .curvz directory.
+    //
+    // No side effects on any non-Ok return — NoProject / NoActiveDoc
+    // are pre-check refusals; IoFailed leaves whatever write_svg_file
+    // managed to produce on disk (typically nothing, occasionally an
+    // empty/partial file the writer's open-failed path doesn't even
+    // reach to create).
+    ScriptExportSvgResult script_export_svg(const std::string& path);
+
 private:
     void setup_headerbar();  // category: zone: headerbar
     void setup_layout();  // category: zone: layout
@@ -1233,6 +1313,25 @@ private:
     // consumer earns the refactor, the virtual-method-per-Scriptable
     // shape promotes to a central register_verb(name, mask) table.
     std::unique_ptr<curvz::scripting::ProjScriptable> m_proj_scriptable;
+
+    // s251 m1 — `export` Scriptable, second headless-verb singleton from
+    // ARC m5b (Tier 4 row ticks 1/~4-5 → 2/~4-5). Sibling of
+    // ProjScriptable in shape — flat verb surface, no proxy routing,
+    // MainWindow-pointer constructor — but wraps a different concern
+    // (the export-format-bearing dialog's per-format writers, not the
+    // project lifecycle). m1 ships one verb (`svg <path>`) and two
+    // queries (`last_path`, `last_ok`); the remaining four format-
+    // verbs (png / ico / refpt / gresource) land in m2+ as the
+    // surface widens. Same lifetime / dtor story as the Scriptables
+    // above; the dtor stays out-of-line so the unique_ptr can hold
+    // an incomplete type. See ExportScriptable.hpp for the verb
+    // surface, the five-branch refusal contract on `svg`, and the
+    // RunContext mask rationale (Scripter | TestRunner — same as
+    // proj save, not proj save_as; export produces a side artefact
+    // that does not rewrite the project's identity). Seventh
+    // consumer of Scriptable::context_mask() — registry-promotion
+    // clock at 7/n, still held by design.
+    std::unique_ptr<curvz::scripting::ExportScriptable> m_export_scriptable;
 
     // s219 m1 — Scripter window. Owned by MainWindow as a unique_ptr
     // member, matching the pattern of every other persistent floating

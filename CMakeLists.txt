@@ -501,6 +501,15 @@ set(SOURCES
     # section orchestration. One verb (`save`) + two queries (`path`,
     # `has_path`) in m1; save_as / load / new / close land in s247+.
     src/scripting/ProjScriptable.cpp
+    # s251 m1 — `export` Scriptable. Second headless-verb singleton from
+    # ARC m5b (Tier 4 row 1/~4-5 → 2/~4-5). Sibling singleton-host
+    # pattern as proj (flat verb surface, no proxy routing, MainWindow-
+    # pointer ctor) but wraps the per-format writers rather than the
+    # project lifecycle. One verb (`svg <path>`) + two queries
+    # (`last_path`, `last_ok`) in m1; png / ico / refpt / gresource
+    # land in m2+ as the surface widens. Cardinality is by concern,
+    # not by format — one Scriptable, five format-verbs.
+    src/scripting/ExportScriptable.cpp
     src/curvz/widgets/ToggleButton.cpp
     src/curvz/widgets/Button.cpp
     src/curvz/widgets/CheckButton.cpp

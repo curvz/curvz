@@ -20,6 +20,7 @@
 #include "scripting/ObjectsScriptable.hpp"  // s230 m1 — sixth model Scriptable
 #include "scripting/InspectorScriptable.hpp"  // s222 m2 — inspector area Scriptable
 #include "scripting/ProjScriptable.hpp"      // s246 m1 — first headless-verb singleton
+#include "scripting/ExportScriptable.hpp"    // s251 m1 — second headless-verb singleton
 #include "scripting/ScripterWindow.hpp"    // s219 m1 — apply_scripter_pref present/hide
 #include "curvz/widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
 #include "Application.hpp"                  // s219 m1 — Curvz::Application (main_window only)
@@ -420,6 +421,20 @@ MainWindow::MainWindow(Application & /*app*/) {
   // the design block and the RunContext mask rationale.
   m_proj_scriptable =
       std::make_unique<curvz::scripting::ProjScriptable>(this);
+
+  // s251 m1 — `export` Scriptable. Second headless-verb singleton from
+  // ARC m5b. Sibling singleton-host pattern as proj: flat verb surface,
+  // no proxy routing, MainWindow-pointer constructor. The one verb that
+  // ships in m1 (`svg <path>`) goes through script_export_svg() — the
+  // helper that wraps SvgWriter::write_svg_file with the same project-
+  // state pre-checks (NoProject / NoActiveDoc / IoFailed). path_is_safe
+  // pre-flight lives in the Scriptable, mirroring save_as / load / new.
+  // See ExportScriptable.hpp for the design block and the RunContext
+  // mask rationale (Scripter | TestRunner — same as proj save; the
+  // path-containment gate covers the system-integrity layer and the
+  // Macro exclusion covers the recorded-automation surface).
+  m_export_scriptable =
+      std::make_unique<curvz::scripting::ExportScriptable>(this);
 
   // s219 m1 — Scripter window construction. Previously lived in
   // Application::on_activate; moved here so MainWindow owns the
