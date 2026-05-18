@@ -1,0 +1,367 @@
+# 50_export_png_smoke — second format-verb on the `export` Scriptable
+# (s252 m2). Tier 4 row STAYS at 2/~4-5 (same singleton, second verb);
+# the export surface itself widens 1/5 -> 2/5 inside the singleton.
+# Same dynamic as the proj surface widening through s247-s250 without
+# ticking the row.
+#
+# `export png <path> <size>` is the FIRST two-arg verb on this
+# Scriptable and the FIRST numeric-arg verb on any m5b headless-verb
+# singleton. The size arg is the longest-side pixel count; the
+# helper derives width × height from the active doc's aspect ratio
+# inside MainWindow's script_export_png (mirroring
+# ExportDialog.cpp:911-922's fit-side arithmetic, picking fit-side
+# from doc aspect rather than user choice).
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# `export png <path> <size>` has a seven-case contract (six refusals
+# plus the happy path; see ExportScriptable.hpp for the full design
+# block):
+#
+#   Branch A (happy path):     project loaded + active doc + safe path
+#                              + valid size + write succeeds. Writes
+#                              PNG to disk, captures path + ok into
+#                              per-attempt observables, returns ok.
+#   Branch B (wrong args):     not exactly two args. Refuses with
+#                              "expected exactly two arguments
+#                              (path and size)".
+#   Branch C (empty path):     empty string or non-string arg at
+#                              position 0. Refuses with "path
+#                              argument is empty or not a string".
+#                              Same shape as svg's empty-path refusal.
+#   Branch D (size invalid):   size <= 0 (zero, negative, or wrong
+#                              kind that coerces to 0). Refuses with
+#                              "size must be a positive integer".
+#                              NEW for png — first numeric-arg
+#                              refusal in m5b headless-verb-singleton
+#                              territory. Sibling layer to svg's
+#                              path-empty refusal (both are arg-shape
+#                              gates at the Scriptable layer; neither
+#                              touches the helper's enum surface).
+#   Branch E (unsafe path):    path_is_safe refused. Refuses with the
+#                              utility's reason string. FIFTH
+#                              production call site of path_is_safe;
+#                              SECOND call site on the export
+#                              Scriptable after svg.
+#   Branch F (NoProject):      m_project null. Refuses.
+#   Branch G (NoActiveDoc):    m_project loaded but active_doc()
+#                              null. Refuses.
+#   Branch H (IoFailed):       export_png_sized returned false.
+#                              Refuses. Rare; usually unreachable
+#                              from Scripter unless filesystem fault
+#                              occurs.
+#
+# This smoke exercises Branches A (twice — different paths AND
+# different sizes), C, D, and E as the assertable edge cases.
+# Branches B / F / G / H are documented at the bottom with the
+# manual setup steps to reach them.
+#
+# Coverage shape (BUILD UP / VALIDATE / FIND EDGES discipline, same as
+# smoke 49 with one extra FIND EDGES phase for the size guard):
+#
+#   - BUILD UP   : Phase 1 inspects initial query state.
+#                  IMPORTANT: last_path / last_ok are SHARED across
+#                  all format-verbs on this Scriptable. If a prior
+#                  svg export succeeded this session, last_path
+#                  reflects that. This smoke's Phase 1 assumes a
+#                  fresh session (same posture smoke 49 assumes).
+#   - VALIDATE   : Phase 2 issues the happy-path png export; Phase 3
+#                  asserts both observables flipped correctly.
+#   - FIND EDGES : Phases 4-7 exercise refusal paths:
+#                    Phase 4 -> empty-path refusal (arg-shape gate)
+#                    Phase 5 -> assertion that refusal preserved
+#                               last_path and flipped last_ok
+#                    Phase 6 -> size-invalid refusal (NEW gate for png)
+#                    Phase 7 -> unsafe-path refusal (path_is_safe gate)
+#                  All three refusal branches share the property that
+#                  m_last_path is preserved (not blanked). The
+#                  size-invalid refusal is the NEW shape this smoke
+#                  exercises — Phase 6's assertion that last_path
+#                  STILL points at the Phase 2 success after a
+#                  size-rejected call confirms the floor-at-top
+#                  discipline holds across the new arg-shape gate too.
+#   - VALIDATE again : Phase 8 issues a second happy-path png export
+#                      to a different file at a different size; Phase
+#                      9 confirms last_path updated to the new path
+#                      (last successful export's path replaces the
+#                      previous, regardless of size or format).
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# Runs through ScripterWindow's listener with m_context =
+# RunContext::Scripter. `export png` declares its mask as
+# Scripter | TestRunner (SAME as svg's mask, same as proj save's
+# mask). The dispatcher's gating check passes and the verb body
+# runs. Eighth consumer of Scriptable::context_mask() in the
+# codebase; six of eight verbs now share the Scripter | TestRunner
+# shape — the catalogue keeps getting MORE uniform, which weakens
+# rather than strengthens the registry-promotion argument.
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# `export png` WRITES TO DISK — produces side artefacts at the two
+# paths named below, both under /tmp. The smoke does NOT modify
+# project content. Effect: two .png files materialise in /tmp.
+#
+# Manual teardown (the DSL has no `fs.remove` verb today):
+#
+#   rm /tmp/curvz_smoke_50_export.png /tmp/curvz_smoke_50_export_v2.png
+#
+# Safe to run repeatedly; each run overwrites the prior run's outputs
+# (cairo_surface_write_to_png truncates the existing file).
+
+#[sub] === Phase 1: initial-state precondition ===
+
+#[sub] Get the most-recent-successful-export path. At session start
+#[sub] (or before the first successful export this session), it's the
+#[sub] empty string — the Scriptable's m_last_path defaults to "" at
+#[sub] construction. Operator-visual on the empty echo; the assert
+#[sub] below makes it structural.
+#[sub]
+#[sub] NOTE: last_path / last_ok are SHARED ACROSS ALL FORMAT-VERBS on
+#[sub] the export Scriptable. If smoke 49 (or any other prior export
+#[sub] verb) ran successfully in this session, last_path reflects the
+#[sub] most recent success regardless of format, and these assertions
+#[sub] will fail. Same posture smoke 49 assumes: run on a fresh session.
+
+get export last_path
+
+assert export last_ok == false
+assert export last_path == ""
+
+#[sub] === Phase 2: happy-path export (Branch A) ===
+
+#[sub] Issue the verb. Expected trace line:
+#[sub]
+#[sub]   > export png "/tmp/curvz_smoke_50_export.png" 256
+#[sub]   ok
+#[sub]
+#[sub] Operator-visual on the `ok` echo. Side effects:
+#[sub]   - export_png_sized writes the active doc as PNG to
+#[sub]     /tmp/curvz_smoke_50_export.png. Width × height computed
+#[sub]     from longest-side=256 + doc aspect ratio. For a square
+#[sub]     doc the result is 256x256; for a 16:9 landscape doc it
+#[sub]     would be 256x144; for a 9:16 portrait doc, 144x256.
+#[sub]   - LOG_INFO line: "export png: wrote
+#[sub]     '/tmp/curvz_smoke_50_export.png' WxH" (W and H reflecting
+#[sub]     the resolved dimensions).
+#[sub]   - m_last_path updated to the supplied path.
+#[sub]   - m_last_ok flipped to true.
+#[sub]
+#[sub] No project-state mutation — m_project, m_history, the dirty
+#[sub] indicator on the title bar are all unchanged.
+
+export png "/tmp/curvz_smoke_50_export.png" 256
+
+#[sub] === Phase 3: post-success assertable observables ===
+
+#[sub] Both queries reflect the just-completed successful png export.
+#[sub] These two asserts are the structural proof that the verb body
+#[sub] ran to completion through the Ok branch — the DSL's assert
+#[sub] can't directly compare against the listener's `ok` echo line,
+#[sub] so the queries are the assertable observable standing in for
+#[sub] the ok echo.
+
+assert export last_ok == true
+assert export last_path == "/tmp/curvz_smoke_50_export.png"
+
+#[sub] === Phase 4: empty-path refusal (Branch C) ===
+
+#[sub] Call png with an empty path argument and a valid size. The
+#[sub] Scriptable's argument-validation guard fires before
+#[sub] path_is_safe and before the helper:
+#[sub]
+#[sub]   > export png "" 256
+#[sub]   error invoke threw: export png: path argument is empty or not a string
+#[sub]
+#[sub] Operator-visual on the refusal text. The refusal:
+#[sub]   - Flips m_last_ok to false (no successful export just happened).
+#[sub]   - Does NOT clear m_last_path — it still points at the Phase 2
+#[sub]     success's path. Design choice unchanged from svg: a script
+#[sub]     that attempts export-then-fails wants to know which prior
+#[sub]     export's path it can still rely on.
+
+export png "" 256
+
+#[sub] === Phase 5: refusal preserves last_path, flips last_ok ===
+
+#[sub] The two structural properties this smoke confirms about
+#[sub] refusal semantics. last_ok flipped to false (no current
+#[sub] success); last_path UNCHANGED from Phase 2's value (the
+#[sub] prior success's observable survives a refusal).
+#[sub]
+#[sub] Same contract svg's smoke 49 confirmed at its Phase 5; this
+#[sub] phase re-confirms it for the png verb body's argument-shape
+#[sub] gate. The floor-set-at-top discipline (m_last_ok = false at
+#[sub] the top of the verb body, before any refusal branch can
+#[sub] throw) is what makes this property hold across all the
+#[sub] verb's refusal paths — same structural shape that svg
+#[sub] landed on in s251 m1's fix re-ship.
+
+assert export last_ok == false
+assert export last_path == "/tmp/curvz_smoke_50_export.png"
+
+#[sub] === Phase 6: size-invalid refusal (Branch D) ===
+
+#[sub] Call png with a safe path and an invalid size (zero). The
+#[sub] Scriptable's size-validation guard fires after the path
+#[sub] checks but before path_is_safe and before the helper:
+#[sub]
+#[sub]   > export png "/tmp/curvz_smoke_50_export_zero.png" 0
+#[sub]   error invoke threw: export png: size must be a positive integer
+#[sub]
+#[sub] NEW for png — first numeric-arg refusal in m5b. The path is
+#[sub] safe so path_is_safe would let it through; the refusal comes
+#[sub] from the arg-shape gate one layer earlier. Same shape applies
+#[sub] to negative sizes (e.g. -1) and to non-numeric args (the
+#[sub] arg_as_int helper returns 0 for wrong-kind args, which the
+#[sub] <= 0 gate then catches; single refusal message covers all
+#[sub] three failure modes).
+#[sub]
+#[sub] Operator-visual on the refusal text. The refusal:
+#[sub]   - Flips m_last_ok to false.
+#[sub]   - Does NOT clear m_last_path. Same property as Phase 4's
+#[sub]     refusal — the new gate honours the same floor-at-top
+#[sub]     discipline as the older arg-shape gates.
+#[sub]
+#[sub] Phase 6's assertions DO follow — unlike Phase 5 which already
+#[sub] proved the contract for the older gates, the size gate is a
+#[sub] NEW arg-shape gate this milestone introduces, and a structural
+#[sub] check here is the proof that the new gate honours the
+#[sub] floor-at-top discipline. Without these asserts a hypothetical
+#[sub] size-gate bug that mishandled m_last_ok would be masked by
+#[sub] Phase 8's success update (which would flip last_ok back to
+#[sub] true and last_path to the new path regardless of the bug).
+#[sub] These asserts catch the bug at the moment it would happen.
+
+export png "/tmp/curvz_smoke_50_export_zero.png" 0
+
+assert export last_ok == false
+assert export last_path == "/tmp/curvz_smoke_50_export.png"
+
+#[sub] === Phase 7: unsafe-path refusal (Branch E) ===
+
+#[sub] Call png with a path outside $HOME and $TMPDIR and a valid
+#[sub] size. path_is_safe refuses with the structured reason string:
+#[sub]
+#[sub]   > export png "/etc/curvz_smoke_50_etc.png" 256
+#[sub]   error invoke threw: export png: outside $HOME and $TMPDIR
+#[sub]
+#[sub] Operator-visual on the refusal text. The reason string comes
+#[sub] from path_is_safe's reason_out parameter — same string svg's
+#[sub] Phase 6 sees, prefixed with the per-verb label.
+#[sub]
+#[sub] FIFTH production call site of curvz::scripting::path_is_safe
+#[sub] (after save_as s247 m1, load s249 m1, new s250 m1, svg
+#[sub] s251 m1); SECOND call site on the export Scriptable. The
+#[sub] utility's "one validator, many callers" design intent is now
+#[sub] confirmed across two formats on the same Scriptable.
+
+export png "/etc/curvz_smoke_50_etc.png" 256
+
+#[sub] === Phase 8: second happy-path export (different file, different size) ===
+
+#[sub] Re-export to a DIFFERENT /tmp path with a DIFFERENT size.
+#[sub] Two distinct successful exports back-to-back exercise the
+#[sub] "last_path updates on every success" semantic — Phase 9's
+#[sub] assertion is that last_path now points at the NEW path, not
+#[sub] the Phase-2 path. The size change (256 -> 128) also exercises
+#[sub] the size-arg's value-passing path on a second valid call,
+#[sub] confirming the verb body doesn't carry size state across
+#[sub] calls.
+
+export png "/tmp/curvz_smoke_50_export_v2.png" 128
+
+#[sub] === Phase 9: last_path updated to the new path ===
+
+#[sub] last_ok back to true (we just succeeded). last_path now equal
+#[sub] to the Phase-8 path, not the Phase-2 path. Structural proof
+#[sub] that consecutive successful exports correctly update the
+#[sub] observable to the most recent target, regardless of format
+#[sub] OR size.
+
+assert export last_ok == true
+assert export last_path == "/tmp/curvz_smoke_50_export_v2.png"
+
+#[sub] s252 m2 smoke complete. Expected summary line:
+#[sub]
+#[sub]   16 lines, 10 pass, 0 fail, 3 error
+#[sub]
+#[sub] - 10 PASS  : 2 (Phase 1 initial state)
+#[sub]              + 2 (Phase 3 post-success)
+#[sub]              + 2 (Phase 5 refusal-preserves after empty-path)
+#[sub]              + 2 (Phase 6 refusal-preserves after size-invalid)
+#[sub]              + 2 (Phase 9 second-success-updates)
+#[sub] - 3 error  : Phase 4 (empty-path), Phase 6 (size-invalid),
+#[sub]              Phase 7 (unsafe-path). Three refusals; one error
+#[sub]              line each.
+#[sub] - 1 operator-visual : the `get export last_path` echo at Phase 1.
+#[sub] - 2 operator-visual `ok` echoes : Phases 2 and 8.
+#[sub] - 3 operator-visual refusal lines : Phases 4, 6, 7. Word-for-word
+#[sub]              the per-branch refusal messages in ExportScriptable.cpp.
+#[sub]
+#[sub] Tier 4 row STAYS at 2/~4-5 (same singleton, second verb on
+#[sub] the same surface). Export-surface arc widens 1/5 -> 2/5
+#[sub] within the singleton. path_is_safe production call site count
+#[sub] goes 4 -> 5 (first SECOND call site on the same Scriptable).
+#[sub] context_mask() consumer count goes 7 -> 8 (registry-promotion
+#[sub] clock held at 8/n by design — catalogue getting MORE uniform
+#[sub] across consumers).
+#[sub]
+#[sub] m5b export-surface arc continues: 2/5 today (svg + png shipped);
+#[sub] ico / refpt / gresource land in m3+. The third m5b singleton
+#[sub] candidate (`app` — quit / preferences / recent_clear) waits
+#[sub] for the export surface to close or for a use case to name it.
+
+#[sub] ── Manual exercise for the other branches ─────────────────────
+#[sub]
+#[sub] Branch B (wrong-args): call `export png` with zero / one / three+
+#[sub] args, e.g.:
+#[sub]
+#[sub]   > export png
+#[sub]   error invoke threw: export png: expected exactly two arguments (path and size)
+#[sub]
+#[sub]   > export png "/tmp/a.png"
+#[sub]   error invoke threw: export png: expected exactly two arguments (path and size)
+#[sub]
+#[sub]   > export png "/tmp/a.png" 256 512
+#[sub]   error invoke threw: export png: expected exactly two arguments (path and size)
+#[sub]
+#[sub] The smoke skips these because the empty-path refusal (Phase 4)
+#[sub] already exercises the same arg-validation layer.
+#[sub]
+#[sub] Branch D (size invalid — additional cases): the smoke uses 0
+#[sub] for Phase 6's size. Other manually-reachable cases:
+#[sub]
+#[sub]   > export png "/tmp/a.png" -1
+#[sub]   error invoke threw: export png: size must be a positive integer
+#[sub]
+#[sub]   > export png "/tmp/a.png" "big"
+#[sub]   error invoke threw: export png: size must be a positive integer
+#[sub]   (the "big" coerces to 0 via the arg_as_int sentinel; the
+#[sub]   <= 0 guard fires uniformly)
+#[sub]
+#[sub] Branch F (NoProject — no project loaded): rare; reachable by
+#[sub] File ▸ Close Project, then running an export verb in Scripter
+#[sub] before opening a new project. Expected refusal:
+#[sub]
+#[sub]   > export png "/tmp/foo.png" 256
+#[sub]   error invoke threw: export png: no project loaded
+#[sub]
+#[sub] Branch G (NoActiveDoc — project loaded with no documents): open
+#[sub] a project, remove every document via the DocTabBar close
+#[sub] buttons, then run an export verb. Expected refusal:
+#[sub]
+#[sub]   > export png "/tmp/foo.png" 256
+#[sub]   error invoke threw: export png: project has no active document
+#[sub]
+#[sub] Branch H (IoFailed): harder to reach without filesystem fault
+#[sub] injection. Closest natural reach: chmod -w the target directory
+#[sub] before running the smoke. Expected refusal:
+#[sub]
+#[sub]   > export png "/tmp/readonly_dir/foo.png" 256
+#[sub]   error invoke threw: export png: write failed
+#[sub]
+#[sub] All refusal branches share the listener's standard error-throw
+#[sub] convention: `error invoke threw: <message>` with the message
+#[sub] text matching the strings in ExportScriptable.cpp.

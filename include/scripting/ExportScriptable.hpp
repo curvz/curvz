@@ -55,7 +55,7 @@
 //
 // `can_resolve` / `proxy_for` are unimplemented (inherit base no-op).
 //
-// ── Verb surface (s251 m1: `svg`) ──────────────────────────────────────────
+// ── Verb surface (s251 m1: `svg`; s252 m2: + `png`) ────────────────────────
 //
 //   svg <path>              — write the project's ACTIVE DOCUMENT as
 //                             a standalone .svg file at the supplied
@@ -152,16 +152,142 @@
 //                             layer's "recorded automation should
 //                             not silently write files" rule.
 //
-// ── Query surface (s251 m1: `last_path`, `last_ok`) ────────────────────────
+//   png <path> <size>       — write the project's ACTIVE DOCUMENT as
+//                             a PNG file at the supplied path. SECOND
+//                             format-verb on this Scriptable (s252 m2;
+//                             m5b export-surface arc 2/5). First
+//                             two-arg verb on this Scriptable; first
+//                             numeric-arg verb on any m5b headless-
+//                             verb singleton.
+//
+//                             `<size>` is the LONGEST-SIDE pixel
+//                             count. Width/height are computed from
+//                             the active doc's aspect ratio inside
+//                             MainWindow's helper, mirroring
+//                             ExportDialog.cpp's fit_width / fit_height
+//                             calculation (the GUI's Export Documents
+//                             dialog also collects ONE size value and
+//                             derives the other dimension from the
+//                             document's aspect ratio — same mental
+//                             model, same arithmetic).
+//
+//                             Choice of longest-side over a two-int
+//                             (width × height) signature: matches the
+//                             GUI's single-size-field UI; matches
+//                             CANON's "headless-verb singletons"
+//                             frame (script supplies the same
+//                             ARGUMENT the picker collects, and the
+//                             picker collects ONE size value); keeps
+//                             the verb signature simple for the m2
+//                             ship's open-the-shape job. If a use
+//                             case ever names "I need a specific
+//                             non-aspect-preserving width × height",
+//                             a sibling verb `png_sized <path> <w> <h>`
+//                             can graduate later without breaking
+//                             this one.
+//
+//                             Contract — six refusal paths and one
+//                             happy path. Same five refusals as svg
+//                             plus one new size-validation refusal:
+//
+//                             - Wrong argument shape (not exactly two
+//                               args; first arg not coercible to
+//                               string; second arg not coercible to
+//                               int): refuse with structured error.
+//                               Argument validation fires at the
+//                               Scriptable layer before any state
+//                               inspection.
+//
+//                             - Empty path (first arg coerces to ""):
+//                               refuse. Same shape as svg's empty-
+//                               path refusal.
+//
+//                             - Invalid size (size <= 0): refuse with
+//                               structured error "size must be a
+//                               positive integer". Mirrors the
+//                               stricter-than-GUI posture that landed
+//                               on save_as / load / new (the GUI's
+//                               SpinButton already enforces > 0; the
+//                               script side matches by refusing
+//                               rather than clamping). Upper-bound
+//                               policy intentionally left open — the
+//                               writer probably handles 100000 fine,
+//                               and an upper bound is a "use case
+//                               names the need" item.
+//
+//                               IMPORTANT: size-invalid is an
+//                               ARGUMENT-SHAPE refusal (same layer as
+//                               the path-empty / wrong-arg-count
+//                               guards), not an outcome of the
+//                               MainWindow helper. It throws
+//                               directly from the Scriptable without
+//                               going through an enum branch, same as
+//                               svg's path-empty refusal does. Layering
+//                               principle: argument shape lives in
+//                               the Scriptable, path containment lives
+//                               in path_is_safe, project-state and
+//                               I/O live in the helper. Each layer
+//                               speaks its own concern; SizeInvalid
+//                               belongs at the argument-shape layer.
+//
+//                             - Path-containment refusal: refuse with
+//                               path_is_safe's reason string. FIFTH
+//                               production call site (after save_as
+//                               s247 m1, load s249 m1, new s250 m1,
+//                               export svg s251 m1); SECOND
+//                               cross-Scriptable application after
+//                               svg.
+//
+//                             - No project loaded: refuse.
+//
+//                             - No active document: refuse.
+//
+//                             - I/O failure (export_png_sized
+//                               returned false): refuse with
+//                               structured error. Mirrors svg's
+//                               IoFailed.
+//
+//                             - Otherwise: compute width/height from
+//                               size + doc aspect ratio, call
+//                               export_png_sized(doc, path, w, h),
+//                               update last_path / last_ok. Return
+//                               Null (listener prints `ok`).
+//
+//                             RunContext mask:
+//                                 ctx::Scripter | ctx::TestRunner
+//                             — SAME mask shape as svg (and proj
+//                             save). PNG is also a side-artefact
+//                             writer; same trust profile as svg
+//                             warrants the same mask. The
+//                             path-containment gate and Macro
+//                             exclusion cover the system-integrity
+//                             and recorded-automation layers
+//                             respectively.
+//
+// ── Query surface (s251 m1: `last_path`, `last_ok`; s252 m2: shared with png) ─
 //
 //   last_path  — text. Path of the most recent SUCCESSFUL export. Empty
 //                string if no export has succeeded yet this session
 //                (initial state) or if every attempted export failed.
 //                Read-only.
 //
+//                s252 m2 — last_path is SHARED ACROSS ALL FORMAT-VERBS.
+//                A successful `export svg "/tmp/a.svg"` followed by a
+//                successful `export png "/tmp/b.png" 256` leaves
+//                last_path == "/tmp/b.png". This is the right shape:
+//                the observable answers "what was the last successful
+//                export, regardless of format" — a script that
+//                inspects last_path after multiple format calls cares
+//                about the most recent success, not the most recent
+//                per-format success. Per-format observables can
+//                graduate later (last_svg_path / last_png_path / etc)
+//                if a use case names the need; today's cross-format
+//                sharing is the simpler shape.
+//
 //   last_ok    — boolean. true iff the most recent export call
 //                succeeded. false at session start (no exports yet) and
-//                after any failed export. Read-only.
+//                after any failed export. Read-only. Also SHARED ACROSS
+//                ALL FORMAT-VERBS — same rationale as last_path.
 //
 // Both queries are members of the Scriptable itself (not delegated to
 // MainWindow) — they describe the most recent ATTEMPT, not project
@@ -219,6 +345,7 @@ public:
     std::vector<std::string> properties() const override;
 
     // s251 m1 — RunContext mask declarations.
+    // s252 m2 — png declaration added.
     //
     //   svg — ctx::Scripter | ctx::TestRunner. Macro OUT.
     //         Same mask shape as proj save (NOT proj save_as). See
@@ -230,42 +357,55 @@ public:
     //         gate ($HOME + $TMPDIR) covers the system-integrity
     //         layer separately.
     //
-    // NOTE: this is the SEVENTH consumer of context_mask() in the
-    // codebase (Inspector + proj.{save, save_as, close, load, new} +
-    // export.svg). The registry-promotion clock is now at 7/n; STILL
-    // HELD by design. New rationale this session: export.svg's mask is
-    // sibling to proj.save's (the Scripter | TestRunner pair), not a
-    // novel shape — the catalogue still consists of exactly two
-    // distinct mask values across seven verbs (Scripter | TestRunner
-    // for save / svg; TestRunner-only for save_as / close / load /
-    // new). Promotion-today's blast radius (every Scriptable's ctor
-    // and dispatch path) still outweighs the benefit; the dedup
-    // argument grows weaker as the catalogue gets MORE uniform, not
-    // stronger. Hold until either (a) a typo bug bites, (b) the
-    // catalogue grows past ~10 declarations, or (c) a novel mask
-    // combination appears (Macro-only verb, TestRunner+special caller,
-    // anything genuinely new). Banked observation.
+    //   png — ctx::Scripter | ctx::TestRunner. Macro OUT.
+    //         SAME mask shape as svg. PNG is a side-artefact writer
+    //         with the same trust profile — the path is the only
+    //         disk surface touched, the project itself is unchanged,
+    //         the path-containment gate covers system integrity, and
+    //         Macro exclusion covers recorded-automation surface.
+    //         Predicted in s251 m1's "future verbs all expected to
+    //         share svg's mask shape" note; confirmed this session.
     //
-    // Future verbs in this Scriptable (`png`, `ico`, `refpt`,
-    // `gresource`) will declare their own masks here as they land.
-    // All five are expected to share svg's `Scripter | TestRunner`
-    // shape because all five produce side artefacts with the same
-    // trust profile; if a future format raises a distinct trust
-    // concern (e.g. gresource's GResource bundles touch a different
-    // layer than the others) that's the time to revisit per-verb.
+    // NOTE: this is the EIGHTH consumer of context_mask() in the
+    // codebase (Inspector + proj.{save, save_as, close, load, new} +
+    // export.{svg, png}). The registry-promotion clock is now at 8/n;
+    // STILL HELD by design. Catalogue: TWO distinct mask values
+    // across eight verbs (Scripter | TestRunner for save / svg /
+    // png; TestRunner-only for save_as / close / load / new). The
+    // ratio is GETTING MORE UNIFORM, not less — six of eight verbs
+    // now share one mask shape. The dedup argument that would drive
+    // a central register_verb table weakens further with each
+    // sibling-shape addition; the strict trigger conditions stay:
+    // (a) a typo bug bites, (b) catalogue grows past ~10
+    // declarations, or (c) a novel mask combination appears.
+    // Banked observation; clock at 8/n.
+    //
+    // Future verbs in this Scriptable (`ico`, `refpt`, `gresource`)
+    // will declare their own masks here as they land. All three are
+    // expected to share svg/png's `Scripter | TestRunner` shape
+    // because all produce side artefacts with the same trust
+    // profile; if a future format raises a distinct trust concern
+    // (e.g. gresource's GResource bundles touch a different layer
+    // than the others) that's the time to revisit per-verb.
     RunContextMask context_mask(std::string_view verb) const override;
 
 private:
     Curvz::MainWindow* m_main_window;
 
     // s251 m1 — per-attempt observables for the smoke. These describe
-    // the most recent svg / (future png / ico / refpt / gresource)
-    // call, not project state. Both reset to empty / false at
-    // construction; both update on EVERY successful export call (the
-    // path supplied is captured to last_path, last_ok flips to true);
-    // on a failed export, last_ok flips to false and last_path is
-    // unchanged (so a script can tell which prior export's path it
-    // still corresponds to).
+    // the most recent svg / png / (future ico / refpt / gresource)
+    // call, not project state. SHARED ACROSS ALL FORMAT-VERBS — any
+    // successful export updates these, regardless of format; any
+    // failed export leaves m_last_path untouched and m_last_ok set
+    // to false. See the query-surface design block for the
+    // cross-format-sharing rationale.
+    //
+    // Both reset to empty / false at construction; both update on
+    // EVERY successful export call (the path supplied is captured
+    // to last_path, last_ok flips to true); on a failed export,
+    // last_ok flips to false and last_path is unchanged (so a
+    // script can tell which prior export's path it still
+    // corresponds to).
     //
     // Choice: update on success only, not on attempt. Rationale: a
     // refused or failed export shouldn't blank the prior success's

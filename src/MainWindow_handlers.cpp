@@ -6,6 +6,7 @@
 #include "CurvzProject.hpp"
 #include "DocTabBar.hpp"
 #include "ExportDialog.hpp"
+#include "PngExporter.hpp"  // s252 m2 — script_export_png helper uses export_png_sized
 #include "RecentProjects.hpp" // s144 m3 — Open Recent submenu
 #include "Ruler.hpp"
 #include "SvgOptimiser.hpp"
@@ -27,6 +28,7 @@
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector-driven appearance edits
 #include <algorithm>
 #include <cctype> // s136 m4: std::isspace for library item name trim
+#include <cmath>  // s252 m2: std::round for png aspect-fit calc
 #include <filesystem>
 #include <fstream>
 #include <giomm/file.h> // s125 m1a: Gio::File::create_for_path (folder picker)
@@ -652,6 +654,101 @@ MainWindow::script_export_svg(const std::string& path) {
   }
   LOG_INFO("export svg: wrote '{}'", path);
   return ScriptExportSvgResult::Ok;
+}
+
+
+// s252 m2 — script_export_png helper. Sibling shape to
+// script_export_svg: takes a path that's been path_is_safe-vetted by
+// the Scriptable, plus the longest-side size (assumed > 0 by the
+// Scriptable's argument-shape gate). Returns an enum naming the
+// outcome.
+//
+// Three pre-check refusal branches before the I/O:
+//   1. m_project is null         -> ScriptExportPngResult::NoProject
+//   2. active_doc()  is nullptr  -> ScriptExportPngResult::NoActiveDoc
+//   3. export_png_sized returns false -> ScriptExportPngResult::IoFailed
+//
+// Width × height calculation from longest-side size. The active
+// doc's canvas dimensions tell us which side is "longest":
+//   - If canvas_width >= canvas_height: width is the dominant axis,
+//     out_w = size, out_h scaled by height/width ratio.
+//   - Otherwise: height is dominant, out_h = size, out_w scaled.
+// Square documents land in the >= branch (out_w == out_h == size).
+//
+// Mirrors ExportDialog.cpp:911-922's fit_width / fit_height
+// arithmetic. The DIFFERENCE: the GUI dialog picks fit-side from
+// the user's choice of dimension field (width-locked or
+// height-locked); the script picks fit-side from the doc's aspect
+// ratio (longest side always wins). Reason: the script's mental
+// model is "I want an N-pixel image"; the GUI's mental model is
+// "I want an N-pixel WIDTH" or "N-pixel HEIGHT". The dialog needs
+// the user's choice because both produce different aspect-
+// preserved outcomes when the doc isn't square; the script's
+// single-size convention picks the longest-side because that's the
+// "fit in an N×N box" answer everyone means by "give me a 256-pixel
+// image".
+//
+// Defensive against pathological canvas_height / canvas_width zero
+// values: CurvzDocument guarantees positive canvas dimensions by
+// construction, but if either turns up as zero (e.g. from a corrupt
+// document somehow loaded), the std::max(1, ...) floor prevents the
+// arithmetic from producing a 0-pixel dimension that
+// export_png_sized would reject with IoFailed. The floor never
+// changes a non-degenerate case (a 1-pixel result from a
+// nondegenerate doc means the user asked for a size so small the
+// scaled dimension truncated to under one pixel, which is also
+// fine — they asked for tiny, they get tiny).
+//
+// Happy path: write succeeded; LOG_INFO line emitted matching
+// svg's pattern but with the resolved WxH dimensions for easy
+// log-side audit. No project-state mutation — export is a side
+// artefact. No update_title(). No save_config(). All deliberately
+// absent for the same reasons script_export_svg lists.
+//
+// See MainWindow.hpp's ScriptExportPngResult block for the enum
+// contract; see ExportScriptable.cpp's invoke() for the
+// Scriptable-side enum-to-error mapping.
+MainWindow::ScriptExportPngResult
+MainWindow::script_export_png(const std::string& path, int size) {
+  if (!m_project) {
+    return ScriptExportPngResult::NoProject;
+  }
+  auto* doc = m_project->active_doc();
+  if (!doc) {
+    return ScriptExportPngResult::NoActiveDoc;
+  }
+
+  // Compute output dimensions from longest-side size + doc aspect
+  // ratio. Mirrors ExportDialog.cpp's fit-side arithmetic with the
+  // fit-side picked from the doc's aspect ratio rather than user
+  // choice.
+  const int cw = doc->canvas_width();
+  const int ch = doc->canvas_height();
+  int out_w = 1, out_h = 1;
+  if (cw >= ch) {
+    // Width is the longest (or equal) side.
+    out_w = size;
+    out_h = std::max(1, (int)std::round(
+        size * (double)ch / (double)cw));
+  } else {
+    // Height is the longest side.
+    out_h = size;
+    out_w = std::max(1, (int)std::round(
+        size * (double)cw / (double)ch));
+  }
+
+  // export_png_sized logs its own LOG_DEBUG on success and
+  // LOG_ERROR on failure (cairo write failed, or invalid
+  // dimensions which we've pre-filtered above with the max(1,...)
+  // floor). The success-side LOG_INFO here is distinct so
+  // script-driven exports are identifiable in the log apart from
+  // GUI Export Documents writes (which log through ExportDialog's
+  // own lines) and from the writer's own debug-level line.
+  if (!export_png_sized(*doc, path, out_w, out_h)) {
+    return ScriptExportPngResult::IoFailed;
+  }
+  LOG_INFO("export png: wrote '{}' {}x{}", path, out_w, out_h);
+  return ScriptExportPngResult::Ok;
 }
 
 

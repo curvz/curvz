@@ -814,6 +814,101 @@ public:
     // reach to create).
     ScriptExportSvgResult script_export_svg(const std::string& path);
 
+    // ── s252 m2 — script-side export png helper ──────────────────────
+    //
+    // Sibling helper to script_export_svg — same shape (enum-naming-
+    // the-outcome return; takes already-path-is-safe-vetted path;
+    // touches m_project internals on this class's behalf), plus a
+    // size arg (longest-side pixel count) the helper uses to derive
+    // width × height from the active doc's aspect ratio.
+    //
+    // The helper writes the project's ACTIVE document as a PNG file
+    // at `path`, using PngExporter::export_png_sized(). Width and
+    // height are computed internally from `size` (the longest-side
+    // pixel count) plus the active doc's canvas_width() /
+    // canvas_height() — same calculation ExportDialog.cpp uses at
+    // lines 911-922 for its fit_width / fit_height paths. The
+    // longest-side convention matches the GUI's Export Documents
+    // dialog (single size field), keeping the script's mental model
+    // identical to the user's.
+    //
+    // Size is assumed already validated > 0 by the Scriptable's
+    // argument-shape gate; the helper does not re-check. Same
+    // layering posture as path_is_safe: argument-shape in the
+    // Scriptable, state-check + I/O in the helper.
+    //
+    // Path is assumed already vetted by curvz::scripting::path_is_safe;
+    // the helper does not re-check (separation of concerns matches
+    // every other script_* helper here exactly: path containment is
+    // the Scriptable's pre-flight, project-state + I/O is the
+    // helper's).
+    //
+    //   Ok           — Active doc was written to `path` via
+    //                  PngExporter::export_png_sized(); LOG_INFO line
+    //                  emitted ("export png: wrote '<path>' WxH"). No
+    //                  side effects on m_project state — export
+    //                  produces a side artefact, the loaded project
+    //                  is unchanged. No update_title() (the title
+    //                  bar reflects project saved-ness, not export
+    //                  activity).
+    //   NoProject    — m_project is null. Same edge case as svg's
+    //                  NoProject branch.
+    //   NoActiveDoc  — m_project is loaded but active_doc() returns
+    //                  nullptr. Post-doc-removal transient state;
+    //                  mirrors svg.
+    //   IoFailed     — export_png_sized() returned false. Mirrors
+    //                  the writer's LOG_ERROR paths (invalid
+    //                  dimensions — pre-checked here so this is
+    //                  rare; or cairo_surface_write_to_png returned
+    //                  non-success). The writer itself logs the
+    //                  specific cause.
+    //
+    // No SizeInvalid branch on this enum — size <= 0 is an
+    // argument-shape problem refused at the Scriptable layer before
+    // the helper is reached. Same posture svg takes for its
+    // path.empty() refusal (caught at the Scriptable, no helper
+    // branch needed).
+    enum class ScriptExportPngResult {
+        Ok,
+        NoProject,
+        NoActiveDoc,
+        IoFailed,
+    };
+
+    // Run the PNG-export flow on behalf of a script caller. `path` is
+    // assumed path_is_safe-vetted; `size` is assumed > 0 (validated
+    // at the Scriptable layer). Active doc is read through
+    // m_project->active_doc() at call time (no doc argument — the
+    // ACTIVE doc is the export target, matching the GUI's Export
+    // Documents dialog's default).
+    //
+    // Size is the LONGEST-SIDE pixel count. Internal calculation:
+    //   if (canvas_width >= canvas_height) {
+    //       out_w = size;
+    //       out_h = max(1, round(size * canvas_height / canvas_width));
+    //   } else {
+    //       out_h = size;
+    //       out_w = max(1, round(size * canvas_width / canvas_height));
+    //   }
+    // Mirrors ExportDialog.cpp:911-922's fit_width / fit_height
+    // arithmetic — the dialog picks fit-side from the user's choice
+    // of dimension field, the helper picks fit-side from the
+    // doc's aspect ratio (longest side wins). For a square doc
+    // (canvas_width == canvas_height) the two branches give the
+    // same result (out_w == out_h == size); the >= covers the
+    // edge uniformly.
+    //
+    // Side effects on Ok: a .png file at `path`; LOG_INFO line
+    // "export png: wrote '<path>' WxH". No project state changes.
+    //
+    // No side effects on any non-Ok return — NoProject / NoActiveDoc
+    // are pre-check refusals; IoFailed leaves whatever
+    // export_png_sized managed to produce on disk (typically nothing
+    // if its dimensions check rejected, or a partial/empty file if
+    // cairo's write failed mid-output).
+    ScriptExportPngResult script_export_png(const std::string& path,
+                                            int size);
+
 private:
     void setup_headerbar();  // category: zone: headerbar
     void setup_layout();  // category: zone: layout
