@@ -1,0 +1,372 @@
+# 51_export_theme_smoke — third format-verb on the export Scriptable
+# from ARC m5b (s253 m1). Lands on the now-open `export` singleton
+# (opened at s251 m1 with svg); adds the freedesktop icon-theme
+# bundle verb. **No Tier 4 row tick** — verb-on-existing-singleton.
+# Export verb surface widens 2/5 → 3/5.
+#
+# `theme <dir>` is the THIRD format-verb on this Scriptable. First
+# directory-output verb on any m5b headless-verb singleton (the
+# helper writes a TREE of files under <dir>, not a single file).
+# Naming: `theme` rather than `ico` because the bundle is a
+# freedesktop icon theme (consumable by GTK apps and system-wide
+# hicolor installations), not a Windows `.ico` file. The
+# architecture-text references to `export ico` in CANON / ARC /
+# HANDOFF were swept to `export theme` at the s253 m1 doc sweep
+# alongside this code-side ship.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# `export theme <dir>` has a five-case contract (see ExportScriptable.hpp
+# for the full design block):
+#
+#   Branch A (happy path):     project loaded + project has a path +
+#                              safe directory + write succeeds. Writes
+#                              the freedesktop icon-theme bundle tree
+#                              under <dir>, captures path + ok into
+#                              per-attempt observables, returns ok.
+#   Branch B (wrong args):     zero / multiple / non-string args.
+#                              Refuses with "expected exactly one
+#                              path argument". Same-shape as svg.
+#   Branch C (empty path):     empty string or non-string arg. Refuses
+#                              with "path argument is empty or not a
+#                              string". Same-shape as svg.
+#   Branch D (unsafe path):    path_is_safe refused. Refuses with the
+#                              utility's reason string (outside $HOME
+#                              and $TMPDIR / realpath failed / etc).
+#                              SIXTH production call site of
+#                              path_is_safe (after save_as s247 m1,
+#                              load s249 m1, new s250 m1, svg s251
+#                              m1, png s252 m2); THIRD call site on
+#                              the export Scriptable.
+#   Branch E (NoProject):      m_project null. Refuses.
+#   Branch F (NoProjectPath):  m_project loaded but its directory is
+#                              empty — the project hasn't been saved.
+#                              NEW BRANCH not present on svg / png:
+#                              theme derives theme_name from the
+#                              project's directory basename, so a
+#                              never-saved project has no usable
+#                              theme_name. Refusal points the script
+#                              author at proj save_as.
+#   Branch G (IoFailed):       export_theme returned success=false.
+#                              Helper's error_message is interpolated
+#                              into the throw. Several sub-causes:
+#                              cannot create output_dir; no valid
+#                              icons after filtering (project has
+#                              zero documents OR every document has
+#                              empty export_name / export_category);
+#                              every per-doc write failed. The
+#                              "project has zero documents" case
+#                              surfaces HERE rather than as a
+#                              NoActiveDoc branch (theme exports
+#                              EVERY document, not the active one;
+#                              the absence of an active doc has no
+#                              meaning for this verb).
+#
+# This smoke exercises Branch A twice (different paths) plus Branches C
+# and D as the assertable edge cases. Branches B / E / F / G are
+# documented at the bottom with the manual setup steps to reach them.
+# Branch F (NoProjectPath) in particular is interesting because it's
+# the new branch unique to theme — exercising it requires running
+# the smoke against a never-saved project, which contradicts the
+# smoke's general assumption of running on a saved project.
+#
+# Coverage shape (matches smoke 49 / smoke 50's BUILD UP / VALIDATE /
+# FIND EDGES discipline):
+#
+#   - BUILD UP        : Phase 1 inspects initial query state.
+#                       NOTE: this smoke is typically run after smokes
+#                       49 (svg) and 50 (png) in the same session, so
+#                       last_path will reflect the prior smoke's last
+#                       successful export. Phase 1's asserts are
+#                       written for the fresh-session case; see the
+#                       NOTE below the asserts for the run-after-50
+#                       caveat.
+#   - VALIDATE        : Phase 2 issues the happy-path export to a
+#                       /tmp directory. Phase 3 asserts both
+#                       observables flipped correctly (last_ok ==
+#                       true, last_path == supplied dir).
+#   - FIND EDGES      : Phases 4-6 exercise refusal paths (empty
+#                       path, unsafe path), confirming each
+#                       preserves last_path while flipping last_ok
+#                       back to false.
+#   - VALIDATE again  : Phase 7 issues a second happy-path export to
+#                       a different /tmp directory. Phase 8 confirms
+#                       last_path updated to the new path.
+#
+# The two refused calls produce listener-error lines but no project
+# state mutation — same property smokes 45-50 confirmed for the
+# respective refusals.
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# This smoke runs through ScripterWindow's listener, m_context =
+# RunContext::Scripter. `export theme` declares its mask as
+# Scripter | TestRunner — THE SAME MASK AS svg and png. Same trust
+# rationale: theme produces SIDE ARTEFACTS (a tree of files under
+# <dir>), it does not rewrite the project's identity. The path-
+# containment gate covers the system-integrity layer; Macro
+# exclusion covers the recorded-automation layer.
+#
+# NINTH consumer of Scriptable::context_mask() in the codebase
+# (Inspector + proj.{save, save_as, close, load, new} +
+# export.{svg, png, theme}). Registry-promotion clock at 9/n;
+# STILL HELD by design — catalogue is getting MORE uniform
+# (seven of nine verbs share Scripter | TestRunner), which
+# weakens rather than strengthens the dedup argument. One verb
+# away from the ~10 catalogue-size promotion trigger.
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# `export theme` WRITES TO DISK — produces a TREE of side artefacts
+# under the two directories named below, both under /tmp. The smoke
+# does NOT modify project content (no objects added / removed /
+# edited, no save / save_as / close / load fired). Effect: two
+# directory trees materialise in /tmp, each containing:
+#
+#   <dir>/
+#     scalable/<category>/<name>-symbolic.svg          (one per included doc)
+#     16x16/<category>/<name>-symbolic.png             (and 24x24, 32x32, 48x48,
+#                                                       64x64, 128x128, 256x256)
+#     gresource.xml
+#     index.theme
+#     README.md
+#
+# Manual teardown (the DSL has no `fs.remove` verb today):
+#
+#   rm -rf /tmp/curvz_smoke_51_theme /tmp/curvz_smoke_51_theme_v2
+#
+# Safe to run repeatedly — each run overwrites the prior run's
+# outputs (ensure_dir is idempotent; write_text and the PNG writer
+# both truncate on open).
+#
+# ── Precondition reminders ───────────────────────────────────────────────
+#
+# This smoke assumes:
+#   1. A project is loaded (any project; the smoke does not depend
+#      on specific content).
+#   2. The project has been SAVED at least once — m_project->directory
+#      is non-empty. Without this, every `export theme` call in the
+#      smoke refuses with NoProjectPath at Branch F and the asserts
+#      in Phases 3 and 8 fail (last_ok stays false).
+#   3. The project has at least one document with non-empty
+#      export_name and export_category (set via the inspector's
+#      Icon Export section). Without this, the helper's "No icons
+#      to export" branch fires and the asserts in Phases 3 and 8
+#      fail (last_ok stays false; the throw carries the helper's
+#      error_message).
+#
+# Preconditions 2 and 3 are stricter than smoke 49's. Smoke 49 only
+# needed a project + an active doc; it didn't care whether the doc
+# had export_name set. Theme cares because the writer skips docs
+# without an export_name AND fails the whole export if the result
+# of skipping is zero valid entries. The minimum viable project
+# for this smoke: one saved project + one doc with export_name and
+# export_category set.
+
+#[sub] === Phase 1: initial-state precondition ===
+
+#[sub] Get the most-recent-successful-export path. At session start
+#[sub] (or before the first successful export this session), it's the
+#[sub] empty string. Operator-visual on the empty echo.
+#[sub]
+#[sub] NOTE: if you've already run smokes 49 or 50 in the current
+#[sub] session, last_path will reflect the prior smoke's last
+#[sub] successful export (probably /tmp/curvz_smoke_50_export_v2.png
+#[sub] from smoke 50's Phase 7). The two asserts below will fail in
+#[sub] that case; the smoke is designed to land cleanly on a fresh
+#[sub] session. Same posture as smokes 49 and 50.
+
+get export last_path
+
+assert export last_ok == false
+assert export last_path == ""
+
+#[sub] === Phase 2: happy-path export (Branch A) ===
+
+#[sub] Issue the verb. Expected trace line:
+#[sub]
+#[sub]   > export theme "/tmp/curvz_smoke_51_theme"
+#[sub]   ok
+#[sub]
+#[sub] Operator-visual on the `ok` echo. Side effects:
+#[sub]   - Curvz::export_theme writes the icon-theme bundle tree
+#[sub]     under /tmp/curvz_smoke_51_theme.
+#[sub]   - LOG_INFO line: "export theme: wrote N icons to '/tmp/curvz_smoke_51_theme'".
+#[sub]   - m_last_path updated to the supplied directory.
+#[sub]   - m_last_ok flipped to true.
+#[sub]
+#[sub] No project-state mutation — m_project, m_history, the dirty
+#[sub] indicator on the title bar are all unchanged. Export produces
+#[sub] a tree of side artefacts; the project remains identifiable
+#[sub] by its own .curvz directory.
+
+export theme "/tmp/curvz_smoke_51_theme"
+
+#[sub] === Phase 3: post-success assertable observables ===
+
+#[sub] Both queries reflect the just-completed successful export.
+#[sub] These two asserts are THE STRUCTURAL PROOF that the verb body
+#[sub] ran to completion — the DSL's assert can't directly compare
+#[sub] against the listener's `ok` echo line (assert is equality-only
+#[sub] on query results), so the queries are the assertable
+#[sub] observable standing in for the ok echo.
+
+assert export last_ok == true
+assert export last_path == "/tmp/curvz_smoke_51_theme"
+
+#[sub] === Phase 4: empty-path refusal (Branch C) ===
+
+#[sub] Call theme with an empty path argument. The Scriptable's
+#[sub] argument-validation guard fires before path_is_safe and
+#[sub] before the helper:
+#[sub]
+#[sub]   > export theme ""
+#[sub]   error invoke threw: export theme: path argument is empty or not a string
+#[sub]
+#[sub] Operator-visual on the refusal text. The refusal:
+#[sub]   - Flips m_last_ok to false (no successful export just happened).
+#[sub]   - Does NOT clear m_last_path — it still points at the prior
+#[sub]     success's path. Same design choice as svg / png.
+
+export theme ""
+
+#[sub] === Phase 5: refusal preserves last_path, flips last_ok ===
+
+#[sub] The two structural properties the smoke is here to confirm
+#[sub] about refusal semantics. last_ok flipped to false (no current
+#[sub] success); last_path UNCHANGED from Phase 2's value (the prior
+#[sub] success's observable survives a refusal).
+
+assert export last_ok == false
+assert export last_path == "/tmp/curvz_smoke_51_theme"
+
+#[sub] === Phase 6: unsafe-path refusal (Branch D) ===
+
+#[sub] Call theme with a directory outside $HOME and $TMPDIR.
+#[sub] path_is_safe refuses with the structured reason string:
+#[sub]
+#[sub]   > export theme "/etc/curvz_smoke_51_etc"
+#[sub]   error invoke threw: export theme: outside $HOME and $TMPDIR
+#[sub]
+#[sub] Operator-visual on the refusal text. The reason string comes
+#[sub] from path_is_safe's reason_out parameter — same string svg's
+#[sub] Phase 6 and the proj save_as / load / new smokes would see.
+#[sub]
+#[sub] SIXTH production call site of curvz::scripting::path_is_safe
+#[sub] (after save_as s247 m1, load s249 m1, new s250 m1, svg s251
+#[sub] m1, png s252 m2); THIRD call site on the export Scriptable.
+#[sub] The utility's file-vs-directory neutrality is now exercised
+#[sub] across two distinct path shapes (file path on svg/png/save_as/
+#[sub] load/new; directory path on theme); the same gate that
+#[sub] protected /etc/foo.svg also protects /etc/my-theme/.
+#[sub]
+#[sub] No assertions follow this refusal — Phase 5's structural
+#[sub] properties (last_ok flips false, last_path preserved) already
+#[sub] established the contract.
+
+export theme "/etc/curvz_smoke_51_etc"
+
+#[sub] === Phase 7: second happy-path export (different directory) ===
+
+#[sub] Re-export to a DIFFERENT /tmp directory. Two distinct
+#[sub] successful exports back-to-back exercise the "last_path
+#[sub] updates on every success" semantic — Phase 8's assertion is
+#[sub] that last_path now points at the NEW directory, not the
+#[sub] Phase-2 directory.
+
+export theme "/tmp/curvz_smoke_51_theme_v2"
+
+#[sub] === Phase 8: last_path updated to the new path ===
+
+#[sub] last_ok back to true (we just succeeded). last_path now equal
+#[sub] to the Phase-7 directory, not the Phase-2 directory.
+#[sub] Structural proof that consecutive successful exports correctly
+#[sub] update the observable to the most recent target — across two
+#[sub] different formats now, this also confirms the cross-format
+#[sub] last_path sharing semantic (Phases 2 and 7 are both `theme`
+#[sub] calls, but the same update discipline applies if Phase 7
+#[sub] were a different format).
+
+assert export last_ok == true
+assert export last_path == "/tmp/curvz_smoke_51_theme_v2"
+
+#[sub] s253 m1 smoke complete. Expected summary line:
+#[sub]
+#[sub]   13 lines, 8 pass, 0 fail, 2 error
+#[sub]
+#[sub] - 8 PASS  : 2 (Phase 1 initial state) + 2 (Phase 3 post-success)
+#[sub]             + 2 (Phase 5 refusal-preserves) + 2 (Phase 8 second-
+#[sub]             success-updates)
+#[sub] - 2 error : the two verb-body refusals at Phases 4 and 6
+#[sub]             (empty-path and unsafe-path; intentional — the
+#[sub]             argument-validation guard and path_is_safe gate
+#[sub]             working as designed)
+#[sub] - 1 operator-visual : the `get export last_path` echo at Phase 1
+#[sub] - 2 operator-visual `ok` echoes : the two successful exports
+#[sub]             at Phases 2 and 7
+#[sub] - 2 operator-visual refusals : the structured `error invoke
+#[sub]             threw:` lines under each refused export
+#[sub]
+#[sub] EXACT MATCH to smoke 49's predicted counts (13 lines, 8 pass,
+#[sub] 0 fail, 2 error) — the contract is identical minus the size
+#[sub] dimension which neither verb has. This is the cleanest
+#[sub] prediction-streak entry to forecast since the discipline-
+#[sub] transfer property held across both s251 m1 and s252 m2 fix
+#[sub] / first-ship landings: if the structural shape that landed
+#[sub] on svg transferred cleanly to png at s252 m2, the same shape
+#[sub] should transfer cleanly to theme here. The smoke is the
+#[sub] structural check; observed counts matching predicted is the
+#[sub] discipline-transfer confirmation.
+#[sub]
+#[sub] Tier 4 row stays at 2/~4-5 (verb-on-existing-singleton, no
+#[sub] tick). Export surface widens 2/5 → 3/5. path_is_safe gains
+#[sub] its sixth production call site and third cross-Scriptable
+#[sub] application. context_mask() consumer count goes 8 → 9
+#[sub] (registry-promotion clock held at 9/n by design — catalogue
+#[sub] is becoming MORE uniform across consumers, not less).
+#[sub]
+#[sub] m5b export-surface arc continues to widen: refpt and
+#[sub] gresource remain. After those land, the `app` singleton's
+#[sub] `quit` is the natural next opener; the third Tier 4 tick
+#[sub] (2 → 3) happens then.
+
+#[sub] ── Manual exercise for the other branches ─────────────────────
+#[sub]
+#[sub] Branch B (wrong-args): call `export theme` with zero or two
+#[sub] args:
+#[sub]
+#[sub]   > export theme
+#[sub]   error invoke threw: export theme: expected exactly one path argument
+#[sub]
+#[sub]   > export theme "/tmp/a" "/tmp/b"
+#[sub]   error invoke threw: export theme: expected exactly one path argument
+#[sub]
+#[sub] Branch E (NoProject — no project loaded): rare; can occur
+#[sub] transiently during a project close sequence. Manually
+#[sub] reachable by File ▸ Close Project, then running theme in
+#[sub] Scripter before opening a new project:
+#[sub]
+#[sub]   > export theme "/tmp/foo"
+#[sub]   error invoke threw: export theme: no project loaded
+#[sub]
+#[sub] Branch F (NoProjectPath — new branch unique to theme): start
+#[sub] Curvz, do NOT load or save a project, then call theme:
+#[sub]
+#[sub]   > export theme "/tmp/foo"
+#[sub]   error invoke threw: export theme: project has no path (save the project with proj save_as first)
+#[sub]
+#[sub] Branch G (IoFailed): the most reachable variant is "no valid
+#[sub] icons" — load a project where no documents have export_name
+#[sub] and export_category set, then call theme:
+#[sub]
+#[sub]   > export theme "/tmp/foo"
+#[sub]   error invoke threw: export theme: No icons to export. Assign a name and category to each icon in the inspector.
+#[sub]
+#[sub] Alternative IoFailed variant: chmod -w a target directory's
+#[sub] parent before running the smoke; ensure_dir's mkdir call
+#[sub] will fail and the helper returns IoFailed with a "Cannot
+#[sub] create output directory" message.
+#[sub]
+#[sub] All refusal branches share the listener's standard error-throw
+#[sub] convention: `error invoke threw: <message>` with the message
+#[sub] text matching the strings in ExportScriptable.cpp.

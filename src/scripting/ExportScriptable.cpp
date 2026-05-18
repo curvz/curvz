@@ -14,6 +14,22 @@
 // the same singleton across subsequent milestones without ticking
 // the Tier 4 row again until a NEW singleton opens.
 //
+// s253 m1 — third format-verb `theme <dir>` lands. Tier 4 row stays
+// at 2/~4-5 (same accumulation pattern); the export surface itself
+// widens 2/5 → 3/5. First DIRECTORY-output verb on any headless-
+// verb singleton — the verb produces a tree of files at the
+// supplied path (the freedesktop icon-theme bundle: scalable/ +
+// 16x16/24x24/32x32/48x48/64x64/128x128/256x256 PNG bundles per
+// category + gresource.xml + index.theme + README.md). Naming
+// call: `theme` rather than `ico` because the bundle is a
+// freedesktop icon theme (consumable by GTK apps and system-wide
+// hicolor installations), not a Windows .ico file. A genuine
+// Windows .ico writer can graduate later as a sibling verb
+// `winico` without re-litigating this naming call. The historical
+// architecture-text references to `export ico` in CANON / ARC /
+// HANDOFF were swept to `export theme` at the s253 m1 doc sweep
+// alongside this code-side ship.
+//
 // m1 ships ONE verb (`svg <path>`) plus two queries (`last_path`,
 // `last_ok`). The svg writer (`SvgWriter::write_svg_file`) is the
 // simplest of the five export formats — single path arg, no
@@ -25,27 +41,30 @@
 // Subsequent milestones (m2+) add the remaining four formats as
 // sibling verbs on the same singleton:
 //   - `png <path> <size>`       — size arg (longest-side pixels)  [m2: shipped]
-//   - `ico <path>`              — windows .ico bundle              [m3+]
-//   - `refpt <path>`            — reference-points export          [m3+]
-//   - `gresource <path>`        — full project bundle              [m3+]
+//   - `theme <dir>`             — freedesktop icon-theme bundle   [s253 m1: shipped]
+//   - `refpt <path>`            — reference-points export          [m4+]
+//   - `gresource <path>`        — full project bundle              [m4+]
 //
 // All five share the same MainWindow-helper / path_is_safe pre-flight /
 // last_path-last_ok observable shape; the per-format diff lives only in
 // which writer the helper calls and what additional argument-shape
-// validation the verb body applies (svg/ico/refpt/gresource all
-// one-arg; png is the only two-arg format because of the size value).
+// validation the verb body applies (svg/refpt/gresource are one-arg;
+// theme is one-arg-directory; png is two-arg because of the size value).
 //
 // See ExportScriptable.hpp for the verb / query surface, the per-verb
-// refusal contract on `svg` and `png`, and the RunContext mask rationale
-// (Scripter | TestRunner — same as proj save, not proj save_as).
+// refusal contract on `svg`, `png`, and `theme`, and the RunContext
+// mask rationale (Scripter | TestRunner — same as proj save, not
+// proj save_as; all three formats are side-artefact writers with
+// the same trust profile).
 //
 // The body is small because each verb delegates to a MainWindow helper
-// (`script_export_svg` / `script_export_png`), which packages the
-// project-state checks (NoProject / NoActiveDoc) plus the call to the
-// format-specific writer and returns an enum naming the outcome. The
-// Scriptable maps the enum to either a happy-path `ok` (return Null +
-// update last_path / last_ok) or a structured error throw (the
-// listener catches and prints `error invoke threw: <message>`).
+// (`script_export_svg` / `script_export_png` / `script_export_theme`),
+// which packages the project-state checks (NoProject / NoActiveDoc /
+// NoProjectPath) plus the call to the format-specific writer and
+// returns an enum naming the outcome. The Scriptable maps the enum
+// to either a happy-path `ok` (return Null + update last_path /
+// last_ok) or a structured error throw (the listener catches and
+// prints `error invoke threw: <message>`).
 //
 // path_is_safe pre-validates the path argument BEFORE calling the
 // helper. Same split as save_as / load / new: path-safety in the
@@ -360,6 +379,123 @@ ScriptValue ExportScriptable::invoke(std::string_view verb,
         return ScriptValue::null();
     }
 
+    if (verb == "theme") {
+        // s253 m1 — third format-verb on this Scriptable. One-arg
+        // shape (path-as-directory), mirrors svg's body almost
+        // exactly. Two structural differences from svg / png:
+        //
+        //   1. The helper has a new enum branch (NoProjectPath)
+        //      for the loaded-but-never-saved-project case, since
+        //      theme derives theme_name from the project directory's
+        //      basename and cannot proceed without one.
+        //   2. NoActiveDoc is ABSENT from the helper's enum —
+        //      theme writes every doc, not the active one. The
+        //      "project has zero documents" case manifests as
+        //      IoFailed via the helper's "No icons to export"
+        //      branch; the error_message_out parameter carries
+        //      that specific reason to the script author.
+        //
+        // Floor-set-at-top-and-lift-on-ok discipline (s251 m1 fix
+        // re-ship): m_last_ok = false ONCE at the top, then flip
+        // to true ONLY on the Ok branch. The structural shape
+        // landed at s251 and inherited at s252; this is the
+        // THIRD instance of the shape transferring cleanly to a
+        // sibling format-verb. With three instances the pattern
+        // graduates from "banked observation" to canon candidate
+        // at next consolidation — see the backlog entries in the
+        // s252 → s253 handoff.
+        //
+        // m_last_path is NOT touched here — it preserves the prior
+        // success's path (across all formats) through any refusal.
+        // Only updated on the Ok branch. See header design block
+        // on cross-format last_path sharing for the rationale.
+        m_last_ok = false;
+
+        // Argument validation: exactly one arg, coercible to
+        // non-empty string. Same shape and same messages as svg's
+        // arg-validation — the script author's observable is
+        // identical ("you didn't supply a usable path"); the verb
+        // name interpolates so the message identifies which verb
+        // refused.
+        if (args.size() != 1) {
+            throw std::runtime_error(
+                "export theme: expected exactly one path argument");
+        }
+        std::string path = arg_as_string(args[0]);
+        if (path.empty()) {
+            // Empty string OR wrong arg-kind (arg_as_string returns
+            // empty for non-String kinds). Sibling to svg's
+            // empty-path refusal, same observable rationale.
+            throw std::runtime_error(
+                "export theme: path argument is empty or not a string");
+        }
+
+        // Path-containment pre-flight. SIXTH production call site
+        // of curvz::scripting::path_is_safe (after save_as s247 m1,
+        // load s249 m1, new s250 m1, svg s251 m1, png s252 m2);
+        // THIRD call site on this Scriptable. The utility's
+        // file-vs-directory neutrality is now exercised — `path`
+        // here names a directory, and the utility's realpath-then-
+        // contain logic doesn't care; the same gate that protected
+        // /etc/foo.svg also protects /etc/my-theme/.
+        std::string reason;
+        if (!path_is_safe(path, &reason)) {
+            throw std::runtime_error(
+                "export theme: " + reason);
+        }
+
+        // Path cleared the safety gate. Delegate to MainWindow's
+        // helper for the project-state checks and the actual
+        // export. The helper handles entry-list construction,
+        // theme_name derivation from project basename, and the
+        // call to Curvz::export_theme().
+        using R = Curvz::MainWindow::ScriptExportThemeResult;
+        std::string err_msg;
+        switch (m_main_window->script_export_theme(path, &err_msg)) {
+            case R::Ok:
+                // Happy path. Capture observables — m_last_path
+                // takes the supplied directory; m_last_ok lifts
+                // to true (cleared at top, only set true here).
+                // Return Null so the listener prints `ok`.
+                m_last_path = path;
+                m_last_ok   = true;
+                return ScriptValue::null();
+            case R::NoProject:
+                throw std::runtime_error(
+                    "export theme: no project loaded");
+            case R::NoProjectPath:
+                // New branch unique to theme (not present on
+                // svg / png). The project is loaded but has
+                // never been saved — m_project->directory is
+                // empty, so theme_name has no source. Point
+                // the script author at proj save_as as the
+                // natural remedy: save the project first to
+                // give it an identity, then export the theme
+                // bundle. Same posture as proj save's NoPath
+                // branch which also routes the script author
+                // to save_as.
+                throw std::runtime_error(
+                    "export theme: project has no path "
+                    "(save the project with proj save_as first)");
+            case R::IoFailed:
+                // Pass through the helper's error_message so the
+                // script author sees the specific reason
+                // (couldn't create output directory; no valid
+                // icons after filtering; every per-doc write
+                // failed). If the helper didn't supply one
+                // (defensive — shouldn't happen), fall back to
+                // a generic message.
+                throw std::runtime_error(
+                    "export theme: " +
+                    (err_msg.empty() ? std::string("write failed")
+                                     : err_msg));
+        }
+        // Unreachable — switch is exhaustive — but keeps the
+        // compiler quiet about non-void return paths (mirrors
+        // svg / png tails).
+        return ScriptValue::null();
+    }
+
     // Unknown verb. Same posture as ProjScriptable's tail: the verb
     // dispatch fell through every known branch; surface a structured
     // error so a typo doesn't look like a silent success.
@@ -399,11 +535,13 @@ ExportScriptable::query(std::string_view property) const {
 std::vector<std::string> ExportScriptable::verbs() const {
     // s251 m1 — `svg`.
     // s252 m2 — `png` added.
-    // m3+ adds ico / refpt / gresource as the surface widens; the
-    // singleton's verb count climbs from 2 (today) to 5.
+    // s253 m1 — `theme` added.
+    // m4+ adds refpt / gresource as the surface widens; the
+    // singleton's verb count climbs from 3 (today) to 5.
     return {
         "svg",
         "png",
+        "theme",
     };
 }
 
@@ -417,26 +555,44 @@ std::vector<std::string> ExportScriptable::properties() const {
 
 // s251 m1 — RunContext mask declarations.
 // s252 m2 — png mask declaration added.
+// s253 m1 — theme mask declaration added.
 //
-// `svg` — ctx::Scripter | ctx::TestRunner. Macro OUT. Same mask shape
-//         as proj save (NOT proj save_as). Rationale: export produces
-//         a side artefact at a path, it does not rewrite the project's
-//         own identity. CANON's Scripter-in-scope list explicitly
-//         permits "/tmp writes for scratch and diagnostic dumps" —
-//         exporting an SVG to /tmp for visual inspection IS the
-//         canonical use case. The path-containment gate ($HOME +
-//         $TMPDIR) covers the system-integrity layer; Macro
-//         exclusion covers the user-data layer's "recorded
-//         automation should not silently write files" rule.
+// `svg`   — ctx::Scripter | ctx::TestRunner. Macro OUT. Same mask
+//           shape as proj save (NOT proj save_as). Rationale: export
+//           produces a side artefact at a path, it does not rewrite
+//           the project's own identity. CANON's Scripter-in-scope
+//           list explicitly permits "/tmp writes for scratch and
+//           diagnostic dumps" — exporting an SVG to /tmp for visual
+//           inspection IS the canonical use case. The path-
+//           containment gate ($HOME + $TMPDIR) covers the system-
+//           integrity layer; Macro exclusion covers the user-data
+//           layer's "recorded automation should not silently write
+//           files" rule.
 //
-// `png` — ctx::Scripter | ctx::TestRunner. SAME mask shape as svg.
-//         PNG is a side-artefact writer with the same trust profile —
-//         the path is the only disk surface touched, the project
-//         itself is unchanged, the path-containment gate covers
-//         system integrity, Macro exclusion covers
-//         recorded-automation surface. Predicted in s251 m1's
-//         future-verbs note ("All five are expected to share svg's
-//         Scripter | TestRunner shape"); confirmed this session.
+// `png`   — ctx::Scripter | ctx::TestRunner. SAME mask shape as svg.
+//           PNG is a side-artefact writer with the same trust
+//           profile — the path is the only disk surface touched,
+//           the project itself is unchanged, the path-containment
+//           gate covers system integrity, Macro exclusion covers
+//           recorded-automation surface. Predicted in s251 m1's
+//           future-verbs note ("All five are expected to share
+//           svg's Scripter | TestRunner shape"); confirmed at
+//           s252 m2.
+//
+// `theme` — ctx::Scripter | ctx::TestRunner. SAME mask shape as
+//           svg and png. Theme is also a side-artefact writer —
+//           it writes a TREE of files under the supplied
+//           directory, but the loaded project's identity is
+//           unchanged. The trust profile is identical to svg/png
+//           modulo file count: a theme export writes more files
+//           per call (potentially dozens — one SVG + 7 PNGs per
+//           document per category) than an svg or png export,
+//           but the volume of files is a quantitative
+//           difference, not a qualitative one. The path-
+//           containment gate covers system integrity; Macro
+//           exclusion covers recorded-automation surface.
+//           Second confirmation of the s251 m1 future-verbs
+//           prediction.
 //
 // Unknown verbs (typos, future verbs not yet declared) fall through
 // to the base default of ctx::all_three. Matches the note in
@@ -446,20 +602,23 @@ std::vector<std::string> ExportScriptable::properties() const {
 // implementation above does notice and throws on unknown verb, so
 // the all_three fallthrough here is harmless.
 //
-// Eighth consumer of context_mask() (Inspector + proj.save +
+// Ninth consumer of context_mask() (Inspector + proj.save +
 // proj.save_as + proj.close + proj.load + proj.new + export.svg +
-// export.png). Registry-promotion clock at 8/n and STILL HELD by
-// design — see ExportScriptable.hpp's context_mask declaration block
-// for the at-eight reasoning (six of eight verbs now share the
-// Scripter | TestRunner mask; the catalogue is getting MORE uniform,
-// which weakens rather than strengthens the dedup argument that
-// would drive registry promotion).
+// export.png + export.theme). Registry-promotion clock at 9/n and
+// STILL HELD by design — see ExportScriptable.hpp's context_mask
+// declaration block for the at-nine reasoning (seven of nine
+// verbs now share the Scripter | TestRunner mask; the catalogue
+// is getting MORE uniform, which weakens rather than strengthens
+// the dedup argument that would drive registry promotion).
 RunContextMask
 ExportScriptable::context_mask(std::string_view verb) const {
     if (verb == "svg") {
         return ctx::Scripter | ctx::TestRunner;
     }
     if (verb == "png") {
+        return ctx::Scripter | ctx::TestRunner;
+    }
+    if (verb == "theme") {
         return ctx::Scripter | ctx::TestRunner;
     }
     return ctx::all_three;

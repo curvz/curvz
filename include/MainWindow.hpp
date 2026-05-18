@@ -750,7 +750,7 @@ public:
     // fit-side parameters at this layer; the vanilla SVG (no
     // data-curvz-export-* metadata) is the right shape for the
     // singleton-opening milestone. Future m2+ format helpers
-    // (script_export_png / script_export_ico / script_export_refpt /
+    // (script_export_png / script_export_theme / script_export_refpt /
     // script_export_gresource) sit alongside this one as the
     // ExportScriptable's verb surface widens.
     //
@@ -908,6 +908,110 @@ public:
     // cairo's write failed mid-output).
     ScriptExportPngResult script_export_png(const std::string& path,
                                             int size);
+
+    // ── s253 m1 — script-side export theme helper ───────────────────
+    //
+    // Sibling helper to script_export_svg and script_export_png —
+    // same shape (enum-naming-the-outcome return; takes already-
+    // path-is-safe-vetted path; touches m_project internals on this
+    // class's behalf). The path argument here is a DIRECTORY
+    // (output_dir for the freedesktop icon-theme bundle), not a
+    // file path. path_is_safe doesn't care about the distinction —
+    // it walks up to the nearest existing ancestor and checks
+    // containment — but downstream the helper passes <dir> to
+    // ensure_dir() inside export_theme(), which creates the
+    // directory if it doesn't exist.
+    //
+    // The helper writes the project's documents as a freedesktop
+    // icon-theme bundle at `<path>`, using Curvz::export_theme().
+    // Documents are auto-included (every doc in
+    // m_project->documents with include=true); theme_name is
+    // derived from the project's directory basename; theme_comment
+    // is empty. See ExportScriptable's theme verb-surface design
+    // block for the defaults rationale.
+    //
+    // Path is assumed already vetted by curvz::scripting::path_is_safe;
+    // the helper does not re-check. Same layering posture as
+    // script_export_svg / script_export_png.
+    //
+    //   Ok            — Bundle written to `path` via
+    //                   Curvz::export_theme(); LOG_INFO line emitted
+    //                   ("export theme: wrote <N> icons to '<path>'").
+    //                   No side effects on m_project state — export
+    //                   produces a tree of side artefacts, the loaded
+    //                   project is unchanged. No update_title().
+    //   NoProject     — m_project is null. Same edge case as svg's
+    //                   NoProject branch.
+    //   NoProjectPath — m_project is loaded but
+    //                   m_project->directory is empty. This branch
+    //                   is NEW for theme (not present on svg / png)
+    //                   because theme derives theme_name from the
+    //                   project directory's basename; without a
+    //                   directory there's no usable theme_name.
+    //                   Mirrors the "save before exporting a theme"
+    //                   condition the GUI enforces by greying out
+    //                   the Export action on an unsaved project.
+    //                   Structured refusal points the script author
+    //                   at proj save_as. NOTE: NoActiveDoc is
+    //                   DELIBERATELY ABSENT from this enum — theme
+    //                   exports EVERY document, not the active one;
+    //                   a project with zero documents fails inside
+    //                   the helper's "no valid entries" check and
+    //                   surfaces as IoFailed, with the GUI's
+    //                   familiar "No icons to export" message
+    //                   captured as the error_message.
+    //   IoFailed      — export_theme() returned with success=false.
+    //                   Mirrors the helper's failure paths: cannot
+    //                   create output_dir (ensure_dir failed); no
+    //                   valid icons after filtering by export_name
+    //                   / export_category; every per-document SVG/
+    //                   PNG write failed. The helper's
+    //                   error_message is passed through to the
+    //                   Scriptable for inclusion in the throw
+    //                   message so the script author sees the same
+    //                   diagnostic the GUI user would.
+    enum class ScriptExportThemeResult {
+        Ok,
+        NoProject,
+        NoProjectPath,
+        IoFailed,
+    };
+
+    // Run the freedesktop icon-theme bundle export flow on behalf
+    // of a script caller. `path` is assumed path_is_safe-vetted and
+    // names the OUTPUT DIRECTORY (the helper creates the directory
+    // if it doesn't exist). Entries are auto-derived from
+    // m_project->documents (every doc with include=true);
+    // theme_name from the project directory's basename (fallback
+    // "MyIcons"); theme_comment empty.
+    //
+    // Side effects on Ok: a tree of files at `path` (scalable/
+    // <category>/<name>-symbolic.svg + per-size <NxN>/<category>/
+    // <name>-symbolic.png across 16/24/32/48/64/128/256 px +
+    // gresource.xml + index.theme + README.md). LOG_INFO line
+    // "export theme: wrote N icons to '<path>'". No project state
+    // changes — the dirty indicator stays whatever it was,
+    // m_project->directory is unchanged, m_history is unchanged.
+    // The export is a side artefact; the project remains
+    // identifiable by its own .curvz directory.
+    //
+    // On Ok, error_message_out is left unchanged. On IoFailed,
+    // error_message_out is set to the helper's error_message
+    // (one of: "Cannot create output directory: <path>", "No
+    // icons to export. ...", "All icons failed to write. ...")
+    // so the Scriptable can surface the precise reason. The
+    // pointer-out signature mirrors path_is_safe's reason_out
+    // — single OUT parameter, optional (callers that don't need
+    // the string pass nullptr).
+    //
+    // No side effects on any non-Ok return — NoProject /
+    // NoProjectPath are pre-check refusals; IoFailed leaves
+    // whatever export_theme managed to produce on disk
+    // (typically nothing on the ensure_dir-failed branch; a
+    // partial tree on the per-document-write-failed branch).
+    ScriptExportThemeResult script_export_theme(
+        const std::string& path,
+        std::string* error_message_out);
 
 private:
     void setup_headerbar();  // category: zone: headerbar
@@ -1416,7 +1520,7 @@ private:
     // (the export-format-bearing dialog's per-format writers, not the
     // project lifecycle). m1 ships one verb (`svg <path>`) and two
     // queries (`last_path`, `last_ok`); the remaining four format-
-    // verbs (png / ico / refpt / gresource) land in m2+ as the
+    // verbs (png / theme / refpt / gresource) land in m2+ as the
     // surface widens. Same lifetime / dtor story as the Scriptables
     // above; the dtor stays out-of-line so the unique_ptr can hold
     // an incomplete type. See ExportScriptable.hpp for the verb

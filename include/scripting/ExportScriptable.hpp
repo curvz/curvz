@@ -55,7 +55,7 @@
 //
 // `can_resolve` / `proxy_for` are unimplemented (inherit base no-op).
 //
-// ── Verb surface (s251 m1: `svg`; s252 m2: + `png`) ────────────────────────
+// ── Verb surface (s251 m1: `svg`; s252 m2: + `png`; s253 m1: + `theme`) ────
 //
 //   svg <path>              — write the project's ACTIVE DOCUMENT as
 //                             a standalone .svg file at the supplied
@@ -264,7 +264,189 @@
 //                             and recorded-automation layers
 //                             respectively.
 //
-// ── Query surface (s251 m1: `last_path`, `last_ok`; s252 m2: shared with png) ─
+//   theme <dir>             — write the project's documents as a
+//                             freedesktop icon-theme bundle at
+//                             `<dir>`. THIRD format-verb on this
+//                             Scriptable (s253 m1; m5b export-
+//                             surface arc 3/5). The first verb in
+//                             m5b whose path argument names a
+//                             DIRECTORY rather than a file — the
+//                             output is a tree of subdirectories
+//                             (scalable/<category>/*.svg plus
+//                             16x16/24x24/32x32/48x48/64x64/128x128/
+//                             256x256 PNG bundles per category)
+//                             plus three metadata files
+//                             (gresource.xml, index.theme, README.md).
+//
+//                             Why this is called `theme`, not `ico`:
+//                             the bundle is a FREEDESKTOP ICON THEME
+//                             (a directory tree consumable by GTK
+//                             apps and system-wide hicolor
+//                             installations), not a Windows `.ico`
+//                             file. The output structure exactly
+//                             mirrors what the GUI's File ▸ Export…
+//                             ▸ Icon Theme tab produces. The verb
+//                             name is the same noun the GUI uses
+//                             ("Icon Theme") plus the s251 m1
+//                             one-word convention; "ico" would
+//                             have read as Windows .ico and
+//                             misled future readers about what
+//                             this verb produces. (A genuine
+//                             Windows .ico writer can graduate
+//                             later as a sibling verb `winico`
+//                             without re-litigating this naming
+//                             call.)
+//
+//                             Argument shape: ONE arg (the output
+//                             directory). All other GUI-collected
+//                             parameters get sensible defaults:
+//
+//                             - Entry list: every document in the
+//                               project's `documents` vector with
+//                               include=true. The GUI's checklist
+//                               UI is replaced by "include
+//                               everything"; if a use case ever
+//                               names "include only some docs",
+//                               a sibling verb or arg extension
+//                               can graduate.
+//                             - theme_name: project basename
+//                               derived from m_project->directory
+//                               (e.g. /home/me/myapp.curvz →
+//                               "myapp"). Fallback "MyIcons" if
+//                               the basename is empty (rare;
+//                               only when the project has never
+//                               been saved, in which case the
+//                               NoPath refusal fires first).
+//                             - theme_comment: empty string. The
+//                               GUI's "Icons for MyApp" pattern
+//                               is also defaultable to empty;
+//                               the field is informational in
+//                               the generated index.theme.
+//
+//                             Contract — five refusal paths and
+//                             one happy path. Same five refusals
+//                             as svg (no size arg → no size-
+//                             invalid refusal):
+//
+//                             - Wrong argument shape (not exactly
+//                               one arg, or arg not coercible to
+//                               non-empty string): refuse with
+//                               structured error. Same posture as
+//                               svg's empty-path and arg-count
+//                               refusals; messages mirror svg's.
+//
+//                             - Path-containment refusal: refuse
+//                               with path_is_safe's reason string.
+//                               SIXTH production call site (after
+//                               save_as s247 m1, load s249 m1,
+//                               new s250 m1, svg s251 m1, png
+//                               s252 m2); THIRD cross-Scriptable
+//                               application on `export`. The
+//                               `<dir>` is treated by path_is_safe
+//                               identically to a file path —
+//                               realpath() walks up to the
+//                               nearest existing ancestor, then
+//                               the containment check fires
+//                               against $HOME / $TMPDIR. Whether
+//                               `<dir>` already exists or not
+//                               doesn't change the gate's
+//                               semantics; ensure_dir() inside
+//                               the helper creates the directory
+//                               on the happy path.
+//
+//                             - No project loaded: refuse.
+//
+//                             - No project path (m_project loaded
+//                               but its directory is empty —
+//                               theme_name derivation would have
+//                               no source). Refuse with structured
+//                               error pointing the script author
+//                               at proj save_as. This refusal
+//                               doesn't have an analogue in svg /
+//                               png because those verbs don't
+//                               read m_project->directory; theme
+//                               does, to derive theme_name. A new
+//                               enum branch `NoProjectPath` on the
+//                               result enum names the outcome.
+//
+//                             - No active document state isn't a
+//                               refusal here — `theme` writes
+//                               EVERY document in the project,
+//                               not the active one. If the project
+//                               is empty (zero documents), the
+//                               helper's pre-check sees no valid
+//                               entries and the writer returns
+//                               IoFailed with the "No icons to
+//                               export" message. Same semantic
+//                               surface as the GUI's Icon Theme
+//                               tab: the user sees the same status
+//                               message ("No icons to export.
+//                               Assign a name and category to each
+//                               icon in the inspector.") if no
+//                               valid entries materialise. The
+//                               script-side observable is the
+//                               refusal under IoFailed.
+//
+//                             - I/O failure (export_theme returned
+//                               with success=false — couldn't
+//                               create output_dir, or no valid
+//                               icons after filtering, or every
+//                               PNG/SVG write failed). Refuse with
+//                               structured error including the
+//                               helper's error_message if any. The
+//                               helper's success criterion is
+//                               icons_written > 0; sub-document
+//                               failures are logged but don't
+//                               propagate unless EVERY document
+//                               fails. This matches the GUI's
+//                               behaviour exactly.
+//
+//                             - Otherwise: write the bundle, return
+//                               Null. last_path captures the
+//                               directory (not a file path —
+//                               cross-format last_path holds
+//                               whatever path argument the most
+//                               recent successful export was
+//                               given, which for `theme` is the
+//                               output directory). last_ok flips
+//                               to true.
+//
+//                             RunContext mask:
+//                                 ctx::Scripter | ctx::TestRunner
+//                             — SAME mask shape as svg and png.
+//                             theme is also a side-artefact writer
+//                             with the same trust profile: it
+//                             writes a tree of files at the
+//                             supplied path, but does not modify
+//                             the loaded project's identity. The
+//                             path-containment gate covers system
+//                             integrity (the directory must be
+//                             under $HOME or $TMPDIR); Macro
+//                             exclusion covers recorded-automation
+//                             surface; the user-data integrity
+//                             layer is preserved because the
+//                             project itself is unchanged.
+//
+//                             One nuance worth noting: theme
+//                             writes MORE FILES than svg/png
+//                             (potentially dozens — one SVG + 7
+//                             PNGs per document per category). A
+//                             malicious script with Scripter
+//                             permission could write a lot of
+//                             bytes inside $HOME/$TMPDIR in a
+//                             single call. This doesn't change
+//                             the trust calculus — the path
+//                             containment is the system-integrity
+//                             gate, and the volume of files is
+//                             a quantitative difference, not a
+//                             qualitative one — but it's worth
+//                             noting for future audit-log review:
+//                             a theme export logs more lines than
+//                             an svg export, and the audit story
+//                             across format-verbs is not uniform
+//                             in line count.
+//
+// ── Query surface (s251 m1: `last_path`, `last_ok`; s252 m2: shared with png; s253 m1: shared with theme) ─
 //
 //   last_path  — text. Path of the most recent SUCCESSFUL export. Empty
 //                string if no export has succeeded yet this session
@@ -283,6 +465,20 @@
 //                graduate later (last_svg_path / last_png_path / etc)
 //                if a use case names the need; today's cross-format
 //                sharing is the simpler shape.
+//
+//                s253 m1 — theme widens this from "file path" to
+//                "path argument". The directory `<dir>` supplied to
+//                `export theme <dir>` lands in last_path on success
+//                unchanged; a script sees it as a normal string. No
+//                special "this is a directory" marker — the
+//                observable is the argument the verb received, and
+//                the verb's documentation tells the script what
+//                kind of artefact lives at that path. If a future
+//                use case names "I need to know whether the last
+//                export was a file or directory", a sibling query
+//                (last_format, returning "svg" / "png" / "theme")
+//                is the natural shape; today's cross-format sharing
+//                stays simple.
 //
 //   last_ok    — boolean. true iff the most recent export call
 //                succeeded. false at session start (no exports yet) and
@@ -346,54 +542,80 @@ public:
 
     // s251 m1 — RunContext mask declarations.
     // s252 m2 — png declaration added.
+    // s253 m1 — theme declaration added.
     //
-    //   svg — ctx::Scripter | ctx::TestRunner. Macro OUT.
-    //         Same mask shape as proj save (NOT proj save_as). See
-    //         the verb-surface block above for the rationale: export
-    //         produces a side artefact at a path, it does not
-    //         rewrite the project's own identity; CANON's Scripter
-    //         in-scope list explicitly permits /tmp writes for
-    //         scratch and diagnostic dumps; the path-containment
-    //         gate ($HOME + $TMPDIR) covers the system-integrity
-    //         layer separately.
+    //   svg   — ctx::Scripter | ctx::TestRunner. Macro OUT.
+    //           Same mask shape as proj save (NOT proj save_as). See
+    //           the verb-surface block above for the rationale:
+    //           export produces a side artefact at a path, it does
+    //           not rewrite the project's own identity; CANON's
+    //           Scripter in-scope list explicitly permits /tmp
+    //           writes for scratch and diagnostic dumps; the
+    //           path-containment gate ($HOME + $TMPDIR) covers the
+    //           system-integrity layer separately.
     //
-    //   png — ctx::Scripter | ctx::TestRunner. Macro OUT.
-    //         SAME mask shape as svg. PNG is a side-artefact writer
-    //         with the same trust profile — the path is the only
-    //         disk surface touched, the project itself is unchanged,
-    //         the path-containment gate covers system integrity, and
-    //         Macro exclusion covers recorded-automation surface.
-    //         Predicted in s251 m1's "future verbs all expected to
-    //         share svg's mask shape" note; confirmed this session.
+    //   png   — ctx::Scripter | ctx::TestRunner. Macro OUT.
+    //           SAME mask shape as svg. PNG is a side-artefact
+    //           writer with the same trust profile — the path is
+    //           the only disk surface touched, the project itself
+    //           is unchanged, the path-containment gate covers
+    //           system integrity, and Macro exclusion covers
+    //           recorded-automation surface. Predicted in s251
+    //           m1's "future verbs all expected to share svg's
+    //           mask shape" note; confirmed at s252 m2.
     //
-    // NOTE: this is the EIGHTH consumer of context_mask() in the
+    //   theme — ctx::Scripter | ctx::TestRunner. Macro OUT.
+    //           SAME mask shape as svg and png. Theme is also a
+    //           side-artefact writer — it writes a TREE of files
+    //           under <dir>, but the loaded project's own
+    //           identity is unchanged. The trust profile is
+    //           identical to svg/png modulo file count; see the
+    //           theme verb-surface design block for the
+    //           file-count nuance and why it doesn't change the
+    //           mask call. Third instance of the
+    //           "future format-verbs all share svg's mask" prediction;
+    //           the prediction is now confirmed across three
+    //           formats. If a future format raises a distinct
+    //           trust concern (gresource is the most likely
+    //           candidate — its bundles touch a different
+    //           consumer layer), that's the time to revisit per-
+    //           verb. For theme, the rationale lines up cleanly
+    //           with svg/png.
+    //
+    // NOTE: this is the NINTH consumer of context_mask() in the
     // codebase (Inspector + proj.{save, save_as, close, load, new} +
-    // export.{svg, png}). The registry-promotion clock is now at 8/n;
-    // STILL HELD by design. Catalogue: TWO distinct mask values
-    // across eight verbs (Scripter | TestRunner for save / svg /
-    // png; TestRunner-only for save_as / close / load / new). The
-    // ratio is GETTING MORE UNIFORM, not less — six of eight verbs
-    // now share one mask shape. The dedup argument that would drive
-    // a central register_verb table weakens further with each
-    // sibling-shape addition; the strict trigger conditions stay:
-    // (a) a typo bug bites, (b) catalogue grows past ~10
-    // declarations, or (c) a novel mask combination appears.
-    // Banked observation; clock at 8/n.
+    // export.{svg, png, theme}). The registry-promotion clock is
+    // now at 9/n; STILL HELD by design. Catalogue: TWO distinct
+    // mask values across nine verbs (Scripter | TestRunner for
+    // save / svg / png / theme; TestRunner-only for save_as /
+    // close / load / new). The ratio is GETTING MORE UNIFORM,
+    // not less — seven of nine verbs now share one mask shape.
+    // The dedup argument that would drive a central register_verb
+    // table weakens further with each sibling-shape addition; the
+    // strict trigger conditions stay: (a) a typo bug bites,
+    // (b) catalogue grows past ~10 declarations, or (c) a novel
+    // mask combination appears.
     //
-    // Future verbs in this Scriptable (`ico`, `refpt`, `gresource`)
-    // will declare their own masks here as they land. All three are
-    // expected to share svg/png's `Scripter | TestRunner` shape
-    // because all produce side artefacts with the same trust
-    // profile; if a future format raises a distinct trust concern
-    // (e.g. gresource's GResource bundles touch a different layer
-    // than the others) that's the time to revisit per-verb.
+    // The catalogue is now ONE verb away from the "past ~10"
+    // promotion trigger. The next m5b verb (`refpt` or
+    // `gresource`) will land that threshold; promotion to
+    // central register_verb registry becomes a real conversation
+    // at that point. Banked observation; clock at 9/n.
+    //
+    // Future verbs in this Scriptable (`refpt`, `gresource`)
+    // will declare their own masks here as they land. Both are
+    // expected to share svg/png/theme's `Scripter | TestRunner`
+    // shape because all produce side artefacts with the same
+    // trust profile; gresource's GResource bundle (a .gresource
+    // binary readable by any GTK app) is the most likely
+    // candidate to raise a distinct trust concern if any does.
     RunContextMask context_mask(std::string_view verb) const override;
 
 private:
     Curvz::MainWindow* m_main_window;
 
     // s251 m1 — per-attempt observables for the smoke. These describe
-    // the most recent svg / png / (future ico / refpt / gresource)
+    // the most recent svg / png / theme / (future refpt / gresource)
     // call, not project state. SHARED ACROSS ALL FORMAT-VERBS — any
     // successful export updates these, regardless of format; any
     // failed export leaves m_last_path untouched and m_last_ok set

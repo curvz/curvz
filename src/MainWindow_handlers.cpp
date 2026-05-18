@@ -6,6 +6,7 @@
 #include "CurvzProject.hpp"
 #include "DocTabBar.hpp"
 #include "ExportDialog.hpp"
+#include "GResourceExporter.hpp"  // s253 m1 — script_export_theme helper uses export_theme
 #include "PngExporter.hpp"  // s252 m2 — script_export_png helper uses export_png_sized
 #include "RecentProjects.hpp" // s144 m3 — Open Recent submenu
 #include "Ruler.hpp"
@@ -749,6 +750,132 @@ MainWindow::script_export_png(const std::string& path, int size) {
   }
   LOG_INFO("export png: wrote '{}' {}x{}", path, out_w, out_h);
   return ScriptExportPngResult::Ok;
+}
+
+
+// s253 m1 — script_export_theme helper. Sibling shape to
+// script_export_svg / script_export_png: takes a path that's been
+// path_is_safe-vetted by the Scriptable, returns an enum naming the
+// outcome. Two differences from svg/png worth calling out up-front:
+//
+//   1. `path` names a DIRECTORY (output_dir), not a file. The helper
+//      passes it to Curvz::export_theme() which calls ensure_dir()
+//      internally, creating the directory if needed. path_is_safe
+//      doesn't care about the file-vs-directory distinction —
+//      realpath() walks up to the nearest existing ancestor and
+//      checks containment the same way for either.
+//
+//   2. An additional pre-check refusal branch: NoProjectPath. The
+//      theme export derives the theme_name from the project
+//      directory's basename, so a loaded-but-never-saved project
+//      can't ship a theme without re-stating its identity. svg /
+//      png don't have this branch because they don't read
+//      m_project->directory at all; they just write the active
+//      doc's bytes wherever the script said.
+//
+// Three pre-check refusal branches before the I/O:
+//   1. m_project is null                  -> NoProject
+//   2. m_project->directory is empty       -> NoProjectPath
+//   3. export_theme returned success=false -> IoFailed
+//
+// NoActiveDoc is DELIBERATELY ABSENT — theme exports every
+// document in the project, not the active one. A project with
+// zero documents (a fresh project with no docs, or one where every
+// doc was just closed via DocTabBar) hits the helper's "no valid
+// entries" check inside export_theme and surfaces as IoFailed
+// with error_message == "No icons to export. Assign a name and
+// category to each icon in the inspector." That message is
+// identical to what the GUI's Icon Theme tab shows under the
+// same condition; the script-side surface is the structured
+// throw with the message included.
+//
+// Entry construction: every document in m_project->documents
+// becomes an ExportEntry with include=true. The doc filter inside
+// export_theme then drops any that have empty export_name or
+// empty export_category (counted as icons_skipped in the result,
+// not as a failure). This auto-include shape matches the GUI's
+// default checklist state (all docs checked) and the s253 m1
+// design call to keep the verb one-arg.
+//
+// theme_name derivation: m_project->directory's basename (e.g.
+// /home/me/myproject.curvz -> "myproject"). Empty fallback
+// "MyIcons" mirrors the GUI's empty-field fallback at
+// ExportDialog.cpp:1307. If we reach this line m_project->
+// directory is non-empty (NoProjectPath would have fired), so the
+// fallback is defensive — protects against the pathological case
+// where the directory string ends in a separator and
+// stem().string() returns empty.
+//
+// theme_comment: empty string. The GUI's "Icons for MyApp"
+// placeholder is informational only; the field is also
+// defaultable to empty on the GUI side (no validation refuses
+// an empty comment), so this matches.
+//
+// progress_cb: nullptr. The GUI uses a progress bar with
+// main-loop pumping for visual feedback during long exports;
+// the script side has no progress UI and no need for pumping
+// (the helper runs synchronously inside the Scripter's verb
+// dispatch; a long theme export blocks the Scripter window for
+// its duration, same as a long proj save would).
+//
+// See MainWindow.hpp's ScriptExportThemeResult block for the enum
+// contract; see ExportScriptable.cpp's invoke() for the
+// Scriptable-side enum-to-error mapping.
+MainWindow::ScriptExportThemeResult
+MainWindow::script_export_theme(const std::string& path,
+                                std::string* error_message_out) {
+  if (!m_project) {
+    return ScriptExportThemeResult::NoProject;
+  }
+  if (m_project->directory.empty()) {
+    return ScriptExportThemeResult::NoProjectPath;
+  }
+
+  // Build entry list: every document, include=true. The helper's
+  // per-doc filter (empty export_name / export_category) handles
+  // the "some docs aren't ready to export" case internally; we
+  // don't pre-filter here because doing so would lose the
+  // icons_skipped count that the helper computes from the input
+  // size.
+  std::vector<Curvz::ExportEntry> entries;
+  entries.reserve(m_project->documents.size());
+  for (const auto& doc_ptr : m_project->documents) {
+    Curvz::ExportEntry e;
+    e.doc     = doc_ptr.get();
+    e.include = true;
+    entries.push_back(e);
+  }
+
+  // Derive theme_name from the project's directory basename.
+  // .stem() drops a trailing extension (e.g. ".curvz") if present;
+  // we want the bare project name. Defensive fallback "MyIcons"
+  // protects against pathological inputs (trailing separator,
+  // empty stem); the NoProjectPath guard above already covers the
+  // empty-directory case.
+  std::string theme_name = fs::path(m_project->directory).stem().string();
+  if (theme_name.empty()) theme_name = "MyIcons";
+
+  Curvz::ExportResult result = Curvz::export_theme(
+      entries,
+      path,
+      theme_name,
+      /*theme_comment=*/std::string(),
+      /*progress_cb=*/nullptr);
+
+  if (!result.success) {
+    if (error_message_out) {
+      *error_message_out = result.error_message;
+    }
+    return ScriptExportThemeResult::IoFailed;
+  }
+  // success-side LOG_INFO is distinct from the helper's own
+  // "GResourceExporter: exported N icons to '<dir>'" log line —
+  // this one identifies the call as script-driven (matching svg/
+  // png's pattern), so script-driven exports are filterable in
+  // the log apart from GUI Icon Theme exports.
+  LOG_INFO("export theme: wrote {} icons to '{}'",
+           result.icons_written, path);
+  return ScriptExportThemeResult::Ok;
 }
 
 
