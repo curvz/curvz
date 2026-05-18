@@ -93,6 +93,13 @@ ScripterWindow::ScripterWindow(const std::string& initial_folder)
     set_hide_on_close(true);
 
     m_listener = std::make_unique<ScriptListener>();
+    // s244 m2 — declare the caller context. Scripter is the in-app
+    // DSL playground (debugging surface, gated by CURVZ_DIAGNOSTIC,
+    // takes user-typed input at runtime). Narrower than TestRunner,
+    // wider than Macro. Set once at engine-instance creation; never
+    // mutated thereafter. See CANON's "RunContext gates the verb
+    // surface" entry for the no-elevation-toggle rule.
+    m_listener->set_run_context(RunContext::Scripter);
     m_listener->set_output_callback([this](const std::string& s) {
         append_output(s);
     });

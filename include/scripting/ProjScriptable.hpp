@@ -18,6 +18,20 @@
 // than the current GUI on_open, which is arguably a GUI bug, see
 // the load verb block for the rationale).
 //
+// s250 m1 ships the fifth and final File-menu verb: `new <path>`.
+// Closes the m5b proj-surface arc at 5 of 5 File-menu items
+// (save / save_as / close / load / new). Sibling to load in shape
+// (one path arg, path_is_safe pre-flight, MainWindow helper sharing
+// the load_project orchestrator with the GUI handler) and in
+// posture (TestRunner-only by the surface-preservation rule when
+// replacing an existing project; also under the same Dirty
+// stricter-than-GUI refusal posture). Mechanically distinct from
+// load: load reads an EXISTING .curvz from disk, while new
+// CREATES a fresh one at a not-yet-existing path. The construction
+// difference introduces one new structural refusal — TargetExists
+// — that load doesn't have (load wants the path to exist; new
+// wants it not to).
+//
 // See CANON.md "Headless-verb singletons" for the design rule this
 // implements (the substrate can address the GUI Save button but not
 // the resulting picker; scripts leapfrog the picker by passing the
@@ -48,7 +62,7 @@
 // `can_resolve` / `proxy_for` are unimplemented (inherit base no-op).
 //
 // ── Verb surface (s246 m1: `save`; s247 m1: + `save_as`; s248 m1: + `close`;
-//                 s249 m1: + `load`) ──────────────────────────────────────
+//                 s249 m1: + `load`; s250 m1: + `new`) ────────────────────
 //
 //   save                    — write the project to its current
 //                             directory. No arguments. The path is
@@ -431,6 +445,161 @@
 //                             applied to a third verb-name string,
 //                             no novel mask shape earned.
 //
+//   new <path>              — s250 m1. Create a fresh empty project
+//                             at the supplied path and load it,
+//                             replacing the currently-loaded project
+//                             if any. Closes the m5b proj-surface
+//                             arc at 5 of 5 File-menu items
+//                             (save / save_as / close / load / new).
+//                             Sibling to load in code shape (one
+//                             path arg, path_is_safe pre-flight,
+//                             MainWindow helper sharing the
+//                             load_project orchestrator with the
+//                             GUI handler); sibling to load in
+//                             posture (TestRunner-only by the
+//                             surface-preservation rule when
+//                             replacing an existing project; same
+//                             stricter-than-GUI Dirty refusal).
+//
+//                             Contract — six refusal paths and one
+//                             happy path. ONE more refusal than load
+//                             because new introduces a target-
+//                             existence refusal (load wants the
+//                             path to exist; new wants it not to):
+//
+//                             - Wrong argument shape (zero args, more
+//                               than one arg, or arg not coercible to
+//                               a non-empty string): refuse with
+//                               structured error. Same arg-validation
+//                               posture as save_as and load.
+//
+//                             - Path-containment refusal (path_is_safe
+//                               returns false): refuse with structured
+//                               error carrying the reason_out string
+//                               from path_is_safe. Third production
+//                               call site for path_is_safe (save_as,
+//                               load were the first two). Same
+//                               Scripter-unreachability note as
+//                               save_as and load — the dispatcher
+//                               gate refuses new from Scripter BEFORE
+//                               invoke() runs (new's mask is
+//                               ctx::TestRunner only; Scripter is
+//                               not in it). The branch is wired
+//                               live for the future TestRunner
+//                               caller.
+//
+//                               Behaviour under path_is_safe: new
+//                               creates a not-yet-existing directory
+//                               at the supplied path, so the
+//                               path_is_safe walk-up-to-existing-
+//                               ancestor logic is exercised here
+//                               (mirrors save_as more than load —
+//                               load wants the target to exist
+//                               already; save_as and new both write
+//                               to not-yet-existing targets).
+//
+//                             - Canvas drag in flight: refuse with
+//                               structured error. Same rationale as
+//                               every project-lifecycle verb.
+//
+//                             - Project has unsaved work
+//                               (m_history.can_undo() true): refuse
+//                               with structured error pointing the
+//                               script author at `proj save` (or
+//                               `proj save_as <path>`). Same
+//                               STRICTER-than-GUI posture as load:
+//                               the GUI's on_new_project routes
+//                               through check_unsaved_then (a modal
+//                               the script can't summon), so the
+//                               script-side structural refusal is
+//                               the modal's equivalent. A future
+//                               force_new verb (s250+) gives the
+//                               discard path.
+//
+//                             - Target already exists
+//                               (fs::exists(path) true BEFORE
+//                               create_empty runs): refuse with
+//                               structured error. STRICTER than the
+//                               GUI's on_new_project, which silently
+//                               overwrites an existing target — the
+//                               GUI calls create_empty against
+//                               whatever the picker returns,
+//                               clobbering any project.json /
+//                               swatches.json / styles.json /
+//                               themes.json that may already live
+//                               there. The script-side stricter
+//                               posture is deliberate by the same
+//                               rationale as the Dirty refusal: a
+//                               script silently destroying an
+//                               existing project mid-automation is
+//                               exactly the surface-preservation
+//                               problem in another costume.
+//
+//                               This is a NEW refusal not present
+//                               in load (load needs the target to
+//                               EXIST; new needs it NOT to). The
+//                               structural asymmetry is genuine
+//                               and the enum carries an extra
+//                               variant — see ScriptNewResult in
+//                               MainWindow.hpp.
+//
+//                               A future force_new verb (or
+//                               new --replace flag) would give the
+//                               overwrite path. Not in m1 by the
+//                               same banked-for-when-named posture
+//                               as force_close / force_load.
+//                               The GUI's silent-overwrite is
+//                               logged as a separate backlog item
+//                               (the third "GUI is laxer than
+//                               script" gap, alongside on_open's
+//                               missing check_unsaved_then and
+//                               on_save_as's only-confirm-on-file-
+//                               clash — though save_as at least
+//                               does have a confirm dialog, which
+//                               on_new_project doesn't).
+//
+//                             - Create failed (CurvzProject::
+//                               create_empty returned null —
+//                               directory creation failed or the
+//                               immediate save() inside
+//                               create_empty failed): refuse with
+//                               structured error. The two failure
+//                               causes are conflated because
+//                               create_empty itself doesn't
+//                               distinguish them today.
+//
+//                             - Otherwise: delegate to
+//                               MainWindow::script_new_project(path),
+//                               which delegates the actual project
+//                               swap to load_project() (the same
+//                               orchestrator on_new_project calls
+//                               inside its file-dialog lambda).
+//                               Return Null (listener prints `ok`).
+//
+//                             RunContext mask:
+//                                 ctx::TestRunner
+//                             — TestRunner ONLY. Scripter and Macro
+//                             both OUT, by the same surface-
+//                             preservation rule that applies to
+//                             close and load: a successful new
+//                             destroys any currently-loaded project
+//                             and seeds a fresh empty one in its
+//                             place. new is the third verb shipped
+//                             under this rule (close was first,
+//                             load was second). Same TestRunner-only
+//                             constant; no novel mask shape.
+//
+//                             **Sixth consumer of context_mask()** —
+//                             clock goes 5/n → 6/n. Promotion STILL
+//                             HELD by design (see context_mask()
+//                             declaration block below): new's mask
+//                             (TestRunner only) is sibling to
+//                             save_as's, close's, and load's —
+//                             same constant applied to a fourth
+//                             verb-name string within this
+//                             Scriptable, no novel mask shape
+//                             earned.
+//
 // ── Query surface (s246 m1: `path`, `has_path`; s248 m1: + `dirty`) ────────
 //
 //   path                    — String. The project's directory path
@@ -471,15 +640,7 @@
 // Both reads only; no RunContext gating (queries are not gated by
 // canon: "Every model query. Reads can't corrupt.").
 //
-// ── Out of scope for s249 m1 ───────────────────────────────────────────────
-//
-// **`new <path>` verb** — create a fresh project at the supplied
-// directory. Same TestRunner-only treatment as load (creating a new
-// project also replaces the existing one when one is loaded, so the
-// surface-preservation rule applies the same way). Mechanically
-// distinct from load though: new doesn't read existing disk; it
-// constructs an empty project on a not-yet-existing directory. Same
-// shape as save_as's empty-target case. Probably s250 m1.
+// ── Out of scope for s250 m1 ───────────────────────────────────────────────
 //
 // **`force_close` / `close --discard`** — close a dirty project
 // without saving, losing the unsaved work. The Discard branch of
@@ -498,6 +659,20 @@
 // Dirty refusal becomes the structural opt-in path: "to load
 // anyway, call `proj save` first, or wait for a future
 // force_load verb."
+//
+// **`force_new` / `new --replace`** — create a fresh project at a
+// path that already exists, overwriting any existing project there.
+// The opt-in path for the s250 m1 TargetExists refusal. Same
+// banked-for-when-named posture as force_close and force_load.
+// The shape will probably be a sibling verb (force_new, distinct
+// mask) for the same "yes I'm sure" reading discipline; the
+// overlap with force_load + dirty's opt-in is interesting (a
+// force_new against an existing project is BOTH "overwrite the
+// existing project" AND "discard my current unsaved work"), but
+// the two opt-ins read distinctly because they correspond to
+// distinct refusal sources — the script author who hits both
+// refusals reaches for both force verbs in sequence rather than
+// one combined verb that papers over the distinction.
 //
 // ── Lifetime ───────────────────────────────────────────────────────────────
 //
@@ -539,7 +714,7 @@ public:
     std::vector<std::string> verbs()      const override;
     std::vector<std::string> properties() const override;
 
-    // s246 m1 / s247 m1 / s248 m1 / s249 m1 — RunContext mask declarations.
+    // s246 m1 / s247 m1 / s248 m1 / s249 m1 / s250 m1 — RunContext mask declarations.
     //
     //   save     — ctx::Scripter | ctx::TestRunner (Macro is OUT —
     //              per CANON's RunContext pseudocode and the
@@ -582,39 +757,53 @@ public:
     //              earlier lines weren't written against). Same
     //              TestRunner-only constant as save_as and close;
     //              no novel mask shape.
+    //   new      — ctx::TestRunner only. Scripter and Macro both
+    //              OUT. Third verb under the surface-preservation
+    //              rule (close was first, load was second). A
+    //              successful new destroys any currently-loaded
+    //              project and seeds a fresh empty one in its
+    //              place. Mechanically distinct from load (writes
+    //              new disk state rather than reading existing
+    //              state) but the surface-preservation problem is
+    //              identical: the script's trace continues against
+    //              a different project than the earlier lines were
+    //              written against. Same TestRunner-only constant
+    //              as save_as, close, and load; no novel mask
+    //              shape.
     //
-    // Future verbs (`new`, `force_close`, `force_load`) will declare
-    // their own masks here when they land. See scripting/RunContext.hpp
-    // for the enum and helper constants; see CANON's "RunContext
-    // gates the verb surface" entry for the declaration discipline.
+    // Future verbs (`force_close`, `force_load`, `force_new`) will
+    // declare their own masks here when they land. See
+    // scripting/RunContext.hpp for the enum and helper constants;
+    // see CANON's "RunContext gates the verb surface" entry for the
+    // declaration discipline.
     //
-    // NOTE: with `load` shipping, this is the FIFTH consumer of
+    // NOTE: with `new` shipping, this is the SIXTH consumer of
     // context_mask() (Inspector + this Scriptable's `save` +
-    // `save_as` + `close` + `load`). The registry-promotion clock
-    // is now at 5/n.
+    // `save_as` + `close` + `load` + `new`). The registry-promotion
+    // clock is now at 6/n.
     //
-    // **Decision (s249 m1): STILL HOLD the promotion.** Same
-    // reasoning as at 4/n: load's mask (TestRunner-only) is sibling
-    // to save_as's and close's — same constant applied to a third
-    // verb-name string. No novel mask combination has appeared.
-    // The same-shape argument that applied at 3/3 still applies at
-    // 5/n.
+    // **Decision (s250 m1): STILL HOLD the promotion.** Same
+    // reasoning as at 5/n: new's mask (TestRunner-only) is sibling
+    // to save_as's, close's, and load's — same constant applied to
+    // a fourth verb-name string within this Scriptable. No novel
+    // mask combination has appeared. The same-shape argument that
+    // applied at 3/3 still applies at 6/n.
     //
-    // The catalogue across this Scriptable is becoming visibly
+    // The catalogue across this Scriptable is now markedly
     // uniform: one verb at the Scripter | TestRunner mask (save),
-    // three verbs at the TestRunner-only mask (save_as, close,
-    // load). That uniformity is itself an argument FOR a future
-    // promotion — when half the verbs share a constant, hoisting
-    // the constant to a registry would dedupe the comment blocks
-    // even more than the if-branches. Banked observation; not
-    // forcing the promotion yet because (a) typo-bug, (c) catalogue
-    // growth past ~8 declarations, or (d) any future consumer with
-    // a genuinely new mask shape (a Macro-only verb, a "TestRunner +
-    // special caller" combination, anything novel — load doesn't
-    // count, it just adds another instance of the existing
-    // TestRunner-only mask) still haven't fired. See s248 handoff
-    // "Architectural forks" for the at-four reasoning; s249 doesn't
-    // change the call.
+    // four verbs at the TestRunner-only mask (save_as, close,
+    // load, new). That uniformity strengthens the argument FOR a
+    // future promotion — when 80% of the verbs share a constant,
+    // hoisting it to a registry would dedupe the comment blocks
+    // even more than the if-branches. The argument AGAINST
+    // promotion-today is also unchanged: no typo bug has bitten,
+    // the catalogue hasn't grown past ~8 declarations, and no
+    // future consumer with a genuinely new mask shape has appeared
+    // (Macro-only verb, "TestRunner + special caller" combination,
+    // anything novel — new doesn't count, it just adds the fourth
+    // instance of the same TestRunner-only mask). Banked
+    // observation. See s248 handoff "Architectural forks" for the
+    // at-four reasoning; s249 / s250 don't change the call.
     RunContextMask context_mask(std::string_view verb) const override;
 
 private:

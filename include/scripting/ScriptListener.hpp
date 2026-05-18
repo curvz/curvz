@@ -72,6 +72,7 @@
 // — production builds don't compile this TU at all.
 
 #pragma once
+#include "scripting/RunContext.hpp"
 #include "scripting/ScriptValue.hpp"
 #include <functional>
 #include <istream>
@@ -89,6 +90,34 @@ public:
     explicit ScriptListener(std::istream& in);
 
     void set_output_callback(OutputCallback cb) { m_out = std::move(cb); }
+
+    // ── RunContext gating (s244 m2) ──────────────────────────────────────
+    //
+    // Each listener instance carries its caller context — set by the
+    // host (ScripterWindow → Scripter; future CLI test runner →
+    // TestRunner; future MacroSystem-as-script-client → Macro). The
+    // dispatcher checks the context against each verb's mask on every
+    // invoke; mismatched calls refuse with a structured error and an
+    // audit log entry.
+    //
+    // Default is `Scripter` — the only caller that exists today is
+    // ScripterWindow's listener, so a default-constructed listener
+    // behaves like the in-app debugger. A future site that forgets to
+    // call set_run_context() inherits "scripter" semantics, which is
+    // the right unintended default: wider than Macro, narrower than
+    // TestRunner. Closed-door defaults like Macro would silently
+    // refuse every sensitive verb in any forgot-to-set site, which is
+    // a different kind of failure than what these defaults should
+    // optimise for.
+    //
+    // The context is caller-determined, not user-toggleable — there
+    // is no "elevate this Scripter session" path. See CANON's
+    // "RunContext gates the verb surface — no elevation toggle" entry.
+    // Hosts that legitimately need a wider surface (the future CLI
+    // test runner) set the context once at engine-instance creation
+    // and never change it.
+    void        set_run_context(RunContext c) { m_context = c; }
+    RunContext  run_context() const           { return m_context; }
 
     // Reads all lines from the stream into a queue, returns immediately.
     void load();
@@ -208,6 +237,12 @@ private:
     DoneCallback             m_on_done;
     ActionCallback           m_action;  // s201 m3
     int                      m_next_delay_mult = 1;
+
+    // s244 m2 — caller context for verb-mask gating. Default is
+    // Scripter (the only caller wiring that exists today). See the
+    // set_run_context() comment in the public section for the
+    // closed-door-defaults reasoning and the audit-log contract.
+    RunContext               m_context = RunContext::Scripter;
 
     // s216 m2 / s217 m1 — last-result slot for the `result` substitution
     // token. (Was `@` in s216 m2; renamed in s217 m1 to match

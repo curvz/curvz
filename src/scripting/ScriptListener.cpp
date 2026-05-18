@@ -20,6 +20,7 @@
 #include "scripting/Scriptable.hpp"
 #include "scripting/ScriptableRegistry.hpp"
 #include "scripting/WidgetNameResolver.hpp"
+#include "CurvzLog.hpp"   // s244 m2 — audit log for RunContext refusals
 
 #include <algorithm>
 #include <cctype>
@@ -837,6 +838,41 @@ void ScriptListener::run_line(const std::string& raw) {
     if (!obj) { report_unknown(toks[0].text); return; }
     ScriptArgs args;
     for (size_t i = 2; i < toks.size(); ++i) args.push_back(token_to_value(toks[i]));
+
+    // s244 m2 — RunContext gating. Each verb declares a bitmask of
+    // permitted callers via Scriptable::context_mask(verb); the
+    // listener's m_context names the current caller (set by the host
+    // at engine-instance creation). Mismatch → structured refusal +
+    // audit log, no dispatch. Default verb mask is `ctx::all_three`
+    // so every existing verb on every existing Scriptable stays
+    // callable from every existing caller; only verbs that override
+    // context_mask() to declare a narrower mask trip this check.
+    //
+    // The check fires AFTER object resolution (so the "unknown
+    // object" error path still works) but BEFORE args are evaluated
+    // for any side effect. args are already built above as plain
+    // value copies — no side effects in the build, so the order
+    // there doesn't matter. The audit log entry names the caller
+    // context, the object, the verb, and the verb's mask so a
+    // refusal in production is fully forensically reconstructible.
+    {
+        RunContextMask mask = obj->context_mask(toks[1].text);
+        if (!context_allows(m_context, mask)) {
+            std::string msg = "error invoke refused: verb '" + toks[1].text
+                + "' on '" + toks[0].text
+                + "' not permitted in "
+                + context_name(m_context) + " context\n";
+            out(msg);
+            LOG_WARN("ScriptListener: RunContext refusal — "
+                     "caller='{}' object='{}' verb='{}' verb_mask={}",
+                     context_name(m_context),
+                     toks[0].text, toks[1].text,
+                     static_cast<unsigned>(mask));
+            ++m_stats.errors;
+            return;
+        }
+    }
+
     try {
         ScriptValue result = obj->invoke(toks[1].text, args);
         if (result.kind == ValueKind::Null) {

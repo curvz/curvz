@@ -494,6 +494,13 @@ set(SOURCES
     # a different shape — meta over the window's layout, not over a
     # project sub-system.
     src/scripting/InspectorScriptable.cpp
+    # s246 m1 — `proj` Scriptable. First headless-verb singleton from
+    # ARC m5b (Tier 4). Same singleton shape as inspector (flat verb
+    # surface, no proxy routing, MainWindow-pointer ctor) but wraps
+    # the project-level save outcome rather than the inspector area's
+    # section orchestration. One verb (`save`) + two queries (`path`,
+    # `has_path`) in m1; save_as / load / new / close land in s247+.
+    src/scripting/ProjScriptable.cpp
     src/curvz/widgets/ToggleButton.cpp
     src/curvz/widgets/Button.cpp
     src/curvz/widgets/CheckButton.cpp

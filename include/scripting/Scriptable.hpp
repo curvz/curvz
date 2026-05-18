@@ -24,6 +24,7 @@
 // to any subscribers (the listener's recorder/logger).
 
 #pragma once
+#include "scripting/RunContext.hpp"
 #include "scripting/ScriptValue.hpp"
 #include <memory>
 #include <string>
@@ -165,6 +166,33 @@ public:
     virtual std::unique_ptr<Scriptable>
         proxy_for(std::string_view /*key*/) {
         return nullptr;
+    }
+
+    // ── RunContext gating (s244 m2) ──────────────────────────────────────
+    //
+    // Each verb on this Scriptable declares which caller contexts may
+    // invoke it. Default is `ctx::all_three` — every existing verb on
+    // every existing Scriptable stays callable from every existing
+    // caller (backward-compat under CANON's "default is widest
+    // reasonable" rule). Sensitive verbs override this method to
+    // declare a narrower mask; the dispatcher checks the caller's
+    // context against the returned mask before calling invoke().
+    //
+    // Reads (`query`) are not gated — see CANON's RunContext entry:
+    // "Every model query. Reads can't corrupt." The dispatcher only
+    // calls this method on the invoke path.
+    //
+    // The verb name is passed in so a single Scriptable with mixed
+    // verb sensitivities can declare them per-verb without splitting
+    // into multiple Scriptables. Unknown verb names (e.g. typos)
+    // SHOULD fall through to the default — the invoke() method itself
+    // is responsible for noticing the verb is unknown.
+    //
+    // See scripting/RunContext.hpp for the enum, the mask type, and
+    // the helper constants (ctx::TestRunner, ctx::Macro, ctx::Scripter,
+    // ctx::all_three).
+    virtual RunContextMask context_mask(std::string_view /*verb*/) const {
+        return ctx::all_three;
     }
 
 protected:

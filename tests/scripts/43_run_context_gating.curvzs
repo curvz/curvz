@@ -1,0 +1,160 @@
+# 43_run_context_gating - exercises the two structural rules in m5c
+# (ARC's security architecture, Tier 5). Closes the m5c arc opened
+# by s244 m1's path_is_safe utility. Tier 5 row ticks 0/2 -> 2/2 on
+# this smoke's clean pass.
+#
+# ── What this Scriptable surface is for ──────────────────────────────────
+#
+# m5c lands two structural rules in the script engine. Neither has a
+# user-facing observable on its own - they live in the dispatcher
+# plumbing under the m5b headless-verb singletons that will ship
+# next:
+#
+#   1. Path containment (s244 m1): scripted callers that take a path
+#      argument resolve the path through realpath() and refuse unless
+#      the resolved absolute path is under $HOME or $TMPDIR. The
+#      utility (curvz::scripting::path_is_safe) is init'd once at
+#      Application::on_startup and called once per sensitive verb.
+#
+#   2. RunContext gating (s244 m2): every verb declares a bitmask of
+#      caller contexts (TestRunner / Macro / Scripter) permitted to
+#      invoke it. The dispatcher checks the caller's context against
+#      the mask on every invoke. Default mask is all-three so every
+#      existing verb stays callable.
+#
+# Both rules are exercised here through the diagnostic surface on
+# `inspector` (s244 m2):
+#
+#   query  home_root                  - cached $HOME root (string)
+#   query  tmp_root                   - cached $TMPDIR root (string)
+#   query  home_root_initialised      - bool (assertable)
+#   query  tmp_root_initialised       - bool (assertable)
+#   query  home_root_is_safe          - bool, accept-side
+#   query  tmp_root_is_safe           - bool, accept-side
+#   query  etc_is_safe                - bool, refuse-side (/etc/passwd)
+#   query  slash_is_safe              - bool, refuse-side (/)
+#   query  empty_is_safe              - bool, refuse-side ("")
+#   verb   diagnose_universal         - returns "ok" (universal mask)
+#   verb   diagnose_test_runner_only  - TestRunner mask only
+#
+# path_is_safe coverage is provided through queries (not a verb
+# taking a path arg) so each case is `assert`-able - the DSL's
+# `assert` form is equality-on-query-result.
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# No mutation. All queries pull from process-immutable cached state
+# or are pure reads of path_is_safe with hardcoded paths. The two
+# verbs are stateless (return strings). The smoke is repeatable
+# without setup or teardown.
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# This smoke runs through ScripterWindow's listener, which sets its
+# m_context to RunContext::Scripter at ctor (s244 m2 wiring in
+# ScripterWindow.cpp). Every verb invocation here therefore comes
+# from the Scripter context. The accept-path observable
+# (diagnose_universal) is a verb whose mask includes Scripter; the
+# refuse-path observable (diagnose_test_runner_only) is gated to
+# TestRunner only and is refused by the dispatcher BEFORE its body
+# runs.
+#
+# The refusal is visible in the trace as:
+#
+#   > inspector diagnose_test_runner_only
+#   error invoke refused: verb 'diagnose_test_runner_only' on
+#   'inspector' not permitted in scripter context
+#
+# The DSL's `assert` is equality-only, so this negative-path check
+# is not assertable directly - the operator confirms by reading the
+# error line in the output. Same convention as 42_palettes' miss
+# case (`palettes find_by_name "no_such_palette"`). The summary's
+# error count will be 1 when this smoke passes - that single error
+# IS the dispatcher gating working as designed.
+
+#[sub] === Phase 1: path_is_safe init verification ===
+
+#[sub] init_roots() runs once in Application::on_startup. The
+#[sub] cached HOME / TMP roots survive for the process's lifetime.
+#[sub] Both should be populated by the time the smoke runs.
+
+get inspector home_root
+get inspector tmp_root
+assert inspector home_root_initialised == true
+assert inspector tmp_root_initialised == true
+
+#[sub] === Phase 2: path_is_safe acceptance ===
+
+#[sub] Accept: home_root and tmp_root ARE the cached roots, so they
+#[sub] must be safe by construction (equal to the prefix they're
+#[sub] checked against). These are the trivial accept cases that
+#[sub] confirm the predicate behaves on its own inputs.
+
+assert inspector home_root_is_safe == true
+assert inspector tmp_root_is_safe == true
+
+#[sub] === Phase 3: path_is_safe refusal ===
+
+#[sub] Refuse: /etc/passwd is universally outside $HOME and /tmp on
+#[sub] any Linux FHS install. Realpath resolves through any /etc
+#[sub] symlink, then the prefix check refuses.
+
+assert inspector etc_is_safe == false
+
+#[sub] Refuse: the filesystem root. Strictly shallower than either
+#[sub] cached root by construction; prefix check refuses.
+
+assert inspector slash_is_safe == false
+
+#[sub] Refuse: empty path. The degenerate case path_is_safe handles
+#[sub] at the top of the predicate with the "empty path" reason.
+
+assert inspector empty_is_safe == false
+
+#[sub] === Phase 4: RunContext gating accept ===
+
+#[sub] Accept: a verb whose mask includes Scripter (the default
+#[sub] all-three mask, inherited from Scriptable's base). The
+#[sub] dispatcher's gating check passes and the verb's body runs,
+#[sub] returning "ok". Verb returns are not directly assertable
+#[sub] via the DSL's equality-only `assert`, so this is operator-
+#[sub] visual: read the `= "ok"` echo line in the trace after the
+#[sub] line below.
+
+inspector diagnose_universal
+
+#[sub] === Phase 5: RunContext gating refuse ===
+
+#[sub] Refuse: a verb gated to TestRunner only. From Scripter
+#[sub] context, the dispatcher refuses BEFORE the verb's body
+#[sub] runs. The expected trace line is:
+#[sub]
+#[sub]   error invoke refused: verb 'diagnose_test_runner_only'
+#[sub]   on 'inspector' not permitted in scripter context
+#[sub]
+#[sub] The DSL has no equality-comparable "did the last line
+#[sub] error" predicate, so this is operator-visual: read the
+#[sub] line below this comment in the trace and confirm the
+#[sub] refusal appears. The smoke's summary line at end will
+#[sub] show 1 error (this one), which IS the gating working as
+#[sub] designed.
+
+inspector diagnose_test_runner_only
+
+#[sub] === Phase 6: post-refusal sanity ===
+
+#[sub] After the refused invoke, the listener should be in a
+#[sub] clean state. A subsequent legitimate invoke must succeed
+#[sub] (the refuse path is a structured early-return, not a
+#[sub] listener-level error that corrupts dispatch state).
+#[sub] Operator-visual again - watch for `= "ok"` below.
+
+inspector diagnose_universal
+
+#[sub] s244 m2 smoke complete. Expected summary line: 7 PASSes
+#[sub] (init verify x2, path_is_safe accept x2, path_is_safe
+#[sub] refuse x3) and 1 error (the diagnose_test_runner_only
+#[sub] refusal - intentional). Operator-visual on the two
+#[sub] diagnose_universal `= "ok"` echoes (accept-path and
+#[sub] post-refuse sanity). m5c arc closes; Tier 5 row ticks
+#[sub] 0/2 -> 2/2.

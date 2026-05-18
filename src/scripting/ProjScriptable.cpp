@@ -41,8 +41,24 @@
 // boundary. Fifth consumer of context_mask(); promotion STILL
 // held (same-mask-as-existing-verb argument applies again).
 //
-// (Subsequent milestones: `new`, `force_close`, `force_load` in s250+
-// — all TestRunner-only by the same surface-preservation rule.)
+// s250 m1 — fifth verb: `new <path>`. Closes the m5b proj-surface
+// arc at 5 of 5 File-menu items (save / save_as / close / load /
+// new). Sibling to load in code shape (same one-path-arg +
+// path_is_safe + MainWindow helper pattern; same no-do_-lift
+// because load_project IS the orchestrator the GUI delegates to);
+// sibling to load in posture (TestRunner-only by the surface-
+// preservation rule when replacing an existing project; same
+// stricter-than-GUI Dirty refusal). Mechanically distinct: load
+// reads existing disk, new creates fresh disk via
+// CurvzProject::create_empty. The construction difference
+// introduces one new structural refusal — TargetExists — that
+// load doesn't have. Sixth consumer of context_mask(); promotion
+// STILL held (fourth instance of the same TestRunner-only mask
+// within this Scriptable; no novel shape).
+//
+// (Subsequent milestones: `force_close`, `force_load`, `force_new`
+// when use cases name the need — all TestRunner-only by the same
+// surface-preservation rule.)
 //
 // See ProjScriptable.hpp for the verb / query surface, the per-verb
 // refusal contracts, and the design rationale for why this is a
@@ -50,18 +66,19 @@
 //
 // The body is small because each verb delegates to MainWindow's
 // script-side helper (`script_save_project` / `script_save_project_as`
-// / `script_close_project`), which packages the same state checks
-// the GUI handler does plus the call to the underlying writer /
-// teardown method. The helper returns an enum naming the outcome;
+// / `script_close_project` / `script_load_project` /
+// `script_new_project`), which packages the same state checks the
+// GUI handler does plus the call to the underlying writer / teardown
+// / factory method. The helper returns an enum naming the outcome;
 // the Scriptable maps that enum to either a happy-path `ok` (return
 // Null) or a structured error throw (the listener catches and prints
 // `error invoke threw: <message>`).
 //
-// save_as additionally pre-validates its path argument through
-// path_is_safe BEFORE calling the helper. That split (path-safety in
-// the Scriptable, state-check + writer in MainWindow) keeps the two
-// gates in separate layers — the safety gate doesn't know about
-// project state, the state-check gate doesn't know about path
+// save_as / load / new additionally pre-validate the path argument
+// through path_is_safe BEFORE calling the helper. That split (path-
+// safety in the Scriptable, state-check + I/O in MainWindow) keeps
+// the two gates in separate layers — the safety gate doesn't know
+// about project state, the state-check gate doesn't know about path
 // containment.
 //
 // The Scriptable / MainWindow split keeps Scriptable thin (DSL-facing
@@ -365,6 +382,111 @@ ScriptValue ProjScriptable::invoke(std::string_view verb,
         return ScriptValue::null();
     }
 
+    if (verb == "new") {
+        // s250 m1 — fifth verb on this Scriptable. Closes the m5b
+        // proj-surface arc at 5 of 5 File-menu items. Same code
+        // shape as load (one path arg, path_is_safe pre-flight,
+        // MainWindow helper delegating to load_project); same
+        // TestRunner-only mask as save_as, close, and load. Third
+        // verb under the surface-preservation rule (close was
+        // first, load was second; new is the third). Mechanically
+        // distinct from load: load reads an existing .curvz via
+        // CurvzProject::open, while new creates a fresh one via
+        // CurvzProject::create_empty.
+        //
+        // Argument validation mirrors save_as and load exactly:
+        // exactly one arg, coercible to string, non-empty. Wrong
+        // shape is a structured throw (same posture as every
+        // refusal branch on this Scriptable).
+        if (args.size() != 1) {
+            throw std::runtime_error(
+                "proj new: expected exactly one path argument");
+        }
+        std::string path = arg_as_string(args[0]);
+        if (path.empty()) {
+            // Empty string OR wrong arg kind. Same combined message
+            // as save_as and load; observable from the script
+            // author's perspective is identical ("you didn't supply
+            // a usable path").
+            throw std::runtime_error(
+                "proj new: path argument is empty or not a string");
+        }
+
+        // Path-containment pre-flight. THIRD production call site
+        // for path_is_safe (save_as was first, load was second).
+        // Same Scripter-unreachability note as save_as and load —
+        // the dispatcher's RunContext gate refuses new BEFORE
+        // invoke() runs (new's mask is ctx::TestRunner only;
+        // Scripter is not in it). The branch is wired live for the
+        // future TestRunner caller.
+        //
+        // Behaviour under path_is_safe: new creates a not-yet-
+        // existing directory at the supplied path, so the
+        // walk-up-to-existing-ancestor logic inside path_is_safe is
+        // exercised here (same as save_as; load takes the simpler
+        // direct-resolve path because its target must already
+        // exist).
+        std::string reason;
+        if (!path_is_safe(path, &reason)) {
+            throw std::runtime_error(
+                "proj new: " + reason);
+        }
+
+        // Path cleared the safety gate. Delegate to MainWindow's
+        // helper. The helper does drag check + dirty check +
+        // target-exists check + CurvzProject::create_empty +
+        // load_project. We just map the return-enum to the
+        // Scriptable's outward contract.
+        using R = Curvz::MainWindow::ScriptNewResult;
+        switch (m_main_window->script_new_project(path)) {
+            case R::Ok:
+                return ScriptValue::null();
+            case R::Dragging:
+                throw std::runtime_error(
+                    "proj new: canvas drag in progress");
+            case R::Dirty:
+                // STRICTER than the GUI's on_new_project (which
+                // routes through check_unsaved_then — a modal the
+                // script can't summon). Refuse and point the
+                // script author at the explicit save, matching
+                // load's posture and message shape. A future
+                // force_new verb (s250+) gives the discard path.
+                throw std::runtime_error(
+                    "proj new: project has unsaved changes; "
+                    "save first ('proj save' or 'proj save_as "
+                    "<path>') or wait for a future force_new");
+            case R::TargetExists:
+                // STRICTER than the GUI's on_new_project (which
+                // silently overwrites whatever's at the target).
+                // This is the NEW refusal not present in load
+                // (load wants the target to EXIST; new wants it
+                // NOT to). Refuse and point the script author at
+                // either a different path or, eventually, the
+                // future force_new verb that gives the overwrite
+                // path. Surfacing `path` in the message is the
+                // useful diagnostic — most failures here will be
+                // typos against an established directory.
+                throw std::runtime_error(
+                    "proj new: target '" + path + "' already exists; "
+                    "use a different path or wait for a future "
+                    "force_new");
+            case R::CreateFailed:
+                // CurvzProject::create_empty returned null. Conflates
+                // directory-creation failure and the immediate save()-
+                // inside-create_empty failure (create_empty() doesn't
+                // distinguish them today). When create_empty grows
+                // distinguishable error returns, the enum can split
+                // without breaking the existing Ok path.
+                throw std::runtime_error(
+                    "proj new: failed to create project at '" + path +
+                    "' (directory-creation or initial-save failed)");
+        }
+        // Unreachable — switch is exhaustive — but keeps the
+        // compiler quiet about non-void return paths (mirrors save's,
+        // save_as's, close's, and load's tails).
+        return ScriptValue::null();
+    }
+
     // Unknown verb — silent null, same posture as Inspector. The
     // listener doesn't currently flag unknown verbs (it does flag
     // unknown queries via the property() path); the surface stays
@@ -423,13 +545,17 @@ ScriptValue ProjScriptable::query(std::string_view property) const {
 }
 
 std::vector<std::string> ProjScriptable::verbs() const {
-    // s246 m1 / s247 m1 / s248 m1 / s249 m1 — four verbs. new /
-    // force_close / force_load land in subsequent milestones (s250+).
+    // s246 m1 / s247 m1 / s248 m1 / s249 m1 / s250 m1 — five verbs.
+    // m5b proj-surface arc CLOSES at this point: all five File-menu
+    // items (save / save_as / close / load / new) are addressable.
+    // force_close / force_load / force_new land in subsequent
+    // milestones when use cases name the need.
     return {
         "save",
         "save_as",
         "close",
         "load",
+        "new",
     };
 }
 
@@ -444,7 +570,7 @@ std::vector<std::string> ProjScriptable::properties() const {
     };
 }
 
-// s246 m1 / s247 m1 / s248 m1 / s249 m1 — RunContext mask declarations.
+// s246 m1 / s247 m1 / s248 m1 / s249 m1 / s250 m1 — RunContext mask declarations.
 //
 // `save`    — ctx::Scripter | ctx::TestRunner. Macro OUT (canon's
 //             "Macro: not save_as <arbitrary>, not preferences
@@ -484,17 +610,31 @@ std::vector<std::string> ProjScriptable::properties() const {
 //             a different one in its place. Same TestRunner-only
 //             constant as save_as and close; no novel mask shape.
 //
+// `new`     — ctx::TestRunner only. Scripter and Macro both OUT.
+//             Third verb under the surface-preservation rule
+//             (close was first, load was second). A successful
+//             new destroys any currently-loaded project and seeds
+//             a fresh empty one in its place. Mechanically
+//             distinct from load (creates rather than reads) but
+//             the surface-preservation problem is identical:
+//             trace continues against a different project than
+//             earlier lines were written against. Same
+//             TestRunner-only constant as save_as, close, and
+//             load; no novel mask shape.
+//
 // Unknown verbs (typos, future verbs not yet declared) fall through
 // to the base default of ctx::all_three. That matches the note in
 // Scriptable::context_mask: "Unknown verb names (e.g. typos) SHOULD
 // fall through to the default — the invoke() method itself is
 // responsible for noticing the verb is unknown."
 //
-// Fifth consumer of context_mask() (Inspector + proj.save +
-// proj.save_as + proj.close + proj.load). Registry-promotion clock
-// is at 5/n and STILL HELD by design — see ProjScriptable.hpp's
-// context_mask declaration block for the at-five reasoning (load's
-// mask is sibling to save_as's and close's; no novel mask shape).
+// Sixth consumer of context_mask() (Inspector + proj.save +
+// proj.save_as + proj.close + proj.load + proj.new). Registry-
+// promotion clock is at 6/n and STILL HELD by design — see
+// ProjScriptable.hpp's context_mask declaration block for the
+// at-six reasoning (new's mask is sibling to save_as's, close's,
+// and load's; no novel mask shape, fourth instance of the same
+// TestRunner-only constant within this Scriptable).
 RunContextMask
 ProjScriptable::context_mask(std::string_view verb) const {
     if (verb == "save") {
@@ -507,6 +647,9 @@ ProjScriptable::context_mask(std::string_view verb) const {
         return ctx::TestRunner;
     }
     if (verb == "load") {
+        return ctx::TestRunner;
+    }
+    if (verb == "new") {
         return ctx::TestRunner;
     }
     return ctx::all_three;

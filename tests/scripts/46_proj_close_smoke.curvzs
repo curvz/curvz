@@ -1,0 +1,196 @@
+# 46_proj_close_smoke — third verb on the proj headless-verb singleton
+# (s248 m1). Also exercises the new `dirty` query.
+#
+# Tier 4 row remains at 1/~4-5: same singleton, third verb; no tick.
+# Surface widening: proj verb count 2 → 3, proj query count 2 → 3.
+#
+# ── s248 m1 fix re-ship note ─────────────────────────────────────────────
+#
+# The initial s248 m1 ship declared `proj close` as
+# ctx::Scripter | ctx::TestRunner by analogy to save's mask shape.
+# Testing surfaced a segfault when this smoke called proj close from
+# Scripter: do_close_project's teardown invalidates state the
+# Scripter window depends on for output rendering, and subsequent
+# script lines crash. The deeper structural problem is that even
+# WITH the segfault patched, a successful close leaves the script's
+# trace unobservable — the project the trace refers to is gone, and
+# there is no current "copy results to clipboard before destroying"
+# verb. close is now ctx::TestRunner only, sibling to save_as.
+#
+# The rule: scripts can't safely destroy their own RESULT SURFACE
+# (output buffer, project, host window). See ProjScriptable.hpp's
+# verb-surface block at `close` for the full surface-preservation
+# rationale and the catalogue of future verbs (load / new /
+# force_close / app quit) it constrains.
+#
+# This smoke is correspondingly a refusal-shape smoke, parallel to
+# smoke 45 (proj save_as): RunContext gate refuses every close call
+# from Scripter, regardless of project state, and the verb body
+# never runs.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# 1. The new `dirty` query (s248 m1). First exercise in the smoke
+#    corpus. Read-only; no RunContext gating (CANON's "every model
+#    query — reads can't corrupt" line). Returns true iff a project
+#    is loaded AND m_history.can_undo() is true — the same proxy
+#    on_close_project's check_unsaved_then uses in the GUI.
+#
+# 2. RunContext refusal of `proj close` from Scripter. Same dispatcher
+#    layer as smoke 45's save_as refusal; the verb body never runs.
+#    The expected trace line is:
+#
+#      error invoke refused: verb 'close' on 'proj' not permitted
+#      in scripter context
+#
+# 3. Post-refusal sanity: the project's state observables (path,
+#    has_path, dirty) are unchanged after the refused call. The
+#    RunContext gate is a structured early-return; no state mutation
+#    happens. This is the same structural property smoke 45 confirmed
+#    for save_as — and the smoke-46 reason it matters is even
+#    stronger: the close-from-Scripter SEGFAULT proved the verb body
+#    is not safe to run, so the gate's clean refusal is what stands
+#    between the script and the crash.
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# This smoke runs through ScripterWindow's listener, m_context =
+# RunContext::Scripter. `proj close` declares its mask as
+# ctx::TestRunner only (Scripter and Macro both OUT). The
+# dispatcher's context_allows check returns false on every close
+# invoke from this caller — refuses with the standard structured
+# error line, before the verb body runs.
+#
+# Fourth consumer of Scriptable::context_mask() (Inspector +
+# proj.save + proj.save_as + proj.close). Registry-promotion clock
+# at 4/n; STILL HELD by design.
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# Fully non-destructive. Every `proj close` call refuses at the
+# dispatcher gate before any teardown happens; the project's state
+# is untouched across the entire smoke run. Repeatable without
+# setup or teardown; safe to run against any session state.
+
+#[sub] === Phase 1: project state precondition (operator-visual) ===
+
+#[sub] Get the project's current directory path. Operator-visual:
+#[sub] this should be the .curvz directory Scott has open right now.
+
+get proj path
+
+#[sub] Get the dirty signal. This is the first run of `proj dirty`
+#[sub] in the smoke corpus (s248 m1's new query). Operator-visual:
+#[sub]
+#[sub]   = true  → project has work on the undo stack
+#[sub]   = false → project history is empty (just saved, or just
+#[sub]             loaded without edits)
+#[sub]
+#[sub] Either value is fine for this smoke — the close call below
+#[sub] refuses at the dispatcher gate regardless of state, so the
+#[sub] dirty value is informational, not a branch determinant.
+
+get proj dirty
+
+#[sub] === Phase 2: structural precondition (assertable) ===
+
+#[sub] Confirm a project is loaded. has_path is the assertable
+#[sub] precondition for the post-refusal sanity checks below to be
+#[sub] meaningful (if has_path were false, "path unchanged after
+#[sub] refusal" would be trivially true on both sides).
+
+assert proj has_path == true
+
+#[sub] === Phase 3: RunContext refusal of proj close ===
+
+#[sub] Call `proj close`. close's mask is ctx::TestRunner only; the
+#[sub] dispatcher refuses BEFORE the verb body runs. Expected line:
+#[sub]
+#[sub]   error invoke refused: verb 'close' on 'proj' not permitted
+#[sub]   in scripter context
+#[sub]
+#[sub] Operator-visual on the refusal: read the line below this
+#[sub] comment in the trace and confirm the structured refusal
+#[sub] appears with the exact wording above.
+#[sub]
+#[sub] This is the structural property the smoke confirms: the
+#[sub] surface-preservation rule (see header banner) IS enforced by
+#[sub] the RunContext layer. The verb body — which would otherwise
+#[sub] segfault when called from Scripter — is structurally
+#[sub] unreachable.
+
+proj close
+
+#[sub] === Phase 4: post-refusal sanity (assertable) ===
+
+#[sub] After the refused invoke, the project's state is unchanged.
+#[sub] The RunContext gate is a structured early-return (the verb
+#[sub] body never ran), so no teardown happened. Two assertions
+#[sub] make this observable:
+#[sub]
+#[sub]   - has_path stays true: project is still loaded.
+#[sub]   - dirty value at the end of the smoke matches the value at
+#[sub]     Phase 1.
+#[sub]
+#[sub] The second assertion can't be expressed directly in the DSL
+#[sub] (no variable capture of Phase 1's value). It's operator-
+#[sub] visual: read the `get proj dirty` echo below and confirm it
+#[sub] matches Phase 1's echo.
+
+assert proj has_path == true
+
+get proj dirty
+
+#[sub] s248 m1 smoke complete. Expected summary line:
+#[sub]
+#[sub]   6 lines, 2 pass, 0 fail, 1 error
+#[sub]
+#[sub] - 2 PASS  : has_path == true at Phases 2 and 4 (path
+#[sub]             unchanged across the refusal).
+#[sub] - 1 error : the proj close RunContext refusal at Phase 3
+#[sub]             (intentional — the gate working as designed,
+#[sub]             per ScriptListener's ++m_stats.errors at the
+#[sub]             gating site).
+#[sub] - 3 operator-visual: path display at Phase 1, dirty echo
+#[sub]             at Phase 1, dirty echo at Phase 4 (read both
+#[sub]             dirty echoes and confirm they match).
+#[sub]
+#[sub] Tier 4 row stays at 1/~4-5 (no tick — same singleton, third
+#[sub] verb). Surface widening:
+#[sub]
+#[sub]   - proj verb count: 2 → 3 (close added; mask TestRunner
+#[sub]     only, structurally unreachable from this caller — that
+#[sub]     IS the design).
+#[sub]   - proj query count: 2 → 3 (dirty added).
+#[sub]   - context_mask() consumer count: 3 → 4 (registry-promotion
+#[sub]     clock held at 4/n by design — close's mask is sibling
+#[sub]     to save_as's, not a novel shape).
+#[sub]   - do_close_project() lifted from on_close_project's lambda
+#[sub]     to a private method (second instance of the lift pattern
+#[sub]     after do_save_as s247 m1 — promotable to canon).
+#[sub]   - Surface-preservation rule articulated in header (the
+#[sub]     structural sibling to path containment; both enforced by
+#[sub]     RunContext masks).
+
+#[sub] ── Manual exercise for the verb body ──────────────────────
+#[sub]
+#[sub] To exercise the close verb body's accept and refuse paths
+#[sub] (the four-case contract: Ok / NoProject / Dragging / Dirty),
+#[sub] the script needs to run under RunContext::TestRunner. No CLI
+#[sub] test runner exists today; this is a backlog item.
+#[sub]
+#[sub] In the meantime, the verb body is wired live: argument
+#[sub] guard ("close: takes no arguments"), state checks (NoProject
+#[sub] before Dirty, drag check between them, then teardown via
+#[sub] do_close_project), and the script_close_project helper
+#[sub] delegation. The compile and link succeed even though
+#[sub] today's only caller (Scripter) can't reach the body through
+#[sub] the dispatcher's gate.
+#[sub]
+#[sub] When the test runner lands, the analogue of this smoke will
+#[sub] flip Phase 3 from an operator-visual refusal observation to
+#[sub] either an assertable accept (TestRunner mask matches) plus
+#[sub] post-close state checks (has_path == false, dirty == false)
+#[sub] in the happy-path case, or one of the three Branch B/C/D
+#[sub] refusal cases observed via the `error invoke threw` shape
+#[sub] (in contrast to this smoke's `error invoke refused` shape).

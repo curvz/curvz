@@ -618,6 +618,122 @@ public:
     // any of MainWindow's state.
     ScriptLoadResult script_load_project(const std::string& path);
 
+    // ── s250 m1 — script-side proj new helper ─────────────────────────
+    //
+    // Sibling to script_load_project (above). The Scriptable calls this
+    // from ProjScriptable's `new` verb branch AFTER pre-validating the
+    // path through path_is_safe (same split as save_as and load: path-
+    // containment in the Scriptable, project-state + I/O in this
+    // helper).
+    //
+    // `new` is a destructive-replacement verb (when a project is
+    // already loaded). Sibling to load in shape (one path arg,
+    // path_is_safe pre-flight, MainWindow helper); sibling to close
+    // and load in posture (TestRunner-only, by the surface-preservation
+    // rule). Mechanically distinct from load: load reads an existing
+    // .curvz from disk via CurvzProject::open, while new constructs a
+    // fresh empty project via CurvzProject::create_empty (which itself
+    // calls save() at construction time, writing project.json into the
+    // target directory).
+    //
+    //   Ok            — CurvzProject::create_empty(path) succeeded and
+    //                   load_project() was called. The orchestrator did
+    //                   the panel sync, recent-projects bump,
+    //                   update_title, and LOG_INFO line. No NoProject
+    //                   case — new is legitimate from any state (it's
+    //                   one of the two project-lifecycle verbs along
+    //                   with load that legitimately runs from the
+    //                   no-project state).
+    //   Dragging      — m_canvas.is_dragging() is true. Same refusal
+    //                   posture as every project-lifecycle helper.
+    //                   With no project loaded the check is trivially
+    //                   false, so this only meaningfully fires when
+    //                   new is REPLACING an existing project. Still
+    //                   wired for symmetry.
+    //   Dirty         — m_history.can_undo() is true. Refuse rather
+    //                   than silently destroy the user's unsaved work.
+    //                   Stricter than the GUI's on_new_project, which
+    //                   routes through check_unsaved_then (a modal the
+    //                   script can't summon); the script-side
+    //                   structural refusal is the modal's equivalent.
+    //                   Same banked-for-when-named posture as load's
+    //                   Dirty case: a future force_new verb (s250+)
+    //                   gives the discard path; for now refusing is
+    //                   the safer default.
+    //   TargetExists  — fs::exists(path) is true BEFORE create_empty
+    //                   runs. Stricter than the GUI's on_new_project,
+    //                   which silently overwrites if the target
+    //                   already exists (because create_empty calls
+    //                   save() which uses create_directories — no-op
+    //                   on existing dir — then writes project.json,
+    //                   clobbering whatever was there). The GUI's
+    //                   silent-overwrite is arguably another GUI bug
+    //                   in the family of "stricter than the GUI"
+    //                   examples (alongside on_open's missing
+    //                   check_unsaved_then). The script-side stricter
+    //                   posture is deliberate by the same rationale
+    //                   as load's Dirty refusal: a script silently
+    //                   destroying an existing project mid-automation
+    //                   is exactly the discipline-instead-of-design
+    //                   trap the surface-preservation family of
+    //                   rules is here to prevent. A future force_new
+    //                   verb would give the overwrite path.
+    //
+    //                   This check is in the helper rather than the
+    //                   Scriptable because it's a project-state-vs-disk
+    //                   concern (the same layer that owns the
+    //                   Dragging and Dirty checks), not a path-format
+    //                   concern (which would belong with
+    //                   path_is_safe).
+    //   CreateFailed  — CurvzProject::create_empty(path) returned null.
+    //                   create_empty's failure modes are: directory
+    //                   creation failed (permissions, full disk),
+    //                   or the immediate save() inside create_empty
+    //                   failed (same causes). Single CreateFailed
+    //                   bucket matches CurvzProject's current
+    //                   surface; when create_empty grows
+    //                   distinguishable error returns, the enum can
+    //                   split without breaking the existing Ok path.
+    //                   On CreateFailed the existing project is left
+    //                   intact (create_empty either succeeds or
+    //                   returns null without mutating MainWindow's
+    //                   state).
+    enum class ScriptNewResult {
+        Ok,
+        Dragging,
+        Dirty,
+        TargetExists,
+        CreateFailed,
+    };
+
+    // Run the new-project flow on behalf of a script caller. The
+    // supplied `path` is assumed already vetted by path_is_safe; the
+    // helper does not re-check (separation of concerns matches
+    // save_as and load exactly: path containment is the Scriptable's
+    // pre-flight, project-state + I/O is this helper's).
+    //
+    // Body: drag check → dirty check → target-exists check →
+    // CurvzProject::create_empty(path) → load_project(). No
+    // do_new_project lift is needed — load_project() already IS the
+    // orchestrator the GUI's on_new_project delegates to (after its
+    // own check_unsaved_then + file dialog + extension normalisation),
+    // so the same pump-at-the-seam discipline that load applied
+    // (s249 m1) applies here too: the seam is the
+    // helper-orchestrator boundary, one layer deeper than the do_-
+    // lift cases (s247 do_save_as, s248 do_close_project).
+    //
+    // Side effects on Ok: target directory created on disk with
+    // project.json (and empty swatches.json / styles.json /
+    // themes.json from seed_library_defaults), m_project replaced
+    // with the freshly-created empty project, m_history reset, every
+    // panel re-seeded, recents bumped, config saved, title refreshed,
+    // LOG_INFO line. No side effects on any other return value — on
+    // Dragging / Dirty / TargetExists the existing project is
+    // untouched; on CreateFailed any partial disk state from
+    // create_empty's aborted run is left for the user/script to
+    // inspect, but MainWindow's in-memory state is unchanged.
+    ScriptNewResult script_new_project(const std::string& path);
+
 private:
     void setup_headerbar();  // category: zone: headerbar
     void setup_layout();  // category: zone: layout

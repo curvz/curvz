@@ -522,6 +522,95 @@ MainWindow::script_load_project(const std::string& path) {
 }
 
 
+// s250 m1 — script-side counterpart to on_new_project. See the design
+// block in MainWindow.hpp at ScriptNewResult / script_new_project for
+// the enum's contract.
+//
+// The `path` argument is assumed pre-validated by the caller through
+// curvz::scripting::path_is_safe. This helper does NOT re-check —
+// separation of concerns matches save_as and load exactly: path
+// containment is the Scriptable's pre-flight; project-state + disk
+// state + I/O is this helper's.
+//
+// Body — drag check, dirty check, target-exists check, create, swap:
+//
+//   - Drag check first. Same posture as every project-lifecycle
+//     helper. As with load, this only meaningfully fires when new
+//     is REPLACING an existing project (no project loaded means no
+//     canvas drag is possible). Still wired for symmetry.
+//
+//   - Dirty check second. STRICTER than on_new_project (which
+//     routes through check_unsaved_then — a modal the script can't
+//     summon). The script-side structural refusal is the modal's
+//     equivalent for non-interactive callers. Same posture as the
+//     load Dirty refusal; see ProjScriptable.hpp's verb-surface
+//     block at `new` for the full rationale.
+//
+//   - Target-exists check third. STRICTER than on_new_project,
+//     which silently overwrites an existing target (create_empty
+//     calls save() which uses create_directories — a no-op on
+//     existing dir — then writes project.json over whatever's
+//     there). This is the NEW refusal not present in load
+//     (load needs the target to EXIST; new needs it NOT to). See
+//     header for the rationale and the future force_new opt-in
+//     path. fs::exists is the natural primitive here; we don't
+//     try to distinguish "exists as a directory" vs "exists as a
+//     file" because either case is a target-already-exists refusal
+//     from the script's perspective.
+//
+//   - CurvzProject::create_empty(path) — same call on_new_project's
+//     lambda makes. Null means "directory creation failed or the
+//     immediate save() inside create_empty failed" — create_empty
+//     itself doesn't distinguish these today. A single CreateFailed
+//     bucket matches the underlying surface honestly; when
+//     create_empty grows distinguishable error returns, the enum
+//     (and this helper) can split without breaking the existing Ok
+//     path.
+//
+//   - load_project(std::move(project)) — same orchestrator
+//     on_new_project calls. This is the PUMP: panel sync, history
+//     reset, recent-projects bump, config save, title refresh,
+//     LOG_INFO line. No do_new_project lift needed — the pump
+//     already exists at the helper-orchestrator boundary, same as
+//     load (s249 m1). Pump-at-the-seam discipline, applied one
+//     layer deeper than the s247/s248 do_-lift cases.
+MainWindow::ScriptNewResult
+MainWindow::script_new_project(const std::string& path) {
+  if (m_canvas.is_dragging()) {
+    return ScriptNewResult::Dragging;
+  }
+  if (m_history.can_undo()) {
+    // STRICTER than on_new_project's check_unsaved_then. See header.
+    return ScriptNewResult::Dirty;
+  }
+  if (fs::exists(path)) {
+    // STRICTER than on_new_project's silent overwrite. The GUI calls
+    // create_empty against whatever the picker returns, clobbering
+    // any existing project.json / swatches.json / styles.json /
+    // themes.json. Script side refuses; a future force_new verb
+    // (s250+) gives the overwrite path. See header for the
+    // rationale.
+    return ScriptNewResult::TargetExists;
+  }
+  auto project = CurvzProject::create_empty(path);
+  if (!project) {
+    // Mirrors on_new_project's LOG_ERROR path. Conflates directory-
+    // creation failure and the immediate save()-inside-create_empty
+    // failure (see header for the catalogue).
+    LOG_ERROR("proj new: create_empty failed for '{}'", path);
+    return ScriptNewResult::CreateFailed;
+  }
+  load_project(std::move(project));
+  // load_project emits the canonical "Project loaded: '{}'"
+  // LOG_INFO line and the recent-projects bump. No additional log
+  // here — one entry per success is enough, and load_project's
+  // line is the right one (matches on_new_project's success path,
+  // which also relies on load_project's logging without adding its
+  // own).
+  return ScriptNewResult::Ok;
+}
+
+
 void MainWindow::on_save_as() {
   auto dialog = Gtk::FileDialog::create();
   dialog->set_title("Save Project As — enter project name");

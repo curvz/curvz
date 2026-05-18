@@ -1,0 +1,161 @@
+# 44_proj_save_smoke — first headless-verb singleton from ARC m5b
+# (s246 m1). Closes the first slot in the Tier 4 row (0/~4-5 -> 1).
+#
+# `proj` is the project-level singleton — one registry entry per app
+# session, no per-instance proxy. m1 ships one verb (save) and two
+# queries (path, has_path). save_as / load / new / close land in
+# s247+ as the surface widens.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# `proj save` has a four-case contract (see ProjScriptable.hpp for the
+# full design block):
+#
+#   Branch A (happy path):  project loaded + directory set + no drag.
+#                           Writes to disk, returns ok.
+#   Branch B (NoPath):      project loaded, directory empty (never saved).
+#                           Refuses with structured error pointing to
+#                           the future save_as verb (s247).
+#   Branch C (NoProject):   no project loaded (rare edge case).
+#                           Refuses.
+#   Branch D (Dragging):    canvas drag in flight. Refuses (the GUI's
+#                           timer-defer doesn't translate cleanly to a
+#                           synchronous script verb).
+#
+# This smoke runs Branch A only — it's the path Scott's normal session
+# state reaches when he opens the Scripter window after loading a
+# project from disk. Branches B/C/D are documented at the bottom of
+# this file with the manual setup steps needed to reach them, in case
+# Scott wants to eyeball any of them after the build lands.
+#
+# The Branch A assertions surround the verb call. The verb itself is
+# operator-visual (the DSL's `assert` is equality-only and can't
+# compare against the listener's `ok` echo line); the assertable
+# observable is the `proj has_path` query, checked before and after
+# the verb to confirm the project-is-saved precondition holds. The
+# `path` query is fetched once at the top for visual confirmation
+# that the smoke is running against the project Scott actually has
+# open.
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# This smoke runs through ScripterWindow's listener, m_context =
+# RunContext::Scripter (set in ScripterWindow's ctor, see s244 m2
+# wiring). `proj save` declares its mask as Scripter | TestRunner
+# (Macro is OUT — recorded macros saving the user's project file
+# without an explicit click trail violates the user's mental model
+# of what macros do). So Scripter is allowed; the dispatcher's
+# gating check passes and the verb body runs.
+#
+# Second consumer of Scriptable::context_mask() in the codebase —
+# first was InspectorScriptable's diagnostic surface (s244 m2). The
+# registry-promotion clock is ticking: when a third consumer earns
+# the refactor (probably mid-m5b or at m5b close), the virtual-
+# method-per-Scriptable shape promotes to a central register_verb
+# table matching CANON's pseudocode form.
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# `proj save` WRITES TO DISK — this is genuinely a mutating verb (the
+# first one in the test corpus that touches a file outside of the
+# log). The write goes to the project's existing directory, the same
+# place File ▸ Save writes. Effects on disk are visible to other
+# processes (git status will pick them up if the project is under
+# version control). Don't run this smoke against a project you
+# don't want freshly-touched.
+#
+# The smoke does NOT modify project content — just calls save twice.
+# So the on-disk effect is "last-saved timestamps refreshed; bytes
+# identical." But it IS a write; that's the structural reality of
+# the verb, not a defect of the smoke.
+
+#[sub] === Phase 1: project state precondition ===
+
+#[sub] Get the project's current directory path. Operator-visual:
+#[sub] this should be the .curvz directory Scott has open right now.
+#[sub] Empty string here means no project is loaded (Branch C) or
+#[sub] the project is fresh and unsaved (Branch B); either makes
+#[sub] Phase 2's save a no-op refusal rather than a write.
+
+get proj path
+
+#[sub] Assert that the project has a directory set. This is the
+#[sub] precondition for Branch A (the happy path). If this assert
+#[sub] fails, Scott's session is in Branch B or C state — see the
+#[sub] manual-setup notes at the bottom for the recovery path.
+
+assert proj has_path == true
+
+#[sub] === Phase 2: proj save (Branch A — happy path) ===
+
+#[sub] Call the verb. The expected trace line is:
+#[sub]
+#[sub]   > proj save
+#[sub]   ok
+#[sub]
+#[sub] Operator-visual on the `ok` echo. The DSL's assert is equality-
+#[sub] on-query-result and can't directly compare against the
+#[sub] listener's verb-echo line. Same negative-path / verb-result
+#[sub] convention as smoke 43's diagnose_universal call (Phase 4
+#[sub] there).
+#[sub]
+#[sub] Side effects on a clean run:
+#[sub]   - CurvzProject::save() writes every doc SVG + project.json to
+#[sub]     m_project->directory.
+#[sub]   - MainWindow::update_title() clears the dirty indicator in
+#[sub]     the title bar (visible if the project was dirty before).
+#[sub]   - LOG_INFO line: "proj save: saved '<directory>'".
+
+proj save
+
+#[sub] === Phase 3: post-save sanity ===
+
+#[sub] After the save, the project's directory is unchanged (save
+#[sub] writes to the existing path; it doesn't move the project).
+#[sub] Re-assert has_path to confirm the project state didn't
+#[sub] surprise us. Same value as Phase 1's assertion; this is the
+#[sub] structural sanity that the verb's side effects stayed within
+#[sub] their declared scope.
+
+assert proj has_path == true
+
+#[sub] === Phase 4: second save (idempotence) ===
+
+#[sub] Call the verb again. Saving an already-saved project is
+#[sub] idempotent — same bytes get written, the title bar's clean
+#[sub] state stays clean. Operator-visual on the second `ok` echo;
+#[sub] this confirms the listener's dispatch state wasn't somehow
+#[sub] poisoned by the first invoke.
+
+proj save
+
+#[sub] s246 m1 smoke complete. Expected summary line: 2 PASSes
+#[sub] (has_path before save, has_path after save) and 0 errors.
+#[sub] Operator-visual on the two `ok` echoes from the proj save
+#[sub] calls (Phase 2 and Phase 4). Tier 4 row ticks 0/~4-5 -> 1.
+
+#[sub] ── Manual exercise for the other branches ─────────────────
+#[sub]
+#[sub] Branch B (NoPath — never saved): close the current project
+#[sub] via File ▸ Close Project, then File ▸ New Project (which
+#[sub] creates a fresh project but doesn't save it until you do).
+#[sub] Re-run this smoke; Phase 1's `assert proj has_path == true`
+#[sub] will FAIL, and a manual `proj save` line in the Scripter
+#[sub] will print:
+#[sub]
+#[sub]   > proj save
+#[sub]   error invoke threw: proj save: no saved path; use
+#[sub]   'proj save_as <path>' first (s247)
+#[sub]
+#[sub] Branch C (NoProject — no project loaded): rare; can occur
+#[sub] transiently during a project close sequence. Not easily
+#[sub] reachable from the GUI today.
+#[sub]
+#[sub] Branch D (Dragging): manually awkward to set up — would
+#[sub] require holding a canvas drag while triggering the script.
+#[sub] The behaviour is defensive against the edge case rather than
+#[sub] something operators routinely hit.
+#[sub]
+#[sub] All three refusal branches share the listener's standard
+#[sub] error-throw convention: `error invoke threw: <message>` with
+#[sub] the message text matching the strings in ProjScriptable.cpp.

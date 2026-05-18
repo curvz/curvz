@@ -19,6 +19,7 @@
 #include "scripting/ThemesScriptable.hpp"  // s223 m1 — fifth model Scriptable
 #include "scripting/ObjectsScriptable.hpp"  // s230 m1 — sixth model Scriptable
 #include "scripting/InspectorScriptable.hpp"  // s222 m2 — inspector area Scriptable
+#include "scripting/ProjScriptable.hpp"      // s246 m1 — first headless-verb singleton
 #include "scripting/ScripterWindow.hpp"    // s219 m1 — apply_scripter_pref present/hide
 #include "curvz/widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
 #include "Application.hpp"                  // s219 m1 — Curvz::Application (main_window only)
@@ -409,6 +410,17 @@ MainWindow::MainWindow(Application & /*app*/) {
   m_inspector_scriptable =
       std::make_unique<curvz::scripting::InspectorScriptable>(this);
 
+  // s246 m1 — `proj` Scriptable. First headless-verb singleton from
+  // ARC m5b. Same singleton-host pattern as inspector: flat verb
+  // surface, no proxy routing, MainWindow-pointer constructor. The
+  // one verb that ships in m1 (`save`) goes through
+  // script_save_project() — the same code on_save runs minus the
+  // picker-fallthrough branch (which becomes a structured refusal
+  // since scripts can't summon modals). See ProjScriptable.hpp for
+  // the design block and the RunContext mask rationale.
+  m_proj_scriptable =
+      std::make_unique<curvz::scripting::ProjScriptable>(this);
+
   // s219 m1 — Scripter window construction. Previously lived in
   // Application::on_activate; moved here so MainWindow owns the
   // window the way it owns HelpWindow, ShortcutsDialog, and the
@@ -495,16 +507,17 @@ MainWindow::MainWindow(Application & /*app*/) {
   LOG_INFO("MainWindow created");
 }
 
-// s216 m1 / s218 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 — out-of-line dtor. The header forward-declares
+// s216 m1 / s218 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s246 m1 — out-of-line dtor. The header forward-declares
 // curvz::scripting::LayersScriptable, curvz::scripting::GuidesScriptable,
 // curvz::scripting::SwatchesScriptable, curvz::scripting::StylesScriptable,
 // curvz::scripting::ThemesScriptable, curvz::scripting::ObjectsScriptable,
-// and curvz::scripting::InspectorScriptable; the unique_ptrs in the header
-// need the complete types at MainWindow destruction time, and they're
-// only visible in this TU (where we included the full headers above).
-// Defaulted body is the right answer — every member has its own
-// destructor; we just need the complete types visible at the dtor's
-// point-of-emission. No longer gated as of s219 m1.
+// curvz::scripting::InspectorScriptable, and curvz::scripting::ProjScriptable;
+// the unique_ptrs in the header need the complete types at MainWindow
+// destruction time, and they're only visible in this TU (where we
+// included the full headers above). Defaulted body is the right
+// answer — every member has its own destructor; we just need the
+// complete types visible at the dtor's point-of-emission. No longer
+// gated as of s219 m1.
 MainWindow::~MainWindow() = default;
 
 // s219 m1 — apply scripter_enabled to every dependent surface.
