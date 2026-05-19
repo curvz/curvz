@@ -232,11 +232,25 @@ void ThemesPanel::build_ui() {
   }
 
   // Targets list — rows built by rebuild_targets_list().
+  //
+  // s264 m1: wrapped in ScrolledWindow with the same bounds as the
+  // library list above. Without it, a project with many open
+  // documents grows the targets list unbounded and pushes the
+  // inspector taller than the screen — same Content-panel structural
+  // bug Swatches hit with large palettes and Styles can hit with
+  // many user-created styles.
   {
     m_targets_list = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
     m_targets_list->set_spacing(2);
     m_targets_list->set_margin_start(6);
-    append(*m_targets_list);
+
+    auto *scr = Gtk::make_managed<Gtk::ScrolledWindow>();
+    scr->set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+    scr->set_propagate_natural_height(true);
+    scr->set_min_content_height(80);
+    scr->set_max_content_height(220);
+    scr->set_child(*m_targets_list);
+    append(*scr);
   }
 
   // ── Footer ────────────────────────────────────────────────────────

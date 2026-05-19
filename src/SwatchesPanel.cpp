@@ -110,7 +110,36 @@ SwatchesPanel::SwatchesPanel() : Gtk::Box(Gtk::Orientation::VERTICAL) {
     m_body.set_margin_top(2);
     m_body.set_margin_bottom(8);
     m_body.set_spacing(6);
-    append(m_body);
+
+    // s264 m1: search promoted to a stable position between the header
+    // and the scrolled body. Pre-s264 the search was appended into
+    // m_body during refresh() — it scrolled away with the chips below
+    // it, which defeats the purpose of search in a long palette. Now
+    // m_search lives outside the scroller and stays visible at any
+    // scroll position; refresh() only toggles visibility based on
+    // whether there are chips to filter. Substrate identity (`sw_srch`,
+    // registered in the ctor below) is unaffected — the search's
+    // widget tree position changes but its lifetime doesn't.
+    m_search.set_margin_start(8);
+    m_search.set_margin_end(8);
+    m_search.set_margin_top(2);
+    m_search.set_visible(false);
+    append(m_search);
+
+    // s264 m1: ScrolledWindow wraps m_body. Without it, the natural
+    // size of a large palette FlowBox propagates to the inspector and
+    // pushes the main window sideways — observed when a user imported
+    // a Pantone .gpl (1000+ chips). NEVER/AUTOMATIC: vertical scroll
+    // only; horizontal natural-width propagation off so the parent
+    // (right-pane ScrolledWindow) doesn't need to grant infinite
+    // width. Bounds match ThemesPanel's library-list scroller (s129
+    // m9) for consistency across Content panels.
+    m_scroll.set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+    m_scroll.set_propagate_natural_height(true);
+    m_scroll.set_min_content_height(80);
+    m_scroll.set_max_content_height(220);
+    m_scroll.set_child(m_body);
+    append(m_scroll);
 
     // Labels reused across rebuilds.
     m_empty_state.set_text("No swatches yet. Open the menu to add a colour.");
@@ -512,19 +541,16 @@ void SwatchesPanel::refresh() {
     rebuild_kebab_menu();
 
     if (!m_library) {
+        m_search.set_visible(false);
         m_body.append(m_empty_state);
         return;
     }
 
     if (m_library->empty()) {
+        m_search.set_visible(false);
         m_body.append(m_empty_state);
         return;
     }
-
-    // S101 m4: search entry above all chip flows. Only meaningful
-    // when at least one chip will render; we conditionally append it
-    // below after we've decided whether there's anything to show.
-    // (Defer the append until we know recents-or-palette has content.)
 
     // --- Recents strip -----------------------------------------------------
     //
@@ -534,18 +560,17 @@ void SwatchesPanel::refresh() {
     const auto& recents = m_library->recents();
     const bool have_recents = !recents.empty();
 
-    // S101 m4: search entry appears at the top of m_body whenever
-    // there's at least one chip flow to filter. Cheaper to compute
-    // active_will_render up front than to recheck mid-build. If
-    // neither recents nor active will render, we skip the search
-    // entirely — empty grids don't need a search box.
+    // s264 m1: search now lives outside m_body as a stable widget
+    // (appended once in the ctor between m_header and m_scroll), so
+    // refresh() only toggles its visibility. Pre-s264 m_search was
+    // appended INTO m_body conditionally here and torn down on every
+    // refresh; the new shape keeps the search reachable when the user
+    // scrolls down through a long palette grid.
     color::PaletteId active_for_sep = m_library->active_palette();
     const bool active_will_render = !active_for_sep.empty()
         && m_library->find_palette(active_for_sep) != nullptr
         && !m_library->find_palette(active_for_sep)->swatches.empty();
-    if (have_recents || active_will_render) {
-        m_body.append(m_search);
-    }
+    m_search.set_visible(have_recents || active_will_render);
 
     if (have_recents) {
         m_body.append(m_recents_label);

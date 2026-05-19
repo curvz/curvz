@@ -1424,6 +1424,30 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
             if (attr(tag, "data-curvz-measure-destruct-after-copy") == "1")
                 doc->measure_destruct_after_copy = true;
 
+            // s264 m1: render intent from data-curvz-intended-* attrs.
+            // Explicit attrs are the trusted path — files written by
+            // post-s264 Curvz carry them and round-trip exactly. When
+            // present they take priority over the Physical-mode
+            // unit-suffix reconstruction below: render intent and
+            // Physical-mode are mutually exclusive (the intent fields
+            // override per the writer's emission rule).
+            {
+                auto iw_attr = attr(tag, "data-curvz-intended-w");
+                auto ih_attr = attr(tag, "data-curvz-intended-h");
+                auto iu_attr = attr(tag, "data-curvz-intended-unit");
+                if (!iw_attr.empty() && !ih_attr.empty()) {
+                    try {
+                        doc->intended_w = std::stod(iw_attr);
+                        doc->intended_h = std::stod(ih_attr);
+                        doc->intended_unit = iu_attr;   // "" treated as "px"
+                    } catch (...) {
+                        doc->intended_w = 0.0;
+                        doc->intended_h = 0.0;
+                        doc->intended_unit.clear();
+                    }
+                }
+            }
+
             // Detect a physical-unit suffix on width/height ("1in", "25.4mm",
             // "2.54cm").  If present alongside a viewBox, the file was
             // exported from a Physical-mode canvas — reconstruct phys_width,
@@ -1476,6 +1500,40 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                     } else {
                         doc->canvas = CanvasModel::from_legacy(
                             (int)std::round(w), (int)std::round(h));
+
+                        // s264 m1: implicit render-intent inference. If the
+                        // SVG declares a viewBox AND a bare-number
+                        // width/height that DISAGREES with the viewBox, the
+                        // file's author intended "design at viewBox scale,
+                        // deliver at width/height" — the SVG-native idiom
+                        // every other tool emits (Inkscape, Illustrator,
+                        // hand-written). Curvz reads this as render intent
+                        // so the file round-trips with its semantics
+                        // preserved.
+                        //
+                        // Guard 1: explicit data-curvz-intended-* attrs win
+                        //   (already read above; if intended_w > 0 the
+                        //   doc-level intent is set, don't re-infer).
+                        // Guard 2: Physical-mode reconstruction wins (the
+                        //   is_phys branch above takes the file and we
+                        //   never reach this else).
+                        // Guard 3: Curvz's own legacy files emit
+                        //   width == viewBox.W; the != check rejects them
+                        //   and leaves intent unset.
+                        if (doc->intended_w == 0.0 && !w_attr.empty()
+                                && !h_attr.empty()) {
+                            double iw = 0.0, ih = 0.0;
+                            try {
+                                iw = std::stod(w_attr);
+                                ih = std::stod(h_attr);
+                            } catch (...) { iw = ih = 0.0; }
+                            if (iw > 0.0 && ih > 0.0
+                                    && (iw != w || ih != h)) {
+                                doc->intended_w = iw;
+                                doc->intended_h = ih;
+                                doc->intended_unit = "px";
+                            }
+                        }
                     }
                 }
             } else {

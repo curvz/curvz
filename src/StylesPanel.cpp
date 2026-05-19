@@ -189,7 +189,18 @@ StylesPanel::StylesPanel()
     m_body.set_spacing(0);
     m_body.set_margin_start(2);
     m_body.set_margin_end(2);
-    append(m_body);
+
+    // s264 m1: m_body sits inside m_scroll so a category with many
+    // user-created styles doesn't push the inspector taller than the
+    // screen. Same bounds as SwatchesPanel and ThemesPanel scrollers
+    // for consistency across Content panels: NEVER/AUTOMATIC, min 80
+    // / max 220 content height.
+    m_scroll.set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+    m_scroll.set_propagate_natural_height(true);
+    m_scroll.set_min_content_height(80);
+    m_scroll.set_max_content_height(220);
+    m_scroll.set_child(m_body);
+    append(m_scroll);
 
     // ── Hidden context-menu helper (S81 m4c-3, mirrors SwatchesPanel S72) ─
     //

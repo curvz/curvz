@@ -1212,17 +1212,35 @@ button.tb-type-btn.tb-type-btn-active {
     color: var(--fg-muted);
 }
 .tb-icon-btn {
-    padding: 1px;
+    padding: 3px;
     border-radius: 4px;
     background-color: transparent;
+    color: var(--fg-muted);
     min-width: 0;
     min-height: 0;
 }
+.tb-icon-btn image { color: var(--fg-muted); }
 .tb-icon-btn:hover { background-color: var(--hover-bg); }
+/* s264 m2: cap/join active-state highlight. Pre-s264 these used
+   --accent-dim (low-emphasis tint) with padding: 1px — visible as a
+   1px hairline ring around the symbolic icon, which read as "no
+   highlight" in normal use. Matches .tool-btn:checked convention
+   now: --accent-deep background + white icon recolor for clear
+   "this is the active option" reading. Symbolic icons honor `color`
+   on both the button and the inner image; both need the override
+   for the glyph itself to flip white. Baseline padding bumped to
+   3px so the accent fill has visible area behind the icon (1px was
+   the original culprit — the bg color WAS being applied, it just
+   had nowhere to render). Affects cap_butt/round/square and
+   join_miter/round/bevel; align-popover buttons share the base
+   .tb-icon-btn rule but never get the -active class, so their
+   visual change is the slightly larger click target only. */
 .tb-icon-btn-active {
-    background-color: var(--accent-dim);
+    background-color: var(--accent-deep);
+    color: #ffffff;
     border-radius: 4px;
 }
+.tb-icon-btn-active image { color: #ffffff; }
 /* ── Toolbar zoom controls ───────────────────────────────── */
 .tb-zoom-btn {
     min-width: 0;

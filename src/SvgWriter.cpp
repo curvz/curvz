@@ -860,9 +860,31 @@ std::string write_svg(const CurvzDocument& doc) {
     // Ratio modes there is no physical intent — emit bare numbers matching
     // the viewBox.  See Inkscape convention: width="1in" + viewBox="0 0 300 300"
     // establishes the doc-unit ↔ inch mapping declaratively.
+    //
+    // s264 m2: render-intent override. When the doc has intended_w/h set
+    // (>0), emit those instead so the SVG declares its intended rendered
+    // size while viewBox keeps the working scale. This is the SVG-native
+    // idiom for "design at 1000, deliver at 48": every node coordinate
+    // stays at full precision in viewBox space; consumers (browsers, file
+    // previews, design tools) render the file at delivery size with zero
+    // data loss. Priority: render-intent > Physical-mode > Pixel/Ratio
+    // legacy. The intent fields are the new canon; the older two branches
+    // remain for files that pre-date s264 or never set an intent.
     char wh[64];
     char hh[64];
-    if (doc.canvas.display_mode == DisplayMode::Physical) {
+    if (doc.intended_w > 0.0 && doc.intended_h > 0.0) {
+        // Render-intent set. Emit with unit suffix unless empty / "px"
+        // (SVG default; bare number == px, suffix only when needed).
+        const std::string& iu = doc.intended_unit;
+        const bool bare = iu.empty() || iu == "px";
+        if (bare) {
+            snprintf(wh, sizeof(wh), "%g", doc.intended_w);
+            snprintf(hh, sizeof(hh), "%g", doc.intended_h);
+        } else {
+            snprintf(wh, sizeof(wh), "%g%s", doc.intended_w, iu.c_str());
+            snprintf(hh, sizeof(hh), "%g%s", doc.intended_h, iu.c_str());
+        }
+    } else if (doc.canvas.display_mode == DisplayMode::Physical) {
         // 2 decimal places for phys w/h; unit is doc.canvas.phys_unit ("in","mm","cm")
         snprintf(wh, sizeof(wh), "%.4f%s",
                  doc.canvas.phys_width,  doc.canvas.phys_unit.c_str());
@@ -885,6 +907,25 @@ std::string write_svg(const CurvzDocument& doc) {
         out << " data-curvz-measure-save-to-layer=\"1\"";
     if (doc.measure_destruct_after_copy)
         out << " data-curvz-measure-destruct-after-copy=\"1\"";
+
+    // s264 m1: persist render intent as explicit data-curvz-intended-*
+    // attrs so files round-trip without depending on the parser's
+    // viewBox-vs-width disagreement inference. The inference is the
+    // compatibility path for files written by other tools; for Curvz's
+    // own files we want explicit storage. Unit attribute only emitted
+    // when non-default (non-empty / non-"px") to keep the common case
+    // (px intent) clean — the parser treats absent unit as "px".
+    if (doc.intended_w > 0.0 && doc.intended_h > 0.0) {
+        char ibuf[32];
+        snprintf(ibuf, sizeof(ibuf), "%g", doc.intended_w);
+        out << " data-curvz-intended-w=\"" << ibuf << "\"";
+        snprintf(ibuf, sizeof(ibuf), "%g", doc.intended_h);
+        out << " data-curvz-intended-h=\"" << ibuf << "\"";
+        if (!doc.intended_unit.empty() && doc.intended_unit != "px") {
+            out << " data-curvz-intended-unit=\""
+                << doc.intended_unit << "\"";
+        }
+    }
     out << ">\n";
 
     // ── S90 Stage 2 — gradient pre-pass ───────────────────────────────

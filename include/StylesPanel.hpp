@@ -324,6 +324,16 @@ private:
     // it to share the header row with the kebab.
     Gtk::Box m_body { Gtk::Orientation::VERTICAL };
 
+    // s264 m1: ScrolledWindow wrapping m_body, lifetime-resident. Same
+    // shape as SwatchesPanel's m_scroll and ThemesPanel's library-list
+    // scroller — bounds the panel's vertical growth so a category with
+    // many user-created styles doesn't push the inspector taller than
+    // the screen. NEVER/AUTOMATIC: horizontal scroll off; vertical
+    // appears when content exceeds max_content_height. Header stays
+    // outside the scroll region so the category dropdown, "+", and
+    // kebab remain reachable at any scroll position.
+    Gtk::ScrolledWindow m_scroll;
+
     // ── Right-click context-menu plumbing (S81 m4c-3) ─────────────────────
     //
     // Per the SwatchesPanel S72 dispatch fix: bare PopoverMenu::set_parent

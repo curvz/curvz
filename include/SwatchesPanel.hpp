@@ -39,6 +39,7 @@
 #include <gtkmm/label.h>
 #include <gtkmm/menubutton.h>
 #include <gtkmm/popovermenu.h>
+#include <gtkmm/scrolledwindow.h>
 #include <gtkmm/searchentry.h>
 #include <giomm/menu.h>
 #include <giomm/simpleactiongroup.h>
@@ -140,7 +141,21 @@ private:
     // Pre-v13 the dropdown was the second body row inside a
     // selector_row; v13 promoted it to share the header row with
     // the kebab.
+    //
+    // s264 m1: m_body sits inside m_scroll, a stable lifetime-resident
+    // ScrolledWindow appended once in the ctor. Without the scroller,
+    // a large palette (e.g. an imported Pantone .gpl with hundreds of
+    // chips) propagates its natural width to the inspector and pushes
+    // the main window off-screen — the GTK4 ScrolledWindow gotcha
+    // (set_propagate_natural_width is on by default for plain Box
+    // parents, but a bounded ScrolledWindow clamps both dimensions).
+    // Same bounds as ThemesPanel's library-list scroller for
+    // consistency: NEVER/AUTOMATIC, min 80 / max 220 content height.
+    // Header (palette dropdown, "+", kebab) and search row stay
+    // outside the scroll region so category-level controls remain
+    // reachable at any scroll position.
     Gtk::Box m_body { Gtk::Orientation::VERTICAL };
+    Gtk::ScrolledWindow m_scroll;
 
     // Held as members so refresh() can reuse them rather than reallocating.
     Gtk::Label m_empty_state;
