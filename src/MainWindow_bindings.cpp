@@ -703,6 +703,10 @@ void MainWindow::connect_signals() {
     rs.phys_short = std::min(doc->canvas.phys_width, doc->canvas.phys_height);
     rs.phys_unit = doc->canvas.phys_unit;
     rs.display_unit = doc->canvas.display_unit;
+    // s265 m2: forward intent so the rulers report in user-units.
+    rs.intended_w = doc->canvas.intended_w;
+    rs.intended_h = doc->canvas.intended_h;
+    rs.intended_unit = doc->canvas.intended_unit;
     rs.preview_active = true;
     rs.preview_origin_x = ux;
     rs.preview_origin_y = uy;
@@ -775,6 +779,43 @@ void MainWindow::connect_signals() {
     auto *doc = m_project->active_doc();
     if (!doc)
       return;
+    // s265 m2: if intent is set, convert intended_w/h to the new unit so
+    // the ruler reading stays meaningful. Mirrors the inspector Units
+    // dropdown behaviour — same real-world size, different spelling.
+    if (doc->canvas.intended_w > 0.0 && doc->canvas.intended_h > 0.0) {
+      auto unit_from_str = [](const std::string &s) -> Unit {
+        if (s == "in") return Unit::In;
+        if (s == "mm") return Unit::Mm;
+        if (s == "pt") return Unit::Pt;
+        return Unit::Px;
+      };
+      Unit old_unit = unit_from_str(doc->canvas.intended_unit);
+      if (old_unit != u) {
+        // s265 m2 follow-up: DPI retired from the user-facing model.
+        // px↔physical conversion uses SVG's 96-dpi default everywhere.
+        constexpr int kDPI = 96;
+        auto to_inches = [](double v, Unit u) -> double {
+          if (u == Unit::Mm) return v / 25.4;
+          if (u == Unit::Pt) return v / 72.0;
+          if (u == Unit::Px) return v / (double)kDPI;
+          return v;
+        };
+        auto from_inches = [](double v, Unit u) -> double {
+          if (u == Unit::Mm) return v * 25.4;
+          if (u == Unit::Pt) return v * 72.0;
+          if (u == Unit::Px) return v * (double)kDPI;
+          return v;
+        };
+        double w_in = to_inches(doc->canvas.intended_w, old_unit);
+        double h_in = to_inches(doc->canvas.intended_h, old_unit);
+        doc->canvas.intended_w = from_inches(w_in, u);
+        doc->canvas.intended_h = from_inches(h_in, u);
+        doc->canvas.intended_unit = (u == Unit::Mm)   ? "mm"
+                                    : (u == Unit::Pt) ? "pt"
+                                    : (u == Unit::In) ? "in"
+                                                      : "px";
+      }
+    }
     doc->canvas.display_unit = u;
     schedule_save();
     update_rulers();

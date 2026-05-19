@@ -772,6 +772,71 @@ box_add_spin(Gtk::Box *box, std::string_view name, const char *label,
 // (e.g. "Dimensions  IN") so the user sees what unit they're typing in
 // at a glance, without scanning into the section. The Units dropdown
 // inside the section is the editor; the accessory is the readout.
+// ── Dimensions section — s265 m2 simplification ─────────────────────────
+// Pre-s265 the section had four kinds of rows that overlapped depending on
+// which Mode was active: a Units row, a Mode+orientation row, a presets
+// row (3 different preset families across the modes), mode-specific Width
+// /Height spinners (always relabelled "Width (px)" or "Width (in)" by
+// mode), a DPI row in Physical, a Ratio W/H pair in Ratio, a Quality
+// spinner in Ratio. Same Inspector section meant three different things
+// depending on which Mode was selected — the "Width" label alone meant
+// working-scale-AND-intended-size (Pixel), intended-size-only (Physical),
+// or didn't appear at all (Ratio). s265's headline: collapse to one
+// concept per row, valid in every mode.
+//
+// New layout:
+//
+//   Dimensions                                       <UNIT>
+//   ─────────────────────────────────────────────────────────
+//   Mode    [Pixel ▼]    [Units ▼]     📱 🖥️
+//
+//              W           H
+//   SIZE    [   256]    [   256]    🔗
+//
+//   Presets [16] [24] [32] [48] [64] [128] [256]    ← mode-specific
+//
+//   (Ratio mode only)
+//   Ratio   [  1] : [  1]    [1:1] [4:3] [16:9] [√2] [φ]
+//
+//   Quality [Normal ▼]  [1000]
+//
+// What each row means:
+//
+//   * Mode row — the three Modes survive (Pixel / Physical / Ratio).
+//     Units dropdown rides on the same row (mode and unit are tightly
+//     coupled — Pixel implies px; Physical lets you pick in/mm/pt; Ratio
+//     lets you pick any unit for Size). Orientation buttons stay where
+//     they are.
+//   * Size row — the SVG's width/height with units. Carries delivery
+//     intent. W and H column headers above the spinners (the "X/Y
+//     header" idiom from build_guide_section / build_selection_section).
+//     Aspect-lock toggle on the right defaults on; when on, editing W
+//     scales H proportionally and vice versa.
+//   * Presets — quick-pick for Size. Pixel/Ratio mode shows {16,24,32,
+//     48,64,128,256}; Physical mode shows {Letter, A4, A5, Tabloid}.
+//   * Ratio row (Ratio mode only) — explicit ratio components +
+//     classic ratio preset buttons. Drives Size when aspect lock is on.
+//   * Quality — picks the viewBox short-axis size (the working scale).
+//     Normal=1000 / Better=2000 / Best=3000 / Custom = user value.
+//     Independent of Size — Size is the delivery contract, Quality is
+//     working precision. The spinner alongside is authoritative; the
+//     dropdown is a quick-pick that writes through.
+//
+// Internal mapping (cm = CanvasModel):
+//   * Size W/H → cm->intended_w / intended_h / intended_unit
+//     (s264 m3 plumbing; SvgWriter emits these as the SVG root
+//     width/height with the unit suffix).
+//   * Mode shape →
+//      Pixel:    ratio derived from Size W/H aspect (intended_unit="px")
+//      Physical: ratio derived from Size W/H aspect (intended_unit
+//                = "in"/"mm"/"pt")
+//      Ratio:    ratio set explicitly from the Ratio row
+//   * Quality → cm->quality (viewBox short-axis units).
+//     canvas_width()/canvas_height() = round(quality * ratio_*).
+//   * Physical-mode-specific cm->phys_width/phys_height/phys_unit/dpi
+//     are still written for legacy writer compatibility (the writer
+//     prefers intended_*); they retire formally in m4.
+
 void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
                                            Gtk::Box *parent) {
   // s150: announce the active unit in the section header. UnitSystem::label
@@ -783,118 +848,197 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
   auto *body =
       add_collapsible("Dimensions", false, parent, unit_label_upper.c_str());
 
-  // ── Display units dropdown (governs inspector readouts, not canvas geometry)
-  {
-    static const std::array<Unit, 4> k_units = {Unit::Px, Unit::In, Unit::Mm,
-                                                Unit::Pt};
-    auto *u_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-    u_row->add_css_class("prop-row");
-    auto *u_key = Gtk::make_managed<Gtk::Label>("Units");
-    u_key->add_css_class("prop-lbl");
-    u_key->set_width_chars(8);
-    u_key->set_xalign(0.0f);
-    auto u_list = Gtk::StringList::create({});
-    guint u_sel = 0;
-    for (guint i = 0; i < k_units.size(); ++i) {
-      u_list->append(UnitSystem::label(k_units[i]));
-      if (k_units[i] == cm->display_unit)
-        u_sel = i;
-    }
-    auto *u_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_can_un", u_list);
-    curvz::utils::set_name(u_drop, "ins_can_un", "inspector_canvas_units_dd");
-    u_drop->set_selected(u_sel);
-    u_drop->set_hexpand(true);
-    u_drop->add_css_class("prop-dropdown");
-    uint32_t u_gen = m_build_gen;
-    u_drop->property_selected().signal_changed().connect(
-        [this, cm, u_drop, u_gen]() {
-          if (u_gen != m_build_gen || m_loading)
-            return;
-          auto sel = u_drop->get_selected();
-          if (sel < k_units.size())
-            cm->display_unit = k_units[sel];
-          m_sig_canvas_changed.emit(*cm);
-          Glib::signal_idle().connect_once(
-              [this]() { refresh(m_canvas, m_current); });
-        });
-    u_row->append(*u_key);
-    u_row->append(*u_drop);
-    body->append(*u_row);
-  }
+  // s265 m2: Quality row retired from the UI. Working-plane size
+  // (cm->quality) remains in the model and file format for back-compat,
+  // but the user never sees or sets it. New docs default to quality=1000
+  // (set by CanvasModel's constructor / from_* factories). The drawing
+  // plane is now a pure implementation detail of SVG, not a user concept.
 
-  // ── Mode switcher + orientation buttons (S63 M6)
-  // Single row: [Mode ▼ ~50%] [📱 Portrait] [🖥️ Landscape]
-  // Orientation buttons swap canvas width and height for the current mode.
-  // The button matching the current orientation (W < H = portrait, W > H =
-  // landscape) is highlighted via the .orient-active CSS class. A square
-  // canvas (W == H) leaves both buttons inactive.
+  // The current Mode — used by helpers below. Read once at build time;
+  // any change rebuilds the panel.
+  const DisplayMode mode = cm->display_mode;
+
+  // ── Unit list — always all four units, in every mode. Mode picks the
+  // canvas semantics (pixel-as-delivery, physical, ratio); the unit
+  // picks how Size is *spelled* on the SVG and in the spinner. The two
+  // are independent: a Pixel-mode doc can still be displayed in inches
+  // if the user is targeting an iPad app at a known DPI, and a Ratio-
+  // mode doc can use any unit for the intended delivery size.
+  static const std::array<Unit, 4> k_units_all = {Unit::Px, Unit::In,
+                                                  Unit::Mm, Unit::Pt};
+  auto unit_list_for_mode = [&]() -> std::vector<Unit> {
+    return {k_units_all.begin(), k_units_all.end()};
+  };
+
+  // ── Display unit for the Size row. cm->display_unit drives across
+  // all modes — see "Unit list" comment above for why mode no longer
+  // constrains units.
+  Unit disp_unit = cm->display_unit;
+
+  // ── Helpers for converting between display-unit and inches. Physical
+  // mode stores phys_width/height in inches internally — these mirror
+  // the pre-s265 helpers exactly so the model behaviour doesn't shift.
+  auto inches_to_display = [](double inches, Unit u, int dpi) -> double {
+    if (u == Unit::Mm)
+      return inches * 25.4;
+    if (u == Unit::Pt)
+      return inches * 72.0;
+    if (u == Unit::Px)
+      return inches * dpi;
+    return inches; // In
+  };
+  auto display_to_inches = [](double v, Unit u, int dpi) -> double {
+    if (u == Unit::Mm)
+      return v / 25.4;
+    if (u == Unit::Pt)
+      return v / 72.0;
+    if (u == Unit::Px)
+      return (dpi > 0) ? v / dpi : v;
+    return v; // In
+  };
+
+  // ── Compute the Size W/H to display in the current Mode.
+  //
+  // Priority order:
+  //   1. intended_w/h if set (post-s264 m3 doc-level render intent —
+  //      this IS the SVG width/height, the delivery contract). Stored
+  //      in the unit named by intended_unit; if that differs from the
+  //      current display unit, convert.
+  //   2. Otherwise fall back to canvas dimensions:
+  //      * Physical mode: phys_width/height live in inches, convert to
+  //        the display unit via inches_to_display.
+  //      * Pixel / Ratio mode: canvas_width() is in working px; treat
+  //        the value AS px and convert to the display unit using a
+  //        96-dpi assumption (the SVG default — Curvz can't know what
+  //        device the user is targeting until they say so).
+  //
+  // Captures cm/disp_unit/mode/inches_to_display BY VALUE so the lambda
+  // can outlive the enclosing call stack — it's stored on a signal
+  // connection that fires after build_canvas_section returns.
+  //
+  // s265 m2 follow-up: DPI retired from the user-facing model. Conversion
+  // between px and physical units uses SVG's 96-dpi default everywhere
+  // (formerly cm->dpi was a per-doc value; now Curvz doesn't expose it).
+  auto unit_from_str = [](const std::string &s) -> Unit {
+    if (s == "in") return Unit::In;
+    if (s == "mm") return Unit::Mm;
+    if (s == "pt") return Unit::Pt;
+    return Unit::Px;
+  };
+  auto compute_size_wh = [cm, disp_unit, mode, inches_to_display,
+                          display_to_inches, unit_from_str](
+                             double &w_out, double &h_out) {
+    constexpr int kDPI = 96;
+    if (cm->intended_w > 0.0 && cm->intended_h > 0.0) {
+      Unit src_unit = unit_from_str(cm->intended_unit);
+      if (src_unit == disp_unit) {
+        w_out = cm->intended_w;
+        h_out = cm->intended_h;
+      } else {
+        double w_in = display_to_inches(cm->intended_w, src_unit, kDPI);
+        double h_in = display_to_inches(cm->intended_h, src_unit, kDPI);
+        w_out = inches_to_display(w_in, disp_unit, kDPI);
+        h_out = inches_to_display(h_in, disp_unit, kDPI);
+      }
+      return;
+    }
+    if (mode == DisplayMode::Physical) {
+      // Legacy back-compat: pre-s265 Physical-mode files have
+      // phys_width/height in inches. Render in user's display unit.
+      w_out = inches_to_display(cm->phys_width, disp_unit, kDPI);
+      h_out = inches_to_display(cm->phys_height, disp_unit, kDPI);
+    } else {
+      // Pixel / Ratio fallback: canvas is in working px. Treat as px
+      // at SVG-default 96 dpi and convert to the requested display unit.
+      double cw_in = (double)cm->canvas_width() / (double)kDPI;
+      double ch_in = (double)cm->canvas_height() / (double)kDPI;
+      w_out = inches_to_display(cw_in, disp_unit, kDPI);
+      h_out = inches_to_display(ch_in, disp_unit, kDPI);
+    }
+  };
+  double size_w = 0.0, size_h = 0.0;
+  compute_size_wh(size_w, size_h);
+
+  // ────────────────────────────────────────────────────────────────────
+  // Row 1 — Units + Orientation
+  // ────────────────────────────────────────────────────────────────────
+  //
+  // s265 m2 follow-up: Mode dropdown retired from the inspector. The
+  // three pre-s265 modes (Pixel / Physical / Ratio) collapsed into a
+  // single Size-driven model. Units drives the presets row below; the
+  // ratio presets are always available. The CanvasModel still carries
+  // a display_mode enum for back-compat with old files, but the
+  // inspector neither reads nor writes it after this milestone.
   {
     auto *m_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     m_row->add_css_class("prop-row");
     m_row->set_spacing(4);
 
-    auto *m_key = Gtk::make_managed<Gtk::Label>("Mode");
+    auto *m_key = Gtk::make_managed<Gtk::Label>("Units");
     m_key->add_css_class("prop-lbl");
     m_key->set_width_chars(8);
     m_key->set_xalign(0.0f);
     m_row->append(*m_key);
 
-    auto m_list = Gtk::StringList::create({"Pixel", "Physical", "Ratio"});
-    auto *m_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_can_md", m_list);
-    curvz::utils::set_name(m_drop, "ins_can_md", "inspector_canvas_mode_dd");
-    guint m_sel = 0;
-    if (cm->display_mode == DisplayMode::Physical)
-      m_sel = 1;
-    else if (cm->display_mode == DisplayMode::RatioQuality)
-      m_sel = 2;
-    m_drop->set_selected(m_sel);
-    m_drop->add_css_class("prop-dropdown");
-    // Hexpand so the dropdown takes the left half; the orientation button
-    // box on the right is non-expanding and hugs the end edge.
-    m_drop->set_hexpand(true);
-    m_row->append(*m_drop);
+    uint32_t m_gen = m_build_gen; // shared with swap_wh below
 
-    uint32_t m_gen = m_build_gen;
-    m_drop->property_selected().signal_changed().connect(
-        [this, cm, m_drop, m_gen]() {
-          if (m_gen != m_build_gen || m_loading)
+    // Units dropdown — always all four units, always editable.
+    auto units_for_mode = unit_list_for_mode();
+    auto u_list = Gtk::StringList::create({});
+    guint u_sel = 0;
+    for (guint i = 0; i < units_for_mode.size(); ++i) {
+      u_list->append(UnitSystem::label(units_for_mode[i]));
+      if (units_for_mode[i] == disp_unit)
+        u_sel = i;
+    }
+    auto *u_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_can_un",
+                                                               u_list);
+    curvz::utils::set_name(u_drop, "ins_can_un", "inspector_canvas_units_dd");
+    u_drop->set_selected(u_sel);
+    u_drop->add_css_class("prop-dropdown");
+    u_drop->set_hexpand(true);
+    m_row->append(*u_drop);
+
+    uint32_t u_gen = m_build_gen;
+    u_drop->property_selected().signal_changed().connect(
+        [this, cm, u_drop, u_gen, units_for_mode, inches_to_display,
+         display_to_inches]() {
+          if (u_gen != m_build_gen || m_loading)
             return;
-          auto sel = m_drop->get_selected();
-          int cw = cm->canvas_width(), ch = cm->canvas_height();
-          if (sel == 0) {
-            cm->display_mode = DisplayMode::Pixel;
-            cm->px_width = cw;
-            cm->px_height = ch;
-          } else if (sel == 1) {
-            int dpi = (cm->dpi > 0) ? cm->dpi : 300;
-            std::string unit = "in";
-            if (cm->display_unit == Unit::Mm)
-              unit = "mm";
-            double scale = dpi;
-            if (unit == "mm")
-              scale = dpi / 25.4;
-            cm->display_mode = DisplayMode::Physical;
-            cm->phys_unit = unit;
-            cm->phys_width = cw / scale;
-            cm->phys_height = ch / scale;
-            cm->dpi = dpi;
-          } else {
-            cm->display_mode = DisplayMode::RatioQuality;
+          auto sel = u_drop->get_selected();
+          if (sel >= units_for_mode.size())
+            return;
+          Unit new_unit = units_for_mode[sel];
+          Unit old_unit = cm->display_unit;
+          // Convert intended_w/h between units so the SAME real-world
+          // size carries across (e.g. 1in -> 25.4mm). Pure unit change
+          // shouldn't alter the delivery contract; it just changes how
+          // it's spelled.
+          if (cm->intended_w > 0.0 && cm->intended_h > 0.0
+              && new_unit != old_unit) {
+            const int dpi = 96;
+            double w_in = display_to_inches(cm->intended_w, old_unit, dpi);
+            double h_in = display_to_inches(cm->intended_h, old_unit, dpi);
+            cm->intended_w = inches_to_display(w_in, new_unit, dpi);
+            cm->intended_h = inches_to_display(h_in, new_unit, dpi);
+            cm->intended_unit = (new_unit == Unit::Mm)   ? "mm"
+                                : (new_unit == Unit::Pt) ? "pt"
+                                : (new_unit == Unit::In) ? "in"
+                                                         : "px";
           }
+          cm->display_unit = new_unit;
           m_sig_canvas_changed.emit(*cm);
           Glib::signal_idle().connect_once(
               [this]() { refresh(m_canvas, m_current); });
         });
 
-    // ── Orientation buttons (portrait / landscape) ──────────────────────────
-    // Compute current orientation from the current canvas size. One button
-    // is always active — square (W == H) defaults to Portrait to match
-    // print convention (Letter, A4, etc. are all portrait-first). Click the
-    // inactive button to swap W↔H; clicking the active one is a no-op.
+    // ── Orientation buttons (portrait / landscape) ──────────────────────
+    // One of two highlighted, click the inactive one to swap W↔H. Square
+    // defaults to Portrait.
     const int cur_w = cm->canvas_width();
     const int cur_h = cm->canvas_height();
     const bool is_landscape = (cur_w > cur_h);
-    const bool is_portrait = !is_landscape; // W < H, or square (W == H)
+    const bool is_portrait = !is_landscape;
 
     auto *portrait_btn = Gtk::make_managed<curvz::widgets::Button>("ins_can_op");
     curvz::utils::set_name(portrait_btn, "ins_can_op",
@@ -917,25 +1061,19 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     if (is_landscape)
       landscape_btn->add_css_class("orient-active");
 
-    // Swap helper — flips W↔H for whichever mode the canvas is in. The
-    // CanvasModel stores three independent representations (ratio, pixel,
-    // physical), so we swap all three in lockstep to keep canvas_width() /
-    // canvas_height() consistent.
     auto swap_wh = [this, cm, m_gen]() {
       if (m_gen != m_build_gen || m_loading)
         return;
       std::swap(cm->ratio_w, cm->ratio_h);
       std::swap(cm->px_width, cm->px_height);
       std::swap(cm->phys_width, cm->phys_height);
+      // Also swap intended_w/intended_h so the SVG W/H tracks the swap.
+      std::swap(cm->intended_w, cm->intended_h);
       m_sig_canvas_changed.emit(*cm);
       Glib::signal_idle().connect_once(
           [this]() { refresh(m_canvas, m_current); });
     };
 
-    // Click handlers. The active button is a no-op; the inactive one swaps.
-    // Square (W == H) is treated as Portrait — so Landscape-click on a
-    // square triggers a swap (no visual change but formally transitions the
-    // "orientation" state). This keeps the one-of-two rule clean.
     portrait_btn->signal_clicked().connect([swap_wh, cm]() {
       if (cm->canvas_width() > cm->canvas_height())
         swap_wh();
@@ -947,13 +1085,208 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
 
     m_row->append(*portrait_btn);
     m_row->append(*landscape_btn);
-
     body->append(*m_row);
   }
 
-  // ── Pixel mode: Width / Height spinners + quick presets
-  if (cm->display_mode == DisplayMode::Pixel) {
-    // Preset buttons
+  // ────────────────────────────────────────────────────────────────────
+  // Row 2 — SIZE with W / H column headers and aspect-lock toggle
+  // ────────────────────────────────────────────────────────────────────
+  //
+  // Uses the X/Y header idiom from build_guide_section / build_selection_
+  // section: column-0 row label, columns 1+2 spinners under centered
+  // single-char column headers (W / H here, X / Y there). Aspect-lock
+  // toggle sits at column 3, opacity-dimmed when unlocked (same idiom as
+  // build_selection_section's scale-link toggle, lines ~4582-4595).
+  //
+  // The spinners step+precision adapt to the display unit: px is integer,
+  // in/mm have decimals.
+  Gtk::SpinButton *size_w_spin = nullptr, *size_h_spin = nullptr;
+  {
+    auto *grid = Gtk::make_managed<Gtk::Grid>();
+    grid->set_row_spacing(2);
+    grid->set_column_spacing(4);
+    grid->set_margin_start(8);
+    grid->set_margin_end(6);
+    grid->set_margin_top(4);
+    grid->set_margin_bottom(4);
+
+    auto make_hdr = [](const char *txt) {
+      auto *l = Gtk::make_managed<Gtk::Label>(txt);
+      l->add_css_class("prop-lbl");
+      l->set_xalign(0.5f);
+      l->set_hexpand(true);
+      return l;
+    };
+    auto make_row_lbl = [](const char *txt) {
+      auto *l = Gtk::make_managed<Gtk::Label>(txt);
+      l->add_css_class("prop-lbl");
+      l->set_xalign(0.0f);
+      l->set_width_chars(8);
+      return l;
+    };
+
+    grid->attach(*make_hdr("W"), 1, 0);
+    grid->attach(*make_hdr("H"), 2, 0);
+
+    // Spinner range/step/precision adapt to display unit.
+    double sz_max = (disp_unit == Unit::Mm)   ? 100000.0
+                    : (disp_unit == Unit::Pt) ? 72000.0
+                    : (disp_unit == Unit::In) ? 10000.0
+                                              : 65536.0;
+    double sz_step = (disp_unit == Unit::In) ? 0.1 : 1.0;
+    double sz_page = (disp_unit == Unit::Mm)   ? 10.0
+                     : (disp_unit == Unit::Pt) ? 72.0
+                     : (disp_unit == Unit::In) ? 1.0
+                                               : 10.0;
+    int sz_dec = (disp_unit == Unit::Mm)   ? 2
+                 : (disp_unit == Unit::Pt) ? 1
+                 : (disp_unit == Unit::In) ? 3
+                                           : 0;
+    double sz_lo = (disp_unit == Unit::In) ? 0.001 : 1.0;
+
+    auto adj_sw = Gtk::Adjustment::create(size_w, sz_lo, sz_max, sz_step,
+                                          sz_page);
+    auto *sp_w = Gtk::make_managed<curvz::widgets::SpinButton>(
+        "ins_can_sw", adj_sw, sz_step, sz_dec);
+    curvz::utils::set_name(sp_w, "ins_can_sw", "inspector_canvas_size_w_spn");
+    sp_w->set_hexpand(true);
+    sp_w->add_css_class("prop-width-entry");
+    sp_w->set_tooltip_text("Intended output width — the SVG's width attribute "
+                           "(delivery size, not working precision)");
+    block_scroll(sp_w, [this] { emit_canvas_focus(); });
+    size_w_spin = sp_w;
+
+    auto adj_sh = Gtk::Adjustment::create(size_h, sz_lo, sz_max, sz_step,
+                                          sz_page);
+    auto *sp_h = Gtk::make_managed<curvz::widgets::SpinButton>(
+        "ins_can_sh", adj_sh, sz_step, sz_dec);
+    curvz::utils::set_name(sp_h, "ins_can_sh", "inspector_canvas_size_h_spn");
+    sp_h->set_hexpand(true);
+    sp_h->add_css_class("prop-width-entry");
+    sp_h->set_tooltip_text("Intended output height — the SVG's height "
+                           "attribute (delivery size, not working precision)");
+    block_scroll(sp_h, [this] { emit_canvas_focus(); });
+    size_h_spin = sp_h;
+
+    grid->attach(*make_row_lbl("Size"), 0, 1);
+    grid->attach(*sp_w, 1, 1);
+    grid->attach(*sp_h, 2, 1);
+
+    // Aspect-lock toggle. Same monochrome bright/dim idiom as
+    // build_selection_section's scale link (line ~4582).
+    auto *lock_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+        "ins_can_sl");
+    curvz::utils::set_name(lock_btn, "ins_can_sl",
+                           "inspector_canvas_size_lock_toggle");
+    lock_btn->set_active(m_canvas_aspect_locked);
+    lock_btn->set_tooltip_text("Link W and H — preserve aspect when editing "
+                               "one");
+    lock_btn->add_css_class("flat");
+    lock_btn->set_has_frame(false);
+    lock_btn->set_icon_name("curvz-link-symbolic");
+    lock_btn->set_opacity(m_canvas_aspect_locked ? 1.0 : 0.3);
+    lock_btn->signal_toggled().connect([this, lock_btn]() {
+      m_canvas_aspect_locked = lock_btn->get_active();
+      lock_btn->set_opacity(m_canvas_aspect_locked ? 1.0 : 0.3);
+    });
+    grid->attach(*lock_btn, 3, 1);
+
+    body->append(*grid);
+
+    // ── Commit helper: writes Size W/H back to the model.
+    // Strategy varies by mode:
+    //   Pixel:    Size is the canvas dimensions. Update ratio (from new
+    //             aspect) and intended_w/h to match. Quality independent.
+    //   Physical: Size in display unit -> phys_w/h in inches. Update
+    //             ratio (from new aspect) and intended_w/h to match.
+    //   Ratio:    Size is the SVG intended size. Ratio is independent —
+    //             aspect lock means "preserve ratio while changing Size."
+    //             Update intended_w/h directly; canvas_w/h stays at
+    //             quality * ratio (working scale).
+    //
+    // intended_unit always tracks disp_unit (rendered as "px"/"in"/"mm"/
+    // "pt" — see UnitSystem::label).
+    uint32_t s_gen = m_build_gen;
+    auto unit_str_for_disp = [](Unit u) -> std::string {
+      switch (u) {
+      case Unit::Px:
+        return "px";
+      case Unit::In:
+        return "in";
+      case Unit::Mm:
+        return "mm";
+      case Unit::Pt:
+        return "pt";
+      }
+      return "px";
+    };
+    auto commit_size = [this, cm, sp_w, sp_h, s_gen, disp_unit,
+                        unit_str_for_disp, compute_size_wh](
+                           Gtk::SpinButton *driver) {
+      if (s_gen != m_build_gen || m_loading)
+        return;
+      double new_w = sp_w->get_value();
+      double new_h = sp_h->get_value();
+
+      // Aspect lock — when on, the non-driver field gets recomputed from
+      // the driver value and the previous aspect. Compute aspect from the
+      // CURRENT model state (not the spinner snapshot) so the lock can't
+      // drift if both fields fire in succession.
+      if (m_canvas_aspect_locked && driver != nullptr) {
+        double old_w = 0.0, old_h = 0.0;
+        compute_size_wh(old_w, old_h);
+        if (old_w > 0.0 && old_h > 0.0) {
+          double aspect = old_w / old_h;
+          m_loading = true;
+          if (driver == sp_w) {
+            new_h = new_w / aspect;
+            sp_h->set_value(new_h);
+          } else {
+            new_w = new_h * aspect;
+            sp_w->set_value(new_w);
+          }
+          m_loading = false;
+        }
+      }
+
+      // Write to model. s265 m2 follow-up: single-path commit (mode-
+      // independent). The user types Size W/H; we:
+      //   1. set intended_w/h/intended_unit (delivery contract)
+      //   2. update ratio_w/h from the new aspect (working plane shape)
+      //   3. preserve quality (working plane resolution — Curvz default
+      //      1000, not exposed to user)
+      //   4. preserve display_unit (Units dropdown is independent)
+      // display_mode stays at whatever the file loaded with; the inspector
+      // no longer changes it.
+      if (new_w > 0.0 && new_h > 0.0) {
+        double s = std::min(new_w, new_h);
+        cm->ratio_w = new_w / s;
+        cm->ratio_h = new_h / s;
+      }
+      cm->intended_w = new_w;
+      cm->intended_h = new_h;
+      cm->intended_unit = unit_str_for_disp(disp_unit);
+
+      Glib::signal_timeout().connect_once(
+          [this, cm]() { m_sig_canvas_changed.emit(*cm); }, 1);
+    };
+
+    adj_sw->signal_value_changed().connect(
+        [commit_size, sp_w]() { commit_size(sp_w); });
+    adj_sh->signal_value_changed().connect(
+        [commit_size, sp_h]() { commit_size(sp_h); });
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Row 3 — Size presets (driven by Units)
+  // ────────────────────────────────────────────────────────────────────
+  //
+  // s265 m2 follow-up: the old "preset family is per-Mode" logic is gone
+  // along with Mode itself. Units now drives the presets:
+  //   * px            → numeric square presets {16,24,32,48,64,128,256}
+  //   * in/mm/pt      → page presets {Letter, A4, A5, Tabloid}
+  // Clicking a preset writes Size W/H; the inspector rebuilds.
+  {
     auto *pre_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     pre_row->set_spacing(4);
     pre_row->set_margin_bottom(4);
@@ -962,238 +1295,94 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     pre_lbl->set_width_chars(8);
     pre_lbl->set_xalign(0.0f);
     pre_row->append(*pre_lbl);
-    static const int PX_PRESETS[] = {16, 24, 32, 48, 64, 128, 256};
-    for (int px : PX_PRESETS) {
-      auto *btn = Gtk::make_managed<Gtk::Button>(std::to_string(px));
-      btn->add_css_class("flat");
-      btn->set_margin_start(1);
-      uint32_t b_gen = m_build_gen;
-      btn->signal_clicked().connect([this, cm, px, b_gen]() {
-        if (b_gen != m_build_gen)
-          return;
-        Unit saved_unit = cm->display_unit;
-        *cm = CanvasModel::from_pixels(px, px);
-        cm->display_unit = saved_unit;
-        m_sig_canvas_changed.emit(*cm);
-        Glib::signal_idle().connect_once(
-            [this]() { refresh(m_canvas, m_current); });
-      });
-      pre_row->append(*btn);
+
+    if (disp_unit == Unit::Px) {
+      // Numeric square presets — the classic icon sizes.
+      static const int PX_PRESETS[] = {16, 24, 32, 48, 64, 128, 256};
+      for (int px : PX_PRESETS) {
+        auto *btn = Gtk::make_managed<Gtk::Button>(std::to_string(px));
+        btn->add_css_class("flat");
+        btn->set_margin_start(1);
+        uint32_t b_gen = m_build_gen;
+        btn->signal_clicked().connect([this, cm, px, b_gen]() {
+          if (b_gen != m_build_gen)
+            return;
+          // Set Size to px×px; ratio derives to 1:1. Quality preserved.
+          cm->ratio_w = 1.0;
+          cm->ratio_h = 1.0;
+          cm->intended_w = (double)px;
+          cm->intended_h = (double)px;
+          cm->intended_unit = "px";
+          m_sig_canvas_changed.emit(*cm);
+          Glib::signal_idle().connect_once(
+              [this]() { refresh(m_canvas, m_current); });
+        });
+        pre_row->append(*btn);
+      }
+    } else {
+      // Page presets in inches; converted to the current display unit on
+      // click so the SVG carries `width="8.5in"` (or "215.9mm", etc.) as
+      // the delivery contract.
+      struct PagePreset {
+        const char *label;
+        double w_in, h_in;
+      };
+      static const PagePreset PAGE_PRESETS[] = {
+          {"Letter",  8.5,  11.0},
+          {"A4",      8.27, 11.69},
+          {"A5",      5.83, 8.27},
+          {"Tabloid", 11.0, 17.0},
+      };
+      for (const auto &p : PAGE_PRESETS) {
+        auto *btn = Gtk::make_managed<Gtk::Button>(p.label);
+        btn->add_css_class("flat");
+        btn->set_margin_start(1);
+        uint32_t b_gen = m_build_gen;
+        double bw = p.w_in, bh = p.h_in;
+        btn->signal_clicked().connect([this, cm, bw, bh, b_gen, disp_unit,
+                                       inches_to_display]() {
+          if (b_gen != m_build_gen)
+            return;
+          // Aspect from page (always portrait — user can hit landscape
+          // button afterwards). Quality / display_unit preserved.
+          double s_in = std::min(bw, bh);
+          cm->ratio_w = bw / s_in;
+          cm->ratio_h = bh / s_in;
+          const int dpi = 96;
+          cm->intended_w = inches_to_display(bw, disp_unit, dpi);
+          cm->intended_h = inches_to_display(bh, disp_unit, dpi);
+          cm->intended_unit = (disp_unit == Unit::Mm)   ? "mm"
+                              : (disp_unit == Unit::Pt) ? "pt"
+                                                        : "in";
+          m_sig_canvas_changed.emit(*cm);
+          Glib::signal_idle().connect_once(
+              [this]() { refresh(m_canvas, m_current); });
+        });
+        pre_row->append(*btn);
+      }
     }
     body->append(*pre_row);
-
-    int cw = cm->canvas_width(), ch = cm->canvas_height();
-    Gtk::SpinButton *can_pw_spin = nullptr, *can_ph_spin = nullptr;
-    auto adj_pw = box_add_spin(
-        body, "ins_can_pw", "Width (px)", cw, 1, 65536, 1, 8, 0, 8,
-        "Canvas width in pixels", [this] { emit_canvas_focus(); }, &can_pw_spin);
-    curvz::utils::set_name(can_pw_spin, "ins_can_pw",
-                           "inspector_canvas_pixel_width_spn");
-    auto adj_ph = box_add_spin(
-        body, "ins_can_ph", "Height (px)", ch, 1, 65536, 1, 8, 0, 8,
-        "Canvas height in pixels", [this] { emit_canvas_focus(); },
-        &can_ph_spin);
-    curvz::utils::set_name(can_ph_spin, "ins_can_ph",
-                           "inspector_canvas_pixel_height_spn");
-    uint32_t p_gen = m_build_gen;
-    adj_pw->signal_value_changed().connect([this, cm, adj_pw, adj_ph, p_gen]() {
-      if (p_gen != m_build_gen || m_loading)
-        return;
-      int pw = (int)adj_pw->get_value(), ph = (int)adj_ph->get_value();
-      *cm = CanvasModel::from_pixels(pw, ph);
-      Glib::signal_timeout().connect_once(
-          [this, cm]() { m_sig_canvas_changed.emit(*cm); }, 1);
-    });
-    adj_ph->signal_value_changed().connect([this, cm, adj_pw, adj_ph, p_gen]() {
-      if (p_gen != m_build_gen || m_loading)
-        return;
-      int pw = (int)adj_pw->get_value(), ph = (int)adj_ph->get_value();
-      *cm = CanvasModel::from_pixels(pw, ph);
-      Glib::signal_timeout().connect_once(
-          [this, cm]() { m_sig_canvas_changed.emit(*cm); }, 1);
-    });
   }
 
-  // ── Physical mode: W / H / Unit / DPI
-  else if (cm->display_mode == DisplayMode::Physical) {
-    // phys_width/height are always stored in inches internally.
-    // Display and accept values in the current display_unit.
-    auto inches_to_display = [](double inches, Unit u, int dpi) -> double {
-      if (u == Unit::Mm)
-        return inches * 25.4;
-      if (u == Unit::Pt)
-        return inches * 72.0;
-      if (u == Unit::Px)
-        return inches * dpi;
-      return inches; // In
-    };
-    auto display_to_inches = [](double v, Unit u, int dpi) -> double {
-      if (u == Unit::Mm)
-        return v / 25.4;
-      if (u == Unit::Pt)
-        return v / 72.0;
-      if (u == Unit::Px)
-        return (dpi > 0) ? v / dpi : v;
-      return v; // In
-    };
-    auto unit_to_phys = [](Unit u) -> std::string {
-      if (u == Unit::Mm)
-        return "mm";
-      return "in"; // In, Pt, Px all stored as inches
-    };
+  // ────────────────────────────────────────────────────────────────────
+  // Row 4 — Ratio presets (always available)
+  // ────────────────────────────────────────────────────────────────────
+  //
+  // s265 m2 follow-up: ratio presets used to be Ratio-mode-only. They
+  // now live alongside the size presets in every doc. Clicking a ratio
+  // preserves the current Size's SHORT side and rescales the long side
+  // to match the new aspect — same convention as the aspect-lock toggle
+  // when you change one side of Size manually.
+  {
+    auto *rp_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+    rp_row->set_spacing(4);
+    rp_row->set_margin_bottom(4);
+    auto *rp_lbl = Gtk::make_managed<Gtk::Label>("Ratio");
+    rp_lbl->add_css_class("prop-lbl");
+    rp_lbl->set_width_chars(8);
+    rp_lbl->set_xalign(0.0f);
+    rp_row->append(*rp_lbl);
 
-    Unit disp_unit = cm->display_unit;
-    double disp_w = inches_to_display(cm->phys_width, disp_unit, cm->dpi);
-    double disp_h = inches_to_display(cm->phys_height, disp_unit, cm->dpi);
-
-    // Spinner range and step in display units
-    double max_v = (disp_unit == Unit::Mm)   ? 100000.0
-                   : (disp_unit == Unit::Pt) ? 72000.0
-                   : (disp_unit == Unit::Px) ? 65536.0
-                                             : 10000.0;
-    double step = (disp_unit == Unit::Mm)   ? 1.0
-                  : (disp_unit == Unit::Pt) ? 1.0
-                  : (disp_unit == Unit::Px) ? 1.0
-                                            : 0.1;
-    double page = (disp_unit == Unit::Mm)   ? 10.0
-                  : (disp_unit == Unit::Pt) ? 72.0
-                  : (disp_unit == Unit::Px) ? 10.0
-                                            : 1.0;
-    int dec = (disp_unit == Unit::Mm)   ? 2
-              : (disp_unit == Unit::Pt) ? 1
-              : (disp_unit == Unit::Px) ? 0
-                                        : 3;
-    std::string w_lbl =
-        std::string("Width (") + UnitSystem::label(disp_unit) + ")";
-    std::string h_lbl =
-        std::string("Height (") + UnitSystem::label(disp_unit) + ")";
-
-    Gtk::SpinButton *can_phw_spin = nullptr, *can_phh_spin = nullptr;
-    auto adj_pw = box_add_spin(
-        body, "ins_can_phw", w_lbl.c_str(), disp_w, 0.001, max_v, step, page,
-        dec, 8, "Physical width in current unit",
-        [this] { emit_canvas_focus(); }, &can_phw_spin);
-    curvz::utils::set_name(can_phw_spin, "ins_can_phw",
-                           "inspector_canvas_phys_width_spn");
-    auto adj_ph = box_add_spin(
-        body, "ins_can_phh", h_lbl.c_str(), disp_h, 0.001, max_v, step, page,
-        dec, 8, "Physical height in current unit",
-        [this] { emit_canvas_focus(); }, &can_phh_spin);
-    curvz::utils::set_name(can_phh_spin, "ins_can_phh",
-                           "inspector_canvas_phys_height_spn");
-
-    // DPI row — dropdown for common presets, spinner for any custom value.
-    // The spinner is authoritative; the dropdown is a quick-pick that
-    // writes to the spinner. Both sync to `cm->dpi` via commit_physical.
-    auto *dpi_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-    dpi_row->add_css_class("prop-row");
-    dpi_row->set_spacing(4);
-    auto *dpi_key = Gtk::make_managed<Gtk::Label>("DPI");
-    dpi_key->add_css_class("prop-lbl");
-    dpi_key->set_width_chars(8);
-    dpi_key->set_xalign(0.0f);
-    auto dpi_list =
-        Gtk::StringList::create({"72", "96", "150", "300", "600", "Custom"});
-    static const int DPI_VALS[] = {72, 96, 150, 300, 600};
-    static const int DPI_PRESET_COUNT = 5;
-    static const guint DPI_CUSTOM_INDEX = 5;
-    auto *dpi_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_can_dpi", dpi_list);
-    curvz::utils::set_name(dpi_drop, "ins_can_dpi", "inspector_canvas_dpi_dd");
-    // Pick the matching preset index, else "Custom"
-    guint dpi_sel = DPI_CUSTOM_INDEX;
-    for (guint i = 0; i < DPI_PRESET_COUNT; ++i)
-      if (DPI_VALS[i] == cm->dpi) {
-        dpi_sel = i;
-        break;
-      }
-    dpi_drop->set_selected(dpi_sel);
-    dpi_drop->add_css_class("prop-dropdown");
-    dpi_row->append(*dpi_key);
-    dpi_row->append(*dpi_drop);
-
-    // Custom DPI spinner — always visible. Values outside the preset
-    // list are valid (e.g. 144 for retina, 203 for thermal printers,
-    // 1200 for fine print). Range covers screen through commercial
-    // print; lower bound 1 prevents divide-by-zero downstream.
-    auto dpi_adj =
-        Gtk::Adjustment::create((double)cm->dpi, 1.0, 9600.0, 1.0, 10.0);
-    auto *dpi_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
-        "ins_can_dpi_spn", dpi_adj, 1.0, 0);
-    curvz::utils::set_name(dpi_spin, "ins_can_dpi_spn",
-                           "inspector_canvas_dpi_spn");
-    dpi_spin->set_width_chars(5);
-    dpi_spin->set_hexpand(true);
-    dpi_spin->add_css_class("prop-width-entry");
-    dpi_spin->set_tooltip_text(
-        "DPI — pick a preset on the left or type any value here");
-    block_scroll(dpi_spin, [this] { emit_canvas_focus(); });
-    dpi_row->append(*dpi_spin);
-    body->append(*dpi_row);
-
-    // Wire — convert display unit → inches → CanvasModel.
-    // dpi_spin is the authoritative DPI source. dpi_drop is a quick-pick
-    // that writes to dpi_spin (which then triggers commit_physical via
-    // the spinner's value-changed signal). Selecting "Custom" leaves
-    // the spinner alone — the user types the value directly.
-    //
-    // m_loading flag (used by the ph_gen+m_loading guard) is leveraged
-    // as a "we are programmatically updating, don't recurse" gate so
-    // the dropdown→spinner write doesn't fire commit twice.
-    uint32_t ph_gen = m_build_gen;
-    auto commit_physical = [this, cm, adj_pw, adj_ph, dpi_drop, dpi_spin,
-                            ph_gen, display_to_inches, unit_to_phys]() {
-      if (ph_gen != m_build_gen || m_loading)
-        return;
-      double w_in =
-          display_to_inches(adj_pw->get_value(), cm->display_unit, cm->dpi);
-      double h_in =
-          display_to_inches(adj_ph->get_value(), cm->display_unit, cm->dpi);
-      int dpi_v = std::clamp((int)std::lround(dpi_spin->get_value()), 1, 9600);
-      std::string phys_unit = unit_to_phys(cm->display_unit);
-      Unit saved_display = cm->display_unit;
-      *cm = CanvasModel::from_physical(w_in, h_in, phys_unit, dpi_v);
-      cm->display_unit = saved_display;
-      // Sync the dropdown to reflect preset/custom state. Guard
-      // m_loading so this programmatic write doesn't re-enter
-      // commit_physical from the dropdown's signal.
-      m_loading = true;
-      guint match = DPI_CUSTOM_INDEX;
-      for (guint i = 0; i < DPI_PRESET_COUNT; ++i)
-        if (DPI_VALS[i] == dpi_v) {
-          match = i;
-          break;
-        }
-      if (dpi_drop->get_selected() != match)
-        dpi_drop->set_selected(match);
-      m_loading = false;
-      Glib::signal_timeout().connect_once(
-          [this, cm]() { m_sig_canvas_changed.emit(*cm); }, 1);
-    };
-    adj_pw->signal_value_changed().connect(commit_physical);
-    adj_ph->signal_value_changed().connect(commit_physical);
-    dpi_spin->signal_value_changed().connect(commit_physical);
-    dpi_drop->property_selected().signal_changed().connect(
-        [this, dpi_drop, dpi_spin, ph_gen]() {
-          if (ph_gen != m_build_gen || m_loading)
-            return;
-          guint sel = dpi_drop->get_selected();
-          if (sel >= DPI_PRESET_COUNT)
-            return; // "Custom" — leave spinner
-          // Write through to the spinner, which fires its own
-          // value-changed signal and runs commit_physical.
-          dpi_spin->set_value((double)DPI_VALS[sel]);
-        });
-
-    // Read-only pixel size readout
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%d × %d px", cm->canvas_width(),
-             cm->canvas_height());
-    box_add_row(body, "Pixels", buf, 8);
-  }
-
-  // ── Ratio / Quality mode
-  else {
-    // Ratio preset buttons
     struct RatioPreset {
       const char *label;
       double w, h;
@@ -1202,28 +1391,35 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
         {"1:1", 1.0, 1.0},      {"4:3", 4.0, 3.0},     {"16:9", 16.0, 9.0},
         {"√2", 1.0, 1.4142135}, {"φ", 1.0, 1.6180339},
     };
-    auto *rp_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-    rp_row->set_spacing(4);
-    rp_row->set_margin_bottom(4);
-    auto *rp_lbl = Gtk::make_managed<Gtk::Label>("Presets");
-    rp_lbl->add_css_class("prop-lbl");
-    rp_lbl->set_width_chars(8);
-    rp_lbl->set_xalign(0.0f);
-    rp_row->append(*rp_lbl);
     for (const auto &p : RATIO_PRESETS) {
       auto *btn = Gtk::make_managed<Gtk::Button>(p.label);
       btn->add_css_class("flat");
       btn->set_margin_start(1);
       uint32_t b_gen = m_build_gen;
       double bw = p.w, bh = p.h;
-      btn->signal_clicked().connect([this, cm, bw, bh, b_gen]() {
+      btn->signal_clicked().connect([this, cm, bw, bh, b_gen,
+                                     compute_size_wh]() {
         if (b_gen != m_build_gen)
           return;
-        Unit saved_unit = cm->display_unit;
-        int saved_dpi = cm->dpi;
-        *cm = CanvasModel::from_ratio(bw, bh, cm->quality);
-        cm->display_unit = saved_unit;
-        cm->dpi = saved_dpi;
+        // New ratio (normalised so short axis = 1).
+        double s = std::min(bw, bh);
+        cm->ratio_w = bw / s;
+        cm->ratio_h = bh / s;
+        // Rescale Size: keep the short side, recompute the long one
+        // from the new ratio. If intent isn't set yet, fall through to
+        // canvas dims via compute_size_wh so the user's first ratio
+        // click on a fresh doc still does the right thing.
+        double cur_w = 0.0, cur_h = 0.0;
+        compute_size_wh(cur_w, cur_h);
+        if (cur_w > 0.0 && cur_h > 0.0) {
+          double short_side = std::min(cur_w, cur_h);
+          cm->intended_w = short_side * cm->ratio_w;
+          cm->intended_h = short_side * cm->ratio_h;
+          // Inherit current Units string from cm->intended_unit if set,
+          // else default to "px" (compute_size_wh fallback uses doc-px).
+          if (cm->intended_unit.empty())
+            cm->intended_unit = "px";
+        }
         m_sig_canvas_changed.emit(*cm);
         Glib::signal_idle().connect_once(
             [this]() { refresh(m_canvas, m_current); });
@@ -1231,78 +1427,6 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
       rp_row->append(*btn);
     }
     body->append(*rp_row);
-
-    Gtk::SpinButton *can_rw_spin = nullptr, *can_rh_spin = nullptr,
-                    *can_rq_spin = nullptr;
-    auto adj_rw = box_add_spin(
-        body, "ins_can_rw", "Ratio W", cm->ratio_w, 0.001, 100.0, 0.001, 0.1,
-        4, 8, "Width ratio (normalised: short axis = 1.0)",
-        [this] { emit_canvas_focus(); }, &can_rw_spin);
-    curvz::utils::set_name(can_rw_spin, "ins_can_rw",
-                           "inspector_canvas_ratio_w_spn");
-    auto adj_rh = box_add_spin(
-        body, "ins_can_rh", "Ratio H", cm->ratio_h, 0.001, 100.0, 0.001, 0.1,
-        4, 8, "Height ratio (normalised: short axis = 1.0)",
-        [this] { emit_canvas_focus(); }, &can_rh_spin);
-    curvz::utils::set_name(can_rh_spin, "ins_can_rh",
-                           "inspector_canvas_ratio_h_spn");
-
-    // Quality with slider labels
-    auto *ql_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-    ql_row->set_spacing(4);
-    for (const char *lbl : {"Icon", "Print", "Poster", "Billboard"}) {
-      auto *l = Gtk::make_managed<Gtk::Label>(lbl);
-      l->add_css_class("caption-label");
-      l->set_hexpand(true);
-      l->set_xalign(0.5f);
-      ql_row->append(*l);
-    }
-    body->append(*ql_row);
-
-    auto adj_q = box_add_spin(
-        body, "ins_can_rq", "Quality", cm->quality, 1, 100000, 100, 1000, 0, 8,
-        "Unit count on short axis. Icon=1000 Print=4000 Poster=10000",
-        [this] { emit_canvas_focus(); }, &can_rq_spin);
-    curvz::utils::set_name(can_rq_spin, "ins_can_rq",
-                           "inspector_canvas_ratio_quality_spn");
-
-    uint32_t r_gen = m_build_gen;
-    adj_rw->signal_value_changed().connect([this, cm, adj_rw, adj_rh, adj_q,
-                                            r_gen]() {
-      if (r_gen != m_build_gen || m_loading)
-        return;
-      double rw = adj_rw->get_value(), rh = adj_rh->get_value();
-      double s = std::min(rw, rh);
-      *cm = CanvasModel::from_ratio(rw / s, rh / s, (int)adj_q->get_value());
-      Glib::signal_timeout().connect_once(
-          [this, cm]() { m_sig_canvas_changed.emit(*cm); }, 1);
-    });
-    adj_rh->signal_value_changed().connect([this, cm, adj_rw, adj_rh, adj_q,
-                                            r_gen]() {
-      if (r_gen != m_build_gen || m_loading)
-        return;
-      double rw = adj_rw->get_value(), rh = adj_rh->get_value();
-      double s = std::min(rw, rh);
-      *cm = CanvasModel::from_ratio(rw / s, rh / s, (int)adj_q->get_value());
-      Glib::signal_timeout().connect_once(
-          [this, cm]() { m_sig_canvas_changed.emit(*cm); }, 1);
-    });
-    adj_q->signal_value_changed().connect([this, cm, adj_rw, adj_rh, adj_q,
-                                           r_gen]() {
-      if (r_gen != m_build_gen || m_loading)
-        return;
-      double rw = adj_rw->get_value(), rh = adj_rh->get_value();
-      double s = std::min(rw, rh);
-      *cm = CanvasModel::from_ratio(rw / s, rh / s, (int)adj_q->get_value());
-      Glib::signal_timeout().connect_once(
-          [this, cm]() { m_sig_canvas_changed.emit(*cm); }, 1);
-    });
-
-    // Read-only pixel size readout
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%d × %d px", cm->canvas_width(),
-             cm->canvas_height());
-    box_add_row(body, "Pixels", buf, 8);
   }
 }
 

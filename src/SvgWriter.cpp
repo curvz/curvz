@@ -872,17 +872,17 @@ std::string write_svg(const CurvzDocument& doc) {
     // remain for files that pre-date s264 or never set an intent.
     char wh[64];
     char hh[64];
-    if (doc.intended_w > 0.0 && doc.intended_h > 0.0) {
+    if (doc.canvas.intended_w > 0.0 && doc.canvas.intended_h > 0.0) {
         // Render-intent set. Emit with unit suffix unless empty / "px"
         // (SVG default; bare number == px, suffix only when needed).
-        const std::string& iu = doc.intended_unit;
+        const std::string& iu = doc.canvas.intended_unit;
         const bool bare = iu.empty() || iu == "px";
         if (bare) {
-            snprintf(wh, sizeof(wh), "%g", doc.intended_w);
-            snprintf(hh, sizeof(hh), "%g", doc.intended_h);
+            snprintf(wh, sizeof(wh), "%g", doc.canvas.intended_w);
+            snprintf(hh, sizeof(hh), "%g", doc.canvas.intended_h);
         } else {
-            snprintf(wh, sizeof(wh), "%g%s", doc.intended_w, iu.c_str());
-            snprintf(hh, sizeof(hh), "%g%s", doc.intended_h, iu.c_str());
+            snprintf(wh, sizeof(wh), "%g%s", doc.canvas.intended_w, iu.c_str());
+            snprintf(hh, sizeof(hh), "%g%s", doc.canvas.intended_h, iu.c_str());
         }
     } else if (doc.canvas.display_mode == DisplayMode::Physical) {
         // 2 decimal places for phys w/h; unit is doc.canvas.phys_unit ("in","mm","cm")
@@ -915,15 +915,15 @@ std::string write_svg(const CurvzDocument& doc) {
     // own files we want explicit storage. Unit attribute only emitted
     // when non-default (non-empty / non-"px") to keep the common case
     // (px intent) clean — the parser treats absent unit as "px".
-    if (doc.intended_w > 0.0 && doc.intended_h > 0.0) {
+    if (doc.canvas.intended_w > 0.0 && doc.canvas.intended_h > 0.0) {
         char ibuf[32];
-        snprintf(ibuf, sizeof(ibuf), "%g", doc.intended_w);
+        snprintf(ibuf, sizeof(ibuf), "%g", doc.canvas.intended_w);
         out << " data-curvz-intended-w=\"" << ibuf << "\"";
-        snprintf(ibuf, sizeof(ibuf), "%g", doc.intended_h);
+        snprintf(ibuf, sizeof(ibuf), "%g", doc.canvas.intended_h);
         out << " data-curvz-intended-h=\"" << ibuf << "\"";
-        if (!doc.intended_unit.empty() && doc.intended_unit != "px") {
+        if (!doc.canvas.intended_unit.empty() && doc.canvas.intended_unit != "px") {
             out << " data-curvz-intended-unit=\""
-                << doc.intended_unit << "\"";
+                << doc.canvas.intended_unit << "\"";
         }
     }
     out << ">\n";
@@ -1225,6 +1225,81 @@ bool write_svg_file_with_export_meta(const CurvzDocument& doc,
     } else {
         LOG_WARN("SvgWriter: could not locate <svg root for export metadata "
                  "injection in '{}' — writing without metadata", path);
+    }
+
+    // ── s265 m2 fix: patch the visible width/height on the root <svg>
+    // ── to the Export-dialog Size override. ────────────────────────────
+    //
+    // Pre-fix, the Export dialog's Size field only made it into the file
+    // as data-curvz-export-* metadata; the visible width/height kept
+    // coming from doc.canvas.intended_* via write_svg. That meant the
+    // SVG would render at the doc's intent size, NOT the override the
+    // user typed in the Export dialog — a semantic regression flagged
+    // in the s264 handoff "carry forward" bucket.
+    //
+    // Fix: scale doc.canvas.intended_* (or canvas dims, as fallback)
+    // to the override side, compute the other side from the doc's
+    // aspect, and rewrite the two attrs in place.
+    //
+    // Aspect source: intended_* if set, else canvas dims. Same source
+    // write_svg picks for width/height, so the aspect can never drift
+    // between the two paths.
+    {
+        // Resolve the doc aspect.
+        double aspect_w = (doc.canvas.intended_w > 0.0)
+                              ? doc.canvas.intended_w
+                              : (double)doc.canvas_width();
+        double aspect_h = (doc.canvas.intended_h > 0.0)
+                              ? doc.canvas.intended_h
+                              : (double)doc.canvas_height();
+        if (aspect_w > 0.0 && aspect_h > 0.0 && size_value > 0.0) {
+            double out_w, out_h;
+            if (fit_side == "height") {
+                out_h = size_value;
+                out_w = size_value * (aspect_w / aspect_h);
+            } else { // default: width-fit
+                out_w = size_value;
+                out_h = size_value * (aspect_h / aspect_w);
+            }
+
+            // Format with unit suffix. SVG default is px when bare; emit
+            // suffix for any non-px unit (matches write_svg's idiom).
+            char out_w_buf[64], out_h_buf[64];
+            const bool bare = units.empty() || units == "px";
+            if (bare) {
+                snprintf(out_w_buf, sizeof(out_w_buf), "%g", out_w);
+                snprintf(out_h_buf, sizeof(out_h_buf), "%g", out_h);
+            } else {
+                snprintf(out_w_buf, sizeof(out_w_buf), "%g%s",
+                         out_w, units.c_str());
+                snprintf(out_h_buf, sizeof(out_h_buf), "%g%s",
+                         out_h, units.c_str());
+            }
+
+            // Replace the FIRST occurrence of width="..." and height="..."
+            // in the file. write_svg emits these as the first attributes
+            // after viewBox on the root <svg> — they never appear
+            // earlier in the byte stream than the root tag opens, so
+            // first-match is the root tag's pair.
+            auto replace_attr = [&](const char* name,
+                                    const std::string& new_val) {
+                std::string needle = std::string(" ") + name + "=\"";
+                auto a = svg.find(needle);
+                if (a == std::string::npos) return false;
+                auto b = svg.find('"', a + needle.size());
+                if (b == std::string::npos) return false;
+                svg.replace(a + needle.size(), b - (a + needle.size()),
+                            new_val);
+                return true;
+            };
+            bool ok_w = replace_attr("width",  out_w_buf);
+            bool ok_h = replace_attr("height", out_h_buf);
+            if (!ok_w || !ok_h) {
+                LOG_WARN("SvgWriter: could not patch root width/height for "
+                         "export size override in '{}' — file uses doc "
+                         "intent for size", path);
+            }
+        }
     }
 
     std::ofstream f(path);

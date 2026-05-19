@@ -56,20 +56,48 @@ struct TickScheme {
   std::string suffix; // label suffix ("", "%", "px", "in", "mm")
 };
 
+// s265 m2: Helpers for intent-aware ruler math. When the doc has render
+// intent set (intended_w/h/unit), the ruler should report in that unit
+// regardless of display_mode. This mirrors DocUnits's resolution order
+// and gives ruler ticks the same coordinate system every other surface
+// reports.
+static inline bool ruler_has_intent(const RulerState &s) {
+  return s.intended_w > 0.0 && s.intended_h > 0.0 && s.canvas_w > 0.0
+         && s.canvas_h > 0.0;
+}
+static inline Unit ruler_intent_unit(const RulerState &s) {
+  if (s.intended_unit == "in") return Unit::In;
+  if (s.intended_unit == "mm") return Unit::Mm;
+  if (s.intended_unit == "pt") return Unit::Pt;
+  return Unit::Px;
+}
+
 static TickScheme choose_ticks(const RulerState &s, double min_px_major) {
-  Unit u = s.display_unit;
+  // s265 m2: intent overrides display_unit/mode. The ruler reports in the
+  // unit the user typed for Size (intended_unit), and a "display unit" tick
+  // = canvas_w / intended_w doc-units (so a 16-inch poster's tick spacing
+  // is one doc-unit per (canvas_w / 16) = 62.5 doc-units for the 1000-wide
+  // canvas, giving 16 ticks across the doc.canvas span).
+  Unit u = ruler_has_intent(s) ? ruler_intent_unit(s) : s.display_unit;
 
   // How many screen-px per doc-unit at current zoom
   double px_per_doc = s.zoom;
 
-  // How many doc-units per display-unit depends on display mode:
-  // - Pixel: 1 doc-unit = 1px → px_per_display_unit = zoom * 1
-  // - RatioQuality: same as Pixel for ruler purposes
-  // - Physical: 1 display-unit (e.g. 1in) = quality/phys_short doc-units
+  // How many doc-units per display-unit:
+  //   * intent set:     canvas_w / intended_w (X) or canvas_h / intended_h
+  //                     (Y).  choose_ticks doesn't know the axis, but X and
+  //                     Y of the same canvas have the same px_per_unit at
+  //                     the same zoom because the canvas keeps a fixed
+  //                     aspect — and the intent ratio is the same on both
+  //                     axes (we set intended_w/intended_h proportionally).
+  //                     Using X is fine; Y would yield the same px_per_unit.
+  //   * Physical mode:  1 in = quality/phys_short doc-units (legacy path).
+  //   * Pixel / Ratio:  UnitSystem::to_px(1, u) (legacy path).
   double doc_per_display = 1.0;
-  if (s.display_mode == DisplayMode::Physical && s.quality > 0 &&
-      s.phys_short > 0) {
-    // e.g. 1000 quality / 3.333in = 300 doc-units per inch
+  if (ruler_has_intent(s) && s.intended_w > 0.0) {
+    doc_per_display = s.canvas_w / s.intended_w;
+  } else if (s.display_mode == DisplayMode::Physical && s.quality > 0 &&
+             s.phys_short > 0) {
     doc_per_display = (double)s.quality / s.phys_short;
   } else {
     doc_per_display = UnitSystem::to_px(1.0, u);
@@ -135,6 +163,16 @@ static double doc_tick_to_display(double doc_tick, const RulerState &s,
                                   bool is_y) {
   double user_val =
       is_y ? doc_to_user_y(doc_tick, s) : doc_to_user_x(doc_tick, s);
+
+  // s265 m2: when intent is set, scale by (intended / canvas) so the label
+  // is in the user's typed unit. This is the same rule as DocUnits.
+  if (ruler_has_intent(s)) {
+    double span_doc = is_y ? s.canvas_h : s.canvas_w;
+    double span_user = is_y ? s.intended_h : s.intended_w;
+    if (span_doc > 0.0)
+      return user_val * (span_user / span_doc);
+    return user_val;
+  }
 
   if (s.display_mode == DisplayMode::RatioQuality && s.quality > 0) {
     return user_val; // show raw doc units, same as inspector/status bar
@@ -330,6 +368,29 @@ void HRuler::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
 
   double first_user = std::floor(user_left / ts.interval) * ts.interval;
 
+  // ── HRULER diag (s266 m1 followup) ─────────────────────────────────────
+  // Throttled log of the state on_draw is actually using and what it
+  // computes from that state. Compare against the RULER diag from
+  // MainWindow_helpers::update_rulers to find any divergence between
+  // pushed state and consumed state.
+  {
+    static uint64_t s_last_log_ms = 0;
+    auto now_ms = (uint64_t)g_get_monotonic_time() / 1000;
+    if (now_ms - s_last_log_ms > 500) {
+      s_last_log_ms = now_ms;
+      LOG_INFO("HRULER diag: on_draw widget=({}x{}) m_state zoom={:.4g} "
+               "pan=({:.1f},{:.1f}) canvas=({:.0f}x{:.0f}) intent=({:.4g}x{:.4g}) "
+               "intended_unit='{}' display_unit={} origin={:.1f} "
+               "→ ts.interval={:.4g} suffix='{}' user_left={:.4g} user_right={:.4g} "
+               "first_user={:.4g}",
+               w, h, m_state.zoom, m_state.pan_x, m_state.pan_y,
+               m_state.canvas_w, m_state.canvas_h, m_state.intended_w,
+               m_state.intended_h, m_state.intended_unit,
+               (int)m_state.display_unit, m_state.ruler_origin_x,
+               ts.interval, ts.suffix, user_left, user_right, first_user);
+    }
+  }
+
   cr->set_font_size(8.0);
   cr->select_font_face("monospace", Cairo::ToyFontFace::Slant::NORMAL,
                        Cairo::ToyFontFace::Weight::NORMAL);
@@ -348,9 +409,13 @@ void HRuler::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     cr->line_to(sx + 0.5, h);
     cr->stroke();
 
-    // Label — convert doc-space tick to display value (handles physical mode)
+    // Label — convert doc-space tick to display value (handles physical
+    // mode and s265 m2 intent). When intent is set, doc_tick_to_display
+    // already returns the right value; only the legacy non-intent
+    // non-Physical path needs the extra from_px conversion.
     double display_val = doc_tick_to_display(doc_x, m_state, false);
-    if (m_state.display_mode != DisplayMode::Physical)
+    if (!ruler_has_intent(m_state)
+        && m_state.display_mode != DisplayMode::Physical)
       display_val = UnitSystem::from_px(user_x, m_state.display_unit);
 
     std::string lbl = fmt_tick(display_val, ts);
@@ -537,9 +602,13 @@ void VRuler::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     cr->line_to(w, sy + 0.5);
     cr->stroke();
 
-    // Label — convert doc-space tick to display value (handles physical mode)
+    // Label — convert doc-space tick to display value (handles physical
+    // mode and s265 m2 intent). When intent is set, doc_tick_to_display
+    // already returns the right value; only the legacy non-intent
+    // non-Physical path needs the extra from_px conversion.
     double display_val = doc_tick_to_display(doc_y, m_state, true);
-    if (m_state.display_mode != DisplayMode::Physical)
+    if (!ruler_has_intent(m_state)
+        && m_state.display_mode != DisplayMode::Physical)
       display_val = UnitSystem::from_px(user_y, m_state.display_unit);
 
     std::string lbl = fmt_tick(display_val, ts);

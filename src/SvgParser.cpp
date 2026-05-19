@@ -1424,29 +1424,30 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
             if (attr(tag, "data-curvz-measure-destruct-after-copy") == "1")
                 doc->measure_destruct_after_copy = true;
 
-            // s264 m1: render intent from data-curvz-intended-* attrs.
-            // Explicit attrs are the trusted path — files written by
-            // post-s264 Curvz carry them and round-trip exactly. When
-            // present they take priority over the Physical-mode
-            // unit-suffix reconstruction below: render intent and
-            // Physical-mode are mutually exclusive (the intent fields
-            // override per the writer's emission rule).
-            {
+            // s264 m1 / s265 m2: render intent from data-curvz-intended-*
+            // attrs. Read AFTER the doc->canvas = from_legacy/from_physical
+            // assignments below, because s265 m2 moved intended_* into
+            // CanvasModel — a `doc->canvas = ...` reassignment would wipe
+            // any intent set first. Block is deferred to lines below the
+            // canvas-build code; the read function is captured here as a
+            // lambda so the original logical position is preserved in the
+            // file's flow.
+            auto read_explicit_intent = [&]() {
                 auto iw_attr = attr(tag, "data-curvz-intended-w");
                 auto ih_attr = attr(tag, "data-curvz-intended-h");
                 auto iu_attr = attr(tag, "data-curvz-intended-unit");
                 if (!iw_attr.empty() && !ih_attr.empty()) {
                     try {
-                        doc->intended_w = std::stod(iw_attr);
-                        doc->intended_h = std::stod(ih_attr);
-                        doc->intended_unit = iu_attr;   // "" treated as "px"
+                        doc->canvas.intended_w = std::stod(iw_attr);
+                        doc->canvas.intended_h = std::stod(ih_attr);
+                        doc->canvas.intended_unit = iu_attr;   // "" treated as "px"
                     } catch (...) {
-                        doc->intended_w = 0.0;
-                        doc->intended_h = 0.0;
-                        doc->intended_unit.clear();
+                        doc->canvas.intended_w = 0.0;
+                        doc->canvas.intended_h = 0.0;
+                        doc->canvas.intended_unit.clear();
                     }
                 }
-            }
+            };
 
             // Detect a physical-unit suffix on width/height ("1in", "25.4mm",
             // "2.54cm").  If present alongside a viewBox, the file was
@@ -1497,9 +1498,13 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                                   : 96;
                         doc->canvas = CanvasModel::from_physical(
                             phys_w, phys_h, phys_u_w, dpi);
+                        // s265 m2: read explicit intent AFTER the reassign.
+                        read_explicit_intent();
                     } else {
                         doc->canvas = CanvasModel::from_legacy(
                             (int)std::round(w), (int)std::round(h));
+                        // s265 m2: read explicit intent AFTER the reassign.
+                        read_explicit_intent();
 
                         // s264 m1: implicit render-intent inference. If the
                         // SVG declares a viewBox AND a bare-number
@@ -1520,7 +1525,7 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                         // Guard 3: Curvz's own legacy files emit
                         //   width == viewBox.W; the != check rejects them
                         //   and leaves intent unset.
-                        if (doc->intended_w == 0.0 && !w_attr.empty()
+                        if (doc->canvas.intended_w == 0.0 && !w_attr.empty()
                                 && !h_attr.empty()) {
                             double iw = 0.0, ih = 0.0;
                             try {
@@ -1529,9 +1534,9 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                             } catch (...) { iw = ih = 0.0; }
                             if (iw > 0.0 && ih > 0.0
                                     && (iw != w || ih != h)) {
-                                doc->intended_w = iw;
-                                doc->intended_h = ih;
-                                doc->intended_unit = "px";
+                                doc->canvas.intended_w = iw;
+                                doc->canvas.intended_h = ih;
+                                doc->canvas.intended_unit = "px";
                             }
                         }
                     }
@@ -1540,6 +1545,8 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                 int cw = w_attr.empty() ? 24 : (int)dbl(w_attr, 24);
                 int ch = h_attr.empty() ? 24 : (int)dbl(h_attr, 24);
                 doc->canvas = CanvasModel::from_legacy(cw, ch);
+                // s265 m2: read explicit intent AFTER the reassign.
+                read_explicit_intent();
             }
             // Don't create a layer here — wait for <g> tags
             // current_layer stays null until first <g>

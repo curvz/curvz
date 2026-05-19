@@ -378,6 +378,13 @@ private:
     double           m_ruler_ox = 0.0;
     double           m_ruler_oy = 0.0;
     bool             m_scale_linked = true;  // uniform scale link state
+    // s265 m2: Dimensions Size W/H aspect lock. When true, editing W
+    // updates H proportionally (and vice versa) to preserve the canvas
+    // aspect ratio. Defaults true — the common case is "I want a 256
+    // square" or "I want to scale 4×8 → 5×10 keeping the 1:2 shape."
+    // Lives on the panel (not the model) because it's an editor
+    // preference, not document state.
+    bool             m_canvas_aspect_locked = true;
 
     // ── Undo coalescing ───────────────────────────────────────────────────────
     SceneNode*  m_undo_last_obj  = nullptr;

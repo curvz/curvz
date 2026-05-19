@@ -3,7 +3,11 @@
 #include "curvz_utils.hpp"  // s117 m18 v2
 #include "widgets/DropDown.hpp"  // s208 m5 — substrate theme dropdown
 #include "widgets/Button.hpp"  // s211 m2 — unregistered substrate Button for preset-button loops
+#include "widgets/SpinButton.hpp"  // s266 m1 — substrate SpinButton for size-tab spinners
+#include "widgets/ToggleButton.hpp"  // s266 m1 — substrate ToggleButton for aspect-lock
+#include "UnitSystem.hpp"  // s266 m1 — unit labels and parsing for the Units row
 #include <algorithm>
+#include <array>
 #include <cairomm/cairomm.h>
 #include <cmath>
 #include <gdkmm/pixbuf.h>
@@ -17,63 +21,22 @@
 
 namespace Curvz {
 
-// ── Quality slider stops ──────────────────────────────────────────────────────
-struct QualityStop {
-  const char *label;
-  int value;
-};
-static const QualityStop QUALITY_STOPS[] = {
-    {"Icon", 1000},
-    {"Print", 4000},
-    {"Poster", 10000},
-    {"Billboard", 40000},
-};
-static constexpr int N_STOPS = 4;
-
-// ── Pixel presets ─────────────────────────────────────────────────────────────
-static const int PX_PRESETS[] = {16, 24, 32, 48, 64, 128, 256};
-
-// ── Ratio presets ─────────────────────────────────────────────────────────────
-struct RatioPreset {
-  const char *label;
-  double w;
-  double h;
-};
-static const RatioPreset RATIO_PRESETS[] = {
-    {"1:1", 1.0, 1.0},        {"4:3", 4.0, 3.0},          {"16:9", 16.0, 9.0},
-    {"1:√2", 1.0, 1.4142135}, {"Golden", 1.0, 1.6180339}, {"2.35:1", 2.35, 1.0},
-};
-
-// ── DPI presets ───────────────────────────────────────────────────────────────
-static const int DPI_PRESETS[] = {72, 96, 150, 300, 600};
-
 // ── Thumbnail tile sizing ─────────────────────────────────────────────────────
 static constexpr int THUMB_IMG_PX   = 128;   // image area
 static constexpr int THUMB_LABEL_PX = 28;    // label height
 static constexpr int TEMPLATE_COLS  = 3;     // grid columns
 
-// ── Helper: make a labelled row for a grid ────────────────────────────────────
-static void grid_row(Gtk::Grid &g, int row, const char *lbl, Gtk::Widget &w) {
-  auto *label = Gtk::make_managed<Gtk::Label>(lbl);
-  label->set_xalign(1.0f);
-  label->set_margin_end(8);
-  label->add_css_class("section-label");
-  g.attach(*label, 0, row);
-  g.attach(w, 1, row);
-}
+// s266 m1: Quality/DPI/per-mode preset constants retired alongside the
+// four-tab structure. The Size tab carries px and page presets inside
+// populate_size_tab() — they're conceptually local to that builder, not
+// dialog-wide constants. Ratio presets likewise. See populate_size_tab().
+
+// s266 m1: the per-mode `grid_row` helper retired with the four-tab
+// structure. The Size tab uses a Grid-with-column-headers idiom inline
+// in populate_size_tab(), parallel to the inspector's Size row.
 
 // ── Constructor ───────────────────────────────────────────────────────────────
-NewDocumentDialog::NewDocumentDialog()
-    : m_px_w(Gtk::Adjustment::create(24, 1, 65536, 1, 8), 0.0, 0),
-      m_px_h(Gtk::Adjustment::create(24, 1, 65536, 1, 8), 0.0, 0),
-      m_phys_w(Gtk::Adjustment::create(4.0, 0.001, 10000.0, 0.1, 1.0), 0.0, 3),
-      m_phys_h(Gtk::Adjustment::create(4.0, 0.001, 10000.0, 0.1, 1.0), 0.0, 3),
-      m_ratio_w(Gtk::Adjustment::create(1.0, 0.001, 100.0, 0.001, 0.1), 0.0, 4),
-      m_ratio_h(Gtk::Adjustment::create(1.0, 0.001, 100.0, 0.001, 0.1), 0.0, 4),
-      m_quality_slider(Gtk::Adjustment::create(0, 0, N_STOPS - 1, 1, 1),
-                       Gtk::Orientation::HORIZONTAL),
-      m_quality_spin(Gtk::Adjustment::create(1000, 1, 100000, 100, 1000), 0.0,
-                     0) {
+NewDocumentDialog::NewDocumentDialog() {
   curvz::utils::set_name(*this, "dlg_nd", "new_document_dialog_root");
   set_title("New Document");
   // Widened from the pre-template 520px so the 3×128 thumbnail grid fits
@@ -160,9 +123,7 @@ NewDocumentDialog::NewDocumentDialog()
   curvz::utils::set_name(m_notebook, "dlg_nd_nb", "new_document_dialog_notebook");
   root->append(m_notebook);
   m_notebook.append_page(build_template_tab(), "Template");
-  m_notebook.append_page(build_pixel_tab(),    "Pixel");
-  m_notebook.append_page(build_physical_tab(), "Physical");
-  m_notebook.append_page(build_ratio_tab(),    "Ratio / Quality");
+  m_notebook.append_page(build_size_tab(),     "Size");
 
   // ── Preview section ───────────────────────────────────────────────────
   auto *sep = Gtk::make_managed<Gtk::Separator>();
@@ -254,16 +215,29 @@ NewDocumentDialog::NewDocumentDialog()
   m_btn_create.signal_clicked().connect(
       sigc::mem_fun(*this, &NewDocumentDialog::on_create));
 
-  // Tab switch → refresh preview and, if leaving the template tab to a
-  // dimension-input tab, clear any template selection so the Create button
-  // reflects what the user is actually configuring.
+  // Tab switch behaviour:
+  //   * Switching TO the Size tab (page 1): drop any template selection,
+  //     reset m_current to the bootstrap default (quality=1000, 1:1
+  //     working plane, 24×24 px intent), and rebuild populate_size_tab
+  //     so the spinners reflect that. The Size tab is a fresh path —
+  //     the user typed "I want to set this up by hand," not "let me
+  //     edit the template's canvas." Preserving the template's
+  //     dimensions across the switch would be confusing.
+  //   * Switching TO the Template tab (page 0): just refresh the preview
+  //     — the template grid is independently populated by show(), and
+  //     m_current was last set by the user's last interaction (Size-tab
+  //     edits or a previous template pick); either is fine.
   m_notebook.signal_switch_page().connect(
       [this](Gtk::Widget *, guint page) {
         if (page != 0) {
-          // Non-template tab — clear any template pick so the canvas comes
-          // from the tab inputs.
           if (m_selected_builtin != BuiltIn::None || m_selected_disk >= 0)
             clear_template_selection();
+          m_current = CanvasModel::from_ratio(1.0, 1.0, 1000);
+          m_current.intended_w    = 24.0;
+          m_current.intended_h    = 24.0;
+          m_current.intended_unit = "px";
+          Glib::signal_idle().connect_once(
+              [this]() { populate_size_tab(); refresh_preview(); });
         }
         refresh_preview();
       });
@@ -895,303 +869,528 @@ std::unique_ptr<CurvzDocument> NewDocumentDialog::build_default_seed() {
   return doc;
 }
 
-// ── Tab: Pixel ────────────────────────────────────────────────────────────────
-Gtk::Widget &NewDocumentDialog::build_pixel_tab() {
-  m_pixel_box.set_margin(12);
-  m_pixel_box.set_spacing(10);
-
-  // Preset buttons
-  auto *preset_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-  preset_row->set_spacing(4);
-  auto *preset_lbl = Gtk::make_managed<Gtk::Label>("Presets");
-  preset_lbl->add_css_class("section-label");
-  preset_lbl->set_margin_end(8);
-  preset_row->append(*preset_lbl);
-
-  for (int px : PX_PRESETS) {
-    // s211 m2 — unregistered substrate Button. Per-preset transient
-    // built inside `build_pixel_tab`'s `for (int px : PX_PRESETS)`
-    // loop; preset count is fixed but each tab rebuild constructs
-    // fresh instances, so a shared abbrev would collide on the
-    // singleton dialog's per-show rebuild. The click handler is the
-    // only interaction surface — no per-button script addressability
-    // needed.
-    auto *btn = Gtk::make_managed<curvz::widgets::Button>(
-                    curvz::scripting::unregistered,
-                    std::to_string(px));
-    btn->add_css_class("flat");
-    btn->signal_clicked().connect([this, px]() {
-      m_updating = true;
-      m_px_w.set_value(px);
-      m_px_h.set_value(px);
-      m_updating = false;
-      update_from_pixel();
-    });
-    preset_row->append(*btn);
-  }
-  m_pixel_box.append(*preset_row);
-
-  // W / H inputs
-  auto *grid = Gtk::make_managed<Gtk::Grid>();
-  grid->set_row_spacing(8);
-  grid->set_column_spacing(8);
-  m_pixel_box.append(*grid);
-
-  m_px_w.set_digits(0);
-  m_px_w.set_numeric(true);
-  m_px_w.set_hexpand(true);
-  curvz::utils::set_name(m_px_w, "dlg_nd_pxw", "new_document_dialog_pixel_w_spn");
-  m_px_h.set_digits(0);
-  m_px_h.set_numeric(true);
-  m_px_h.set_hexpand(true);
-  curvz::utils::set_name(m_px_h, "dlg_nd_pxh", "new_document_dialog_pixel_h_spn");
-
-  grid_row(*grid, 0, "Width (px)", m_px_w);
-  grid_row(*grid, 1, "Height (px)", m_px_h);
-
-  m_px_w.signal_value_changed().connect([this]() {
-    if (!m_updating) update_from_pixel();
-  });
-  m_px_h.signal_value_changed().connect([this]() {
-    if (!m_updating) update_from_pixel();
-  });
-
-  return m_pixel_box;
+// ── Tab: Size (s266 m1 — replaces Pixel/Physical/Ratio) ──────────────────────
+//
+// Direct mirror of PropertiesPanel::build_canvas_section. The Size tab
+// is the new-document equivalent of the inspector's Dimensions section:
+// one Units dropdown, one Size W/H row with aspect lock, two preset
+// rows. Quality, DPI, and Mode are gone — see
+// resources/help/1-4-how-curvz-thinks-about-size.md.
+//
+// Architecture: build_size_tab() does the once-per-dialog setup (the
+// Gtk::Box page that lives in the Notebook); populate_size_tab() does
+// the per-rebuild fill, called from build_size_tab and from any handler
+// that needs the interior re-laid (e.g. a unit-changing preset). The
+// rebuild pattern matches the inspector's refresh() loop: tear down
+// children, bump m_build_gen so stale signal lambdas captured before
+// the rebuild bail out, repopulate.
+Gtk::Widget &NewDocumentDialog::build_size_tab() {
+  m_size_box.set_margin(12);
+  m_size_box.set_spacing(10);
+  populate_size_tab();
+  return m_size_box;
 }
 
-// ── Tab: Physical ─────────────────────────────────────────────────────────────
-Gtk::Widget &NewDocumentDialog::build_physical_tab() {
-  m_phys_box.set_margin(12);
-  m_phys_box.set_spacing(10);
-
-  auto *grid = Gtk::make_managed<Gtk::Grid>();
-  grid->set_row_spacing(8);
-  grid->set_column_spacing(8);
-  m_phys_box.append(*grid);
-
-  m_phys_w.set_digits(3);
-  m_phys_w.set_numeric(true);
-  m_phys_w.set_hexpand(true);
-  curvz::utils::set_name(m_phys_w, "dlg_nd_phw", "new_document_dialog_phys_w_spn");
-  m_phys_h.set_digits(3);
-  m_phys_h.set_numeric(true);
-  m_phys_h.set_hexpand(true);
-  curvz::utils::set_name(m_phys_h, "dlg_nd_phh", "new_document_dialog_phys_h_spn");
-
-  // Unit dropdown
-  auto unit_list = Gtk::StringList::create({"inches", "mm", "cm"});
-  m_phys_unit.set_model(unit_list);
-  m_phys_unit.set_selected(0);
-  m_phys_unit.set_hexpand(true);
-  curvz::utils::set_name(m_phys_unit, "dlg_nd_phu", "new_document_dialog_phys_unit_dd");
-
-  // DPI dropdown
-  auto dpi_list = Gtk::StringList::create({"72", "96", "150", "300", "600"});
-  m_phys_dpi.set_model(dpi_list);
-  m_phys_dpi.set_selected(3); // 300 dpi default
-  m_phys_dpi.set_hexpand(true);
-  curvz::utils::set_name(m_phys_dpi, "dlg_nd_phd", "new_document_dialog_phys_dpi_dd");
-
-  grid_row(*grid, 0, "Width", m_phys_w);
-  grid_row(*grid, 1, "Height", m_phys_h);
-  grid_row(*grid, 2, "Units", m_phys_unit);
-  grid_row(*grid, 3, "DPI", m_phys_dpi);
-
-  auto update = [this]() {
-    if (!m_updating) update_from_physical();
+// Mirror of PropertiesPanel::compute_size_wh (s265 m2 follow-up).
+// Reads m_current (the dialog's CanvasModel) and writes the Size W/H to
+// display in display_unit.
+void NewDocumentDialog::compute_size_wh(double &w_out, double &h_out) const {
+  constexpr int kDPI = 96;
+  const CanvasModel &cm = m_current;
+  Unit disp_unit = cm.display_unit;
+  auto unit_from_str = [](const std::string &s) -> Unit {
+    if (s == "in") return Unit::In;
+    if (s == "mm") return Unit::Mm;
+    if (s == "pt") return Unit::Pt;
+    return Unit::Px;
   };
-  m_phys_w.signal_value_changed().connect(update);
-  m_phys_h.signal_value_changed().connect(update);
-  m_phys_unit.property_selected().signal_changed().connect(update);
-  m_phys_dpi.property_selected().signal_changed().connect(update);
+  auto inches_to_display = [](double inches, Unit u, int dpi) -> double {
+    if (u == Unit::Mm) return inches * 25.4;
+    if (u == Unit::Pt) return inches * 72.0;
+    if (u == Unit::Px) return inches * dpi;
+    return inches; // In
+  };
+  auto display_to_inches = [](double v, Unit u, int dpi) -> double {
+    if (u == Unit::Mm) return v / 25.4;
+    if (u == Unit::Pt) return v / 72.0;
+    if (u == Unit::Px) return (dpi > 0) ? v / dpi : v;
+    return v; // In
+  };
 
-  return m_phys_box;
+  // Priority 1: render intent if set.
+  if (cm.intended_w > 0.0 && cm.intended_h > 0.0) {
+    Unit src_unit = unit_from_str(cm.intended_unit);
+    if (src_unit == disp_unit) {
+      w_out = cm.intended_w;
+      h_out = cm.intended_h;
+    } else {
+      double w_in = display_to_inches(cm.intended_w, src_unit, kDPI);
+      double h_in = display_to_inches(cm.intended_h, src_unit, kDPI);
+      w_out = inches_to_display(w_in, disp_unit, kDPI);
+      h_out = inches_to_display(h_in, disp_unit, kDPI);
+    }
+    return;
+  }
+  // Priority 2: legacy Physical-mode fallback (phys_w/h stored in inches).
+  if (cm.display_mode == DisplayMode::Physical) {
+    w_out = inches_to_display(cm.phys_width, disp_unit, kDPI);
+    h_out = inches_to_display(cm.phys_height, disp_unit, kDPI);
+    return;
+  }
+  // Priority 3: Pixel/Ratio fallback — canvas dims at SVG-default 96dpi.
+  double cw_in = (double)cm.canvas_width() / (double)kDPI;
+  double ch_in = (double)cm.canvas_height() / (double)kDPI;
+  w_out = inches_to_display(cw_in, disp_unit, kDPI);
+  h_out = inches_to_display(ch_in, disp_unit, kDPI);
 }
 
-// ── Tab: Ratio / Quality ──────────────────────────────────────────────────────
-Gtk::Widget &NewDocumentDialog::build_ratio_tab() {
-  m_ratio_box.set_margin(12);
-  m_ratio_box.set_spacing(10);
+// ── populate_size_tab ─────────────────────────────────────────────────────────
+// Tear down and re-lay out the four-row Size tab interior. Mirrors the
+// inspector's build_canvas_section structure 1:1 — Units+Orient on row 1,
+// Size W/H+lock on row 2, Size presets driven by Units on row 3, Ratio
+// presets always-visible on row 4. Driven entirely by m_current; any
+// handler that mutates m_current and wants the panel to reflect the new
+// state queues this function on an idle.
+void NewDocumentDialog::populate_size_tab() {
+  // Bump generation so old captured lambdas can detect they're stale.
+  ++m_build_gen;
 
-  // Ratio preset buttons
-  auto *preset_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-  preset_row->set_spacing(4);
-  auto *preset_lbl = Gtk::make_managed<Gtk::Label>("Presets");
-  preset_lbl->add_css_class("section-label");
-  preset_lbl->set_margin_end(8);
-  preset_row->append(*preset_lbl);
+  // Synchronously force-unregister every Scriptable widget in the
+  // subtree BEFORE GTK's remove/destroy work runs. GTK4 destroys
+  // widgets at idle priority; a self-rebuild handler (e.g. preset
+  // click, Units change) constructs new substrate widgets and tries
+  // to register them while the old ones are still alive in the
+  // about-to-be-destroyed subtree. The registry refuses the duplicate
+  // name and throws. Same hazard PropertiesPanel::do_clear addresses
+  // — same pump (s199 m1, see curvz_utils.hpp force_unregister_subtree
+  // docs which name NewDocumentDialog as a use case).
+  for (Gtk::Widget *c = m_size_box.get_first_child(); c;
+       c = c->get_next_sibling()) {
+    curvz::utils::force_unregister_subtree(c);
+  }
 
-  for (const auto &p : RATIO_PRESETS) {
-    // s211 m2 — unregistered substrate Button. Same rationale as the
-    // pixel-tab preset loop above: per-preset transient with no
-    // script-addressability requirement.
-    auto *btn = Gtk::make_managed<curvz::widgets::Button>(
-                    curvz::scripting::unregistered, p.label);
-    btn->add_css_class("flat");
-    btn->signal_clicked().connect([this, p]() {
-      m_updating = true;
-      m_ratio_w.set_value(p.w);
-      m_ratio_h.set_value(p.h);
-      m_updating = false;
-      update_from_ratio();
+  // Remove all children.
+  while (auto *child = m_size_box.get_first_child())
+    m_size_box.remove(*child);
+  m_size_box.queue_resize();
+
+  const Unit disp_unit = m_current.display_unit;
+
+  // Local helpers — keep parallel to compute_size_wh's internals so the
+  // preset handlers and the spinner commit see the same conversions.
+  auto inches_to_display = [](double inches, Unit u, int dpi) -> double {
+    if (u == Unit::Mm) return inches * 25.4;
+    if (u == Unit::Pt) return inches * 72.0;
+    if (u == Unit::Px) return inches * dpi;
+    return inches;
+  };
+  auto display_to_inches = [](double v, Unit u, int dpi) -> double {
+    if (u == Unit::Mm) return v / 25.4;
+    if (u == Unit::Pt) return v / 72.0;
+    if (u == Unit::Px) return (dpi > 0) ? v / dpi : v;
+    return v;
+  };
+  auto unit_str_for_disp = [](Unit u) -> std::string {
+    switch (u) {
+      case Unit::Px: return "px";
+      case Unit::In: return "in";
+      case Unit::Mm: return "mm";
+      case Unit::Pt: return "pt";
+    }
+    return "px";
+  };
+
+  double size_w = 0.0, size_h = 0.0;
+  compute_size_wh(size_w, size_h);
+
+  // ────────────────────────────────────────────────────────────────────
+  // Row 1 — Units + Orientation
+  // ────────────────────────────────────────────────────────────────────
+  {
+    auto *u_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+    u_row->set_spacing(4);
+
+    auto *u_key = Gtk::make_managed<Gtk::Label>("Units");
+    u_key->add_css_class("section-label");
+    u_key->set_width_chars(8);
+    u_key->set_xalign(0.0f);
+    u_row->append(*u_key);
+
+    // Units dropdown — all four units always.
+    static const std::array<Unit, 4> k_units_all = {Unit::Px, Unit::In,
+                                                    Unit::Mm, Unit::Pt};
+    auto u_list = Gtk::StringList::create({});
+    guint u_sel = 0;
+    for (guint i = 0; i < k_units_all.size(); ++i) {
+      u_list->append(UnitSystem::label(k_units_all[i]));
+      if (k_units_all[i] == disp_unit) u_sel = i;
+    }
+    auto *u_drop = Gtk::make_managed<curvz::widgets::DropDown>("dlg_nd_un",
+                                                               u_list);
+    curvz::utils::set_name(u_drop, "dlg_nd_un",
+                           "new_document_dialog_units_dd");
+    u_drop->set_selected(u_sel);
+    u_drop->set_hexpand(true);
+    u_row->append(*u_drop);
+
+    uint32_t u_gen = m_build_gen;
+    u_drop->property_selected().signal_changed().connect(
+        [this, u_drop, u_gen, inches_to_display, display_to_inches]() {
+          if (u_gen != m_build_gen || m_updating) return;
+          static const std::array<Unit, 4> units_all = {
+              Unit::Px, Unit::In, Unit::Mm, Unit::Pt};
+          auto sel = u_drop->get_selected();
+          if (sel >= units_all.size()) return;
+          Unit new_unit = units_all[sel];
+          Unit old_unit = m_current.display_unit;
+          // Convert intended_w/h between units so the SAME real-world size
+          // carries across — pure unit change shouldn't alter the delivery
+          // contract; only how it's spelled.
+          if (m_current.intended_w > 0.0 && m_current.intended_h > 0.0
+              && new_unit != old_unit) {
+            const int dpi = 96;
+            double w_in = display_to_inches(m_current.intended_w, old_unit,
+                                            dpi);
+            double h_in = display_to_inches(m_current.intended_h, old_unit,
+                                            dpi);
+            m_current.intended_w = inches_to_display(w_in, new_unit, dpi);
+            m_current.intended_h = inches_to_display(h_in, new_unit, dpi);
+            m_current.intended_unit = (new_unit == Unit::Mm)   ? "mm"
+                                      : (new_unit == Unit::Pt) ? "pt"
+                                      : (new_unit == Unit::In) ? "in"
+                                                               : "px";
+          }
+          m_current.display_unit = new_unit;
+          // Rebuild — Units drives spinner step/precision AND the preset
+          // row, so a unit change needs a full repopulate.
+          Glib::signal_idle().connect_once(
+              [this]() { populate_size_tab(); refresh_preview(); });
+        });
+
+    // Orientation buttons — one highlighted, click the inactive to swap W↔H.
+    double cur_w = 0.0, cur_h = 0.0;
+    compute_size_wh(cur_w, cur_h);
+    // For a fresh dialog with no intent yet, fall back to canvas dims.
+    if (cur_w <= 0.0 || cur_h <= 0.0) {
+      cur_w = m_current.canvas_width();
+      cur_h = m_current.canvas_height();
+    }
+    const bool is_landscape = (cur_w > cur_h);
+    const bool is_portrait  = !is_landscape;
+
+    auto *portrait_btn = Gtk::make_managed<curvz::widgets::Button>("dlg_nd_op");
+    curvz::utils::set_name(portrait_btn, "dlg_nd_op",
+                           "new_document_dialog_orient_portrait_btn");
+    auto *landscape_btn = Gtk::make_managed<curvz::widgets::Button>(
+        "dlg_nd_ol");
+    curvz::utils::set_name(landscape_btn, "dlg_nd_ol",
+                           "new_document_dialog_orient_landscape_btn");
+
+    portrait_btn->set_icon_name("curvz-orientation-portrait-symbolic");
+    portrait_btn->set_tooltip_text("Portrait — taller than wide");
+    portrait_btn->add_css_class("flat");
+    portrait_btn->add_css_class("orient-btn");
+    if (is_portrait) portrait_btn->add_css_class("orient-active");
+
+    landscape_btn->set_icon_name("curvz-orientation-landscape-symbolic");
+    landscape_btn->set_tooltip_text("Landscape — wider than tall");
+    landscape_btn->add_css_class("flat");
+    landscape_btn->add_css_class("orient-btn");
+    if (is_landscape) landscape_btn->add_css_class("orient-active");
+
+    uint32_t s_gen = m_build_gen;
+    auto swap_wh = [this, s_gen]() {
+      if (s_gen != m_build_gen) return;
+      std::swap(m_current.ratio_w, m_current.ratio_h);
+      std::swap(m_current.px_width, m_current.px_height);
+      std::swap(m_current.phys_width, m_current.phys_height);
+      std::swap(m_current.intended_w, m_current.intended_h);
+      Glib::signal_idle().connect_once(
+          [this]() { populate_size_tab(); refresh_preview(); });
+    };
+
+    portrait_btn->signal_clicked().connect([this, swap_wh]() {
+      if (m_current.canvas_width() > m_current.canvas_height()) swap_wh();
     });
-    preset_row->append(*btn);
+    landscape_btn->signal_clicked().connect([this, swap_wh]() {
+      if (m_current.canvas_width() <= m_current.canvas_height()) swap_wh();
+    });
+
+    u_row->append(*portrait_btn);
+    u_row->append(*landscape_btn);
+    m_size_box.append(*u_row);
   }
-  m_ratio_box.append(*preset_row);
 
-  // Ratio inputs
-  auto *ratio_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-  ratio_row->set_spacing(6);
-  auto *rl = Gtk::make_managed<Gtk::Label>("Ratio");
-  rl->add_css_class("section-label");
-  rl->set_margin_end(8);
-  ratio_row->append(*rl);
-  m_ratio_w.set_digits(4);
-  m_ratio_w.set_numeric(true);
-  m_ratio_w.set_hexpand(true);
-  curvz::utils::set_name(m_ratio_w, "dlg_nd_rtw", "new_document_dialog_ratio_w_spn");
-  ratio_row->append(m_ratio_w);
-  auto *colon = Gtk::make_managed<Gtk::Label>(":");
-  colon->set_margin_start(4);
-  colon->set_margin_end(4);
-  ratio_row->append(*colon);
-  m_ratio_h.set_digits(4);
-  m_ratio_h.set_numeric(true);
-  m_ratio_h.set_hexpand(true);
-  curvz::utils::set_name(m_ratio_h, "dlg_nd_rth", "new_document_dialog_ratio_h_spn");
-  ratio_row->append(m_ratio_h);
-  m_ratio_box.append(*ratio_row);
+  // ────────────────────────────────────────────────────────────────────
+  // Row 2 — SIZE W / H with column headers and aspect-lock toggle
+  // ────────────────────────────────────────────────────────────────────
+  {
+    auto *grid = Gtk::make_managed<Gtk::Grid>();
+    grid->set_row_spacing(2);
+    grid->set_column_spacing(4);
 
-  // Quality slider
-  auto *q_lbl = Gtk::make_managed<Gtk::Label>("Quality");
-  q_lbl->add_css_class("section-label");
-  q_lbl->set_xalign(0.0f);
-  m_ratio_box.append(*q_lbl);
+    auto make_hdr = [](const char *txt) {
+      auto *l = Gtk::make_managed<Gtk::Label>(txt);
+      l->add_css_class("section-label");
+      l->set_xalign(0.5f);
+      l->set_hexpand(true);
+      return l;
+    };
+    auto make_row_lbl = [](const char *txt) {
+      auto *l = Gtk::make_managed<Gtk::Label>(txt);
+      l->add_css_class("section-label");
+      l->set_xalign(0.0f);
+      l->set_width_chars(8);
+      return l;
+    };
 
-  // Slider stop labels
-  auto *stop_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-  stop_row->set_hexpand(true);
-  for (const auto &s : QUALITY_STOPS) {
-    auto *lbl = Gtk::make_managed<Gtk::Label>(s.label);
-    lbl->add_css_class("caption-label");
-    lbl->set_hexpand(true);
-    lbl->set_xalign(0.5f);
-    stop_row->append(*lbl);
+    grid->attach(*make_hdr("W"), 1, 0);
+    grid->attach(*make_hdr("H"), 2, 0);
+
+    // Spinner range/step/precision adapt to display unit — same table as
+    // the inspector's commit_size builder.
+    double sz_max = (disp_unit == Unit::Mm)   ? 100000.0
+                    : (disp_unit == Unit::Pt) ? 72000.0
+                    : (disp_unit == Unit::In) ? 10000.0
+                                              : 65536.0;
+    double sz_step = (disp_unit == Unit::In) ? 0.1 : 1.0;
+    double sz_page = (disp_unit == Unit::Mm)   ? 10.0
+                     : (disp_unit == Unit::Pt) ? 72.0
+                     : (disp_unit == Unit::In) ? 1.0
+                                               : 10.0;
+    int sz_dec = (disp_unit == Unit::Mm)   ? 2
+                 : (disp_unit == Unit::Pt) ? 1
+                 : (disp_unit == Unit::In) ? 3
+                                           : 0;
+    double sz_lo = (disp_unit == Unit::In) ? 0.001 : 1.0;
+
+    auto adj_sw = Gtk::Adjustment::create(size_w, sz_lo, sz_max, sz_step,
+                                          sz_page);
+    auto *sp_w = Gtk::make_managed<curvz::widgets::SpinButton>(
+        "dlg_nd_sw", adj_sw, sz_step, sz_dec);
+    curvz::utils::set_name(sp_w, "dlg_nd_sw",
+                           "new_document_dialog_size_w_spn");
+    sp_w->set_hexpand(true);
+    sp_w->set_tooltip_text("Intended output width — the SVG's width "
+                           "attribute (delivery size, not working precision)");
+
+    auto adj_sh = Gtk::Adjustment::create(size_h, sz_lo, sz_max, sz_step,
+                                          sz_page);
+    auto *sp_h = Gtk::make_managed<curvz::widgets::SpinButton>(
+        "dlg_nd_sh", adj_sh, sz_step, sz_dec);
+    curvz::utils::set_name(sp_h, "dlg_nd_sh",
+                           "new_document_dialog_size_h_spn");
+    sp_h->set_hexpand(true);
+    sp_h->set_tooltip_text("Intended output height — the SVG's height "
+                           "attribute (delivery size, not working precision)");
+
+    grid->attach(*make_row_lbl("Size"), 0, 1);
+    grid->attach(*sp_w, 1, 1);
+    grid->attach(*sp_h, 2, 1);
+
+    // Aspect-lock toggle. Same monochrome bright/dim idiom as the
+    // inspector's lock_btn (PropertiesPanel.cpp ~1177).
+    auto *lock_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+        "dlg_nd_sl");
+    curvz::utils::set_name(lock_btn, "dlg_nd_sl",
+                           "new_document_dialog_size_lock_toggle");
+    lock_btn->set_active(m_size_aspect_locked);
+    lock_btn->set_tooltip_text("Link W and H — preserve aspect when "
+                               "editing one");
+    lock_btn->add_css_class("flat");
+    lock_btn->set_has_frame(false);
+    lock_btn->set_icon_name("curvz-link-symbolic");
+    lock_btn->set_opacity(m_size_aspect_locked ? 1.0 : 0.3);
+    lock_btn->signal_toggled().connect([this, lock_btn]() {
+      m_size_aspect_locked = lock_btn->get_active();
+      lock_btn->set_opacity(m_size_aspect_locked ? 1.0 : 0.3);
+    });
+    grid->attach(*lock_btn, 3, 1);
+
+    m_size_box.append(*grid);
+
+    // Wire spinner commits. capture-by-value safe: spinner pointers live
+    // until the next populate_size_tab() tears down the widget tree, at
+    // which point m_build_gen will have advanced and the gen-check below
+    // makes the now-stale captures no-op.
+    uint32_t s_gen = m_build_gen;
+    auto on_commit = [this, sp_w, sp_h, s_gen,
+                      disp_unit, unit_str_for_disp](Gtk::SpinButton *driver) {
+      if (s_gen != m_build_gen || m_updating) return;
+      double new_w = sp_w->get_value();
+      double new_h = sp_h->get_value();
+
+      // Aspect-lock recompute.
+      if (m_size_aspect_locked && driver != nullptr) {
+        double old_w = 0.0, old_h = 0.0;
+        compute_size_wh(old_w, old_h);
+        if (old_w > 0.0 && old_h > 0.0) {
+          double aspect = old_w / old_h;
+          m_updating = true;
+          if (driver == sp_w) {
+            new_h = new_w / aspect;
+            sp_h->set_value(new_h);
+          } else {
+            new_w = new_h * aspect;
+            sp_w->set_value(new_w);
+          }
+          m_updating = false;
+        }
+      }
+
+      // Write through to the model. Single path, mode-independent.
+      if (new_w > 0.0 && new_h > 0.0) {
+        double s = std::min(new_w, new_h);
+        m_current.ratio_w = new_w / s;
+        m_current.ratio_h = new_h / s;
+      }
+      m_current.intended_w    = new_w;
+      m_current.intended_h    = new_h;
+      m_current.intended_unit = unit_str_for_disp(disp_unit);
+      refresh_preview();
+    };
+
+    adj_sw->signal_value_changed().connect(
+        [on_commit, sp_w]() { on_commit(sp_w); });
+    adj_sh->signal_value_changed().connect(
+        [on_commit, sp_h]() { on_commit(sp_h); });
   }
-  m_ratio_box.append(*stop_row);
 
-  m_quality_slider.set_hexpand(true);
-  m_quality_slider.set_digits(0);
-  m_quality_slider.set_draw_value(false);
-  curvz::utils::set_name(m_quality_slider, "dlg_nd_qsl", "new_document_dialog_quality_slider");
-  for (int i = 0; i < N_STOPS; ++i)
-    m_quality_slider.add_mark(i, Gtk::PositionType::BOTTOM, "");
-  m_ratio_box.append(m_quality_slider);
+  // ────────────────────────────────────────────────────────────────────
+  // Row 3 — Size presets (driven by Units)
+  // ────────────────────────────────────────────────────────────────────
+  {
+    auto *pre_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+    pre_row->set_spacing(4);
+    pre_row->set_margin_bottom(4);
+    auto *pre_lbl = Gtk::make_managed<Gtk::Label>("Presets");
+    pre_lbl->add_css_class("section-label");
+    pre_lbl->set_width_chars(8);
+    pre_lbl->set_xalign(0.0f);
+    pre_row->append(*pre_lbl);
 
-  // Quality spin (exact value)
-  auto *spin_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-  spin_row->set_spacing(6);
-  auto *sl = Gtk::make_managed<Gtk::Label>("Exact");
-  sl->add_css_class("section-label");
-  sl->set_margin_end(8);
-  spin_row->append(*sl);
-  m_quality_spin.set_digits(0);
-  m_quality_spin.set_numeric(true);
-  m_quality_spin.set_hexpand(true);
-  curvz::utils::set_name(m_quality_spin, "dlg_nd_qsp", "new_document_dialog_quality_spn");
-  spin_row->append(m_quality_spin);
-  m_ratio_box.append(*spin_row);
+    uint32_t b_gen = m_build_gen;
 
-  // Wire signals
-  m_ratio_w.signal_value_changed().connect([this]() {
-    if (!m_updating) update_from_ratio();
-  });
-  m_ratio_h.signal_value_changed().connect([this]() {
-    if (!m_updating) update_from_ratio();
-  });
-
-  m_quality_slider.signal_value_changed().connect([this]() {
-    if (m_updating) return;
-    int idx = (int)std::round(m_quality_slider.get_value());
-    idx = std::clamp(idx, 0, N_STOPS - 1);
-    m_updating = true;
-    m_quality_spin.set_value(QUALITY_STOPS[idx].value);
-    m_updating = false;
-    update_from_ratio();
-  });
-  m_quality_spin.signal_value_changed().connect([this]() {
-    if (m_updating) return;
-    int qval = (int)m_quality_spin.get_value();
-    int best = 0;
-    int best_d = std::abs(qval - QUALITY_STOPS[0].value);
-    for (int i = 1; i < N_STOPS; ++i) {
-      int d = std::abs(qval - QUALITY_STOPS[i].value);
-      if (d < best_d) {
-        best_d = d;
-        best = i;
+    if (disp_unit == Unit::Px) {
+      static const int PX_PRESETS[] = {16, 24, 32, 48, 64, 128, 256};
+      for (int px : PX_PRESETS) {
+        auto *btn = Gtk::make_managed<curvz::widgets::Button>(
+            curvz::scripting::unregistered, std::to_string(px));
+        btn->add_css_class("flat");
+        btn->set_margin_start(1);
+        btn->signal_clicked().connect([this, px, b_gen]() {
+          if (b_gen != m_build_gen) return;
+          m_current.ratio_w        = 1.0;
+          m_current.ratio_h        = 1.0;
+          m_current.intended_w     = (double)px;
+          m_current.intended_h     = (double)px;
+          m_current.intended_unit  = "px";
+          Glib::signal_idle().connect_once(
+              [this]() { populate_size_tab(); refresh_preview(); });
+        });
+        pre_row->append(*btn);
+      }
+    } else {
+      struct PagePreset {
+        const char *label;
+        double w_in, h_in;
+      };
+      static const PagePreset PAGE_PRESETS[] = {
+          {"Letter",  8.5,  11.0},
+          {"A4",      8.27, 11.69},
+          {"A5",      5.83, 8.27},
+          {"Tabloid", 11.0, 17.0},
+      };
+      for (const auto &p : PAGE_PRESETS) {
+        auto *btn = Gtk::make_managed<curvz::widgets::Button>(
+            curvz::scripting::unregistered, p.label);
+        btn->add_css_class("flat");
+        btn->set_margin_start(1);
+        double bw = p.w_in, bh = p.h_in;
+        btn->signal_clicked().connect(
+            [this, bw, bh, b_gen, disp_unit, inches_to_display]() {
+              if (b_gen != m_build_gen) return;
+              double s_in = std::min(bw, bh);
+              m_current.ratio_w = bw / s_in;
+              m_current.ratio_h = bh / s_in;
+              const int dpi = 96;
+              m_current.intended_w = inches_to_display(bw, disp_unit, dpi);
+              m_current.intended_h = inches_to_display(bh, disp_unit, dpi);
+              m_current.intended_unit =
+                  (disp_unit == Unit::Mm)   ? "mm"
+                  : (disp_unit == Unit::Pt) ? "pt"
+                                            : "in";
+              Glib::signal_idle().connect_once(
+                  [this]() { populate_size_tab(); refresh_preview(); });
+            });
+        pre_row->append(*btn);
       }
     }
-    m_updating = true;
-    m_quality_slider.set_value(best);
-    m_updating = false;
-    update_from_ratio();
-  });
+    m_size_box.append(*pre_row);
+  }
 
-  return m_ratio_box;
-}
+  // ────────────────────────────────────────────────────────────────────
+  // Row 4 — Ratio presets (always available)
+  // ────────────────────────────────────────────────────────────────────
+  {
+    auto *rp_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+    rp_row->set_spacing(4);
+    rp_row->set_margin_bottom(4);
+    auto *rp_lbl = Gtk::make_managed<Gtk::Label>("Ratio");
+    rp_lbl->add_css_class("section-label");
+    rp_lbl->set_width_chars(8);
+    rp_lbl->set_xalign(0.0f);
+    rp_row->append(*rp_lbl);
 
-// ── Update from tab ───────────────────────────────────────────────────────────
-void NewDocumentDialog::update_from_pixel() {
-  m_current = compute_pixel();
-  refresh_preview();
-}
-void NewDocumentDialog::update_from_physical() {
-  m_current = compute_physical();
-  refresh_preview();
-}
-void NewDocumentDialog::update_from_ratio() {
-  m_current = compute_ratio();
-  refresh_preview();
-}
-
-// ── Compute helpers ───────────────────────────────────────────────────────────
-CanvasModel NewDocumentDialog::compute_pixel() const {
-  int pw = std::max(1, (int)m_px_w.get_value());
-  int ph = std::max(1, (int)m_px_h.get_value());
-  return CanvasModel::from_pixels(pw, ph);
-}
-CanvasModel NewDocumentDialog::compute_physical() const {
-  double w = m_phys_w.get_value();
-  double h = m_phys_h.get_value();
-  static const char *units[] = {"in", "mm", "cm"};
-  int unit_idx = (int)m_phys_unit.get_selected();
-  std::string unit = units[std::clamp(unit_idx, 0, 2)];
-  int dpi = DPI_PRESETS[std::clamp((int)m_phys_dpi.get_selected(), 0, 4)];
-  return CanvasModel::from_physical(w, h, unit, dpi);
-}
-CanvasModel NewDocumentDialog::compute_ratio() const {
-  double rw = m_ratio_w.get_value();
-  double rh = m_ratio_h.get_value();
-  int quality = std::max(1, (int)m_quality_spin.get_value());
-  return CanvasModel::from_ratio(rw, rh, quality);
+    struct RatioPreset {
+      const char *label;
+      double w, h;
+    };
+    static const RatioPreset RATIO_PRESETS[] = {
+        {"1:1", 1.0, 1.0},      {"4:3", 4.0, 3.0},     {"16:9", 16.0, 9.0},
+        {"√2", 1.0, 1.4142135}, {"φ", 1.0, 1.6180339},
+    };
+    uint32_t b_gen = m_build_gen;
+    for (const auto &p : RATIO_PRESETS) {
+      auto *btn = Gtk::make_managed<curvz::widgets::Button>(
+          curvz::scripting::unregistered, p.label);
+      btn->add_css_class("flat");
+      btn->set_margin_start(1);
+      double bw = p.w, bh = p.h;
+      btn->signal_clicked().connect([this, bw, bh, b_gen]() {
+        if (b_gen != m_build_gen) return;
+        // New ratio (normalised so short axis = 1).
+        double s = std::min(bw, bh);
+        m_current.ratio_w = bw / s;
+        m_current.ratio_h = bh / s;
+        // Rescale Size: keep the short side, recompute the long one.
+        double cur_w = 0.0, cur_h = 0.0;
+        compute_size_wh(cur_w, cur_h);
+        if (cur_w > 0.0 && cur_h > 0.0) {
+          double short_side = std::min(cur_w, cur_h);
+          m_current.intended_w = short_side * m_current.ratio_w;
+          m_current.intended_h = short_side * m_current.ratio_h;
+          if (m_current.intended_unit.empty())
+            m_current.intended_unit = "px";
+        }
+        Glib::signal_idle().connect_once(
+            [this]() { populate_size_tab(); refresh_preview(); });
+      });
+      rp_row->append(*btn);
+    }
+    m_size_box.append(*rp_row);
+  }
 }
 
 // ── Refresh preview readout + thumbnail ──────────────────────────────────────
+//
+// s266 m1: m_current is the single source of truth. Template tab updates
+// it via select_*; Size tab updates it via spinner commits and preset
+// clicks. No per-tab re-derivation needed here.
 void NewDocumentDialog::refresh_preview() {
-  int tab = m_notebook.get_current_page();
-  // Template tab (0): m_current is already set by select_*; don't overwrite.
-  // Other tabs: re-derive from inputs.
-  if (tab == 1)
-    m_current = compute_pixel();
-  else if (tab == 2)
-    m_current = compute_physical();
-  else if (tab == 3)
-    m_current = compute_ratio();
-
   int cw = m_current.canvas_width();
   int ch = m_current.canvas_height();
 
-  // Build preview string
   std::string info;
   info += "Canvas:  " + std::to_string(cw) + " × " + std::to_string(ch) +
           " units\n";
@@ -1200,16 +1399,16 @@ void NewDocumentDialog::refresh_preview() {
   snprintf(ratio_buf, sizeof(ratio_buf), "Ratio:    %.4g : %.4g",
            m_current.ratio_w, m_current.ratio_h);
   info += ratio_buf;
-  info += "\n";
-  info +=
-      "Quality: " + std::to_string(m_current.quality) + " units (short axis)";
 
-  if (m_current.display_mode == DisplayMode::Physical) {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "\n%.3g × %.3g %s @ %d dpi",
-             m_current.phys_width, m_current.phys_height,
-             m_current.phys_unit.c_str(), m_current.dpi);
-    info += buf;
+  // Intent readout — the SVG width/height contract. Only shown when set.
+  if (m_current.intended_w > 0.0 && m_current.intended_h > 0.0) {
+    char ibuf[128];
+    const char *u = m_current.intended_unit.empty()
+                        ? "px"
+                        : m_current.intended_unit.c_str();
+    snprintf(ibuf, sizeof(ibuf), "\nDelivers: %.4g × %.4g %s",
+             m_current.intended_w, m_current.intended_h, u);
+    info += ibuf;
   }
 
   m_preview_label.set_text(info);
@@ -1333,17 +1532,32 @@ void NewDocumentDialog::show(Gtk::Window &parent,
   // Default tab: Template (page 0)
   m_notebook.set_current_page(0);
 
-  // Seed the preview with a sensible default while no template is picked.
-  // Mirrors the pre-M3 default of a 1000-quality 1:1 canvas.
+  // Seed m_current with a generous working plane and a 24-px intent.
+  //
+  // Working plane (quality=1000, ratio=1:1) is held independent of the
+  // delivery Size — same shape as the inspector's behaviour: presets
+  // and Size edits write intent + ratio, but quality stays put at
+  // 1000 so the working precision is always generous regardless of
+  // what Size the user picks. See
+  // resources/help/1-4-how-curvz-thinks-about-size.md.
+  //
+  // Earlier in this milestone I bootstrapped with from_pixels(24,24)
+  // (canvas=24, quality=24), which made the working plane snap to the
+  // intended size and produced ruler-scale bugs at small Sizes (e.g.
+  // a 256-px preset gave canvas=24, intent=256, scale ratio 10.67, and
+  // the rulers were unreadable). from_ratio(1,1,1000) is what show()
+  // used in the four-tab era; that's the right plane to be on.
+  //
+  // Intent is set to 24×24 px so a fresh dialog shows 24 in the
+  // spinners and the user has a starting point that matches the
+  // small-icon idiom Curvz defaults to. Clicking a preset overwrites
+  // intent; quality stays at 1000.
   m_current = CanvasModel::from_ratio(1.0, 1.0, 1000);
-  m_updating = true;
-  m_ratio_w.set_value(1.0);
-  m_ratio_h.set_value(1.0);
-  m_quality_spin.set_value(1000);
-  m_quality_slider.set_value(0);
-  m_px_w.set_value(1000);
-  m_px_h.set_value(1000);
-  m_updating = false;
+  m_current.intended_w    = 24.0;
+  m_current.intended_h    = 24.0;
+  m_current.intended_unit = "px";
+  Glib::signal_idle().connect_once(
+      [this]() { populate_size_tab(); refresh_preview(); });
 
   refresh_preview();
   present();
@@ -1353,11 +1567,16 @@ void NewDocumentDialog::show(Gtk::Window &parent,
 void NewDocumentDialog::on_create() {
   std::unique_ptr<CurvzDocument> seed;
 
-  // Build the seed according to the active mode:
+  // Build the seed according to the active tab (s266 m1 — two tabs):
   //   - Template tab + built-in picked      → synthetic seed
   //   - Template tab + disk template picked → load_document() clone
   //   - Template tab + nothing picked       → treat as Blank (forgiving UX)
-  //   - Pixel/Physical/Ratio tab            → empty doc + tab's CanvasModel
+  //   - Size tab                            → empty doc + m_current
+  //
+  // m_current is the single source of truth for the Size tab — populated
+  // by the spinners, presets, and Units dropdown as the user interacts.
+  // Intent fields on m_current carry through to seed->canvas, which the
+  // SVG writer emits as the root <svg> width/height contract.
   int tab = m_notebook.get_current_page();
   if (tab == 0) {
     if (m_selected_disk >= 0 &&
@@ -1374,12 +1593,9 @@ void NewDocumentDialog::on_create() {
       seed = build_blank_seed();
     }
   } else {
+    // Size tab — m_current carries the user's edits.
     seed = std::make_unique<CurvzDocument>();
-    CanvasModel cm;
-    if (tab == 1) cm = compute_pixel();
-    else if (tab == 2) cm = compute_physical();
-    else cm = compute_ratio();
-    seed->canvas = cm;
+    seed->canvas = m_current;
   }
 
   if (!seed) {

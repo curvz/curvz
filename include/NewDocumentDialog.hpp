@@ -14,7 +14,6 @@
 #include <gtkmm/grid.h>
 #include <gtkmm/label.h>
 #include <gtkmm/notebook.h>
-#include <gtkmm/scale.h>
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/separator.h>
 #include <gtkmm/spinbutton.h>
@@ -38,18 +37,26 @@ namespace Curvz {
 
 // Modal "New Document" dialog.
 //
-// Presents four tabs:
-//   1. Template         — thumbnail picker; includes two synthetic built-ins
-//                         ("Blank" and "Default") plus any user/system
-//                         templates from TemplateLibrary.
-//   2. Pixel            — raw pixel dimensions
-//   3. Physical         — inches / mm / cm + DPI
-//   4. Ratio / Quality  — aspect ratio + unit count on short axis
+// Presents two tabs:
+//   1. Template — thumbnail picker; includes two synthetic built-ins
+//                 ("Blank" and "Default") plus any user/system templates
+//                 from TemplateLibrary.
+//   2. Size     — Units + Size W/H + presets + ratio presets, mirroring
+//                 the inspector's Dimensions section. Produces an empty
+//                 document carrying the chosen CanvasModel (with render
+//                 intent populated when the user picked a Size).
 //
 // Template is the default tab on show(). Picking a template or built-in
 // locks the dialog into "template mode" — the Create button will produce
-// a document cloned from the template's seed. The other three tabs produce
-// an empty document with the tab's CanvasModel.
+// a document cloned from the template's seed. Switching to the Size tab
+// clears any template selection, and the Create button will produce an
+// empty document with the Size tab's CanvasModel.
+//
+// s266 m1: the previous four-tab structure (Template / Pixel / Physical /
+// Ratio) collapsed alongside the s265 inspector restructure. Quality, DPI,
+// and the Mode trichotomy are gone — there is one Size driving intent and
+// ratio, and Units chooses how Size is spelled. See
+// resources/help/1-4-how-curvz-thinks-about-size.md.
 //
 // Callback signature:
 //   void(std::unique_ptr<CurvzDocument> seed, std::string name)
@@ -105,9 +112,15 @@ public:
 private:
     // ── Tab builders ──────────────────────────────────────────────────────
     Gtk::Widget& build_template_tab();
-    Gtk::Widget& build_pixel_tab();
-    Gtk::Widget& build_physical_tab();
-    Gtk::Widget& build_ratio_tab();
+    Gtk::Widget& build_size_tab();
+
+    // Rebuild the Size tab's interior. Called from build_size_tab() at
+    // construction and from any preset-click / Units-change handler that
+    // needs the panel to re-render (mirrors the inspector's refresh()
+    // pattern). Reads m_current (CanvasModel) as the source of truth and
+    // writes back to it as the user interacts. Bumps m_build_gen so
+    // stale signal lambdas captured before the rebuild bail out.
+    void populate_size_tab();
 
     // ── Template-tab helpers ──────────────────────────────────────────────
     // Built-in synthetic entry kinds for the first two tiles. Tracked
@@ -215,14 +228,14 @@ private:
     bool tick_crossfade(int tile_index);
 
     // ── Live update helpers ───────────────────────────────────────────────
-    void update_from_pixel();
-    void update_from_physical();
-    void update_from_ratio();
-    void refresh_preview();
+    // Compute the Size W/H to display from m_current (CanvasModel),
+    // mirroring PropertiesPanel::compute_size_wh. Priority order:
+    //   1. intended_w/h if set, converted to display_unit if needed.
+    //   2. Physical-mode fallback: phys_width/height in inches.
+    //   3. Pixel/Ratio fallback: canvas_width/height at SVG-default 96dpi.
+    void compute_size_wh(double& w_out, double& h_out) const;
 
-    CanvasModel compute_pixel()    const;
-    CanvasModel compute_physical() const;
-    CanvasModel compute_ratio()    const;
+    void refresh_preview();
 
     // ── Actions ───────────────────────────────────────────────────────────
     void on_create();
@@ -254,24 +267,28 @@ private:
     std::vector<Gtk::Frame*>  m_tile_disk;               // parallel to
                                                          // m_disk_templates
 
-    // ── Pixel tab widgets ─────────────────────────────────────────────────
-    Gtk::Box        m_pixel_box{Gtk::Orientation::VERTICAL};
-    Gtk::SpinButton m_px_w;
-    Gtk::SpinButton m_px_h;
+    // ── Size tab widgets (s266 m1 — collapses Pixel/Physical/Ratio) ──────
+    //
+    // The Size tab is rebuilt in place by populate_size_tab() — its
+    // interior contents (Units, W/H spinners, presets, ratio presets)
+    // are torn down and re-laid-out whenever the user picks a unit-
+    // changing preset, mirroring how the inspector's Dimensions section
+    // rebuilds on canvas_changed. m_size_box is the Notebook page; its
+    // children are the only things populate_size_tab() touches.
+    //
+    // m_size_aspect_locked persists across rebuilds (it's a user
+    // preference for this dialog session, like m_canvas_aspect_locked
+    // on PropertiesPanel). Spinner pointers reset on every rebuild —
+    // populate_size_tab() owns them.
+    Gtk::Box  m_size_box{Gtk::Orientation::VERTICAL};
+    bool      m_size_aspect_locked = true;
 
-    // ── Physical tab widgets ──────────────────────────────────────────────
-    Gtk::Box        m_phys_box{Gtk::Orientation::VERTICAL};
-    Gtk::SpinButton m_phys_w;
-    Gtk::SpinButton m_phys_h;
-    Gtk::DropDown   m_phys_unit;
-    Gtk::DropDown   m_phys_dpi;
-
-    // ── Ratio/Quality tab widgets ─────────────────────────────────────────
-    Gtk::Box        m_ratio_box{Gtk::Orientation::VERTICAL};
-    Gtk::SpinButton m_ratio_w;
-    Gtk::SpinButton m_ratio_h;
-    Gtk::Scale      m_quality_slider;
-    Gtk::SpinButton m_quality_spin;
+    // ── Build-generation counter ─────────────────────────────────────────
+    // Bumped at the start of every populate_size_tab() rebuild. Signal
+    // lambdas capture the generation at connect time and bail if it has
+    // moved on, so stale callbacks from torn-down widgets can't write
+    // to fresh widgets. Same idiom as PropertiesPanel::m_build_gen.
+    uint32_t  m_build_gen = 0;
 
     // ── Name entry ────────────────────────────────────────────────────────
     CurvzEntry m_name_entry;

@@ -1139,7 +1139,28 @@ void Canvas::set_document(CurvzDocument *doc) {
   m_alt_drag_dup = false;
   m_pan_x = 0.0;
   m_pan_y = 0.0;
-  m_fit_pending = true; // defer fit until first draw when widget is sized
+  // s266 m1 followup: doc-switch zoom sync.
+  //
+  // Pre-fix: m_fit_pending = true; first draw runs zoom_fit. That works for
+  // the very first doc on app open (widget not yet sized), but on a doc-
+  // switch during the running app it leaves a window where the canvas's
+  // m_zoom is still the PREVIOUS doc's zoom while update_all_panels pushes
+  // RulerState (and the rulers paint a snapshot at the stale zoom). Rulers
+  // appear "wrong" until the user hides/shows them or otherwise forces a
+  // repaint after the deferred fit fires.
+  //
+  // Fix: if the widget is already sized (running-app doc switch), run
+  // zoom_fit synchronously NOW. fit_zoom() needs valid get_width/height,
+  // and we have them. m_sig_zoom.emit inside zoom_fit propagates the new
+  // zoom to the rulers before update_all_panels's update_rulers call later
+  // in the doc-switch chain. The first-open path (widget not yet sized)
+  // falls through to m_fit_pending and the first-draw fit, unchanged.
+  if (doc && get_width() > 0 && get_height() > 0) {
+    m_fit_pending = false;
+    zoom_fit();  // sets m_zoom = fit_zoom(), pan=0, emits m_sig_zoom
+  } else {
+    m_fit_pending = true; // defer fit until first draw when widget is sized
+  }
   // s160 m2: wholesale selection wipe on document switch — broadcast to
   // SelectionContext so cached object/node info doesn't carry over from the
   // previous document. (Pre-m2 there was no signal at all here; the audit

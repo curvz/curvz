@@ -32,6 +32,12 @@ struct RulerState {
     double phys_short    = 1.0;
     std::string phys_unit = "in";
     Unit   display_unit  = Unit::Px;   // governs tick labels and intervals
+    // s265 m2: render intent — when set, rulers report in this span/unit
+    // regardless of mode (this is the user's typed Size + Units). When
+    // unset, fall back to the legacy mode-based scale.
+    double intended_w    = 0.0;
+    double intended_h    = 0.0;
+    std::string intended_unit;        // "" / "px" / "in" / "mm" / "pt"
     double cursor_doc_x  = 0.0;
     double cursor_doc_y  = 0.0;
     // Preview origin for drag feedback (active only during drag)

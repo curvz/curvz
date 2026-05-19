@@ -2,12 +2,12 @@
 
 ## The plane and the page
 
-Curvz draws on a plane, not on paper. The numbers on the canvas — 1000, 16,
-24, 256 — are a ratio, not a measurement. Nothing in your drawing is any
-particular size until the moment you export it, and that moment is the only
-one where physical size matters. Until then you are working in pure
-proportion: relationships between shapes, distances, curves. Once you see
-this, a great deal of Curvz starts to make sense.
+Curvz draws on a plane, not on paper. Set a Size in the Dimensions inspector
+— 16 px, 16 inches, A4 — and that is how the drawing will deliver. But the
+plane Curvz draws on, internally, is held at a generous working scale
+regardless. The drawing lives in pure proportion; the size you typed in is
+a contract for the moment of export. Until then you are working in
+relationships: shapes, distances, curves, all measured against each other.
 
 ![Three rectangles sharing one corner, each with its diagonal showing its ratio](img/1-4-ratio-diagram.svg)
 
@@ -26,48 +26,54 @@ relationships; the physical size is not realized until it is rendered.
 Raster editors work differently. In a raster application like Photoshop
 the canvas number *is* the size — a 16×16 image is sixteen pixels across,
 full stop, and that number is both the working space and the final output.
-In a vector tool the canvas number is a proportion, and treating it as a
-fixed size will quietly defeat your purpose. Tools have a minimum useful
-precision — a handle that lands on a half-pixel becomes a handle that lands
-on a whole one, and the curve suffers. Boolean operations have a quality
-coefficient — unioning a circle with a square at 16-unit resolution gives
-you a chunky result, because there are only so many places the algorithm
-can put a point. None of these are bugs in the tool. They are what happens
-when the plane is too small for the algorithm to work.
+In a vector tool the canvas number is a proportion, and a Size of "16 px"
+just says where the drawing lands when it is rendered. The plane it was
+drawn on is held at a working scale generous enough that every tool has
+room to work properly, regardless of the Size you typed.
 
-## Working at scale
+## Why the wider plane matters
 
-The way through is to give yourself room. Design at a scale that lets the
-tools perform. Let the export step handle the physical size.
+Tools have a minimum useful precision. A handle that lands on a half-pixel
+becomes a handle that lands on a whole one, and the curve suffers. Boolean
+operations have a quality coefficient — unioning a circle with a square at
+16-unit resolution gives you a chunky result, because there are only so
+many places the algorithm can put a point. None of these are bugs in the
+tool. They are what happens when the plane is too small for the algorithm
+to work.
 
-For a 16×16 icon, set the canvas to 1000×1000. Same proportions — a square
-is still a square, a centered shape is still centered — but every tool now
-has a thousand units of precision instead of sixteen. Snap to grid means
-something. Boolean unions come back clean. Handles can be placed where the
-eye wants them, not where the integer grid forces them. When the drawing is
-ready, export to 16×16 px. Curvz does the normalization for you; the SVG
-that comes out is small, clean, and accurate to the drawing you made.
+Curvz solves this by making the working plane generous regardless of what
+Size you typed. You ask for a 16 px icon and Curvz draws it on a thousand-
+unit plane; you ask for a 16-inch poster and Curvz still draws it on a
+thousand-unit plane. Snap to grid means something. Boolean unions come
+back clean. Handles land where the eye wants them. When you save, the
+working plane is encoded in the SVG's `viewBox` and the Size you typed
+becomes the SVG's `width` and `height`. The file delivers at the size you
+asked for, and every renderer that opens it sees the drawing at the
+precision it was made with.
 
-The 1000×1000 number is not magical — 256, 512, and 2048 all work the
-same way. The point is that you are choosing a working scale generous
-enough to design in, and a delivery scale appropriate to where the icon
-will live.
+## What you actually do
 
-This pattern carries to anything else you draw in Curvz. A 24×24 toolbar
-icon. A 256-pixel app icon. A logomark that has to render at a favicon
-size and a billboard, sized from the same file. In every case the answer is
-the same: design large, normalize on export. The drawing is the same
-drawing; only the rendering changes.
+Set Size in the Dimensions inspector. Pick units that suit the work — `px`
+for screen icons, `in` or `mm` for print, `pt` for typography. Use the
+aspect-lock toggle if you want W and H to scale together. The presets are
+there for the common cases.
 
-## A small habit, a large payoff
+That is all. The wider working plane is not something you configure; it is
+how Curvz draws, the way a sketchpad is bigger than the eventual print.
+The rulers, the inspector readouts, the layer panel coordinates — all read
+in the Size units you set. The viewBox is the SVG file's bookkeeping.
 
-A small habit learned early pays back continuously in the long haul. The tools
-that felt cramped will feel comfortable. Boolean operations will produce results
-worth keeping. Exports will be smaller and cleaner because the drawing they
-came from was made at a scale that left room for it to be balanced. None of
-this requires you to think about ratios *while* you draw — only once, at
-the moment you set up a new document. Then you draw the way you always
-wanted to, and let Curvz do the arithmetic on the way out.
+## The payoff
 
-This is how Curvz wants to be used. Once the idea clicks, you will not want to
-go back.
+A 24 px toolbar icon and a 24-inch poster are drawn the same way in Curvz,
+with the same tools, at the same precision. Only the contract on the way
+out is different. The tools never feel cramped at a small Size; boolean
+operations produce results worth keeping; exports are clean because the
+drawing they came from was made on a plane with room for it.
+
+In other vector tools you would have set up the document at a generous
+working scale yourself, and remembered to normalize on export. Curvz does
+that part for you, every time, invisibly. The drawing is the same drawing;
+only the rendering changes — and the rendering is yours to choose.
+
+This is how Curvz wants to be used.

@@ -389,6 +389,10 @@ void MainWindow::update_rulers() {
     rs.phys_short = std::min(doc->canvas.phys_width, doc->canvas.phys_height);
     rs.phys_unit = doc->canvas.phys_unit;
     rs.display_unit = doc->canvas.display_unit;
+    // s265 m2: forward intent so the rulers report in user-units.
+    rs.intended_w = doc->canvas.intended_w;
+    rs.intended_h = doc->canvas.intended_h;
+    rs.intended_unit = doc->canvas.intended_unit;
   }
 
   m_hruler.set_state(rs);
@@ -879,7 +883,18 @@ void MainWindow::update_all_panels() {
 
   // ── GROUP B: setters that fire signals (now safe — Group A done) ─
   m_canvas.set_document(doc);
-  m_canvas.set_zoom(m_project->zoom);
+  // s266 m1 followup: set_document now runs zoom_fit synchronously when
+  // the widget is sized (running-app doc switch). That sets m_zoom to the
+  // fit value for the new doc's canvas dims. Re-applying m_project->zoom
+  // here would clobber that with the project-wide stored value (which
+  // defaults to 16.0 and is essentially a dead field — there are no
+  // writers to m_project->zoom in the codebase as of this session). Skip
+  // when set_document already fitted, i.e. when the canvas widget is sized.
+  // First-open path (widget not yet sized) still falls through to the
+  // deferred first-draw fit; we don't push a stale value at all.
+  if (m_canvas.get_width() <= 0 || m_canvas.get_height() <= 0) {
+    m_canvas.set_zoom(m_project->zoom);
+  }
   m_canvas.set_history(&m_history);
   m_preview.set_document(doc);
   m_layers.set_document(doc);
@@ -908,13 +923,26 @@ void MainWindow::update_all_panels() {
     m_toolbar.set_snap_settings(doc->snap);
     // Keep popover unit labels in sync with document display unit
     m_toolbar.set_document(doc);
-    m_corner.set_unit(doc->canvas.display_unit);
+    // s265 m2: corner shows the intent unit when set (the user's typed
+    // Size unit), else falls back to display_unit / phys_unit.
+    auto resolve_corner_unit = [&]() -> Unit {
+      const auto &c = doc->canvas;
+      if (c.intended_w > 0.0 && c.intended_h > 0.0
+          && !c.intended_unit.empty()) {
+        if (c.intended_unit == "in") return Unit::In;
+        if (c.intended_unit == "mm") return Unit::Mm;
+        if (c.intended_unit == "pt") return Unit::Pt;
+        return Unit::Px;
+      }
+      if (c.display_mode == DisplayMode::Physical)
+        return UnitSystem::parse_unit(c.phys_unit);
+      return c.display_unit;
+    };
+    Unit corner_u = resolve_corner_unit();
+    m_corner.set_unit(corner_u);
     // Corner panel unit label
     {
-      Unit u = (doc->canvas.display_mode == DisplayMode::Physical)
-                   ? UnitSystem::parse_unit(doc->canvas.phys_unit)
-                   : doc->canvas.display_unit;
-      std::string unit_str = UnitSystem::label(u);
+      std::string unit_str = UnitSystem::label(corner_u);
       m_corner_unit_label.set_text("Units: " + unit_str);
       // Set a sensible default radius in current units (0.1 of current unit)
       m_corner_radius_spin.set_value(0.1);
@@ -935,7 +963,13 @@ void MainWindow::update_all_panels() {
     });
   }
   refresh_status_counts(); // s132 m2 — replaces hand-rolled loop
-  m_statusbar.set_zoom(m_project->zoom * 100.0);
+  // s266 m1 followup: read live canvas zoom rather than m_project->zoom.
+  // m_project->zoom is essentially a dead field (no writers in the
+  // codebase) and defaults to 16.0 which would lie to the user. The
+  // canvas just had its zoom set by set_document's eager zoom_fit (or
+  // will, on first-draw, for the not-yet-sized first-open path) — use
+  // that.
+  m_statusbar.set_zoom(m_canvas.zoom() * 100.0);
   update_rulers();
   apply_motif_to_window();
 }

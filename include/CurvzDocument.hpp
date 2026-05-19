@@ -50,6 +50,53 @@ struct CanvasModel {
     // Pixel mode
     int         px_width      = 24;
     int         px_height     = 24;
+    // ── Render intent (s264 m1; promoted from CurvzDocument in s265 m2)
+    //
+    // The "delivers as" dimensions. Curvz designs at a working scale
+    // (e.g. 1000-unit canvas for a 48px icon — see the help doc
+    // "1-4-how-curvz-thinks-about-size.md"). The viewBox stays at the
+    // working scale so geometry keeps full precision; the SVG root
+    // width/height attributes declare the *intended rendered size* so
+    // downstream consumers (browser, file preview, design tool with no
+    // sizing override) display the file at delivery size with zero data
+    // loss — that's what SVG was designed for. Working coordinates are
+    // a coordinate system; render width/height is a display contract.
+    //
+    // Storage convention:
+    //   * intended_w / intended_h > 0      → render intent IS SET. The
+    //                                        SVG writer emits these on
+    //                                        the root <svg> width/height
+    //                                        (with intended_unit suffix
+    //                                        if non-empty / non-"px").
+    //                                        The parser, on load, reads
+    //                                        them back from the
+    //                                        data-curvz-intended-* attrs
+    //                                        and ALSO recognises files
+    //                                        from other tools where
+    //                                        viewBox and width/height
+    //                                        disagree.
+    //   * intended_w / intended_h == 0     → UNSET. The writer falls
+    //                                        back to legacy behavior
+    //                                        (width=viewBox for Pixel /
+    //                                        Ratio modes, width=phys
+    //                                        with unit for Physical).
+    //                                        Existing files load with
+    //                                        intent unset by default and
+    //                                        round-trip identically.
+    //   * intended_unit                    → "" / "px" / "mm" / "in" /
+    //                                        "pt" / "cm". Empty == "px".
+    //                                        SVG honors these suffixes
+    //                                        natively (CSS lengths).
+    //
+    // s265 m2: Originally added to CurvzDocument in s264 m1. Promoted
+    // into CanvasModel because semantically these ARE canvas geometry
+    // (delivery contract), and the inspector's canvas_changed signal
+    // carries a CanvasModel — keeping them on the document meant the
+    // signal couldn't propagate edits. Same fields, same semantics,
+    // shorter path from inspector to writer.
+    double      intended_w    = 0.0;
+    double      intended_h    = 0.0;
+    std::string intended_unit;     // "" treated as "px"
     // Unit preference — affects rulers and inspector fields (px/in/mm/pt)
     Unit        display_unit  = Unit::Px;
 
@@ -358,57 +405,13 @@ struct CurvzDocument {
     bool measure_save_to_layer       = false;
     bool measure_destruct_after_copy = false;
 
-    // ── Intended render size (s264 m1) ────────────────────────────────────
-    //
-    // The "delivers as" dimensions. Curvz designs at a working scale
-    // (e.g. 1000-unit canvas for a 48px icon — see the help doc
-    // "1-4-how-curvz-thinks-about-size.md"). The viewBox stays at the
-    // working scale so geometry keeps full precision; the SVG root
-    // width/height attributes declare the *intended rendered size* so
-    // downstream consumers (browser, file preview, design tool with no
-    // sizing override) display the file at delivery size with zero data
-    // loss — that's what SVG was designed for. Working coordinates are
-    // a coordinate system; render width/height is a display contract.
-    //
-    // Storage convention:
-    //   * intended_w / intended_h > 0      → render intent IS SET. The
-    //                                        SVG writer emits these on
-    //                                        the root <svg> width/height
-    //                                        (with intended_unit suffix
-    //                                        if non-empty / non-"px").
-    //                                        The parser, on load, reads
-    //                                        them back from the
-    //                                        data-curvz-intended-* attrs
-    //                                        and ALSO recognises files
-    //                                        from other tools where
-    //                                        viewBox and width/height
-    //                                        disagree.
-    //   * intended_w / intended_h == 0     → UNSET. The writer falls
-    //                                        back to legacy behavior
-    //                                        (width=viewBox for Pixel /
-    //                                        Ratio modes, width=phys
-    //                                        with unit for Physical).
-    //                                        Existing files load with
-    //                                        intent unset by default and
-    //                                        round-trip identically.
-    //   * intended_unit                    → "" / "px" / "mm" / "in" /
-    //                                        "pt" / "cm". Empty == "px".
-    //                                        SVG honors these suffixes
-    //                                        natively (CSS lengths).
-    //
-    // Inspector UI (s264 m3): "Delivers as" row in the Dimensions
-    // section exposes the three fields with aspect-locked-by-default
-    // coupling — covered in m3, not m1/m2.
-    //
-    // Why three primitive fields instead of a struct: matches the
-    // measure_* and dark/light_* pattern already in this header
-    // (flat fields with grouped names). No reason to introduce a new
-    // sub-struct just for these three. If render-intent later grows
-    // additional fields (orientation hint, pixel-grid alignment, …)
-    // the struct can absorb them then.
-    double intended_w     = 0.0;
-    double intended_h     = 0.0;
-    std::string intended_unit;     // "" treated as "px"
+    // s264 m1 / s265 m2: render-intent fields (intended_w / intended_h /
+    // intended_unit) live on `canvas` (CanvasModel) now. Pre-s265 they
+    // sat directly on this struct; s265 m2 promoted them into the
+    // canvas model because semantically they ARE canvas geometry (the
+    // SVG width/height delivery contract) and because the inspector's
+    // canvas_changed signal carries a CanvasModel — keeping intent on
+    // the document meant the inspector's edits couldn't propagate.
 
     // Export metadata — used by the icon theme export pipeline
     std::string export_name;      // freedesktop icon name e.g. "edit-copy-symbolic"
