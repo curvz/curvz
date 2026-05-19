@@ -6,8 +6,8 @@
 #include "CurvzSpinButton.hpp"
 #include "MacroSystem.hpp"
 #include "SvgParser.hpp"
-#include "curvz/widgets/RefPointPicker.hpp"  // s204 m4 — pivot right-click picker
-#include "curvz/widgets/Button.hpp"  // s209 m5: unregistered substrate Button (spiral Apply, blend Rebuild popovers)
+#include "widgets/RefPointPicker.hpp"  // s204 m4 — pivot right-click picker
+#include "widgets/Button.hpp"  // s209 m5: unregistered substrate Button (spiral Apply, blend Rebuild popovers)
 #include "curvz_utils.hpp"  // S97 m2 — box_blur_argb32 for drop-shadow render
 #include "color/SwatchLibrary.hpp"  // set_swatch_library + apply_swatch_to_selection
 #include "color/FillStyleInterop.hpp"  // to_fillstyle — live-recolour walk (s70 M3)

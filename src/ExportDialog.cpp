@@ -40,11 +40,11 @@
 #include "curvz_utils.hpp"
 
 // s233 m1 — substrate wrappers for the 21-site sweep.
-#include "curvz/widgets/Button.hpp"
-#include "curvz/widgets/CheckButton.hpp"
-#include "curvz/widgets/DropDown.hpp"
-#include "curvz/widgets/Entry.hpp"
-#include "curvz/widgets/SpinButton.hpp"
+#include "widgets/Button.hpp"
+#include "widgets/CheckButton.hpp"
+#include "widgets/DropDown.hpp"
+#include "widgets/Entry.hpp"
+#include "widgets/SpinButton.hpp"
 
 #include <gtkmm/adjustment.h>
 #include <gtkmm/filedialog.h>

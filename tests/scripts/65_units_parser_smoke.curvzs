@@ -1,0 +1,266 @@
+# 65_units_parser_smoke — substrate parser regression suite (s263 m7).
+#
+# Validates the math-expression parser plumbing in
+# UnitSystem::parse_expr — the same engine that runs when a user types
+# into ANY substrate SpinButton or CurvzSpinButton. This smoke
+# addresses the substrate widget `ins_can_pw` (Pixel-mode canvas
+# width spinner in the inspector); same widget smoke 21 already
+# uses, exercised through a different verb here.
+#
+# ── Why this smoke exists ─────────────────────────────────────────────────
+#
+# s263 m4 added `"` as an inch suffix to the length-domain parser
+# (print-design muscle memory; blueprints write `5"`); s263 m5
+# replaced the parser's binary allow_units flag with a Domain enum
+# (Length / Angle / Percentage / Dimensionless), per-domain legal
+# unit sets, structural cross-domain refusal. The Domain-aware path
+# is reachable through CurvzSpinButton instances (rotation fields,
+# inspector geometry fields with units), but the s187 design fork is
+# still open — CurvzSpinButton inherits from Gtk::SpinButton
+# directly, NOT from the substrate widget, so the Domain-aware
+# parser isn't script-addressable today.
+#
+# What IS addressable today is the substrate widget's parser, which
+# routes through the legacy `allow_units=false` compat path that
+# m5's wrapper maps to Domain::Dimensionless. So this smoke validates
+# the dimensionless-substrate parser path: math, parens, precedence,
+# unary minus, and refusals (no suffixes legal in Dimensionless).
+#
+# That's still real coverage. The m5 work touched this code path —
+# the compat wrapper is what makes the substrate's existing parser
+# behaviour survive the Domain enum migration. A regression here
+# would fail a smoke; same convergent-evidence shape s225-style
+# substrate smokes use.
+#
+# Once the s187 design fork resolves (CurvzSpinButton becomes a
+# substrate widget), this smoke gains a companion `66_units_domain_
+# smoke` that exercises Length / Angle / Percentage domains on the
+# rich widgets, with per-domain suffix asserts and cross-domain
+# refusal asserts.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Two verb surfaces on `ins_can_pw`:
+#
+#   set <number>     — direct numeric back-door; bypasses parser.
+#                      Used to establish a known initial state for
+#                      refusal asserts (value-didn't-change is the
+#                      assertion).
+#   parse <string>   — runs the string through the parser; commits
+#                      on success (signal_value_changed fires inline),
+#                      no-op on refusal. Verb's Bool return is
+#                      operator-visual on the trace echo; the smoke
+#                      asserts on the post-call value query, NOT on
+#                      the parse return (DSL assert is equality-only
+#                      on query results — same constraint smoke 44 and
+#                      smoke 63 both work around).
+#                      s263 m6 added this verb to the substrate
+#                      widget; smoke 65 is its first regression
+#                      consumer.
+#
+# One query surface:
+#
+#   value            — Double; reads the current adjustment value.
+#                      The smoke's invariant for every parse case:
+#                      after a happy-path parse, value commits to the
+#                      expected scalar; after a refusal-path parse,
+#                      value is unchanged from its pre-parse state.
+#
+# Coverage shape (FOUR-PHASE per the s236+ smoke discipline):
+#
+#   BUILD UP   : Phase 1 establishes a known starting value via the
+#                set back-door (256, a portable canvas-width default).
+#   VALIDATE   : Phase 2 exercises happy-path parses (math, parens,
+#                precedence, subtraction). Each asserts the
+#                post-parse value matches the expected scalar.
+#   FIND EDGES : Phase 3 exercises refusals (out-of-range, division
+#                by zero, malformed). Each asserts the post-parse
+#                value stayed at 256.
+#   FIND EDGES : Phase 4 exercises domain refusals (Length suffixes,
+#                Angle suffixes — all illegal in Dimensionless). Same
+#                pattern: value unchanged at 256.
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# ScripterWindow listener, RunContext::Scripter. Substrate widget
+# verbs are not RunContext-gated (substrate is below the gating
+# layer — it's plumbing every higher Scriptable rides on); the parse
+# verb is therefore callable from every context including Macro,
+# matching the pattern smoke 21 and others rely on.
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# The smoke writes to ins_can_pw. The Pixel-mode width is a real
+# document property — committing 256 at the end IS a state change
+# Scott will observe in the inspector. Smoke 21 already uses this
+# widget with the same end-state convention; following it here keeps
+# the inspector predictable across smokes. If Scott's current document
+# has a different launch width, the Phase 1 `set 256` normalizes it
+# for the smoke duration.
+#
+# ── Predicted observables ─────────────────────────────────────────────────
+#
+# Expected summary line at smoke close:
+#
+#   25 lines, 12 pass, 0 fail, 0 error
+#
+# Trace breakdown:
+#   Phase 1 (init):           1 set + 1 assert       = 2 lines, 1 pass
+#   Phase 2 (5 happy paths):  5 parse + 5 assert    = 10 lines, 5 pass
+#   Phase 3 (1 reset + 4 refusals):
+#                             1 set + 4 (parse+assert)
+#                                                    = 9 lines, 4 pass
+#   Phase 4 (2 domain refusals; inch-quote skipped — see Phase 4
+#            block for the DSL-escape gap explanation):
+#                             2 (parse+assert)       = 4 lines, 2 pass
+#   TOTAL:                                            25 lines, 12 pass
+#
+# v1 → v2 fix-re-ship notes:
+#   - Phase 2 decimal test: 256.5 → 256.4 to avoid C++ std::round
+#     half-away-from-zero ambiguity (256.5 rounds UP to 257, not
+#     down to 256 — v1 prediction was wrong about the direction).
+#   - Phase 4 inch-quote test: removed; the DSL tokenizer has no
+#     string-escape mechanism, so `parse "5\""` can't reach the
+#     parser as a single string arg. Inch-quote coverage stays in
+#     the GUI text-entry path (manual smoke); the script-side gap
+#     is banked as a backlog item.
+#
+# If any assertion fails, the parser has regressed against the m4-m5
+# spec. If a parse throws an uncaught exception instead of returning
+# false, the error count goes up — separate failure mode from a fail.
+
+#[sub] === Phase 1: BUILD UP — establish known starting value ===
+
+#[sub] Direct numeric set bypassing the parser; gives Phase 3 / 4
+#[sub] refusal cases a known value to assert "didn't change" against.
+
+ins_can_pw set 256.0
+assert ins_can_pw value == 256.0
+
+#[sub] === Phase 2: VALIDATE — happy-path parses ===
+
+#[sub] Plain integer math. The `parse` verb commits the value and
+#[sub] returns true (operator-visual on the trace's echo line);
+#[sub] the equality assert is on the post-commit value query.
+
+ins_can_pw parse "100"
+assert ins_can_pw value == 100.0
+
+#[sub] Decimal math. ins_can_pw has digits=0 so 256.4 rounds to 256
+#[sub] on commit (std::round, half-away-from-zero — 256.5 would round
+#[sub] UP to 257 per C++ standard, so the smoke uses 256.4 to test
+#[sub] rounding without straddling the half-way ambiguity). This is
+#[sub] the substrate widget's integer-style spin behaviour, documented
+#[sub] in signal_input — get_digits()==0 triggers round in
+#[sub] try_parse_and_commit (same as in signal_input's pre-existing
+#[sub] path).
+
+ins_can_pw parse "256.4"
+assert ins_can_pw value == 256.0
+
+#[sub] Arithmetic with operator precedence — multiplication binds
+#[sub] tighter than addition. 5 + 3 * 2 should commit as 11, not 16.
+
+ins_can_pw parse "5 + 3 * 2"
+assert ins_can_pw value == 11.0
+
+#[sub] Parentheses override precedence — (5 + 3) * 2 should commit
+#[sub] as 16. Exercises the parser's primary() recursive-descent
+#[sub] paren branch.
+
+ins_can_pw parse "(5 + 3) * 2"
+assert ins_can_pw value == 16.0
+
+#[sub] Subtraction. 100 - 50 should commit as 50. ins_can_pw's lower
+#[sub] bound is 1, so the result is in range.
+
+ins_can_pw parse "100 - 50"
+assert ins_can_pw value == 50.0
+
+#[sub] === Phase 3: FIND EDGES — structural refusals ===
+
+#[sub] Re-establish a known pre-refusal value so refusal asserts can
+#[sub] check "value didn't change." The smoke's refusal-class
+#[sub] invariant: parse returns false (operator-visual on echo),
+#[sub] value query stays at 256.
+
+ins_can_pw set 256.0
+
+#[sub] Out-of-range value — below the adjustment's lower bound (1).
+#[sub] Parser parses cleanly but the range clamp in
+#[sub] try_parse_and_commit refuses. Value unchanged.
+
+ins_can_pw parse "0"
+assert ins_can_pw value == 256.0
+
+#[sub] Division by zero — parser's term() throws "Division by zero."
+#[sub] try_parse_and_commit catches and returns false. Value unchanged.
+
+ins_can_pw parse "1 / 0"
+assert ins_can_pw value == 256.0
+
+#[sub] Malformed expression — trailing operator. Parser sees no
+#[sub] operand after `+`; throws "Missing value." or similar.
+#[sub] try_parse_and_commit catches and returns false. Value unchanged.
+
+ins_can_pw parse "5 + "
+assert ins_can_pw value == 256.0
+
+#[sub] Unclosed parenthesis — parser throws "Unclosed parenthesis."
+#[sub] try_parse_and_commit catches and returns false. Value unchanged.
+
+ins_can_pw parse "(5 + 3"
+assert ins_can_pw value == 256.0
+
+#[sub] === Phase 4: FIND EDGES — domain refusals ===
+
+#[sub] The substrate widget is dimensionless: NO suffixes legal.
+#[sub] Every domain's suffix-set is illegal here. The compat wrapper
+#[sub] (s263 m5) routes allow_units=false through Domain::Dimensionless
+#[sub] which throws "Units not allowed here" on any letter run or
+#[sub] non-dimensionless symbol.
+
+#[sub] Length letter suffix. `5in` should refuse with "Units not
+#[sub] allowed here: 'in'." Value unchanged at 256.
+
+ins_can_pw parse "5in"
+assert ins_can_pw value == 256.0
+
+#[sub] Inch quote (s263 m4 added `"` to Length domain) is NOT
+#[sub] tested through this smoke. The DSL tokenizer in
+#[sub] ScriptListener::tokenise has no string-escape mechanism —
+#[sub] `\"` is two characters (backslash + quote), the quote ends
+#[sub] the string, and the backslash gets eaten into the previous
+#[sub] token. So `parse "5\""` mis-tokenizes; the `parse` verb sees
+#[sub] either zero or two args and throws "expects one string arg".
+#[sub] The inch-quote behaviour IS exercised through the GUI text
+#[sub] entry (typing `5"` into a length-domain CurvzSpinButton),
+#[sub] which is its dominant use case anyway. Banked as a backlog
+#[sub] item: if more script-string-with-quote cases appear in the
+#[sub] corpus, escape handling becomes worth adding to the
+#[sub] tokenizer; until then, GUI-only coverage is the honest
+#[sub] answer.
+
+#[sub] Angle letter suffix. `45deg` refuses with "Units not allowed
+#[sub] here: 'deg'." in dimensionless context. Value unchanged.
+
+ins_can_pw parse "45deg"
+assert ins_can_pw value == 256.0
+
+#[sub] === Predicted observables ────────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   25 lines, 12 pass, 0 fail, 0 error
+#[sub]
+#[sub] All assertions are equality-form on Double (value query) per
+#[sub] the DSL's equality-only-on-query rule. The smoke is
+#[sub] structurally a regression net for the m4-m5 parser work; no
+#[sub] smoke-level invariant holds without all 12 PASSes.
+#[sub]
+#[sub] Companion smoke 66 (banked for when s187 design fork
+#[sub] resolves): exercises the Domain-aware parser via
+#[sub] CurvzSpinButton instances once they become substrate-
+#[sub] addressable. Length / Angle / Percentage happy paths;
+#[sub] cross-domain refusals (5\" + 30deg, etc.); same shape as
+#[sub] this smoke with the Dimensionless restriction removed.

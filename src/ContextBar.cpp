@@ -1,8 +1,8 @@
 #include "ContextBar.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s121 m7: curvz::utils::set_name
-#include "curvz/widgets/Button.hpp"  // s209 m1: unregistered substrate Button
-#include "curvz/widgets/ToggleButton.hpp"  // s209 m2: unregistered substrate ToggleButton
+#include "widgets/Button.hpp"  // s209 m1: unregistered substrate Button
+#include "widgets/ToggleButton.hpp"  // s209 m2: unregistered substrate ToggleButton
 #include <gtkmm/gestureclick.h>
 
 namespace Curvz {

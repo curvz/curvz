@@ -14,8 +14,8 @@
 #include "SvgParser.hpp"
 #include "SvgWriter.hpp"
 #include "TemplateLibrary.hpp"
-#include "curvz/widgets/Button.hpp"        // s208 m5 — guide-review dialog substrate
-#include "curvz/widgets/CheckButton.hpp"   // s208 m5 — guide-review dialog substrate
+#include "widgets/Button.hpp"        // s208 m5 — guide-review dialog substrate
+#include "widgets/CheckButton.hpp"   // s208 m5 — guide-review dialog substrate
 #include <functional>
 #include <giomm/simpleactiongroup.h> // s144 m3 — recents action group
 #include <gtkmm/application.h>

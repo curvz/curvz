@@ -158,10 +158,21 @@ private:
     // Expression parsing
     bool   type_allows_units() const;
     Unit   type_default_unit() const;
+    // s263 m5 — returns the parser Domain matching this spinner's SpinType.
+    // Used by both the parser (for legal-suffix sets) and the keystroke
+    // filter (for which letter keys reach the entry buffer). Replaces the
+    // older binary `type_allows_units` discriminator at the use sites;
+    // `type_allows_units` is retained as a thin wrapper for source-compat
+    // and returns true iff domain is Length.
+    Domain type_domain() const;
     bool   try_commit_text(const std::string& txt);  // returns true on success
     void   show_error_popover(const std::string& bad_input,
                               const std::string& msg);
     void   hide_error_popover();
+    // s263 m5 — keystroke filter is now domain-aware. The legacy bool
+    // overload routes through Length/Dimensionless for source-compat; new
+    // call sites pass Domain directly.
+    static bool is_char_allowed(gunichar ch, Domain domain);
     static bool is_char_allowed(gunichar ch, bool units_allowed);
 };
 

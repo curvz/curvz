@@ -1,7 +1,7 @@
 #include "WarpPopover.hpp"
 #include "AppPreferences.hpp"
 #include "curvz_utils.hpp"
-#include "curvz/widgets/Button.hpp"
+#include "widgets/Button.hpp"
 #include <algorithm>
 #include <cmath>
 #include <vector>

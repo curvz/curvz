@@ -1,7 +1,7 @@
 #include "ManageTemplatesDialog.hpp"
 #include "CurvzLog.hpp"
-#include "curvz/widgets/Button.hpp"
-#include "curvz/widgets/Entry.hpp"
+#include "widgets/Button.hpp"
+#include "widgets/Entry.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
 #include <algorithm>
 #include <cairomm/cairomm.h>

@@ -24,7 +24,7 @@
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector-driven appearance edits
 #include <algorithm>
 // s202 m6 — quick-jump float construction
-#include "curvz/widgets/Button.hpp"  // s214 m2 — substrate Button
+#include "widgets/Button.hpp"  // s214 m2 — substrate Button
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
 #include <gtkmm/eventcontrollerkey.h>

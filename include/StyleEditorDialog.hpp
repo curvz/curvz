@@ -123,11 +123,11 @@
 // this dialog uses (no shadow swatch / no DrawingArea substrate yet,
 // those stay raw because there's no substrate wrapper to migrate
 // them to).
-#include "curvz/widgets/Button.hpp"
-#include "curvz/widgets/ToggleButton.hpp"
-#include "curvz/widgets/CheckButton.hpp"
-#include "curvz/widgets/DropDown.hpp"
-#include "curvz/widgets/Scale.hpp"
+#include "widgets/Button.hpp"
+#include "widgets/ToggleButton.hpp"
+#include "widgets/CheckButton.hpp"
+#include "widgets/DropDown.hpp"
+#include "widgets/Scale.hpp"
 
 #include <gtkmm/adjustment.h>
 #include <gtkmm/box.h>

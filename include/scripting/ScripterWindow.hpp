@@ -66,9 +66,9 @@
 // flipped to pointer-held substrate widgets so they register in the
 // ScriptableRegistry and become scriptable. The Scripter now drives the
 // Scripter (recursion of the self-running sort).
-#include "curvz/widgets/Button.hpp"
-#include "curvz/widgets/CheckButton.hpp"
-#include "curvz/widgets/SpinButton.hpp"
+#include "widgets/Button.hpp"
+#include "widgets/CheckButton.hpp"
+#include "widgets/SpinButton.hpp"
 
 #include <chrono>
 #include <filesystem>

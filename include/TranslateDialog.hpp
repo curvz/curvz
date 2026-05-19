@@ -30,7 +30,7 @@
 #pragma once
 
 #include "CurvzSpinButton.hpp"
-#include "curvz/widgets/RefPointPicker.hpp"
+#include "widgets/RefPointPicker.hpp"
 
 #include <gtkmm/box.h>
 #include <gtkmm/grid.h>

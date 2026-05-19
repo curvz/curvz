@@ -72,14 +72,17 @@ void CurvzSpinButton::init()
     m_adj = Gtk::Adjustment::create(0.0, -1e9, 1e9, 1.0, 10.0);
     set_adjustment(m_adj);
 
-    // s219: all spin types accept math expressions. Dimensionless types
-    // (Angle, Percentage, Integer) route through the parser's unitless
-    // branch — type_allows_units() still returns false for them, so unit
-    // suffixes stay rejected; only +, -, *, /, (, ), ., comma, and digits
-    // get through is_char_allowed. Integer types get rounding in the
-    // parser block. The previous policy ("dimensionless types keep GTK's
-    // plain numeric behaviour") blocked legitimate math like "360/36" in
-    // a rotation field.
+    // s219: all spin types accept math expressions.
+    // s263 m5: parser is Domain-aware — each SpinType maps to a parser
+    // Domain (Length / Angle / Percentage / Dimensionless) via
+    // type_domain(); the parser permits the suffixes legal for that
+    // domain and refuses cross-domain mixing structurally. Angle fields
+    // accept deg/rad, Percentage fields accept %, Length fields accept
+    // in/"/mm/pt/px, Integer fields reject all suffixes. is_char_allowed
+    // shares the same Domain dispatch so the keystroke filter agrees
+    // with the parser on what's legal. The previous policy ("dimensionless
+    // types keep GTK's plain numeric behaviour") blocked legitimate math
+    // like "360/36" in a rotation field.
     set_numeric(false);
 
     m_unit_label = Gtk::make_managed<Gtk::Label>("");
@@ -112,22 +115,24 @@ void CurvzSpinButton::init()
         std::string err;
         double display_val = 0.0;
 
-        if (type_allows_units()) {
-            double screen_px = 0.0;
-            Unit default_u = type_default_unit();
-            if (!UnitSystem::parse_expr(t, default_u, screen_px, err, true)) {
-                LOG_INFO("csb::signal_input parse FAIL err='{}'", err);
-                show_error_popover(t, err);
-                return -1;
-            }
-            display_val = UnitSystem::from_px(screen_px, default_u);
+        // s263 m5 — Domain-aware parse path. The Domain enum drives
+        // both the legal-suffix set and the result's normalization
+        // (Length → px, Angle → degrees, Percentage / Dimensionless
+        // → raw). Length-domain results need a from_px conversion
+        // back to the field's display unit; other domains return
+        // directly in the field's native unit.
+        Domain domain = type_domain();
+        Unit default_u = type_default_unit();
+        double parsed = 0.0;
+        if (!UnitSystem::parse_expr(t, domain, default_u, parsed, err)) {
+            LOG_INFO("csb::signal_input parse FAIL err='{}'", err);
+            show_error_popover(t, err);
+            return -1;
+        }
+        if (domain == Domain::Length) {
+            display_val = UnitSystem::from_px(parsed, default_u);
         } else {
-            double v = 0.0;
-            if (!UnitSystem::parse_expr(t, Unit::Px, v, err, false)) {
-                show_error_popover(t, err);
-                return -1;
-            }
-            display_val = v;
+            display_val = parsed;
             if (m_type == SpinType::Integer)
                 display_val = std::round(display_val);
         }
@@ -165,7 +170,10 @@ void CurvzSpinButton::init()
                 return false;
             gunichar ch = gdk_keyval_to_unicode(keyval);
             if (ch == 0) return false;
-            if (!is_char_allowed(ch, type_allows_units())) {
+            // s263 m5 — keystroke filter now domain-aware. Angle fields
+            // accept d/e/g/r/a; Percentage accepts %; Length accepts
+            // i/n/m/p/t/x and the inch quote `"`.
+            if (!is_char_allowed(ch, type_domain())) {
                 return true; // swallow
             }
             return false;
@@ -428,7 +436,46 @@ Unit CurvzSpinButton::type_default_unit() const
     return m_model ? m_model->display_unit : Unit::Px;
 }
 
-bool CurvzSpinButton::is_char_allowed(gunichar ch, bool units_allowed)
+// s263 m5 — map SpinType to parser Domain. The mapping reflects each
+// type's intended editing surface:
+//   Distance / Width / PositionX / PositionY → Length (in/mm/pt/px)
+//   Angle                                    → Angle (deg/rad)
+//   Percentage                               → Percentage (%)
+//   Integer                                  → Dimensionless (no suffix)
+// This is the structural truth that previously hid behind the binary
+// type_allows_units() helper. type_allows_units() is now equivalent to
+// `type_domain() == Domain::Length`.
+Domain CurvzSpinButton::type_domain() const
+{
+    switch (m_type) {
+        case SpinType::Distance:
+        case SpinType::Width:
+        case SpinType::PositionX:
+        case SpinType::PositionY:
+            return Domain::Length;
+        case SpinType::Angle:
+            return Domain::Angle;
+        case SpinType::Percentage:
+            return Domain::Percentage;
+        case SpinType::Integer:
+            return Domain::Dimensionless;
+    }
+    return Domain::Dimensionless;  // unreachable; switch is exhaustive
+}
+
+// s263 m5 — domain-aware keystroke filter. Decides which characters
+// reach the entry buffer based on what's legal in the field's domain.
+// Digits, operators, parens, sign, scientific-e, whitespace are
+// always allowed. Suffix letters are allowed per-domain:
+//   Length        — `i n m p t x "` (forms in, mm, pt, px and `"`)
+//   Angle         — `d e g r a` (forms deg, rad)
+//   Percentage    — `%`
+//   Dimensionless — none
+//
+// The previous bool overload (`units_allowed`) is preserved below as a
+// thin forwarder: true → Length, false → Dimensionless. Same as the
+// parser's compat-wrapper pattern; same backwards-compat shape.
+bool CurvzSpinButton::is_char_allowed(gunichar ch, Domain domain)
 {
     // Digits
     if (ch >= '0' && ch <= '9') return true;
@@ -437,12 +484,32 @@ bool CurvzSpinButton::is_char_allowed(gunichar ch, bool units_allowed)
         ch == '(' || ch == ')' || ch == '.' || ch == ',' ||
         ch == 'e' || ch == 'E' || ch == ' ' || ch == '\t')
         return true;
-    if (!units_allowed) return false;
-    // Unit letters — accept only those that can form in/mm/pt/px
-    if (ch == 'i' || ch == 'n' || ch == 'm' || ch == 'p' ||
-        ch == 't' || ch == 'x')
-        return true;
-    return false;
+    switch (domain) {
+        case Domain::Length:
+            // Letters forming in / mm / pt / px, plus the inch quote.
+            if (ch == 'i' || ch == 'n' || ch == 'm' || ch == 'p' ||
+                ch == 't' || ch == 'x' || ch == '"')
+                return true;
+            return false;
+        case Domain::Angle:
+            // Letters forming deg / rad.
+            if (ch == 'd' || ch == 'e' || ch == 'g' ||
+                ch == 'r' || ch == 'a')
+                return true;
+            return false;
+        case Domain::Percentage:
+            if (ch == '%') return true;
+            return false;
+        case Domain::Dimensionless:
+            return false;
+    }
+    return false;  // unreachable; switch is exhaustive
+}
+
+bool CurvzSpinButton::is_char_allowed(gunichar ch, bool units_allowed)
+{
+    return is_char_allowed(ch,
+        units_allowed ? Domain::Length : Domain::Dimensionless);
 }
 
 bool CurvzSpinButton::try_commit_text(const std::string& txt)
@@ -459,53 +526,42 @@ bool CurvzSpinButton::try_commit_text(const std::string& txt)
     double display_val = 0.0;
     std::string err;
 
-    if (type_allows_units()) {
-        // parse_expr returns 96-dpi screen px. Convert back to our display unit,
-        // then to internal via the same pipeline the adjustment uses.
-        double screen_px = 0.0;
-        Unit default_u = type_default_unit();
-        if (!UnitSystem::parse_expr(t, default_u, screen_px, err, true)) {
-            LOG_INFO("csb::try_commit_text parse FAIL txt='{}' err='{}'", t, err);
-            show_error_popover(t, err);
-            return false;
-        }
+    // s263 m5 — Domain-aware parse path. See signal_input's matching
+    // block for the same shape. Length-domain results normalize to
+    // pixels and need from_px to project back to the field's display
+    // unit; other domains return in the field's native unit directly.
+    Domain domain = type_domain();
+    Unit default_u = type_default_unit();
+    double parsed = 0.0;
+    if (!UnitSystem::parse_expr(t, domain, default_u, parsed, err)) {
+        LOG_INFO("csb::try_commit_text parse FAIL txt='{}' err='{}'", t, err);
+        show_error_popover(t, err);
+        return false;
+    }
+    if (domain == Domain::Length) {
         LOG_INFO("csb::try_commit_text parsed screen_px={} default_u={}",
-                 screen_px, (int)default_u);
-        // parse_expr computed using 96-dpi assumption. For Physical mode with
-        // a custom dpi, rescale: screen_px represents `value_in_default_unit`
-        // converted at 96dpi. We want internal doc px using effective_dpi.
-        double value_in_default = UnitSystem::from_px(screen_px, default_u);
-        display_val = value_in_default;
-        // Clamp to adjustment range to avoid jumping to extremes on bad math.
-        double lo = m_adj->get_lower();
-        double hi = m_adj->get_upper();
-        if (display_val < lo || display_val > hi) {
-            std::string range_msg =
-                "Value out of range (" + std::to_string(lo) +
-                " to " + std::to_string(hi) + ").";
-            show_error_popover(t, range_msg);
-            return false;
-        }
+                 parsed, (int)default_u);
+        // parse_expr computed using 96-dpi assumption. For Physical mode
+        // with a custom dpi, rescale: screen_px represents
+        // `value_in_default_unit` converted at 96dpi. We want internal
+        // doc px using effective_dpi.
+        display_val = UnitSystem::from_px(parsed, default_u);
     } else {
-        // Dimensionless: Angle / Percentage / Integer.
-        // parse_expr with allow_units=false rejects any letter suffix.
-        double v = 0.0;
-        if (!UnitSystem::parse_expr(t, Unit::Px, v, err, false)) {
-            show_error_popover(t, err);
-            return false;
-        }
-        display_val = v;
-        double lo = m_adj->get_lower();
-        double hi = m_adj->get_upper();
-        if (display_val < lo || display_val > hi) {
-            std::string range_msg =
-                "Value out of range (" + std::to_string(lo) +
-                " to " + std::to_string(hi) + ").";
-            show_error_popover(t, range_msg);
-            return false;
-        }
+        // Angle / Percentage / Integer — result already in field's
+        // native unit (degrees for Angle, raw for the others).
+        display_val = parsed;
         if (m_type == SpinType::Integer)
             display_val = std::round(display_val);
+    }
+
+    double lo = m_adj->get_lower();
+    double hi = m_adj->get_upper();
+    if (display_val < lo || display_val > hi) {
+        std::string range_msg =
+            "Value out of range (" + std::to_string(lo) +
+            " to " + std::to_string(hi) + ").";
+        show_error_popover(t, range_msg);
+        return false;
     }
 
     hide_error_popover();

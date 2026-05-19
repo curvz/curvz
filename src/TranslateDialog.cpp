@@ -16,10 +16,10 @@
 // decls per the s208 m5 discipline). The dialog dereferences
 // substrate pointers in its build / signal-connect / apply paths
 // throughout this TU, so the full type is needed here.
-#include "curvz/widgets/Button.hpp"
-#include "curvz/widgets/DropDown.hpp"
-#include "curvz/widgets/SpinButton.hpp"
-#include "curvz/widgets/ToggleButton.hpp"
+#include "widgets/Button.hpp"
+#include "widgets/DropDown.hpp"
+#include "widgets/SpinButton.hpp"
+#include "widgets/ToggleButton.hpp"
 
 #include <gtkmm/stringlist.h>
 #include <algorithm>

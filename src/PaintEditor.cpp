@@ -5,7 +5,7 @@
 #include "color/Color.hpp"
 
 #include "curvz_utils.hpp"               // s208 m5 — curvz::utils::set_name
-#include "curvz/widgets/DropDown.hpp"    // s208 m5 — substrate palette dropdown
+#include "widgets/DropDown.hpp"    // s208 m5 — substrate palette dropdown
 
 #include <cairomm/context.h>
 #include <glibmm/markup.h>

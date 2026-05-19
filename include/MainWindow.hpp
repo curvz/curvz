@@ -160,6 +160,7 @@ namespace curvz::scripting { class ObjectsScriptable; }
 namespace curvz::scripting { class InspectorScriptable; }
 namespace curvz::scripting { class ProjScriptable; }  // s246 m1 — first headless-verb singleton
 namespace curvz::scripting { class ExportScriptable; }  // s251 m1 — second headless-verb singleton
+namespace curvz::scripting { class AppScriptable; }  // s263 m2 — third headless-verb singleton
 namespace curvz::scripting { class ActionGroupScriptable; }  // s254 m2 — Tier 2 action-wrapper Scriptable
 namespace curvz::scripting { class ScripterWindow; }
 
@@ -170,7 +171,7 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
     explicit MainWindow(Application& app);
-    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s243 m2 / s246 m1 / s251 m1 / s254 m2 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
+    // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s243 m2 / s246 m1 / s251 m1 / s254 m2 / s263 m2 — out-of-line dtor so unique_ptr<curvz::scripting::LayersScriptable>,
     // unique_ptr<curvz::scripting::GuidesScriptable>,
     // unique_ptr<curvz::scripting::SwatchesScriptable>,
     // unique_ptr<curvz::scripting::PalettesScriptable>,
@@ -179,7 +180,8 @@ public:
     // unique_ptr<curvz::scripting::ObjectsScriptable>,
     // unique_ptr<curvz::scripting::InspectorScriptable>,
     // unique_ptr<curvz::scripting::ProjScriptable>,
-    // unique_ptr<curvz::scripting::ExportScriptable>, and
+    // unique_ptr<curvz::scripting::ExportScriptable>,
+    // unique_ptr<curvz::scripting::AppScriptable>, and
     // unique_ptr<curvz::scripting::ActionGroupScriptable> can hold incomplete
     // types at the header level. Implementation lives in MainWindow.cpp
     // alongside the construction. No longer gated as of s219 m1.
@@ -1533,6 +1535,30 @@ private:
     // consumer of Scriptable::context_mask() — registry-promotion
     // clock at 7/n, still held by design.
     std::unique_ptr<curvz::scripting::ExportScriptable> m_export_scriptable;
+
+    // s263 m2 — `app` Scriptable, third headless-verb singleton from
+    // ARC m5b (Tier 4 row ticks 2/~4-5 → 3/~4-5). Sibling of
+    // ProjScriptable and ExportScriptable in shape — flat verb
+    // surface, no proxy routing, MainWindow-pointer constructor — but
+    // wraps a different concern (process-scope identity: build
+    // version baked at compile time, runtime gtkmm version linked at
+    // process start). m2 ships one verb (`version`); m3 adds
+    // `gtk_version` as the second pure-read verb on the same
+    // singleton. Both verbs are pure-read with the Scripter |
+    // TestRunner mask — Macro is OUT (recorded-macro replay on a
+    // different build / system means the recorded value is stale at
+    // replay time, violating the recorded-macro mental model). Tenth
+    // and eleventh consumers of Scriptable::context_mask() across
+    // the corpus — registry-promotion clock at 10/n, still held by
+    // design (catalogue uniformising further; no novel mask shape).
+    // Same lifetime / dtor story as the Scriptables above; the dtor
+    // stays out-of-line so the unique_ptr can hold an incomplete
+    // type. MainWindow pointer at construction is unused in m2 / m3
+    // (both verbs read process-scope state) but stashed for symmetry
+    // with proj / export and for future verbs (`app.quit`, etc.).
+    // See AppScriptable.hpp for the verb surface, the no-refusal
+    // contract on both verbs, and the trust-profile rationale.
+    std::unique_ptr<curvz::scripting::AppScriptable> m_app_scriptable;
 
     // s254 m2 — `win` ActionGroupScriptable, first move on Tier 2 action
     // wrappers. Holds the wrap-now subset of MainWindow's win.* actions

@@ -85,11 +85,11 @@
 
 // s200 m2 — substrate widget includes. The dialog's button row migrated
 // m_btn_ok in s199 m1; m2 sweeps the remaining 16 raw widgets.
-#include "curvz/widgets/Button.hpp"
-#include "curvz/widgets/ToggleButton.hpp"
-#include "curvz/widgets/CheckButton.hpp"
-#include "curvz/widgets/SpinButton.hpp"
-#include "curvz/widgets/DropDown.hpp"
+#include "widgets/Button.hpp"
+#include "widgets/ToggleButton.hpp"
+#include "widgets/CheckButton.hpp"
+#include "widgets/SpinButton.hpp"
+#include "widgets/DropDown.hpp"
 
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>

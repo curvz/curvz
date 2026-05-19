@@ -1,8 +1,8 @@
 #include "MacroEditorWindow.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
-#include "curvz/widgets/SpinButton.hpp"  // s211 m2 — unregistered substrate SpinButton for add_spin lambda
-#include "curvz/widgets/Entry.hpp"       // s211 m2 — unregistered substrate Entry for add_entry lambda
+#include "widgets/SpinButton.hpp"  // s211 m2 — unregistered substrate SpinButton for add_spin lambda
+#include "widgets/Entry.hpp"       // s211 m2 — unregistered substrate Entry for add_entry lambda
 #include <gtkmm/gestureclick.h>
 #include <gtkmm/eventcontrollerkey.h>
 #include <gtkmm/adjustment.h>

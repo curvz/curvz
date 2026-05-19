@@ -7,7 +7,7 @@
 #include "CurvzColorPicker.hpp"
 #include "color/ColorRegion.hpp"
 #include "curvz_utils.hpp"  // s121 m14: curvz::utils::set_name
-#include "curvz/widgets/Entry.hpp"  // s208 m4: substrate name entry
+#include "widgets/Entry.hpp"  // s208 m4: substrate name entry
 
 #include <gtkmm/popover.h>
 #include <gtkmm/window.h>

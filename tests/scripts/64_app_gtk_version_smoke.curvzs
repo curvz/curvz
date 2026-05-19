@@ -1,0 +1,154 @@
+# 64_app_gtk_version_smoke — second verb on the `app` headless-verb
+# singleton (s263 m3). Verb-on-existing-singleton; no Tier 4 row tick
+# (the row ticked 2 → 3 at s263 m2 when AppScriptable opened with the
+# `version` verb; this smoke validates the second pure-read verb
+# `gtk_version` added in the same delivery as a stretch milestone).
+#
+# `app gtk_version` reports the RUNTIME gtkmm version — the GTK
+# library actually loaded by the dynamic linker at process start.
+# Distinct from `app version` which reports the BUILD-TIME Curvz
+# identity (CURVZ_VERSION macro from CMake's project(curvz VERSION)).
+# For bug reports, both numbers are needed to characterise the
+# environment: build version names "which Curvz" the user is running,
+# runtime gtk version names "which GTK that Curvz is sitting on."
+# These can diverge on a system where the user updated their distro's
+# GTK without rebuilding Curvz against the new headers.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# `app gtk_version` has the same one-case contract as `app version`
+# (see AppScriptable.hpp for the full design block):
+#
+#   Branch A (happy path):  always. Returns
+#                           "<major>.<minor>.<micro>" via
+#                           gtk_get_major_version() /
+#                           gtk_get_minor_version() /
+#                           gtk_get_micro_version() — C-level
+#                           functions guaranteed initialised by
+#                           GTK's own startup before main().
+#   Branch B (extra args):  any positional argument is a misuse.
+#                           Refuses with "app gtk_version: expected
+#                           zero arguments".
+#
+# Unlike smoke 63's assertable build-version string (CURVZ_VERSION is
+# baked at compile time, so the smoke knows what value to expect),
+# the runtime GTK version varies by system — Scott's Fedora aarch64
+# build will report a different micro than a Flathub manifest's
+# bundled GTK, which will differ from a future MSYS2 Windows port.
+# The smoke does NOT assert on the value because the listener's
+# substring-match primitive doesn't exist yet; once it does, a
+# `starts_with` assertion against "4." would be the right shape
+# (Curvz's minimum-required GTK is 4.x; the major version is the
+# only thing the smoke can portably know without per-system
+# configuration). Operator-visual on the trace's echoed value.
+#
+# This smoke runs Branch A (operator-visual only, no assertion),
+# plus the argument-count refusal (Branch B), plus an unknown-verb
+# refusal on the same singleton. Three observable lines, zero
+# assertions.
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# Same as smoke 63: ScripterWindow listener, RunContext::Scripter.
+# `app gtk_version` declares its mask as Scripter | TestRunner
+# (Macro is OUT — recorded-macro replay on a system with a different
+# distro's GTK means the recorded value is stale at replay time,
+# violating the recorded-macro mental model). Eleventh consumer of
+# Scriptable::context_mask() in the codebase (Inspector + 5 proj
+# verbs + 2 export verbs + 2 app verbs).
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# Pure read with no side effects. Same shape as smoke 63's isolation
+# posture — safe to run anywhere any time, idempotent across repeated
+# calls.
+#
+# ── Predicted observables ─────────────────────────────────────────────────
+#
+# Expected summary line at smoke close:
+#
+#   4 lines, 0 pass, 0 fail, 2 error
+#
+# - 1 "ok" line from `app gtk_version` happy-path call (Phase 1).
+# - 1 "ok" line from a re-call confirming idempotence (Phase 2).
+# - 1 "error" line from extra-args refusal (Phase 3).
+# - 1 "error" line from unknown-verb refusal (Phase 4).
+#
+# Same conservative-smoke shape as smoke 60 (1-verb, 2-refusal),
+# but with the verb called twice across two phases instead of
+# wrapping a single call in an assertion (no assertable value, so
+# the structural validation is "the second call returns the same
+# echo as the first" — operator-visual). Identical line count to
+# smoke 63 (4); zero passes because there's no assertion. The pass
+# count difference between 63 and 64 (1 vs 0) is the only structural
+# difference between the two smokes; otherwise their shape is
+# identical.
+
+#[sub] === Phase 1: app gtk_version (Branch A — happy path) ===
+
+#[sub] Call the verb. The expected trace line is:
+#[sub]
+#[sub]   > app gtk_version
+#[sub]   ok "<major>.<minor>.<micro>"
+#[sub]
+#[sub] e.g. "4.14.5" on Scott's Fedora aarch64 build. Operator-visual
+#[sub] on the `ok` echo and the version string format. The exact
+#[sub] number depends on the system's GTK install; the smoke can't
+#[sub] assert on it without a substring-match primitive that doesn't
+#[sub] exist yet (future milestone — `assert app gtk_version
+#[sub] starts_with "4."` would be the right shape).
+
+app gtk_version
+
+#[sub] === Phase 2: idempotence — call the verb again ===
+
+#[sub] The runtime GTK version doesn't change during a Curvz session
+#[sub] (GTK is loaded once at process start; the dynamic linker
+#[sub] doesn't swap libraries mid-process). Re-calling the verb
+#[sub] should produce the same echo. Operator-visual on the second
+#[sub] `ok` line matching the first; this validates the listener's
+#[sub] dispatch state wasn't poisoned by the first invoke (same
+#[sub] structural property smoke 44's Phase 4 confirmed for proj
+#[sub] save).
+
+app gtk_version
+
+#[sub] === Phase 3: extra-args refusal (Branch B) ===
+
+#[sub] Pass a positional argument the verb doesn't accept. The
+#[sub] expected trace line is:
+#[sub]
+#[sub]   > app gtk_version "extra"
+#[sub]   error invoke threw: app gtk_version: expected zero arguments
+#[sub]
+#[sub] Operator-visual on the error message. Same shape as smoke 63's
+#[sub] Phase 3 with the verb name swapped.
+
+app gtk_version "extra"
+
+#[sub] === Phase 4: unknown-verb refusal on the same singleton ===
+
+#[sub] Address the singleton with a verb name that doesn't exist
+#[sub] (`uptime` is a probe that might naturally arrive as a future
+#[sub] verb but isn't one today; if added later, change this string
+#[sub] to something still-not-defined). The expected trace line is:
+#[sub]
+#[sub]   > app uptime
+#[sub]   error invoke threw: app: unknown verb 'uptime'
+#[sub]
+#[sub] Same unknown-verb fall-through as smoke 63's Phase 4;
+#[sub] validates the dispatch shape is consistent across both verbs
+#[sub] shipped in s263.
+
+app uptime
+
+#[sub] === Predicted observables ────────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   4 lines, 0 pass, 0 fail, 2 error
+#[sub]
+#[sub] Second verb on the `app` singleton; no row tick (verbs-on-
+#[sub] existing-singleton). Eleventh consumer of context_mask() in
+#[sub] the corpus; registry-promotion clock at 10-11/n, still held by
+#[sub] design.

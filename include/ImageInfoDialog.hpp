@@ -45,7 +45,7 @@
 
 #include "ImageInfo.hpp"
 
-#include "curvz/widgets/Button.hpp"
+#include "widgets/Button.hpp"
 
 #include <gtkmm/box.h>
 #include <gtkmm/entry.h>

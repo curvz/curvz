@@ -2,7 +2,7 @@
 #include "CurvzLog.hpp"
 #include "UnitSystem.hpp"
 #include "curvz_utils.hpp"             // s208 m5 — curvz::utils::set_name
-#include "curvz/widgets/Button.hpp"    // s208 m5 — substrate origin-popover btn
+#include "widgets/Button.hpp"    // s208 m5 — substrate origin-popover btn
 #include <algorithm>
 #include <cmath>
 #include <cstdio>

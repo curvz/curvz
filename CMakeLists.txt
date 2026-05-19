@@ -510,6 +510,18 @@ set(SOURCES
     # land in m2+ as the surface widens. Cardinality is by concern,
     # not by format — one Scriptable, five format-verbs.
     src/scripting/ExportScriptable.cpp
+    # s263 m2 — `app` Scriptable. Third headless-verb singleton from
+    # ARC m5b (Tier 4 row 2/~4-5 → 3/~4-5). Sibling singleton-host
+    # pattern as proj / export (flat verb surface, no proxy routing,
+    # MainWindow-pointer ctor) but wraps process-scope identity (build
+    # version baked at compile via CURVZ_VERSION, runtime gtkmm version
+    # via gtk_get_*_version()) rather than file I/O or canvas state.
+    # m2 ships one verb (`version`); m3 adds `gtk_version` as second
+    # pure-read verb on the same singleton. Both verbs declare the
+    # Scripter | TestRunner mask. No queries — the two read VERBS are
+    # the entire read surface in m2 / m3. See AppScriptable.hpp for
+    # the verb-surface block and the "why no quit verb yet" rationale.
+    src/scripting/AppScriptable.cpp
     # s254 m2 — `curvz::scripting::ActionGroupScriptable` + the
     # `add_scripted_action` helper. First move on Tier 2 action wrappers.
     # One Scriptable per Gio action group (m1 ships `win`); wrap-now
@@ -521,14 +533,14 @@ set(SOURCES
     # remaining 44 wrap-now win.* actions by menu domain. See
     # tier2_action_audit.md for the full classification.
     src/scripting/Action.cpp
-    src/curvz/widgets/ToggleButton.cpp
-    src/curvz/widgets/Button.cpp
-    src/curvz/widgets/CheckButton.cpp
-    src/curvz/widgets/DropDown.cpp
-    src/curvz/widgets/Entry.cpp
-    src/curvz/widgets/Scale.cpp
-    src/curvz/widgets/SpinButton.cpp
-    src/curvz/widgets/RefPointPicker.cpp  # s204 m4 — compound bbox-point picker
+    src/widgets/ToggleButton.cpp
+    src/widgets/Button.cpp
+    src/widgets/CheckButton.cpp
+    src/widgets/DropDown.cpp
+    src/widgets/Entry.cpp
+    src/widgets/Scale.cpp
+    src/widgets/SpinButton.cpp
+    src/widgets/RefPointPicker.cpp  # s204 m4 — compound bbox-point picker
 
     # Custom widgets
     src/CurvzSwitch.cpp
@@ -598,8 +610,19 @@ target_compile_options(curvz PRIVATE
 )
 
 # Enable all spdlog levels (DEBUG and above) and source file/line in log output.
+#
+# s263 m2 — CURVZ_VERSION plumbed from project(curvz VERSION ...) so the
+# AppScriptable's `app.version` verb reads it at compile-time. The macro
+# expansion lands as a string-literal in AppScriptable.cpp; the version
+# string flows CMake → preprocessor → C++ → DSL without any hand-
+# maintained mirror, so future bumps to the project() VERSION argument
+# automatically propagate into the verb's return value. The Scriptable
+# also defines a defensive fallback (#ifndef CURVZ_VERSION → "unknown")
+# so sandbox-only compiles still build; smoke 63's equality assertion
+# would catch a missed propagation by failing rather than crashing.
 target_compile_definitions(curvz PRIVATE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG
+    CURVZ_VERSION="${PROJECT_VERSION}"
 )
 
 # s219 m1 — the CURVZ_DIAGNOSTIC sources block is gone. The previously-

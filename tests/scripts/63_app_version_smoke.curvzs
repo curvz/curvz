@@ -1,0 +1,157 @@
+# 63_app_version_smoke — third headless-verb singleton from ARC m5b
+# (s263 m2). Opens the third slot in the Tier 4 row: 2/~4-5 -> 3/~4-5.
+# Sibling smoke to 44 (proj save) and 49 (export svg) in singleton-
+# open shape — third session in the m5b arc where the numerator on a
+# tier row ticks up rather than verbs accumulating on an existing
+# singleton.
+#
+# `app` is the process-scope identity singleton — one registry entry
+# per app session, no per-instance proxy. m2 ships one verb (`version`)
+# reading the CURVZ_VERSION macro plumbed via CMake's
+# target_compile_definitions from project(curvz VERSION 0.9.0). m3
+# adds the second pure-read verb `gtk_version` on the same singleton;
+# this smoke covers `version` only — smoke 64 covers `gtk_version`.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# `app version` has a one-case contract (see AppScriptable.hpp for the
+# full design block):
+#
+#   Branch A (happy path):  always. Returns the build version string
+#                           via ScriptValue::text wrapping the
+#                           CURVZ_VERSION macro expansion.
+#   Branch B (extra args):  any positional argument is a misuse.
+#                           Refuses with "app version: expected zero
+#                           arguments".
+#
+# Unlike proj save's three refusal branches and export svg's five, app
+# version has no refusal branches in Branch A — the macro is always
+# defined by the build (the Scriptable has a #ifndef fallback to
+# "unknown" so the file always compiles, but a healthy build defines
+# the macro and the smoke asserts the expected value). No project-
+# state interrogation; no path-safety pre-flight; no canvas drag
+# check. The verb is the simplest possible Scriptable invocation.
+#
+# This smoke runs Branch A (operator-visual on the ok+value echo, plus
+# an equality assertion against the expected build version), plus the
+# argument-count refusal (Branch B), plus an unknown-verb refusal on
+# the same singleton. Three observable lines, one assertion.
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# This smoke runs through ScripterWindow's listener, m_context =
+# RunContext::Scripter (set in ScripterWindow's ctor, see s244 m2
+# wiring). `app version` declares its mask as Scripter | TestRunner
+# (Macro is OUT — recorded macros replaying a version-read on a
+# different build produce stale recorded values, violating the
+# recorded-macro mental model). So Scripter is allowed; the
+# dispatcher's gating check passes and the verb body runs.
+#
+# Tenth consumer of Scriptable::context_mask() in the codebase
+# (Inspector + 5 proj verbs + 2 export verbs + this one). Registry-
+# promotion clock at 10/n, still held by design.
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# `app version` is a pure read with no side effects. Idempotent across
+# repeated calls; no on-disk effect; no in-memory state mutation; no
+# observable difference between first call and Nth call. Safest smoke
+# in the singleton-open corpus.
+#
+# ── Predicted observables ─────────────────────────────────────────────────
+#
+# Expected summary line at smoke close:
+#
+#   4 lines, 1 pass, 0 fail, 2 error
+#
+# - 1 "ok" line from `app version` happy-path call (Phase 1).
+# - 1 PASS from the assertion (Phase 2).
+# - 1 "error" line from extra-args refusal (Phase 3).
+# - 1 "error" line from unknown-verb refusal (Phase 4).
+#
+# Same conservative-smoke shape as smoke 60 (1-verb, 2-refusal) plus
+# one assertion swapped in for the property-only read. Sibling shape
+# to smoke 44 (proj save) at 5 lines / 2 pass / 0 fail / 0 error —
+# this smoke has fewer assertions (1 vs 2) because there's no
+# precondition to assert (the build version is what it is; we just
+# check the value matches expectation) and two refusal lines instead
+# of zero (a singleton-open smoke validates the dispatcher's refusal
+# paths alongside the happy path, which the smoke 44 didn't because
+# proj's refusals had their own dedicated smokes 45-48).
+
+#[sub] === Phase 1: app version (Branch A — happy path) ===
+
+#[sub] Call the verb. The expected trace line is:
+#[sub]
+#[sub]   > app version
+#[sub]   ok "0.9.0"
+#[sub]
+#[sub] Operator-visual on the `ok` echo and the echoed string value.
+#[sub] CURVZ_VERSION is plumbed via target_compile_definitions in
+#[sub] CMakeLists.txt from project(curvz VERSION 0.9.0); the macro
+#[sub] expansion is a string literal that the Scriptable wraps in
+#[sub] ScriptValue::text. If the CMake build dropped the version
+#[sub] propagation (target_compile_definitions line removed), the
+#[sub] Scriptable's defensive #ifndef fallback returns "unknown" and
+#[sub] the Phase 2 assertion fails — observable in the trace, not a
+#[sub] silent regression.
+
+app version
+
+#[sub] === Phase 2: assert the version is the expected build number ===
+
+#[sub] The DSL's assert is equality-only on query results, but the
+#[sub] verb-form `app version` produces the same value path as a
+#[sub] property would; the listener evaluates the invocation,
+#[sub] captures the return, and compares against the literal. If
+#[sub] CMake's project(curvz VERSION) bumps in a future session,
+#[sub] update this assertion to the new value alongside the bump
+#[sub] (CMake is the source of truth; the smoke follows it).
+
+assert app version == "0.9.0"
+
+#[sub] === Phase 3: extra-args refusal (Branch B) ===
+
+#[sub] Pass a positional argument the verb doesn't accept. The
+#[sub] expected trace line is:
+#[sub]
+#[sub]   > app version "extra"
+#[sub]   error invoke threw: app version: expected zero arguments
+#[sub]
+#[sub] Operator-visual on the error message; the listener's
+#[sub] runtime_error catch surfaces the Scriptable's throw message
+#[sub] verbatim. Same shape as proj save_as's empty-path refusal
+#[sub] and export svg's wrong-args refusal — std::runtime_error
+#[sub] thrown by the Scriptable, caught by the dispatcher,
+#[sub] formatted as `error invoke threw: <message>`.
+
+app version "extra"
+
+#[sub] === Phase 4: unknown-verb refusal on the same singleton ===
+
+#[sub] Address the singleton with a verb name that doesn't exist
+#[sub] (`info` is a common natural-language probe; if a future
+#[sub] milestone adds `app info`, change this smoke's unknown-verb
+#[sub] string to something else still-not-defined). The expected
+#[sub] trace line is:
+#[sub]
+#[sub]   > app info
+#[sub]   error invoke threw: app: unknown verb 'info'
+#[sub]
+#[sub] Operator-visual on the unknown-verb message. Validates the
+#[sub] singleton's invoke-dispatch fall-through correctly identifies
+#[sub] unrecognised verbs rather than silently returning Null (which
+#[sub] would mask typos in user scripts).
+
+app info
+
+#[sub] === Predicted observables ────────────────────────────────────────────
+
+#[sub] Expected summary line:
+#[sub]
+#[sub]   4 lines, 1 pass, 0 fail, 2 error
+#[sub]
+#[sub] Third singleton-open in the Tier 4 row (after proj at s246 m1
+#[sub] and export at s251 m1); Tier 4 ticks 2 → 3. Tenth consumer of
+#[sub] context_mask() in the corpus; registry-promotion clock at 10/n,
+#[sub] still held by design.

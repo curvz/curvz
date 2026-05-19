@@ -9,9 +9,9 @@
 #include "style/StyleIO.hpp"           // S102 m1: import/export bridge
 #include "CurvzLog.hpp"                // S102 m1: LOG_WARN / LOG_INFO in handlers
 #include "curvz_utils.hpp"             // s117 m18 v2: apply_motif_class_from_parent
-#include "curvz/widgets/Button.hpp"    // s212 m2 — unregistered substrate Button for prompt_text variants
-#include "curvz/widgets/DropDown.hpp"  // s212 m2 — registered substrate DropDown (st_cat) + unregistered for new-category prompt
-#include "curvz/widgets/Entry.hpp"     // s212 m2 — unregistered substrate Entry for prompt_text variants
+#include "widgets/Button.hpp"    // s212 m2 — unregistered substrate Button for prompt_text variants
+#include "widgets/DropDown.hpp"  // s212 m2 — registered substrate DropDown (st_cat) + unregistered for new-category prompt
+#include "widgets/Entry.hpp"     // s212 m2 — unregistered substrate Entry for prompt_text variants
 
 #include "scripting/StylesPanelScriptable.hpp"  // s202 m1 / s219 m1 — panel-as-Scriptable (always)
 

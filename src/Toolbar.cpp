@@ -6,11 +6,11 @@
 // s188 m1: every tool button now a curvz::widgets::ToggleButton —
 // the funnel constructs them. Unconditional include (was diagnostic-
 // only in s186/s187 when only the Node tool used the wrapper).
-#include "curvz/widgets/Button.hpp"
-#include "curvz/widgets/CheckButton.hpp"
-#include "curvz/widgets/DropDown.hpp"
-#include "curvz/widgets/SpinButton.hpp"
-#include "curvz/widgets/ToggleButton.hpp"
+#include "widgets/Button.hpp"
+#include "widgets/CheckButton.hpp"
+#include "widgets/DropDown.hpp"
+#include "widgets/SpinButton.hpp"
+#include "widgets/ToggleButton.hpp"
 #include <algorithm>
 #include <cairomm/context.h>
 #include <cmath>

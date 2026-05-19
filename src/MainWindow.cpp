@@ -21,9 +21,10 @@
 #include "scripting/InspectorScriptable.hpp"  // s222 m2 — inspector area Scriptable
 #include "scripting/ProjScriptable.hpp"      // s246 m1 — first headless-verb singleton
 #include "scripting/ExportScriptable.hpp"    // s251 m1 — second headless-verb singleton
+#include "scripting/AppScriptable.hpp"       // s263 m2 — third headless-verb singleton
 #include "scripting/Action.hpp"               // s254 m2 — Tier 2 action wrappers
 #include "scripting/ScripterWindow.hpp"    // s219 m1 — apply_scripter_pref present/hide
-#include "curvz/widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
+#include "widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
 #include "Application.hpp"                  // s219 m1 — Curvz::Application (main_window only)
 #include <functional>
 #include <giomm/simpleactiongroup.h> // s144 m3 — recents action group
@@ -450,6 +451,22 @@ MainWindow::MainWindow(Application & /*app*/) {
   m_export_scriptable =
       std::make_unique<curvz::scripting::ExportScriptable>(this);
 
+  // s263 m2 — `app` Scriptable. Third headless-verb singleton from
+  // ARC m5b. Sibling singleton-host pattern as proj / export: flat
+  // verb surface, no proxy routing, MainWindow-pointer constructor.
+  // The two pure-read verbs in m2 / m3 (`version` reading the
+  // CURVZ_VERSION macro plumbed via target_compile_definitions, and
+  // `gtk_version` reading gtk_get_*_version()) both declare the
+  // Scripter | TestRunner mask. No disk writes, no project state
+  // mutation; the singleton's lifetime is its registration window.
+  // See AppScriptable.hpp for the design block and the RunContext
+  // mask rationale (Scripter | TestRunner — same as proj.save and
+  // export.svg; Macro is OUT because recorded-macro replay on a
+  // different build/system means the recorded value is stale at
+  // replay time, violating the recorded-macro mental model).
+  m_app_scriptable =
+      std::make_unique<curvz::scripting::AppScriptable>(this);
+
   // s219 m1 — Scripter window construction. Previously lived in
   // Application::on_activate; moved here so MainWindow owns the
   // window the way it owns HelpWindow, ShortcutsDialog, and the
@@ -536,11 +553,12 @@ MainWindow::MainWindow(Application & /*app*/) {
   LOG_INFO("MainWindow created");
 }
 
-// s216 m1 / s218 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s246 m1 — out-of-line dtor. The header forward-declares
+// s216 m1 / s218 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s246 m1 / s263 m2 — out-of-line dtor. The header forward-declares
 // curvz::scripting::LayersScriptable, curvz::scripting::GuidesScriptable,
 // curvz::scripting::SwatchesScriptable, curvz::scripting::StylesScriptable,
 // curvz::scripting::ThemesScriptable, curvz::scripting::ObjectsScriptable,
-// curvz::scripting::InspectorScriptable, and curvz::scripting::ProjScriptable;
+// curvz::scripting::InspectorScriptable, curvz::scripting::ProjScriptable,
+// curvz::scripting::ExportScriptable, and curvz::scripting::AppScriptable;
 // the unique_ptrs in the header need the complete types at MainWindow
 // destruction time, and they're only visible in this TU (where we
 // included the full headers above). Defaulted body is the right

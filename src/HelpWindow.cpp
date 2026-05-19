@@ -1,7 +1,7 @@
 #include "HelpWindow.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
-#include "curvz/widgets/Button.hpp"  // s211 m2 — unregistered substrate Button for per-leaf sidebar rows
+#include "widgets/Button.hpp"  // s211 m2 — unregistered substrate Button for per-leaf sidebar rows
 
 #include <cmark.h>
 #include <gio/gio.h>

@@ -14,9 +14,9 @@
 #include "CommandHistory.hpp"  // s220 m1a: AddSwatchCommand / RemoveSwatchCommand / EditSwatchCommand
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
-#include "curvz/widgets/DropDown.hpp"  // s208 m5 — substrate palette dropdown
-#include "curvz/widgets/Button.hpp"    // s211 m2 — unregistered substrate Button for prompt_text dialog
-#include "curvz/widgets/Entry.hpp"     // s211 m2 — unregistered substrate Entry for prompt_text dialog
+#include "widgets/DropDown.hpp"  // s208 m5 — substrate palette dropdown
+#include "widgets/Button.hpp"    // s211 m2 — unregistered substrate Button for prompt_text dialog
+#include "widgets/Entry.hpp"     // s211 m2 — unregistered substrate Entry for prompt_text dialog
 
 #include <cairomm/context.h>
 #include <cctype>

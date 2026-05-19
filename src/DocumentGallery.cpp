@@ -3,8 +3,8 @@
 #include "SvgParser.hpp"
 #include "SvgWriter.hpp"
 #include "curvz_utils.hpp"   // s135 m2 — cairo_set_source_pixbuf pump
-#include "curvz/widgets/DropDown.hpp"  // s208 m5 — substrate system-tab dropdowns
-#include "curvz/widgets/Entry.hpp"     // s211 m1 — unregistered substrate Entry for per-tile rename
+#include "widgets/DropDown.hpp"  // s208 m5 — substrate system-tab dropdowns
+#include "widgets/Entry.hpp"     // s211 m1 — unregistered substrate Entry for per-tile rename
 #include "math/BezierPath.hpp"
 #include <algorithm>
 #include <cairomm/cairomm.h>

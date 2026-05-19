@@ -12,14 +12,14 @@
 #include "color/ColorRegion.hpp" // S83 m4h v2: region_name fallback when swatch.header.name is empty
 #include "color/SwatchLibrary.hpp" // S83 m4h: find_swatch + PaintSlot for binding-indicator rows
 #include "curvz_utils.hpp" // s119 — curvz::utils::set_name
-#include "curvz/widgets/Button.hpp"
-#include "curvz/widgets/CheckButton.hpp"
-#include "curvz/widgets/DropDown.hpp"
-#include "curvz/widgets/Entry.hpp"
-#include "curvz/widgets/RefPointPicker.hpp"  // s205 m1 — Selection-section pivot picker
-#include "curvz/widgets/Scale.hpp"
-#include "curvz/widgets/SpinButton.hpp"
-#include "curvz/widgets/ToggleButton.hpp"
+#include "widgets/Button.hpp"
+#include "widgets/CheckButton.hpp"
+#include "widgets/DropDown.hpp"
+#include "widgets/Entry.hpp"
+#include "widgets/RefPointPicker.hpp"  // s205 m1 — Selection-section pivot picker
+#include "widgets/Scale.hpp"
+#include "widgets/SpinButton.hpp"
+#include "widgets/ToggleButton.hpp"
 #include "math/BezierPath.hpp"
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector appearance writers
 #include "style/StyleLibrary.hpp" // S80 m4b: find_style for "Bound: <n>" indicator

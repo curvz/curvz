@@ -12,7 +12,7 @@
 #include "SvgWriter.hpp"
 #include "TemplateLibrary.hpp"
 #include "ThemeEditDialog.hpp" // s183 m2 — Edit-theme dialog wiring
-#include "curvz/widgets/ToggleButton.hpp" // s190 m2 / s219 m1 — substrate-routed Scripter toggle
+#include "widgets/ToggleButton.hpp" // s190 m2 / s219 m1 — substrate-routed Scripter toggle
 #include "scripting/ScripterWindow.hpp" // s190 m2 / s219 m1 — present/get_visible/property_visible
 #include "scripting/Action.hpp"        // s254 m2 — add_scripted_action helper
 #include <functional>
@@ -45,7 +45,7 @@
 #include <gtkmm/gesturedrag.h>
 #include <gtkmm/image.h>      // s117 m19: custom About dialog hero logo
 #include <gtkmm/linkbutton.h> // s136 m1: About dialog outbound links
-#include "curvz/widgets/Button.hpp"  // s209 m4: unregistered substrate Button (About dialog)
+#include "widgets/Button.hpp"  // s209 m4: unregistered substrate Button (About dialog)
 #include <gtkmm/settings.h>
 #include <gtkmm/stack.h> // s117 m19: custom About dialog flip animation
 #include <gtkmm/stylecontext.h>

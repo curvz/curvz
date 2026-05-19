@@ -1,4 +1,4 @@
-// curvz/widgets/ToggleButton.hpp ─────────────────────────────────────────────
+// widgets/ToggleButton.hpp ─────────────────────────────────────────────
 //
 // Scriptable wrapper around Gtk::ToggleButton. First widget type lifted
 // into Curvz proper during s186 m2. The Node-tool button was the only
@@ -34,29 +34,29 @@ namespace curvz::widgets {
 class ToggleButton
     : public curvz::scripting::ScriptableWidget<Gtk::ToggleButton> {
 public:
-    ToggleButton(std::string_view name, const Glib::ustring& label = {});
+  ToggleButton(std::string_view name, const Glib::ustring &label = {});
 
-    // s209 m2 — unregistered substrate ToggleButton. The widget IS-A
-    // substrate ToggleButton (same universal verbs, same Gtk::ToggleButton
-    // surface, same lifecycle), but skips the script registry — its
-    // `toggled` emission is silent on the outbound channel and it
-    // can't be addressed by abbrev. Use this at call sites where
-    // multiple instances would otherwise collide on a shared abbrev
-    // (ContextBar's `add_toggle`, per-loop helper-multipliers, …).
-    // Mirrors the Button tagged ctor added in s209 m1.
-    ToggleButton(curvz::scripting::unregistered_t,
-                 const Glib::ustring& label = {});
+  // s209 m2 — unregistered substrate ToggleButton. The widget IS-A
+  // substrate ToggleButton (same universal verbs, same Gtk::ToggleButton
+  // surface, same lifecycle), but skips the script registry — its
+  // `toggled` emission is silent on the outbound channel and it
+  // can't be addressed by abbrev. Use this at call sites where
+  // multiple instances would otherwise collide on a shared abbrev
+  // (ContextBar's `add_toggle`, per-loop helper-multipliers, …).
+  // Mirrors the Button tagged ctor added in s209 m1.
+  ToggleButton(curvz::scripting::unregistered_t,
+               const Glib::ustring &label = {});
 
-    curvz::scripting::ScriptValue invoke_leaf(
-            std::string_view verb,
-            const curvz::scripting::ScriptArgs& args) override;
-    curvz::scripting::ScriptValue query_leaf(
-            std::string_view property) const override;
-    std::vector<std::string> leaf_verbs()      const override;
-    std::vector<std::string> leaf_properties() const override;
+  curvz::scripting::ScriptValue
+  invoke_leaf(std::string_view verb,
+              const curvz::scripting::ScriptArgs &args) override;
+  curvz::scripting::ScriptValue
+  query_leaf(std::string_view property) const override;
+  std::vector<std::string> leaf_verbs() const override;
+  std::vector<std::string> leaf_properties() const override;
 
 protected:
-    void bind_canonical() override;
+  void bind_canonical() override;
 };
 
 } // namespace curvz::widgets

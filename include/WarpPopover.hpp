@@ -2,9 +2,9 @@
 #include <gtkmm/box.h>
 #include <gtkmm/popover.h>
 #include <gtkmm/widget.h>
-#include "curvz/widgets/DropDown.hpp"
-#include "curvz/widgets/Scale.hpp"
-#include "curvz/widgets/SpinButton.hpp"
+#include "widgets/DropDown.hpp"
+#include "widgets/Scale.hpp"
+#include "widgets/SpinButton.hpp"
 
 namespace Curvz {
 

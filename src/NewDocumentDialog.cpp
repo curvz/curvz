@@ -1,8 +1,8 @@
 #include "NewDocumentDialog.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s117 m18 v2
-#include "curvz/widgets/DropDown.hpp"  // s208 m5 — substrate theme dropdown
-#include "curvz/widgets/Button.hpp"  // s211 m2 — unregistered substrate Button for preset-button loops
+#include "widgets/DropDown.hpp"  // s208 m5 — substrate theme dropdown
+#include "widgets/Button.hpp"  // s211 m2 — unregistered substrate Button for preset-button loops
 #include <algorithm>
 #include <cairomm/cairomm.h>
 #include <cmath>

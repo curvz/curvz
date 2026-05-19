@@ -12,7 +12,7 @@
 //
 #include "ImageInfoDialog.hpp"
 
-#include "curvz/widgets/Entry.hpp"   // s214 m2 — substrate Entry
+#include "widgets/Entry.hpp"   // s214 m2 — substrate Entry
 #include "curvz_utils.hpp"   // set_name, apply_motif_class_from_parent
 #include "CurvzLog.hpp"
 

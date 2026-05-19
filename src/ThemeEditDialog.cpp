@@ -15,7 +15,7 @@
 #include "CurvzEntry.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"
-#include "curvz/widgets/Button.hpp"  // s199 m1 pilot — OK button as substrate
+#include "widgets/Button.hpp"  // s199 m1 pilot — OK button as substrate
 
 #include <giomm/liststore.h>
 #include <gtkmm/adjustment.h>
