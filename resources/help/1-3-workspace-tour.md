@@ -19,8 +19,8 @@ time you open Curvz:
 - **❹ Canvas** sits in the middle, framed by rulers along its top
   and left edges. This is where you draw.
 - **❺ Inspector** runs down the right side. It is the home of every
-  numeric and structural control — properties, layers, swatches,
-  styles, library, documents.
+  numeric and structural control — properties, layers, library,
+  swatches, styles, themes, documents.
 - **❻ Status bar** runs across the bottom and tells you where you
   are and what is selected.
 
@@ -34,16 +34,32 @@ separator, followed by the open-document tabs. New documents appear
 as new tabs; clicking a tab makes that document active. Right-click
 the **Documents** label to add a new document to the project.
 
-The far-right **☰** button opens the main application menu — File,
-Edit, Arrange, Path, View, Project, Navigate, Help. Every top-level
-action lives there, with its keyboard shortcut shown beside it.
+The far-right **☰** button opens the main application menu. The
+submenus are **File, Edit, Arrange, Align, Path, View, Navigate**, and
+**Developer**, followed by leaf items for **Help**, **Keyboard
+Shortcuts**, and **Quit**. Every top-level action lives there, with its
+keyboard shortcut shown beside it.
 
 ## ❷ Toolbox
 
-The toolbox holds every drawing and navigation tool. Selection and
-Node tools sit at the top, separated from the drawing tools below.
-Each tool has a single-key shortcut you can press to switch to it
-when the canvas has focus. The full list:
+The toolbox holds every drawing and navigation tool, grouped into four
+sections separated by thin horizontal rules:
+
+- **Selection** at the top — the Selection and Node tools, which pick
+  objects and edit their anchor points.
+- **Creation** — the tools that put new geometry on the canvas: Pen,
+  the four primitive shape tools, Reference Point, the two text tools,
+  Polygon/Star, and Spiral.
+- **Transforms** — buttons that operate on the current selection rather
+  than creating new objects: Align, Blend, Boolean, Corner, Step &
+  Repeat, Warp. Most of these are one-shot operation buttons; Corner is
+  the exception, a toggle tool you stay in to apply round, chamfer, or
+  inverse corner treatments.
+- **Utility** at the bottom — Eyedropper, Measure, and Zoom. Selection
+  and navigation, no geometry effect.
+
+Every tool has a single-key shortcut you can press to switch to it when
+the canvas has focus. The full list:
 
 - **Select (S)** and **Nodes (N)** — pick objects and edit their
   anchor points.
@@ -55,12 +71,12 @@ when the canvas has focus. The full list:
   Right-click to place precisely.
 - **Text (T)** and **Text on Path (U)** — draw a text box, or attach
   an existing text run to a path.
-- **Eyedropper (I)** — sample a colour from anywhere in the canvas.
-- **Corner (K)** — apply round, chamfer, or inverse corner treatments
-  to selected nodes.
 - **Polygon / Star (G)** and **Spiral (W)** — parametric shape tools.
   Right-click to configure sides, angle, and similar.
-- **Ruler (M)** — measure the distance between two points.
+- **Corner (K)** — apply round, chamfer, or inverse corner treatments
+  to selected nodes.
+- **Eyedropper (I)** — sample a colour from anywhere in the canvas.
+- **Measure (M)** — measure the distance between two points.
 - **Zoom (Z)** — drag a marquee to zoom into a region. Right-click to
   set a precise zoom level.
 
@@ -143,6 +159,8 @@ related panels:
 - **Swatches** — the project's named colour swatches.
 - **Styles** — the project's named appearance styles (combined fill,
   stroke, effect presets).
+- **Themes** — the project's themes, which remap swatches and styles
+  document-wide.
 - **Documents** — thumbnails for every document in the project.
   Double-click a thumbnail to switch to it; right-click to rename,
   duplicate, or delete.
@@ -158,10 +176,11 @@ following, left to right:
 - **Cursor position** in document units, updating as you move the
   pointer over the canvas.
 - **Zoom percentage**.
+- **Document units** (px, mm, in, etc.).
 - **Object and node counts** for the current selection.
+- **Render mode** — `Preview` or `Outline`.
 - **Project name** (or `unsaved` if the project has never been
   saved).
-- **Render mode** — `Preview` or `Outline`.
 - **Active document name**, right-aligned at the far edge.
 
 The status bar is read-only — every value here is settable somewhere

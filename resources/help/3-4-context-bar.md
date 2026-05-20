@@ -11,6 +11,10 @@ glanceable cheat-sheet for the active tool, intended to remind you
 of the shortcuts for whatever you are about to do without forcing a
 trip to the keyboard-shortcuts dialog.
 
+Right-click anywhere on the context bar to open a small popover with
+**Open Help: \<Tool>**, which jumps the manual to the active tool's
+page in Chapter 4.
+
 ## Anatomy
 
 - **Left** — the tool's glyph and name. The glyph matches the

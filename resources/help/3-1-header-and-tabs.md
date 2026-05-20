@@ -20,7 +20,7 @@ Right of the logo is the word **Documents** with a vertical
 separator after it. The label is more than decoration:
 
 - **Right-click** the label to add a new document to the project,
-  same as **File → New** (or **Ctrl+N**).
+  same as **File → Add to Project…** (or **Ctrl+N**).
 
 The label exists because the tab strip itself can be empty (a
 brand-new project starts with one default document but you can
@@ -34,9 +34,9 @@ button starts. Each tab is one document in the active project.
 
 - **Click** a tab to make that document active. The canvas, the
   layer stack, and the inspector's Document and Object groups all
-  switch to the clicked document. The Application group, the
-  Project group, the Library, the Swatches, and the Styles do not
-  change — those are project-wide or broader.
+  switch to the clicked document. The Application group and the
+  project-wide content panels (Library, Swatches, Styles, Themes)
+  do not change.
 - **Right-click** a tab for its context menu:
   - **New Document** — same as the Documents-label right-click.
   - **Remove This Document** — removes the document from the
@@ -67,9 +67,9 @@ Both wrap at the ends of the strip. The same actions live under
 
 The far-right **☰** button opens the application menu. It contains
 every top-level action Curvz supports, organised into submenus —
-File, Edit, Arrange, Path, View, Project, Navigate — plus Help,
-Keyboard Shortcuts, and Quit at the bottom. See **Menus** (3.2) for
-the full breakdown.
+File, Edit, Arrange, Align, Path, View, Navigate, Developer — plus
+Help, Keyboard Shortcuts, and Quit at the bottom. See **Menus** (3.2)
+for the full breakdown.
 
 ## Where to next
 

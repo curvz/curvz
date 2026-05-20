@@ -5,7 +5,7 @@ read-only state about the project, the active document, and the
 cursor. It is never the place you go to *change* something — every
 value here is settable somewhere else in the UI.
 
-![The status bar showing cursor, zoom, counts, project, mode, and document](img/3-5-status-bar-readouts.png)
+![The status bar showing cursor, zoom, units, counts, mode, project, and document](img/3-5-status-bar-readouts.png)
 
 ## Readouts, left to right
 
@@ -18,14 +18,18 @@ value here is settable somewhere else in the UI.
 - **Zoom percentage** — the current canvas zoom level, shown as
   `1600%` for 16×, `100%` for 1:1, and so on. Updates live as you
   zoom.
+- **Document units** — the abbreviation of the active document's
+  unit (`px`, `mm`, `in`, `pt`). This is the unit the cursor-position
+  and object-bounds readouts are expressed in, set in the Dimensions
+  section of the inspector (5.3.2).
 - **Object and node counts** — the number of objects and the total
   number of nodes in the current selection. Format is
   `3 objects  18 nodes`. With nothing selected the counts read
   `0 objects  0 nodes`. Pluralisation handles itself.
-- **Project name** — the directory name of the loaded project, or
-  `unsaved` if the project has never been saved.
 - **Render mode** — `Preview` or `Outline`. See chapter 10.1 for
   the difference.
+- **Project name** — the directory name of the loaded project, or
+  `unsaved` if the project has never been saved.
 - **Active document name** — right-aligned at the far right of the
   bar. Shows the active document's filename without its `.svg`
   extension. Shifts as you switch tabs.
@@ -47,7 +51,7 @@ the bottom-left corner where you naturally read them.
   everything back.
 
 The deliberate omission is to keep the status bar at a glance —
-six quick readouts, no scanning.
+seven quick readouts, no scanning.
 
 ## Where to next
 

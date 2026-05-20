@@ -48,20 +48,22 @@ SVG files and a JSON manifest you can read with any text editor.
 The **Documents** strip across the top of the window holds one tab
 per open document. Click a tab to switch documents; the canvas, the
 layer stack, and the inspector all change to match. The colour
-swatches, the styles, and the motif do not — those are
+swatches, the styles, the themes, and the motif do not — those are
 project-scoped and stay constant as you move between documents.
 
-Three ways to add a document to the project:
+Four ways to add a document to the project:
 
-- **File → New** (or **Ctrl+N**) opens the New Document dialog,
-  which lets you pick a template, size, and starting grid for a
-  fresh icon.
-- **File → Import SVG** (or **Ctrl+I**) brings an existing SVG
-  in as a new document, preserving its dimensions.
-- **File → Import as Icon** (or **Ctrl+Alt+I**) does the same but
-  rescales the long axis to 1000 units and converts solid fills
-  and strokes to `currentColor`. Use this when bringing artwork in
-  from non-Curvz sources to make it match your other icons.
+- **File → Add to Project…** (or **Ctrl+N**) opens the New Document
+  dialog, which lets you pick a template, size, and starting grid for
+  a fresh icon.
+- **File → Open Image…** brings a raster image in as a new document,
+  sized to the image's pixel dimensions.
+- **File → Import SVG…** brings an existing SVG in as a new document,
+  preserving its dimensions.
+- **File → Import as Icon…** does the same but rescales the long axis
+  to 1000 units and converts solid fills and strokes to `currentColor`.
+  Use this when bringing artwork in from non-Curvz sources to make it
+  match your other icons.
 
 Documents can be reordered by dragging tabs. Right-click any tab
 to add a new document or remove the document from the project. To
@@ -123,15 +125,17 @@ for the rest of the session.
 A useful mental model when looking at the inspector: settings under
 the **Application** group are user preferences that persist across
 projects (recent-projects cap, undo depth, ruler defaults), under
-the **Project** group apply once across the project (Motif), under
-the **Document** group apply to the active document only (Canvas,
-Guides, Grid, Margins, Snap, Measure, Metadata), and under the
-**Object** group apply only to whatever is currently selected on
-the canvas.
+the **Document** group apply to the active document only (Metadata,
+Theme — which carries the document's motif and surface colours,
+Dimensions), and under the **Object** group apply only to whatever
+is currently selected on the canvas.
+
+Snap and Measure are no longer inspector sections — both live as
+right-click popovers on their respective toolbar buttons.
 
 The same split runs through Content (6) — Layers and the Inspector's
-Object section follow the active document; Library, Swatches, and
-Styles are project-wide.
+Object section follow the active document; Library, Swatches, Styles,
+and Themes are project-wide.
 
 ## Where to next
 

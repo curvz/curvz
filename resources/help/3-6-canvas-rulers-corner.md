@@ -12,16 +12,19 @@ The canvas is divided into two regions:
 
 - **Artboard** — the rectangle that represents the document's
   printable extent. This is what gets exported. The artboard's
-  fill colour is whatever Motif sets (see 5.2.1).
+  fill colour is set per-document in the Theme disclosure of the
+  inspector's Document group.
 - **Pasteboard** — everything outside the artboard, but still
   inside the canvas viewport. The pasteboard is scratch space —
   put work-in-progress here, anything outside the artboard does
-  not get exported. The pasteboard's tone is also Motif-driven.
+  not get exported. The pasteboard's tone is set the same way as
+  the artboard's, in the Theme disclosure.
 
-The artboard's size is set per-document in the inspector's Canvas
-section (5.3.2). You can drag objects freely between artboard and
-pasteboard; nothing about an object's appearance changes — the
-distinction is purely about what crosses the export boundary.
+The artboard's size is set per-document in the inspector's
+Dimensions section (5.3.2). You can drag objects freely between
+artboard and pasteboard; nothing about an object's appearance
+changes — the distinction is purely about what crosses the export
+boundary.
 
 ## Coordinate system
 
@@ -55,10 +58,12 @@ Drag from the body of a ruler into the canvas to place a guide.
 
 Release to commit the guide at that position. While dragging, a
 preview line tracks your cursor. Guides lock to whatever snap
-behaviour is active (see 5.3.6).
+behaviour is active — snap is configured by right-clicking the
+Snap toggle at the bottom of the toolbar.
 
 Once placed, guides can be moved, locked, or deleted from the
-inspector's Guides section (5.3.3).
+inspector's Guides section, which now lives in the Object group
+(see 5.3.3).
 
 ## Corner square
 
@@ -96,14 +101,14 @@ The canvas has two render modes:
   result obscures the geometry.
 
 Toggle with **Ctrl+E** or **View → Outline Mode**. The status bar
-shows which mode is active. The toggle is project-wide and
-persists across sessions.
+shows which mode is active. The toggle is per-session; Curvz
+starts every session in Preview mode.
 
 ## Where to next
 
 - **Status bar** (3.5) reports the cursor position the rulers
   reflect.
-- **Canvas section** (5.3.2) sets the artboard's dimensions.
+- **Dimensions** (5.3.2) sets the artboard's dimensions.
 - **Guides** (5.3.3) — once you've dragged guides out of the
   rulers, this is where you manage them.
 - **View options** (10.1) covers all view-related toggles in one

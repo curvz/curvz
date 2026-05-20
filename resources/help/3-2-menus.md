@@ -7,38 +7,41 @@ supports, grouped into submenus.
 ![The menu open, showing the top-level submenus](img/3-2-menu-open.png)
 
 The menu is the canonical place to find an action. Most actions
-also have a keyboard shortcut, listed beside the menu item. Some
-actions appear in **two** places — for example, **Themes…** lives
-under Project but also opens the dialog covered in 9.1; this is
-deliberate, not duplication.
+also have a keyboard shortcut, listed beside the menu item.
 
 ## Submenus, top to bottom
 
-- **File** — project lifecycle (New, Open, Save, Save As, Close),
-  document lifecycle (New, Open Image, Save as Template, Manage
-  Templates), and the import/export paths (Import SVG, Import as
-  Icon, Place Image, Export Icon Theme, Print). See chapters 2.1,
-  2.2, and 2.3.
-- **Edit** — the conventional edit verbs (Undo, Redo, Cut, Copy,
-  Paste, Duplicate, Duplicate in Place).
+- **File** — project lifecycle (New Project, Add to Project, Open,
+  Open Recent, Open Image, Close Project, Save, Save As, Save as
+  Template, Manage Templates) and the import/export paths (Import
+  SVG, Import as Icon, Place Image, Export, Print). See chapters
+  2.1, 2.2, and 2.3.
+- **Edit** — the conventional edit verbs (Undo, Redo, Select All,
+  Deselect All, Cut, Copy, Paste, Duplicate, Duplicate in Place)
+  plus View Clipboard for inspecting the system clipboard.
 - **Arrange** — z-order operations (Bring to Front, Bring Forward,
   Send Backward, Send to Back) and per-axis flips (Flip Horizontal,
   Flip Vertical).
+- **Align** — align operations (Left / Center H / Right / Top /
+  Center V / Bottom) and distribute operations (Distribute
+  Horizontally / Vertically). Enabled when two or more objects are
+  selected with the Selection tool active. See 7.4.
 - **Path** — vector operations grouped into sections: boolean
   (Union, Subtract, Intersect, Step and Repeat), compound paths
-  (Make / Split), derived paths (Offset Path, Expand Stroke,
-  Convert Text to Path), clipping (Clip, Release Clip), blends
-  (Blend, Release Blend), and warps (Warp, Edit Warp, Release
-  Warp, Flatten Warp). See chapter 8.
+  (Make / Split), grouping (Group / Ungroup), derived paths (Offset
+  Path, Expand Stroke, Convert Text to Path), clipping (Clip,
+  Release Clip), blends (Blend, Release Blend), and warps (Warp,
+  Edit Warp, Release Warp, Flatten Warp). See chapter 8.
 - **View** — toggles for Rulers and Outline Mode, plus a **Zoom**
   submenu (Zoom In, Zoom Out, Zoom to 100%, Zoom to 200%, Zoom to
   Selection, Fit to Window). See chapter 10.
-- **Project** — project-scoped utilities that aren't file IO and
-  aren't editing: Themes (9.1), Export Documents (2.3).
 - **Navigate** — Next Document, Previous Document. The menu
   presence is mostly so the keyboard accelerators register at the
   right precedence; you'll usually invoke them via the shortcuts
   rather than the menu.
+- **Developer** — power-user surfaces. Currently houses the
+  Scripting toggle, which enables the Scripter window and the
+  script-driven test harness. See the Developers appendix.
 
 Below the submenus, three top-level items live in their own
 section:
@@ -84,12 +87,11 @@ lives in **Keyboard shortcuts** (11.2).
 
 #### File
 
-- `Ctrl+N` — New Document (Add to Project)
+- `Ctrl+N` — Add to Project (New Document)
 - `Ctrl+O` — Open Project
 - `Ctrl+S` — Save
 - `Ctrl+Shift+S` — Save As
-- `Ctrl+I` — Import SVG
-- `Ctrl+Alt+I` — Import as Icon
+- `Ctrl+Shift+T` — Export
 - `Ctrl+P` — Print
 - `Ctrl+Q` / `Ctrl+W` — Quit
 
@@ -99,6 +101,7 @@ lives in **Keyboard shortcuts** (11.2).
 - `Ctrl+Shift+Z` / `Ctrl+Y` — Redo
 - `Ctrl+X` / `Ctrl+C` / `Ctrl+V` — Cut / Copy / Paste
 - `Ctrl+A` — Select all
+- `Ctrl+Shift+A` — Deselect all
 - `Ctrl+D` — Duplicate
 - `Alt+D` — Duplicate in Place
 
@@ -108,6 +111,15 @@ lives in **Keyboard shortcuts** (11.2).
 - `Ctrl+↓` — Send Backward
 - `Ctrl+Shift+↑` — Bring to Front
 - `Ctrl+Shift+↓` — Send to Back
+
+#### Align
+
+- `Ctrl+Alt+L` — Align Left
+- `Ctrl+Alt+H` — Align Center H
+- `Ctrl+Alt+R` — Align Right
+- `Ctrl+Alt+P` — Align Top
+- `Ctrl+Alt+M` — Align Center V
+- `Ctrl+Alt+B` — Align Bottom
 
 #### Path
 
@@ -130,7 +142,8 @@ lives in **Keyboard shortcuts** (11.2).
 - `Ctrl+E` — Toggle Outline Mode
 - `Ctrl+0` — Fit to Window
 - `Ctrl+Shift+0` — Fit All (including off-canvas)
-- `Ctrl+1` / `Ctrl+2` — Zoom 100% / 200%
+- `Ctrl+1` — Zoom 1× fit (artboard fills viewport)
+- `Ctrl+2` — Zoom 2× fit
 - `Ctrl+3` — Zoom to Selection
 
 #### Navigate

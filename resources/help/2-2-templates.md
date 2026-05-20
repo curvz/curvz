@@ -44,14 +44,19 @@ guides, grid settings, and any geometry you've drawn — into a
 template bundle and registers it for future use.
 
 User templates live at `~/.config/curvz/templates/`. Each template
-is its own directory containing three files:
+is its own directory containing:
 
 ```
 ~/.config/curvz/templates/<category>/<slug>/
-  template.svg     — the seed document
-  template.json    — the metadata (name, category, description)
-  thumbnail.png    — gallery thumbnail rendered at save time
+  template.svg          — the seed document
+  template.json         — the metadata (name, category, description)
+  thumbnail-dark.png    — gallery thumbnail, dark motif
+  thumbnail-light.png   — gallery thumbnail, light motif
 ```
+
+Templates render two thumbnails so the gallery can match the active
+motif. Older templates with a single `thumbnail.png` continue to
+work and are read as a fallback.
 
 The slug is derived from the name (lowercased, alphanumerics only,
 spaces become hyphens). Two templates with names that collide on

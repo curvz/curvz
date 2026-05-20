@@ -17,7 +17,7 @@ defaults, idioms, and output assume you are drawing icons.
 - **A vector editor.** Bézier paths, boolean operations, stroke and
   fill, transforms, the usual machinery — all native, all GTK.
 - **Icon-aware.** Templates default to icon-friendly sizes (16, 24,
-  32, 64, 128, 256). Imports normalise long-axis to 1000 on request.
+  32, 48, 64, 128, 256). Imports normalise long-axis to 1000 on request.
   Exports write `currentColor`-bearing SVG by default. The Tools and
   Inspector are tuned for the workflow of making the same icon at
   several sizes look right at all of them.

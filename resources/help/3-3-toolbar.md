@@ -12,39 +12,33 @@ thin divider between groups:
 
 - **Selection** and **Node** at the top — the two tools you spend
   most of your time in.
-- The **drawing tools** in the middle — Pen, the shape tools
+- The **creation tools** in the middle — Pen, the shape tools
   (Rectangle, Ellipse, Line, Polygon, Spiral), the text tools
-  (Text, Text on Path), and the placement tools (Reference points,
-  Corner).
-- The **utility tools** — Eyedropper, Zoom, Ruler.
-- The **quick-access cluster** at the bottom — Snap toggle, Align
-  & Distribute, Macro, and the fill-and-stroke well. These are not
-  tools but frequently-used commands and state toggles parked on
-  the toolbar so they are always one click away.
+  (Text, Text on Path), and Reference points.
+- The **transforms** — Align, Blend, Boolean, Corner, Step & Repeat,
+  Warp. These are alphabetically ordered. Most are one-shot
+  operations on the current selection; Corner is the exception, a
+  toggle tool you stay in to apply corner treatments.
+- The **utility tools** — Eyedropper, Measure, Zoom.
 
-## The quick-access cluster
+Below the tool list, separated by a final divider, the bottom of
+the toolbar holds the toolbar's stateful and quick-access widgets:
+the Snap toggle, the Macro button, and the fill-and-stroke well.
 
-Below the tool list is a column of four controls. They are not
+## The bottom-of-toolbar widgets
+
+Below the tool list is a column of three controls. They are not
 mode switches like the tools above — clicking one performs an
 action or toggles a state without changing the active tool.
 
 - **Snap toggle** — the master snap switch. When on, the cursor
-  catches on the geometry kinds enabled in the **Snap** inspector
-  section (5.3.6). When off, the cursor moves freely. Same as
-  pressing **Q** with the canvas focused. Use it as the quick
-  escape hatch for nudging a single pixel or sketching free-hand,
-  then flip it back on.
-
-- **Align & Distribute** — opens a popover with eight buttons:
-  six align ops (left/centre H/right and top/centre V/bottom) and
-  two distribute ops (horizontal and vertical, equal gaps). The
-  button is **disabled unless the Selection tool is active and at
-  least two objects are selected** — alignment needs something to
-  align *to* and *with*. See the **Align & Distribute** topic
-  (8.4) for the detail of each op, the anchor-click idiom, and
-  how alignment cooperates with reference points. Also reachable
-  from the **Align** menu, where the six align ops have keyboard
-  shortcuts.
+  catches on the geometry kinds enabled in the snap settings. When
+  off, the cursor moves freely. Same as pressing **Q** with the
+  canvas focused. Right-click the snap toggle to open a popover
+  with the per-target checkboxes (snap to nodes, grid, guides,
+  margins, etc.). Use the master switch as the quick escape hatch
+  for nudging a single pixel or sketching free-hand, then flip it
+  back on.
 
 - **Macro** — left-click runs the **current macro** (the one last
   selected in the Macro Manager) against the current selection;
@@ -57,6 +51,23 @@ action or toggles a state without changing the active tool.
   square to open the colour picker for that paint. See **Color
   picker & paint editor** (3.7) for the picker itself.
 
+Align & Distribute used to live down here too; it now sits in the
+Transforms section higher up in the toolbar, alongside the other
+selection-targeted operations. See **Align & Distribute** (7.4) for
+the popover's anchor-click idiom and how alignment cooperates with
+reference points. Also reachable from the **Align** menu, where the
+six align ops have keyboard shortcuts (Ctrl+Alt+L / H / R / P / M /
+B).
+
+## Toolbar background right-click
+
+Right-clicking an empty area of the toolbar — a separator gap, the
+spacer between the tool groups and the bottom widgets, or the
+Selection tool's button — opens the **density picker**. The picker
+lets you tighten or loosen the toolbar's vertical spacing to suit
+your screen and visual preference. The setting persists across
+sessions.
+
 ## Behaviour
 
 - **Click** a button to switch to that tool. The current tool is
@@ -67,8 +78,8 @@ action or toggles a state without changing the active tool.
 - **Right-click** the shape tools (Rectangle, Ellipse, Line,
   Polygon, Spiral) to open a dialog that places the shape at exact
   dimensions instead of dragging it out by hand. **Reference
-  points** and **Zoom** also have right-click variants — see their
-  per-tool pages in Chapter 4.
+  points**, **Text**, **Measure**, and **Zoom** also have
+  right-click variants — see their per-tool pages in Chapter 4.
 
 Switching tools never disturbs your selection. You can pick an
 object with the Selection tool, switch to the Node tool to edit its
@@ -106,7 +117,7 @@ Tools**. The toolbar is just the surface that hosts them.
 - `K` — Corner
 - `I` — Eyedropper
 - `Z` — Zoom
-- `M` — Ruler
+- `M` — Measure
 - `Q` — Toggle snap on / off (not a tool, but lives on the toolbar logic)
 - `↑` / `↓` — Cycle to previous / next tool (only when nothing is selected)
 

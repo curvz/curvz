@@ -31,16 +31,17 @@ After that, two more pages are worth a few minutes each:
   every region the rest of the manual will refer back to.
 
 The remaining chapters fan out by topic; pick what is relevant to the work
-in front of you. **Chapter 11 (Reference)** holds the keyboard-shortcut
-cheatsheet and a troubleshooting page — both worth a bookmark.
+in front of you. **Chapter 11 (Reference)** holds the macros page, the
+keyboard-shortcut cheatsheet, and a troubleshooting page — all three
+worth a bookmark.
 
 ## A note on the manual itself
 
 The manual lives inside the app. There is no online copy and no external
 dependency — every page, every screenshot, ships in the same binary as
-the editor. Pressing **F1** anywhere in Curvz opens this window. Chapter
-and section numbers are administrative; what you see in the sidebar are
-clean topic titles.
+the editor. Pressing **F1** anywhere in Curvz opens this window. The
+sidebar is a nested outline — chapters expand to show their sections,
+each row labelled with its section number and topic title.
 
 ## In closing
 
