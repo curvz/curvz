@@ -68,6 +68,41 @@ namespace Curvz {
 
 namespace fs = std::filesystem;
 
+// ── Scripts paths (s267 m1) ────────────────────────────────────────────
+// User-scripts directory: AppPreferences::scripts_path_override when
+// set, else ~/.config/curvz/scripts (mirror of TemplateLibrary's user_dir
+// shape — same convention as templates and macros). The dir is created
+// on first read so the Scripter never has to deal with a missing
+// folder; the rescan path tolerates "exists but empty" cleanly already.
+//
+// System-scripts directory: /usr/share/curvz/scripts. Hard-coded to
+// match templates' system_dir convention. CMake's install() rule
+// (s267 m2) populates this from resources/scripts/. Flatpak inherits
+// via the same /app prefix bind as templates does.
+//
+// Lives in MainWindow.cpp rather than its own TU because (a) it's
+// two ten-line functions and (b) MainWindow is the only call site —
+// the Scripter receives the resolved paths via its constructor, not
+// by calling these helpers itself.
+std::string scripts_user_dir() {
+    const std::string &override_path =
+        AppPreferences::instance().scripts_path_override();
+    std::string dir = !override_path.empty()
+        ? override_path
+        : (std::string(Glib::get_user_config_dir()) + "/curvz/scripts");
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) {
+        LOG_WARN("scripts_user_dir: cannot create '{}': {}",
+                 dir, ec.message());
+    }
+    return dir;
+}
+
+std::string scripts_system_dir() {
+    return "/usr/share/curvz/scripts";
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // MainWindow.cpp — the glue.
 //
@@ -472,27 +507,40 @@ MainWindow::MainWindow(Application & /*app*/) {
   // window the way it owns HelpWindow, ShortcutsDialog, and the
   // other persistent floating dialogs.
   //
-  // Script library location: prefer ./tests/scripts (run from build
-  // tree during dev) and ../tests/scripts (run from inside build/).
-  // Falls back to "tests/scripts" so the picker shows a folder name
-  // even if nothing's there yet — user can use the Folder… button
-  // to point elsewhere.
+  // s267 m1 — scripts directory resolution lifted to scripts_user_dir()
+  // and scripts_system_dir() free functions (defined at the top of
+  // this TU). User dir follows AppPreferences::scripts_path_override with fallback to
+  // ~/.config/curvz/scripts; system dir is the install-time
+  // /usr/share/curvz/scripts. The historical tests/scripts build-tree
+  // probe is gone — that was test-runner ergonomics leaking into a
+  // runtime app. Developers pointing the Scripter at tests/scripts
+  // now do it once via the picker (or Paths preferences), and the
+  // pref persists. The picker's accept handler funnels back through
+  // AppPreferences::set_scripts_path_override via the callback wired
+  // a few lines below.
   {
-    namespace fs = std::filesystem;
-    std::string scripts_dir = "tests/scripts";
-    for (auto candidate : {
-            fs::path("tests/scripts"),
-            fs::path("../tests/scripts"),
-         }) {
-        if (fs::exists(candidate) && fs::is_directory(candidate)) {
-            scripts_dir = fs::absolute(candidate).string();
-            break;
-        }
-    }
+    const std::string scripts_dir = scripts_user_dir();
+    const std::string sys_scripts  = scripts_system_dir();
     m_scripter = std::make_unique<curvz::scripting::ScripterWindow>(
-        scripts_dir);
-    LOG_INFO("MainWindow: Scripter constructed (scripts dir: {})",
-             scripts_dir);
+        scripts_dir, sys_scripts);
+    LOG_INFO("MainWindow: Scripter constructed "
+             "(user scripts: {}, system scripts: {})",
+             scripts_dir, sys_scripts);
+
+    // s267 m1 — picker-persistence bridge. The Scripter's folder
+    // picker (statusbar at the window bottom) writes back to
+    // scripts_path_override here, so the choice persists across
+    // launches. Kept as a callback rather than reaching into
+    // AppPreferences from inside curvz::scripting — keeps the
+    // scripting namespace independent of preferences plumbing,
+    // symmetric with how Application bridges the listener's
+    // SubtitleCallback to MainWindow's caption bar.
+    m_scripter->set_user_folder_changed_callback(
+        [](const std::string& path) {
+          AppPreferences::instance().set_scripts_path_override(path);
+          LOG_INFO("MainWindow: scripts_path_override -> '{}' "
+                   "(from Scripter folder picker)", path);
+        });
 
     // s191 m3 / s219 m1 — bridge `#[sub]` lines from the Scripter's
     // listener to MainWindow's caption bar. Previously wired in

@@ -81,7 +81,12 @@ namespace curvz::scripting {
 
 class ScripterWindow : public Gtk::Window {
 public:
-    explicit ScripterWindow(const std::string& initial_folder);
+    // s267 m1 — ctor now takes a second path for the system-installed
+    // scripts directory (read-only; ships with the install). Either
+    // path may be empty or nonexistent; rescan tolerates both and
+    // omits the corresponding section from the sidebar.
+    ScripterWindow(const std::string& user_folder,
+                   const std::string& system_folder);
 
     // s219 m1 — show pattern matching the rest of Curvz's persistent
     // floating dialogs (HelpWindow, ShortcutsDialog, BlendDialog,
@@ -98,6 +103,19 @@ public:
     // construction has not yet wired m_listener (should never be
     // observed by a caller in practice).
     ScriptListener* listener() { return m_listener.get(); }
+
+    // s267 m1 — picker-persistence callback. When the folder picker
+    // accepts a new user-scripts directory, this callback fires with
+    // the chosen path. MainWindow wires it to
+    // AppPreferences::set_scripts_path_override so the choice
+    // persists across launches. Setting an empty callback is fine
+    // (no-op on accept); setting it more than once replaces the
+    // previous binding. Symmetric with how the listener's
+    // SubtitleCallback is bridged from Application.
+    void set_user_folder_changed_callback(
+        std::function<void(const std::string&)> cb) {
+        m_on_user_folder_changed = std::move(cb);
+    }
 
 private:
     // ── Lifecycle ───────────────────────────────────────────────────────
@@ -120,11 +138,18 @@ private:
     // rescan_library() and pinned for the lifetime of the scan; the
     // managed widgets get re-parented by GTK on the next rescan.
     // s195 m4: rows gain a flat trash button at the right end.
+    // s267 m1: rows gain an `is_system` flag. System rows ship with
+    // the install (under /usr/share/curvz/scripts) and are read-only:
+    // their del button is hidden (no trash for files the user
+    // doesn't own), and load_script_into_editor flips the editor
+    // into a read-only state (Save button hidden, Save As… available
+    // for copying to the user dir).
     struct ScriptRow {
         std::filesystem::path  path;
         Gtk::CheckButton*      check  = nullptr;  // managed
         Gtk::Button*           label  = nullptr;  // managed (flat-styled)
         Gtk::Button*           del    = nullptr;  // managed (flat-styled, s195 m4)
+        bool                   is_system = false; // s267 m1
     };
 
     void load_script_into_editor(const std::filesystem::path& p);
@@ -169,6 +194,25 @@ private:
 
     // ── State ──────────────────────────────────────────────────────────
     std::filesystem::path m_folder;
+
+    // s267 m1 — second root for the sidebar, populated by the install
+    // (defaults to /usr/share/curvz/scripts; see scripts_system_dir()
+    // in MainWindow.cpp). Empty or nonexistent path means "no system
+    // section in the sidebar" and rescan_library handles that case
+    // by simply not rendering the System header. Scripts under this
+    // root are read-only — del button hidden, Save disabled while
+    // a system file is loaded.
+    std::filesystem::path m_system_folder;
+
+    // s267 m1 — true when the file currently in the editor lives under
+    // m_system_folder. Drives Save-button visibility and the editor's
+    // dirty-prompt wording (system files can be branched via Save As…
+    // but not written through).
+    bool m_loaded_is_system = false;
+
+    // s267 m1 — picker-persistence callback. See header public block.
+    // MainWindow wires this to AppPreferences::set_scripts_path_override.
+    std::function<void(const std::string&)> m_on_user_folder_changed;
 
     // s193 m1 redesign — top toolbar is playback-only. Output buffer
     // actions (Clear, Copy) live in the Output tab's content header;

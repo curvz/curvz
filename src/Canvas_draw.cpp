@@ -1,4 +1,5 @@
 #include "Canvas.hpp"
+#include "Application.hpp"  // s268 m0 — g_launch_t0 + LAUNCH_TIMING_ENABLED
 #include "CommandHistory.hpp"
 #include "CurvzLog.hpp"
 #include "CurvzProject.hpp"  // s116 m6 — m_project field reads workspace appearance
@@ -388,6 +389,23 @@ void Canvas::draw_text_node(const Cairo::RefPtr<Cairo::Context> &cr,
   cr->restore();
 }
 void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
+  // s268 m0 — cold-launch timing. Fires exactly once per process via
+  // the static-bool latch. main() stamped g_launch_t0 before any
+  // other code ran; the delta to first-paint is what the user
+  // perceives as "launch time." One INFO line in the log; no UI
+  // effect, no further cost on subsequent draws (the branch
+  // mispredict on the latch is negligible at draw frequency).
+  if constexpr (LAUNCH_TIMING_ENABLED) {
+    static bool first_paint_logged = false;
+    if (!first_paint_logged) {
+      first_paint_logged = true;
+      auto now = std::chrono::steady_clock::now();
+      auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - g_launch_t0).count();
+      LOG_INFO("cold launch: {} ms (exec -> first paint)", ms);
+    }
+  }
+
   // ── Outer background — workspace colour around the artboard ─────────
   // Doc-level field (s148 m1 — re-promoted from project per-motif).
   // Each document carries its own workspace surround tone; switching

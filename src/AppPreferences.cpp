@@ -153,6 +153,12 @@ void AppPreferences::load() {
             j["custom_css_path_override"].is_string()) {
             m_custom_css_path_override = j["custom_css_path_override"].get<std::string>();
         }
+        // s267 m1 — mirrors the four siblings above. Empty string means
+        // "use the default" at the consumer (MainWindow's scripts_user_dir).
+        if (j.contains("scripts_path_override") &&
+            j["scripts_path_override"].is_string()) {
+            m_scripts_path_override = j["scripts_path_override"].get<std::string>();
+        }
 
         if (j.contains("library_defaults_seeded") &&
             j["library_defaults_seeded"].is_boolean()) {
@@ -216,7 +222,7 @@ void AppPreferences::load() {
                  "recent_projects_max_count={}, show_rulers_by_default={}, "
                  "undo_history_depth={}, tooltip_delay_ms={}, "
                  "library_override={}, templates_override={}, "
-                 "log_override={}, css_override={}, "
+                 "log_override={}, css_override={}, scripts_override={}, "
                  "library_defaults_seeded={}, toolbar_density={}",
                  path, m_boolean_cleanup_quality,
                  m_reopen_last_project, m_recent_projects_max_count,
@@ -226,6 +232,7 @@ void AppPreferences::load() {
                  m_templates_path_override.empty() ? "<default>" : m_templates_path_override,
                  m_log_path_override.empty() ? "<default>" : m_log_path_override,
                  m_custom_css_path_override.empty() ? "<default>" : m_custom_css_path_override,
+                 m_scripts_path_override.empty() ? "<default>" : m_scripts_path_override,
                  m_library_defaults_seeded,
                  m_toolbar_density);
     } catch (const std::exception& e) {
@@ -260,6 +267,7 @@ void AppPreferences::save() const {
     j["templates_path_override"]    = m_templates_path_override;
     j["log_path_override"]          = m_log_path_override;
     j["custom_css_path_override"]   = m_custom_css_path_override;
+    j["scripts_path_override"]      = m_scripts_path_override;  // s267 m1
     j["library_defaults_seeded"]    = m_library_defaults_seeded;
     j["toolbar_density"]            = m_toolbar_density;
     j["scripter_enabled"]           = m_scripter_enabled;  // s219 m1
@@ -420,6 +428,17 @@ void AppPreferences::set_custom_css_path_override(const std::string& v) {
     std::string t = trim_path(v);
     if (m_custom_css_path_override == t) return;
     m_custom_css_path_override = std::move(t);
+    save();
+    m_sig_changed.emit();
+}
+
+// s267 m1 — Scripts override setter. Same shape as the four above. The
+// Scripter's folder-picker funnels through here on accept, so picker
+// choices persist across sessions without separate plumbing.
+void AppPreferences::set_scripts_path_override(const std::string& v) {
+    std::string t = trim_path(v);
+    if (m_scripts_path_override == t) return;
+    m_scripts_path_override = std::move(t);
     save();
     m_sig_changed.emit();
 }

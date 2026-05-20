@@ -28,6 +28,15 @@ extern "C" {
 
 namespace Curvz {
 
+// s268 m0 — cold-launch timing. Definition for the global declared in
+// Application.hpp. main() assigns to this before Application::create
+// runs; on_draw consumes it on first paint. Default-initialised to
+// epoch in case main() somehow misses the assignment (it never
+// should — the assignment is the first line) — in that case the
+// reported time would be wildly large rather than zero, which is the
+// right failure mode for "something went wrong, look at this."
+std::chrono::steady_clock::time_point g_launch_t0;
+
 // s145 m4 — read the log_path_override key directly from preferences.json,
 // without going through AppPreferences::instance().load(). Necessary
 // because spdlog must be initialised before any LOG_* call can fire,

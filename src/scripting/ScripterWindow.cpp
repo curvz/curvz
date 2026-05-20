@@ -78,8 +78,10 @@ std::string read_file(const fs::path& p) {
 
 // ── construction ────────────────────────────────────────────────────────────
 
-ScripterWindow::ScripterWindow(const std::string& initial_folder)
-    : m_folder(initial_folder) {
+ScripterWindow::ScripterWindow(const std::string& user_folder,
+                               const std::string& system_folder)
+    : m_folder(user_folder),
+      m_system_folder(system_folder) {
     set_title("Curvz Scripter (diagnostic)");
     set_default_size(1100, 700);
 
@@ -512,52 +514,51 @@ void ScripterWindow::build_ui() {
 // ── Library / categories ────────────────────────────────────────────────────
 
 void ScripterWindow::rescan_library() {
-    // Tear down old children. The sidebar Box owns the Expanders; each
-    // Expander owns its row Box; row Boxes own CheckButton + label
-    // Button. Removing from m_sidebar drops the chain.
+    // Tear down old children. The sidebar Box owns the section
+    // headers, Expanders, and (s267 m1) any system-section widgets;
+    // each Expander owns its row Box; row Boxes own CheckButton + label
+    // Button + (for user rows only) trash Button. Removing from
+    // m_sidebar drops the entire chain.
     while (auto* w = m_sidebar.get_first_child()) m_sidebar.remove(*w);
     m_category_expanders.clear();
     m_rows.clear();
 
-    if (!fs::exists(m_folder) || !fs::is_directory(m_folder)) {
-        auto* lbl = Gtk::make_managed<Gtk::Label>("(folder not found)");
-        lbl->set_xalign(0.0f);
-        lbl->set_margin(8);
-        m_sidebar.append(*lbl);
-        m_lbl_folder.set_text(m_folder.string());
-        m_lbl_folder.set_tooltip_text(m_folder.string());
-        return;
-    }
-
-    // First pass: collect loose scripts + subfolder names.
-    std::vector<fs::path> loose_scripts;
-    std::vector<fs::path> subfolders;
-    for (auto& e : fs::directory_iterator(m_folder)) {
-        if (e.is_regular_file() && e.path().extension() == ".curvzs") {
-            loose_scripts.push_back(e.path());
-        } else if (e.is_directory()) {
-            // Only include subfolders that contain at least one *.curvzs.
-            bool has_any = false;
-            for (auto& sub : fs::directory_iterator(e.path())) {
-                if (sub.is_regular_file()
-                    && sub.path().extension() == ".curvzs") {
-                    has_any = true;
-                    break;
-                }
-            }
-            if (has_any) subfolders.push_back(e.path());
-        }
-    }
-    std::sort(loose_scripts.begin(), loose_scripts.end());
-    std::sort(subfolders.begin(), subfolders.end());
+    // s267 m1 — the sidebar now renders up to two stacked sections:
+    //   ┌─ User ──────────────────┐
+    //   │  All Scripts (n)        │
+    //   │  ▸ subfolder1 (n)       │
+    //   │  ▸ subfolder2 (n)       │
+    //   ├─ System ────────────────┤
+    //   │  All Scripts (n)        │
+    //   │  ▸ regression (n)       │
+    //   └─────────────────────────┘
+    //
+    // Each section is preceded by a header Label and a thin
+    // separator. The User section always renders (even if the folder
+    // is missing — same "(folder not found)" placeholder as before),
+    // since it's the writable home and the user needs to see what
+    // path is currently in effect. The System section renders only
+    // when m_system_folder exists AND contains at least one script
+    // (loose or in a subfolder) — a packaged install will always
+    // have content here; a from-source dev build usually won't.
+    //
+    // System rows pass is_system=true into add_category; that hides
+    // the trash button (no delete on files the user doesn't own).
+    // Save-button gating for system-loaded files happens in
+    // load_script_into_editor + update_editor_tab_title.
 
     // Helper to append one category Expander with a list of scripts.
     // s193 m1: each row is a horizontal Box with a CheckButton (for
     // run-set inclusion) and a Button (flat-styled, left-aligned, with
     // the filename as label, for "load into editor" semantics).
+    // s267 m1: is_system arg gates the trash button. System rows
+    // get no trash widget at all (rather than disabled + visible),
+    // since a greyed trash icon next to a file you can't delete is
+    // visual noise; absence reads cleaner.
     auto add_category = [this](const std::string& title,
                                 const std::vector<fs::path>& scripts,
-                                bool initial_expanded) {
+                                bool initial_expanded,
+                                bool is_system) {
         auto* exp = Gtk::make_managed<Gtk::Expander>();
         exp->set_label(title + "  (" + std::to_string(scripts.size()) + ")");
         exp->set_expanded(initial_expanded);
@@ -572,6 +573,7 @@ void ScripterWindow::rescan_library() {
         for (const auto& p : scripts) {
             auto row = std::make_unique<ScriptRow>();
             row->path = p;
+            row->is_system = is_system;
 
             auto* hb = Gtk::make_managed<Gtk::Box>(
                 Gtk::Orientation::HORIZONTAL, 6);
@@ -604,9 +606,14 @@ void ScripterWindow::rescan_library() {
             inner_lbl->set_xalign(0.0f);
             inner_lbl->set_ellipsize(Pango::EllipsizeMode::END);
             row->label->set_child(*inner_lbl);
+            // s267 m1 — tooltip carries the read-only hint for system
+            // rows so the user knows what happens before they click.
             row->label->set_tooltip_text(
-                "Load this script into the editor (click) — independent "
-                "of the checkbox.");
+                is_system
+                    ? "Load this read-only script into the editor "
+                      "(click). Save As… to branch a writable copy."
+                    : "Load this script into the editor (click) — "
+                      "independent of the checkbox.");
 
             fs::path script_path = p;
             row->label->signal_clicked().connect(
@@ -620,17 +627,22 @@ void ScripterWindow::rescan_library() {
             // weight; sits next to the file it operates on. Click sends
             // through confirm_and_delete which prompts before trashing.
             // s214 m2 — unregistered substrate per per-row rationale above.
-            row->del = Gtk::make_managed<curvz::widgets::Button>(
-                curvz::scripting::unregistered);
-            row->del->set_icon_name("edit-delete-symbolic");
-            row->del->add_css_class("flat");
-            row->del->set_tooltip_text(
-                "Send this script to the trash (recoverable)");
-            row->del->signal_clicked().connect(
-                [this, script_path]() {
-                    confirm_and_delete(script_path);
-                });
-            hb->append(*row->del);
+            // s267 m1 — system rows skip the trash button entirely. The
+            // user doesn't own these files; rendering a disabled trash
+            // is visual noise without value.
+            if (!is_system) {
+                row->del = Gtk::make_managed<curvz::widgets::Button>(
+                    curvz::scripting::unregistered);
+                row->del->set_icon_name("edit-delete-symbolic");
+                row->del->add_css_class("flat");
+                row->del->set_tooltip_text(
+                    "Send this script to the trash (recoverable)");
+                row->del->signal_clicked().connect(
+                    [this, script_path]() {
+                        confirm_and_delete(script_path);
+                    });
+                hb->append(*row->del);
+            }
 
             rows_box->append(*hb);
 
@@ -642,29 +654,138 @@ void ScripterWindow::rescan_library() {
         m_category_expanders.push_back(exp);
     };
 
-    // "All Scripts" (loose .curvzs at workspace root) first.
-    if (!loose_scripts.empty()) {
-        add_category("All Scripts", loose_scripts, /*expanded=*/true);
-    }
-
-    // Then one Expander per subfolder. Use folder name as title;
-    // collapse by default so a deep tree doesn't blow up vertically.
-    for (const auto& sub : subfolders) {
-        std::vector<fs::path> hits;
-        for (auto& e : fs::directory_iterator(sub)) {
+    // s267 m1 — one-shot helper: scan a root for loose .curvzs +
+    // subfolders containing .curvzs, return collected paths sorted.
+    // Used twice below (User then System). The same one-level-deep
+    // depth contract applies as in the historical single-root scan.
+    auto collect_root = [](const fs::path& root,
+                            std::vector<fs::path>& loose_out,
+                            std::vector<fs::path>& subs_out) {
+        loose_out.clear();
+        subs_out.clear();
+        if (!fs::exists(root) || !fs::is_directory(root)) return false;
+        for (auto& e : fs::directory_iterator(root)) {
             if (e.is_regular_file() && e.path().extension() == ".curvzs") {
-                hits.push_back(e.path());
+                loose_out.push_back(e.path());
+            } else if (e.is_directory()) {
+                bool has_any = false;
+                for (auto& sub : fs::directory_iterator(e.path())) {
+                    if (sub.is_regular_file()
+                        && sub.path().extension() == ".curvzs") {
+                        has_any = true;
+                        break;
+                    }
+                }
+                if (has_any) subs_out.push_back(e.path());
             }
         }
-        std::sort(hits.begin(), hits.end());
-        add_category(sub.filename().string(), hits, /*expanded=*/false);
-    }
+        std::sort(loose_out.begin(), loose_out.end());
+        std::sort(subs_out.begin(), subs_out.end());
+        return true;
+    };
 
-    if (loose_scripts.empty() && subfolders.empty()) {
+    // s267 m1 — helper to render one section (header + expanders).
+    // Title is "User" or "System"; is_system_section drives the
+    // is_system flag passed into each add_category call inside.
+    auto render_section = [&](const std::string& title,
+                              const std::vector<fs::path>& loose,
+                              const std::vector<fs::path>& subs,
+                              bool is_system_section) {
+        auto* hdr = Gtk::make_managed<Gtk::Label>(title);
+        hdr->set_xalign(0.0f);
+        hdr->set_margin_start(4);
+        hdr->set_margin_top(6);
+        hdr->set_margin_bottom(2);
+        hdr->add_css_class("heading");   // GTK4 built-in: bold + size++
+        hdr->add_css_class("dim-label"); // softer than active text
+        m_sidebar.append(*hdr);
+
+        auto* sep = Gtk::make_managed<Gtk::Separator>(
+            Gtk::Orientation::HORIZONTAL);
+        sep->set_margin_bottom(2);
+        m_sidebar.append(*sep);
+
+        // "All Scripts" (loose .curvzs at the section root) first,
+        // expanded for User (the common-case writable surface) and
+        // collapsed for System (to keep the sidebar quiet by default).
+        if (!loose.empty()) {
+            add_category("All Scripts", loose,
+                         /*expanded=*/!is_system_section,
+                         is_system_section);
+        }
+        for (const auto& sub : subs) {
+            std::vector<fs::path> hits;
+            for (auto& e : fs::directory_iterator(sub)) {
+                if (e.is_regular_file()
+                    && e.path().extension() == ".curvzs") {
+                    hits.push_back(e.path());
+                }
+            }
+            std::sort(hits.begin(), hits.end());
+            add_category(sub.filename().string(), hits,
+                         /*expanded=*/false,
+                         is_system_section);
+        }
+    };
+
+    // ── User section (always renders) ──────────────────────────────────
+    std::vector<fs::path> u_loose, u_subs;
+    const bool u_ok = collect_root(m_folder, u_loose, u_subs);
+    if (!u_ok) {
+        // Header + placeholder so the user can see that their pref
+        // points at a missing folder. Statusbar label still gets the
+        // path so they can fix it via the picker.
+        auto* hdr = Gtk::make_managed<Gtk::Label>("User");
+        hdr->set_xalign(0.0f);
+        hdr->set_margin_start(4);
+        hdr->set_margin_top(6);
+        hdr->set_margin_bottom(2);
+        hdr->add_css_class("heading");
+        hdr->add_css_class("dim-label");
+        m_sidebar.append(*hdr);
+        auto* sep = Gtk::make_managed<Gtk::Separator>(
+            Gtk::Orientation::HORIZONTAL);
+        sep->set_margin_bottom(2);
+        m_sidebar.append(*sep);
+        auto* lbl = Gtk::make_managed<Gtk::Label>("(folder not found)");
+        lbl->set_xalign(0.0f);
+        lbl->set_margin(8);
+        m_sidebar.append(*lbl);
+    } else if (u_loose.empty() && u_subs.empty()) {
+        // Folder exists but no scripts yet. Show the header so the
+        // section divider is consistent, then a quiet placeholder.
+        auto* hdr = Gtk::make_managed<Gtk::Label>("User");
+        hdr->set_xalign(0.0f);
+        hdr->set_margin_start(4);
+        hdr->set_margin_top(6);
+        hdr->set_margin_bottom(2);
+        hdr->add_css_class("heading");
+        hdr->add_css_class("dim-label");
+        m_sidebar.append(*hdr);
+        auto* sep = Gtk::make_managed<Gtk::Separator>(
+            Gtk::Orientation::HORIZONTAL);
+        sep->set_margin_bottom(2);
+        m_sidebar.append(*sep);
         auto* lbl = Gtk::make_managed<Gtk::Label>("(no .curvzs files)");
         lbl->set_xalign(0.0f);
         lbl->set_margin(8);
         m_sidebar.append(*lbl);
+    } else {
+        render_section("User", u_loose, u_subs, /*is_system=*/false);
+    }
+
+    // ── System section (renders only if populated) ─────────────────────
+    if (!m_system_folder.empty()) {
+        std::vector<fs::path> s_loose, s_subs;
+        const bool s_ok =
+            collect_root(m_system_folder, s_loose, s_subs);
+        if (s_ok && (!s_loose.empty() || !s_subs.empty())) {
+            render_section("System", s_loose, s_subs,
+                           /*is_system=*/true);
+        }
+        // If the system folder is missing or empty, omit the section
+        // entirely — most dev builds won't have populated it, and an
+        // empty "System (folder not found)" header is just clutter.
     }
 
     m_lbl_folder.set_text(m_folder.string());
@@ -765,8 +886,32 @@ void ScripterWindow::load_script_into_editor(const fs::path& p) {
     highlight_step_line(-1);
 
     m_loaded_path = p;
+
+    // s267 m1 — flag the load as system-owned when the path lives
+    // under m_system_folder. Drives Save-button gating in
+    // update_editor_tab_title and the early-out in
+    // save_editor_to_loaded_file. Compared as strings rather than
+    // path-relative so a missing/relative m_system_folder produces a
+    // false negative (the safe direction).
+    m_loaded_is_system = false;
+    if (!m_system_folder.empty()) {
+        std::error_code ec;
+        auto canon_sys =
+            fs::weakly_canonical(m_system_folder, ec).string();
+        auto canon_p = fs::weakly_canonical(p, ec).string();
+        if (ec) {
+            // Fall back to literal-prefix check if canonicalisation
+            // fails (e.g. the system path doesn't exist on this box).
+            canon_sys = m_system_folder.string();
+            canon_p   = p.string();
+        }
+        if (!canon_sys.empty()
+            && canon_p.rfind(canon_sys, 0) == 0) {
+            m_loaded_is_system = true;
+        }
+    }
+
     mark_dirty(false);
-    update_editor_tab_title();
 
     // Switch focus to the Script tab so the user sees what just loaded.
     m_notebook.set_current_page(0);
@@ -774,6 +919,19 @@ void ScripterWindow::load_script_into_editor(const fs::path& p) {
 
 void ScripterWindow::save_editor_to_loaded_file() {
     if (m_loaded_path.empty()) return;
+    // s267 m1 — refuse to overwrite system-installed scripts. The
+    // Save button is hidden by update_editor_tab_title when a system
+    // file is loaded, so this branch is a belt-and-braces guard for
+    // any future code path (keybinding, action dispatch) that might
+    // call save_editor_to_loaded_file without checking. Save As… is
+    // the documented escape hatch — branches the file into the user
+    // dir under a chosen name.
+    if (m_loaded_is_system) {
+        append_output(
+            "# this script is read-only (system install). "
+            "Use Save As… to branch a writable copy.\n");
+        return;
+    }
     std::ofstream f(m_loaded_path);
     if (!f.is_open()) {
         append_output("# save failed: " + m_loaded_path.string() + "\n");
@@ -842,6 +1000,10 @@ void ScripterWindow::on_save_as() {
 
                 // Adopt the new path. From now on Save writes here.
                 m_loaded_path = target;
+                // s267 m1 — Save As writes via the user-rooted picker;
+                // the result is always user-owned, so clear the
+                // read-only flag inherited from any prior system load.
+                m_loaded_is_system = false;
                 mark_dirty(false);
                 append_output(
                     "# saved " + target.filename().string() + "\n");
@@ -910,6 +1072,7 @@ void ScripterWindow::confirm_and_delete(const fs::path& p) {
             // path. Mark dirty so the user sees the work is unattached.
             if (m_loaded_path == target) {
                 m_loaded_path.clear();
+                m_loaded_is_system = false;  // s267 m1 — scratchpad isn't system
                 mark_dirty(true);
             }
 
@@ -919,14 +1082,11 @@ void ScripterWindow::confirm_and_delete(const fs::path& p) {
 
 void ScripterWindow::mark_dirty(bool dirty) {
     m_dirty = dirty;
-    // Save is visible whenever a file is loaded — the user sees the
-    // action is available even on a clean file. Enabled only when
-    // there's actually something to save (dirty + loaded). This keeps
-    // the Script tab's content-header row from shifting layout when
-    // the file flips between clean and dirty.
-    bool loaded = !m_loaded_path.empty();
-    m_btn_save->set_visible(loaded);
-    m_btn_save->set_sensitive(loaded && dirty);
+    // s267 m1 — Save visibility/sensitivity moved entirely into
+    // update_editor_tab_title, which has all three inputs in front of
+    // it (loaded, dirty, system). Centralising the gate avoids the
+    // earlier two-call ordering between mark_dirty and the title
+    // helper.
     update_editor_tab_title();
 }
 
@@ -940,14 +1100,33 @@ void ScripterWindow::update_editor_tab_title() {
     // Content header label: state-rich, dim-styled. Tells the user
     // what they're looking at: filename, dirty marker, and (if step
     // mode is parked) which line the next spacebar press will run.
+    // s267 m1 — system-loaded files surface "(read-only)" inline so
+    // the user sees why the Save button is absent.
     std::string state;
     if (m_loaded_path.empty()) {
         state = "(scratchpad — type a script, or click one in the library)";
     } else {
         state = m_loaded_path.filename().string();
-        if (m_dirty) state += "  •  unsaved changes";
+        if (m_loaded_is_system) state += "  •  read-only (system)";
+        if (m_dirty)            state += "  •  unsaved changes";
     }
     m_lbl_script_state.set_text(state);
+
+    // s267 m1 — Save visibility/sensitivity centralised here. Three
+    // inputs:
+    //   loaded   = a file is open (not scratchpad)
+    //   dirty    = unsaved edits
+    //   system   = file lives under m_system_folder (read-only)
+    // Save is visible when loaded AND not-system (matches the
+    // historical "Save sits next to its target" idiom but suppresses
+    // the affordance entirely for read-only files). Sensitive only
+    // when dirty — clicking a clean Save is a no-op.
+    if (m_btn_save) {
+        const bool loaded = !m_loaded_path.empty();
+        const bool can_save = loaded && !m_loaded_is_system;
+        m_btn_save->set_visible(can_save);
+        m_btn_save->set_sensitive(can_save && m_dirty);
+    }
 }
 
 void ScripterWindow::highlight_step_line(int line_index) {
@@ -1061,6 +1240,14 @@ void ScripterWindow::on_folder_pick() {
                 if (f) {
                     m_folder = f->get_path();
                     rescan_library();
+                    // s267 m1 — persist the picked folder to
+                    // AppPreferences::scripts_path_override via the
+                    // bridge wired by MainWindow. Empty callback (no
+                    // bridge installed) is a no-op; we keep the
+                    // session change either way.
+                    if (m_on_user_folder_changed) {
+                        m_on_user_folder_changed(m_folder.string());
+                    }
                 }
             } catch (...) {
                 // user dismissed

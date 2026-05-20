@@ -191,6 +191,16 @@ public:
     const std::string& templates_path_override() const { return m_templates_path_override; }
     void set_templates_path_override(const std::string& v);
 
+    // s267 m1 — Override for the user-scripts directory consumed by the
+    // Scripter window. Empty = default (~/.config/curvz/scripts). The
+    // Scripter's folder-picker also writes here on accept, so a session
+    // browse persists across launches. Takes effect on next launch (the
+    // Scripter constructs once with the resolved path at MainWindow
+    // ctor time; re-pointing mid-run is the picker's job, not a
+    // preferences-write-triggered rescan).
+    const std::string& scripts_path_override() const { return m_scripts_path_override; }
+    void set_scripts_path_override(const std::string& v);
+
     // Read directly from preferences.json by Application constructor —
     // see Application.cpp::read_log_path_override_from_disk(). The
     // singleton getter is provided here for symmetry and inspector
@@ -315,6 +325,10 @@ private:
     std::string m_templates_path_override;
     std::string m_log_path_override;
     std::string m_custom_css_path_override;
+    // s267 m1 — override for the Scripter's user-scripts directory.
+    // Empty falls through to ~/.config/curvz/scripts at the consumer
+    // (see scripts_user_dir() in MainWindow.cpp). Picker writes here.
+    std::string m_scripts_path_override;
     bool m_library_defaults_seeded = false;
     // s152 — Toolbar density. 0=Comfortable, 1=Standard (default),
     // 2=Compact, 3=Tight. Maps to Toolbar::Density enum.

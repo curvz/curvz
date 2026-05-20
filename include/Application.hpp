@@ -1,5 +1,6 @@
 #pragma once
 #include <gtkmm/application.h>
+#include <chrono>
 
 // s219 m1 — the Scripter window is no longer owned by Application.
 // It lives inside MainWindow now (held as a unique_ptr member), the
@@ -8,6 +9,19 @@
 // the Scripter at all.
 
 namespace Curvz {
+
+// s268 m0 — cold-launch timing. main() stamps g_launch_t0 before any
+// other code runs; Canvas::on_draw consumes the timestamp the first
+// time it fires and logs the delta as INFO. One log line per process
+// lifetime, no UI surface, no perf cost beyond the static-bool latch
+// inside on_draw.
+//
+// Flip the constexpr to false to silence. Left as compile-time rather
+// than a CLI flag or preference because it's a development-side
+// diagnostic that should either be on for everyone or off for
+// everyone — not configurable per-user.
+inline constexpr bool LAUNCH_TIMING_ENABLED = true;
+extern std::chrono::steady_clock::time_point g_launch_t0;
 
 class MainWindow;
 

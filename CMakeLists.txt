@@ -678,6 +678,31 @@ install(
     RENAME ${CURVZ_APP_ID}.svg
 )
 
+# ── Bundled scripts (s267 m2) ─────────────────────────────────────────────────
+# Ship the regression-suite scripts alongside the binary so a packaged
+# install carries scripts the Scripter can run out of the box. Lands at
+# ${prefix}/share/curvz/scripts/; the Scripter reads from
+# /usr/share/curvz/scripts (hardcoded in MainWindow.cpp::scripts_system_dir
+# to match TemplateLibrary's system_dir convention). Flatpak builds install
+# into /app/share/curvz/scripts/ via the same mechanism — the runtime
+# resolution is handled by the same bind-mount convention as templates.
+#
+# DIRECTORY (not FILES) preserves the source subfolder structure: a
+# regression/ subdir on disk becomes a regression/ subdir in the install
+# tree, which the Scripter's per-subfolder expanders then surface as a
+# distinct group under the System section. FILES_MATCHING with *.curvzs
+# keeps any README.md or scratch files out of the install bundle.
+#
+# Pre-m3 the source tree may contain only an empty regression/ folder
+# with a README.md; the install rule is still correct (no .curvzs files
+# to match means nothing lands, which is the same outcome as no rule at
+# all from the Scripter's perspective).
+install(
+    DIRECTORY ${CMAKE_SOURCE_DIR}/resources/scripts/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/curvz/scripts
+    FILES_MATCHING PATTERN "*.curvzs"
+)
+
 # ── Post-install hooks ────────────────────────────────────────────────────────
 # When installing into a real prefix (not staging for a package), refresh the
 # desktop, MIME, and icon caches so changes take effect immediately. Distro

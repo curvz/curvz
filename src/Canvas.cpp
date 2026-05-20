@@ -3536,6 +3536,8 @@ void Canvas::scrub_node_refs(const SceneNode *target) {
 // (~9 latent inconsistencies were caught and fixed during the s159/s160
 // migration; see "s160 m2:" / "s159 m2:" comment markers.)
 void Canvas::notify_object_selection_changed() {
+  LOG_INFO("csb::HOLD Canvas::notify_object_selection_changed CALLED sel={} sel_size={}",
+           (void*)m_selected, (int)m_selection.size());
   m_sel_ctx.recompute_object(m_selection, m_selected);
   m_sig_selection.emit(m_selected);
 }
