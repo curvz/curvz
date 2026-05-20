@@ -458,6 +458,13 @@ ObjectActions compute_object_actions(const ObjectInfo &info) {
     if (info.any_path || info.any_compound) {
       a.effect |= EffectAction::ExpandStroke;
     }
+    // s269: OffsetPath gates identically to ExpandStroke — both are path-
+    // deriving ops applicable to any path-like. The op (Canvas::offset_path_op)
+    // filters non-closed paths internally and reports a skipped count, so the
+    // gate here is "this could plausibly offset," not a closed-path pre-flight.
+    if (info.any_path || info.any_compound) {
+      a.effect |= EffectAction::OffsetPath;
+    }
     if (info.is_single() && info.any_text) {
       // s162 m3: ConvertToPath is a font-rasterisation verb (text glyphs
       // → editable Bezier paths). Compound was previously included on a

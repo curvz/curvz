@@ -152,6 +152,17 @@ void MainWindow::connect_signals() {
       if (m_closing)
         return;
       update_all_panels();
+      // s269 m2 — background housekeeper: after the close-doc panel
+      // rebuild has settled, post a low-priority idle to ask glibc to
+      // return the doc's freed chunks to the OS. PRIORITY_LOW means
+      // this only fires when nothing else is queued — paint, input,
+      // default-priority idles all preempt it. The pump no-ops on
+      // non-glibc; see curvz::utils::trim_heap.
+      Glib::signal_idle().connect_once([this]() {
+        if (m_closing)
+          return;
+        curvz::utils::trim_heap();
+      }, Glib::PRIORITY_LOW);
     });
     LOG_INFO("Removed document at index {}", idx);
   });
@@ -385,6 +396,12 @@ void MainWindow::connect_signals() {
       if (m_closing)
         return;
       update_all_panels();
+      // s269 m2 — see doc-tab remove handler above for the rationale.
+      Glib::signal_idle().connect_once([this]() {
+        if (m_closing)
+          return;
+        curvz::utils::trim_heap();
+      }, Glib::PRIORITY_LOW);
     });
     LOG_INFO("Removed document at index {}", idx);
   });
@@ -412,6 +429,13 @@ void MainWindow::connect_signals() {
     m_project->active_doc_index = 0;
     m_project->save();
     update_all_panels();
+    // s269 m2 — biggest freeing event in the close family; every doc at
+    // once. Same low-priority idle pattern as the per-doc remove paths.
+    Glib::signal_idle().connect_once([this]() {
+      if (m_closing)
+        return;
+      curvz::utils::trim_heap();
+    }, Glib::PRIORITY_LOW);
     LOG_INFO("Cleared all documents from project");
   });
 

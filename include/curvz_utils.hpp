@@ -18,6 +18,8 @@
 //                            (s167 m1 — id-based command captures pump)
 //   force_unregister_subtree synchronous registry cleanup for a widget
 //                            subtree about to be destroyed (s199 m1)
+//   trim_heap                ask glibc to return free chunks to the OS
+//                            (s269 m2 — no-op on non-glibc)
 //   box_blur_argb32          in-place 3-pass box blur on ARGB32 pixels
 //                          (Cairo premultiplied, ≈ Gaussian)
 //   build_gradient_pattern FillStyle + bbox → Cairo::Pattern (linear/radial)
@@ -353,6 +355,37 @@ std::string iid_breadcrumb(const Curvz::CurvzProject& proj,
 // deferred-destruction of the old leaves the registry entry alive
 // past when the new tries to register.
 void force_unregister_subtree(Gtk::Widget* root);
+
+// ── trim_heap (s269 m2) ──────────────────────────────────────────────
+// Ask the C allocator to return free chunks to the OS. Wraps glibc's
+// malloc_trim(0); no-op on non-glibc platforms.
+//
+// Background: glibc malloc retains freed chunks in its own free lists
+// for reuse and almost never releases them back to the OS. RSS climbs
+// to the high-water mark of what has ever been allocated, not what is
+// currently live. Bursty mixed-size allocation (e.g. fast Ctrl+Tab
+// through documents, where each switch allocates Cairo surfaces,
+// shadow blur intermediaries, and gradient pattern surfaces of varying
+// sizes) fragments the heap and RSS stays climbed even though most
+// chunks are free.
+//
+// malloc_trim(0) walks the free lists and madvise(MADV_DONTNEED) or
+// munmap's what it can. Microseconds to low milliseconds typically.
+// Safe — does not free any live memory; glibc only acts on chunks that
+// are already free.
+//
+// Threading note: NOT safe to run on a worker thread. malloc_trim
+// holds glibc's arena mutexes for the duration of the walk; any
+// concurrent allocation/free on another thread blocks behind the same
+// mutex. The right "make it cheap" lever is a low-priority GTK idle
+// (Glib::PRIORITY_LOW or below), not a thread — runs only when the
+// main loop is otherwise quiet.
+//
+// Returns true if glibc reported releasing memory, false otherwise.
+// First-deployment diagnostic: logs the returned flag and elapsed
+// microseconds at LOG_INFO. Once we trust the call sites, the log can
+// be demoted or removed.
+bool trim_heap();
 
 // ── box_blur_argb32 ──────────────────────────────────────────────────
 // In-place blur of an ARGB32 (Cairo premultiplied, BGRA byte order on

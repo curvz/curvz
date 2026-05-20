@@ -11,12 +11,17 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>      // s269 m2 — trim_heap elapsed-us timing
 #include <cmath>
 #include <cstdio>      // s236 m1 — snprintf for fmt2 in path-d emitter
 #include <cstring>
 #include <sstream>     // s236 m1 — ostringstream for path-d emitter
 #include <string>
 #include <vector>
+
+#ifdef __GLIBC__
+#include <malloc.h>    // s269 m2 — malloc_trim for trim_heap pump
+#endif
 
 // s125 m2a — dialog factory. Heavy widget includes go here, not in the
 // header, so consumers of the small utility pumps don't pay for them.
@@ -356,6 +361,29 @@ void force_unregister_subtree(Gtk::Widget* root) {
         }
     };
     walk(root);
+}
+
+// ── trim_heap (s269 m2) ─────────────────────────────────────────────
+// See header comment for design notes. glibc-only; no-op elsewhere.
+//
+// Diagnostic logging on first deployment — once we trust the call
+// sites, demote or remove. The interesting numbers are (a) whether
+// glibc actually released memory (the boolean return from malloc_trim)
+// and (b) how long the walk took (sanity check that we're not paying
+// more than a millisecond or two on the close-doc path).
+bool trim_heap() {
+#ifdef __GLIBC__
+    auto t0 = std::chrono::steady_clock::now();
+    int released = malloc_trim(0);
+    auto t1 = std::chrono::steady_clock::now();
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+        t1 - t0).count();
+    LOG_INFO("trim_heap: released={} elapsed={}us", released ? "yes" : "no",
+             (long long)us);
+    return released != 0;
+#else
+    return false;
+#endif
 }
 
 // ── box_blur_argb32 ─────────────────────────────────────────────────

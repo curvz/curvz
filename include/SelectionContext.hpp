@@ -131,6 +131,7 @@ enum class EffectAction : std::uint64_t {
   ConvertToPath  = 1ULL << 6,  // text/shape primitives → editable path
   MakeWarp       = 1ULL << 7,  // s162 m3: applies a Warp to a single path-like
   MakeBlend      = 1ULL << 8,  // s162 m3: blends a closed path-like pair
+  OffsetPath     = 1ULL << 9,  // s269: closed-path inward/outward offset
 };
 
 // Layer — z-order ops within parent.

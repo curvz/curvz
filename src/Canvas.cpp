@@ -253,6 +253,8 @@ build_object_context_menu(const ObjectActions &oa) {
       add(sub, "Flatten",        "win.warp-flatten");
     if (any(oa.effect & EffectAction::ExpandStroke))
       add(sub, "Expand Stroke",  "win.expand-stroke", "<Primary><Shift>x");
+    if (any(oa.effect & EffectAction::OffsetPath))
+      add(sub, "Offset Path…",   "win.offset-path",   "<Primary><Shift>o");
     if (any(oa.effect & EffectAction::ConvertToPath))
       add(sub, "Convert to Path", "win.text-to-path");
     if (sub->get_n_items() > 0) {
