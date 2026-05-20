@@ -2178,6 +2178,26 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
           LOG_INFO("PropertiesPanel: templates_path_override → '{}'", v);
         }));
 
+    // s267 m1 — User scripts folder. Mirrors the templates row shape
+    // exactly (folder picker, takes effect on next launch). The
+    // Scripter's own statusbar picker also writes this preference, so
+    // a session browse from inside the Scripter ends up here too. The
+    // default path is created on first read by scripts_user_dir() in
+    // MainWindow.cpp, so the placeholder always points at a real
+    // location even if the override is empty.
+    const std::string default_scripts_path =
+        std::string(Glib::get_user_config_dir()) + "/curvz/scripts";
+    body->append(*curvz::utils::make_path_override_row(
+        "User scripts", AppPreferences::instance().scripts_path_override(),
+        default_scripts_path,
+        "Folder where the Scripter looks for your *.curvzs scripts.\n"
+        "The Scripter's own folder picker also writes this preference.\n"
+        "Empty = use the default. Takes effect on next launch.",
+        /*pick_folder=*/true, root_win, [](const std::string &v) {
+          AppPreferences::instance().set_scripts_path_override(v);
+          LOG_INFO("PropertiesPanel: scripts_path_override → '{}'", v);
+        }));
+
     body->append(*curvz::utils::make_path_override_row(
         "Log file", AppPreferences::instance().log_path_override(),
         default_log_path,
@@ -7049,6 +7069,15 @@ void PropertiesPanel::refresh_node(CanvasModel *canvas, SceneNode *obj,
   }
 
   m_loading = false;
+
+  // s268: after a node-selection rebuild, return focus to the canvas.
+  // GTK4 auto-focuses the first focusable widget in a freshly built
+  // tree; in node mode that's the first node-coordinate spinner, which
+  // means a subsequent Delete keypress is captured by the text entry
+  // instead of deleting the selected node. The user can still tab/click
+  // into a spinner deliberately to edit a coordinate; only the implicit
+  // focus-on-rebuild is suppressed.
+  emit_canvas_focus();
 }
 
 // ── Colour well + swatches

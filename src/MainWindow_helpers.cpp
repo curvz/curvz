@@ -754,6 +754,20 @@ void MainWindow::sync_motif_class_to(Gtk::Window &w) {
 void MainWindow::apply_motif_to_window() {
   if (!m_project)
     return;
+  // s268 — short-circuit when the motif hasn't changed. signal_prop_changed
+  // calls this on every inspector edit as a "just in case the motif was
+  // the edited prop" precaution; without this gate, the function's tail
+  // (gallery.refresh / library.refresh / refresh_inspector) ran on every
+  // spinner click and rebuilt the entire inspector — destroying the
+  // spinner widget mid-click and killing GTK4's button auto-repeat.
+  // Now: if motif == last applied, nothing changed downstream of motif,
+  // skip the whole walk. Motif-changing call sites (toggle action, project
+  // switch, boot) trip the !equal branch and run normally.
+  if (m_last_applied_motif && *m_last_applied_motif == m_project->motif) {
+    return;
+  }
+  m_last_applied_motif = m_project->motif;
+
   // S117 m15 v2: tell GTK to load its dark/light theme variant to
   // match our motif. Adding `curvz-light` to a window tells our CSS
   // which token block to use, but GTK's *system* theme (Adwaita,

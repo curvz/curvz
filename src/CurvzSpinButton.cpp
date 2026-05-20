@@ -72,6 +72,14 @@ void CurvzSpinButton::init()
     m_adj = Gtk::Adjustment::create(0.0, -1e9, 1e9, 1.0, 10.0);
     set_adjustment(m_adj);
 
+    // s268: enable click-and-hold auto-repeat on the +/- buttons.
+    // GTK4's GtkSpinButton has a built-in repeat timer, but it only
+    // accelerates above the base step when climb_rate > 0; with the
+    // default 0.0 from the Gtk::SpinButton() ctor, holding the button
+    // produces a single bump on press and nothing further until release.
+    // 0.5 gives a comfortable acceleration curve without overshooting.
+    set_climb_rate(0.5);
+
     // s219: all spin types accept math expressions.
     // s263 m5: parser is Domain-aware — each SpinType maps to a parser
     // Domain (Length / Angle / Percentage / Dimensionless) via
@@ -277,16 +285,22 @@ void CurvzSpinButton::apply_unit_params()
         Unit u = m_model ? m_model->display_unit : Unit::Px;
         double lo, hi, step, page;
         int    digits;
+        // s268: step/page sized for per-click usefulness, not maximum
+        // typing precision. The +/- buttons auto-repeat after climb_rate
+        // was added, so single-click steps that took 1000+ clicks to
+        // move anywhere became immediately user-hostile. New values
+        // give a small-but-useful bump per click; users wanting finer
+        // precision still type the value or drag on canvas.
         switch (u) {
         case Unit::In:
-            hi = 1000.0;   step = 0.000001; page = 0.01;  digits = 6; break;
+            hi = 1000.0;   step = 0.01;     page = 0.1;   digits = 6; break;
         case Unit::Mm:
-            hi = 25400.0;  step = 0.001;    page = 1.0;   digits = 3; break;
+            hi = 25400.0;  step = 0.5;      page = 5.0;   digits = 3; break;
         case Unit::Pt:
-            hi = 72000.0;  step = 0.01;     page = 1.0;   digits = 2; break;
+            hi = 72000.0;  step = 1.0;      page = 10.0;  digits = 2; break;
         case Unit::Px:
         default:
-            hi = 100000.0; step = 0.5;      page = 10.0;  digits = 1; break;
+            hi = 100000.0; step = 1.0;      page = 10.0;  digits = 1; break;
         }
         // Width is always positive; Distance and Position allow negative
         lo = (m_type == SpinType::Width) ? 0.0 : -hi;
@@ -296,12 +310,15 @@ void CurvzSpinButton::apply_unit_params()
     }
 
     case SpinType::Angle:
-        m_adj->configure(m_adj->get_value(), -360.0, 360.0, 0.1, 1.0, 0.0);
+        // s268: 1°/click, 10°/page — degrees are unitless of canvas
+        // unit and 0.1°/click required 10 clicks to move a single degree.
+        m_adj->configure(m_adj->get_value(), -360.0, 360.0, 1.0, 10.0, 0.0);
         set_digits(1);
         break;
 
     case SpinType::Percentage:
-        m_adj->configure(m_adj->get_value(), 0.0, 100.0, 0.1, 1.0, 0.0);
+        // s268: 1%/click, 10%/page — same rationale as Angle.
+        m_adj->configure(m_adj->get_value(), 0.0, 100.0, 1.0, 10.0, 0.0);
         set_digits(1);
         break;
 
