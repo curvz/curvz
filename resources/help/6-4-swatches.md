@@ -119,7 +119,7 @@ the object stores the reference, not the colour itself. Editing the
 swatch later automatically updates every object that references it
 without having to re-apply.
 
-The inspector's **Appearance** section (5.4.5) shows whether a
+The inspector's **Styling** section (5.4.5) shows whether a
 fill or stroke is bound to a swatch and lets you unbind it back to
 a literal colour.
 
@@ -138,6 +138,6 @@ another project.
 
 - For *combinations* of fill + stroke + dash, see **Styles** (6.5).
 - For per-object appearance editing (which surfaces "Bound to
-  swatch X" annotations), see **Appearance** (5.4.5).
+  swatch X" annotations), see **Styling** (5.4.5).
 - The colour picker itself, used by the New / Edit flows, is
   covered in **Color picker & paint editor** (3.7).

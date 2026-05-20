@@ -158,7 +158,6 @@
     <file alias="4-6-3-measure.md">help/4-6-3-measure.md</file>
     <file alias="4-7-reference-points.md">help/4-7-reference-points.md</file>
     <file alias="4-8-corner.md">help/4-8-corner.md</file>
-    <file alias="5-2-1-motif.md">help/5-2-1-motif.md</file>
     <file alias="5-1-inspector-overview.md">help/5-1-inspector-overview.md</file>
     <file alias="5-3-1-metadata.md">help/5-3-1-metadata.md</file>
     <file alias="5-3-2-canvas.md">help/5-3-2-canvas.md</file>
@@ -167,6 +166,7 @@
     <file alias="5-3-5-margins.md">help/5-3-5-margins.md</file>
     <file alias="5-3-6-snap.md">help/5-3-6-snap.md</file>
     <file alias="5-3-7-measure.md">help/5-3-7-measure.md</file>
+    <file alias="5-3-8-theme.md">help/5-3-8-theme.md</file>
     <file alias="5-4-1-selection.md">help/5-4-1-selection.md</file>
     <file alias="5-4-2-text.md">help/5-4-2-text.md</file>
     <file alias="5-4-3-blend.md">help/5-4-3-blend.md</file>

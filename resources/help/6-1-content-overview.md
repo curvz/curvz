@@ -1,17 +1,17 @@
 # Content overview
 
-The right side of the Curvz workspace is the **Content pane** — five
+The right side of the Curvz workspace is the **Content pane** — six
 stacked panels that hold the parts of your project that aren't a
 single icon. Layers organise what's inside the active document.
-Library, Swatches, and Styles hold reusable assets shared across the
-project. Documents lists every icon in the project and lets you
-switch between them.
+Library, Swatches, Styles, and Themes hold reusable assets shared
+across the project. Documents lists every icon in the project and
+lets you switch between them.
 
 This chapter walks each panel in turn. They sit one above the other
 in a single scrollable column, each with a collapsible header so you
 can hide the ones you aren't using and focus on the ones you are.
 
-![The five Content panels stacked in the right pane](img/6-1-content-panels.png)
+![The six Content panels stacked in the right pane](img/6-1-content-panels.png)
 
 ## ❶ Layers — what's inside the active document
 
@@ -66,9 +66,23 @@ exported and imported as JSON packs.
 
 See **Styles** (6.5).
 
-## ❺ Documents — every icon in the project
+## ❺ Themes — doc-level surface presets
 
-The **Documents** panel ❺ at the bottom is the project's icon
+The **Themes** panel ❺ saves a document's per-document surface
+settings — Canvas colours, Margins, Grid — as a single named
+preset, and applies that preset to one or more documents in the
+project. Use it to keep a consistent feel across an icon family,
+or to flip a set of icons between editing-time presentations
+without altering the artwork.
+
+Themes are project-scoped, saved in `project.json`. User themes can
+be exported and imported as JSON packs.
+
+See **Themes** (6.7).
+
+## ❻ Documents — every icon in the project
+
+The **Documents** panel ❻ at the bottom is the project's icon
 gallery. It has two tabs: **Project**, which lists the documents
 saved in this project, and **System**, which browses your operating
 system's installed icon themes (handy for picking up reference art
@@ -87,13 +101,13 @@ state:
 
 - **Document-scoped** — Layers. The list changes when you switch
   documents.
-- **Project-scoped** — Swatches, Styles, Documents. Same library,
-  same gallery, regardless of which document is open.
+- **Project-scoped** — Swatches, Styles, Themes, Documents. Same
+  libraries, same gallery, regardless of which document is open.
 - **Machine-scoped** — Library. Shared across every project on this
   computer.
 
 If you save a project and open it on another machine, the document,
-swatch, and style data travels with it. The library doesn't —
+swatch, style, and theme data travels with it. The library doesn't —
 anything you placed from the library was inlined into the document
 SVG at place time.
 
@@ -106,7 +120,10 @@ Each section in this chapter walks one panel in detail:
 - **Swatches** (6.4) — named colours and palettes.
 - **Styles** (6.5) — named fill / stroke / dash bundles.
 - **Documents** (6.6) — the project's document gallery.
+- **Themes** (6.7) — saveable doc-level surface presets.
 
-For per-icon appearance editing (the inspector's Appearance section,
-which interacts with Swatches and Styles), see **Appearance**
-(5.4.5).
+For per-icon appearance editing (the inspector's Styling section,
+which interacts with Swatches and Styles), see **Styling**
+(5.4.5). For the in-inspector edit surface for the active document's
+theme bundle (Canvas / Margins / Grid), see the **Theme** disclosure
+(5.3.8).

@@ -7,7 +7,11 @@ nodes whose corners you want to treat, choose a treatment, set a
 radius, click Apply.
 
 Activate it from the toolbox or with the **K** key (canvas focus
-required).
+required). On the toolbar Corner sits in the Transforms section
+alongside Align, Blend, Bool, Step and Repeat, and Warp — it's
+shaped like a tool toggle, but conceptually it modifies geometry
+in place, which is why it lives with the other geometry-modifying
+verbs rather than with Pen and the shape tools.
 
 ![Three corners on the same path: round, chamfer, and inverse-round at the same radius](img/4-8-corner-treatments.png)
 
@@ -34,21 +38,43 @@ The selection count appears in the **Context bar** at the top of
 the canvas — useful for checking that you've picked the right
 number before applying.
 
-## The Corner panel (Context bar)
+## The Corner panel
 
-The top of the canvas — the **Context bar** strip above the
-canvas — shows the Corner tool's controls when active:
+The Corner tool's controls live in a **popover anchored to the
+Corner toolbar button**, opening to the right of the toolbar
+the first time a non-empty corner selection exists. Once open
+the panel is **sticky** — every click on the canvas (each
+selection change) keeps the panel up rather than dismissing it,
+which would be unusable for a tool whose whole flow is
+"select-some-nodes, set-radius, Apply, select-different-nodes,
+Apply again."
 
-- **Round / Chamfer / Inverse** — three toggle buttons, exactly
-  one active at a time. Picks the treatment type.
-- **Radius** — a spin button accepting a distance in the
-  document's display unit. Defaults to 0.1; set to whatever the
-  treatment needs.
-- **Apply** — commits the treatment to the current node
-  selection.
+Inside the popover:
 
-The radius is stored per-document, so flipping back to the
-Corner tool later restores your last value.
+- **Round / Chamfer / Inverse** — three toggle buttons in a
+  radio group, exactly one active at a time. Picks the
+  treatment type. Round is selected on every open.
+- **Radius** — a numeric entry accepting a distance in the
+  document's display unit (label says "Units: …" with the
+  current unit) or an expression like `8px`, `0.125in`, or
+  `3px + 2mm`. Defaults to 0.1; set to whatever the treatment
+  needs. Pressing **Enter** in the radius entry is equivalent
+  to clicking Apply.
+- **Apply** button — commits the treatment to the current node
+  selection and **dismisses the popover**. The op completes
+  fully; the next selection will re-open the panel.
+
+The panel dismisses on:
+
+- **Apply** (or Enter in the radius entry) — the op completes.
+- **Escape** — wired explicitly because the panel's sticky
+  mode bypasses GTK's automatic Escape routing.
+- An explicit click on the Corner toolbar button to deactivate
+  the tool.
+
+It does **not** dismiss on outside click, which is the whole
+point of the sticky behaviour — clicks on the canvas are
+selection edits, not panel-cancel gestures.
 
 ## The three treatments
 
@@ -98,6 +124,7 @@ The treatment skips nodes silently when:
   treatments only work on straight-meets-straight corners.
 - The node is an **endpoint of an open path** with no segment
   on one side.
+- Either adjacent segment is **degenerate** (zero length).
 
 If a multi-node selection includes some treatable and some
 untreatable corners, only the treatable ones change; the rest
@@ -109,8 +136,8 @@ The radius is **clamped per-node** to whatever the local
 geometry can support. If you ask for a radius of 20 px on a
 corner whose adjacent segments are only 10 px long each, the
 treatment will use 5 px instead — the cap is half the
-shorter-segment length so the treatment doesn't overshoot the
-midpoint.
+shorter-adjacent-segment length so the treatment doesn't
+overshoot the midpoint.
 
 This means a single Apply with one radius value can produce
 different *visible* radii at different corners, depending on
@@ -121,9 +148,10 @@ long.
 ## After Apply
 
 The treatment **bakes** into the path. The path's geometry
-changes — the modified corner is now described by extra anchor
-nodes and Bézier handles for Round and Inverse Round, or by extra
-Corner nodes for Chamfer. The original corner anchor is replaced.
+changes — the modified corner is now described by two anchor
+nodes (P1 and P2) replacing the original corner node, with
+Bézier handles for Round and Inverse Round, or with a straight
+segment between them for Chamfer.
 
 Once baked, the corner is no longer "parametric" — Curvz does not
 remember the old sharp version. You can:

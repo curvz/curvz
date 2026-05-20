@@ -46,8 +46,8 @@ document**:
 - **SVG size** — the on-disk size of the SVG. Shows `—` if the
   document has not been saved or if the file does not exist yet.
 - **Canvas** — the document's pixel dimensions in the form
-  `W × H px`. The Canvas section (5.3.2) below is where you
-  *change* these; this row is just a glanceable readout in
+  `W × H px`. The **Dimensions** section (5.3.2) below is where
+  you *change* these; this row is just a glanceable readout in
   pixel-count terms regardless of the display unit.
 - **Objects** — the total leaf count across every layer in the
   document.
@@ -93,13 +93,17 @@ saving.
 ## Where to next
 
 Metadata is the only section in the Document group that is
-mostly read-only. The next six are all interactive controls
-that edit document state directly:
+mostly read-only. The interactive sections that follow edit
+document state directly:
 
-- **Canvas** (5.3.2) sets the document size and units.
-- **Guides** (5.3.3), **Grid** (5.3.4), **Margins** (5.3.5)
-  control the three layout overlays.
-- **Snap** (5.3.6) decides which of those overlays the cursor
-  honours.
-- **Measure** (5.3.7) configures how the Ruler tool's
-  measurements behave.
+- **Dimensions** (5.3.2) sets the document size, units, and
+  ratio/quality budget.
+- The **Theme** disclosure (5.3.8) wraps the doc-level surfaces
+  that travel together as a saveable style preset: **Canvas**
+  colours, **Margins** (5.3.5), and **Grid** (5.3.4).
+- **Guides** moved to the Object group — see the Object-tier
+  Guides section.
+
+The retired sections **Snap** (5.3.6) and **Measure** (5.3.7)
+are toolbar popovers now; both entries are kept as redirect
+pointers.

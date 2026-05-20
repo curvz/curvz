@@ -29,9 +29,9 @@ fixed corner — width grows from the left edge, height from the
 bottom edge.
 
 All four spinners respect the document's display unit (set in the
-**Canvas** section, 5.3.2). They commit on Enter or focus loss and
-edits coalesce — a quick run of nudges or arrow-presses collapses
-into a single Ctrl+Z.
+**Dimensions** section, 5.3.2). They commit on Enter or focus loss
+and edits coalesce — a quick run of nudges or arrow-presses
+collapses into a single Ctrl+Z.
 
 ### Visual size readout
 
@@ -114,22 +114,26 @@ specialised forms only fire for a single node of that type.
 ## Empty state
 
 With nothing selected, the Selection section header still appears
-but the body is empty. The Document group's controls (Canvas,
-Guides, Grid, Margins, Snap, Measure) are what apply when you have
-nothing on the canvas to inspect.
+but the body is empty. The Document-tier sections — Metadata
+(5.3.1), Dimensions (5.3.2), and the Theme disclosure (5.3.8)
+covering Canvas / Margins / Grid — are what apply when you have
+nothing on the canvas to inspect. The Object group below holds
+Guides (always-visible per s179) and Warp (always-visible per
+s155, editing template defaults when no Warp is selected).
 
 ## Where to next
 
 - **Node** (5.4.4) — when a single node is selected, the inspector
   shows its anchor, handles, and type. Use it for precision Bézier
   editing.
-- **Appearance** (5.4.5) — fill, stroke, and opacity controls.
+- **Styling** (5.4.5) — fill, stroke, and opacity controls.
 - **Shadow** (5.4.6) — drop shadow, conditional on the selected
   type supporting one.
 
 If you do most of your alignment work via Selection's POS row, you
-will want **Snap** (5.3.6) configured — guides + nodes are usually
-the right defaults.
+will want **Snap** configured — the per-kind toggles live in the
+Snap toolbar popover (right-click the Snap button, **Q**). Guides
++ nodes are usually the right defaults.
 
 ### Keys
 

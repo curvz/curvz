@@ -20,9 +20,10 @@ Three click gestures:
   the viewport. The marquee defines exactly the region you want
   to fill the editing surface.
 
-After any of these gestures, Curvz returns to whatever tool was
-active before the Zoom — like the Eyedropper, the Zoom is
-meant for quick interruptions, not as a destination tool.
+Unlike the Eyedropper, the Zoom tool **stays active** after each
+gesture — it's expected that you'll click several times in a row
+while finding the right magnification. Press Z again or pick
+another tool from the toolbox when you're done zooming.
 
 A single short drag (less than 5 pixels) is treated as a click,
 not a marquee, so accidental jitter doesn't produce a tiny
@@ -89,10 +90,8 @@ keyboard and Ctrl+scroll routes are usually faster.
 Zoom doesn't change which part of the canvas is visible, only
 the magnification. To **pan** (slide the view) hold:
 
-- **Space + drag** with any tool active.
-- **Right-click drag** with any tool active.
-- **Middle-click drag** with any tool active (where supported by
-  the input device).
+- **Middle-click drag** with any tool active.
+- **Space + drag** with the left button, with any tool active.
 
 Pan is independent of the active tool, so you can pan
 mid-Zoom-tool to reposition before zooming further.
@@ -111,11 +110,11 @@ failing.
 
 ## Where to next
 
-The companion tools are **Eyedropper** (4.6.1) and **Ruler**
+The companion tools are **Eyedropper** (4.6.1) and **Measure**
 (4.6.3) — the three Utility tools that support the workflow
 around the artwork.
 
 For the **rulers** along the canvas edges (the visual coordinate
-strips, not the Ruler tool), see **Canvas, rulers & corner**
+strips, not the Measure tool), see **Canvas, rulers & corner**
 (3.6). They show the document's coordinate range at the current
 zoom.

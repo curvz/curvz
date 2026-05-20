@@ -92,7 +92,7 @@ undo step — Ctrl+Z reverts every affected object together.
 Once an object is bound, editing the style later updates that
 object automatically. To break the binding (without changing the
 appearance), use the **Style** row at the top of the inspector's
-Appearance section (5.4.5), or press `Ctrl + Shift + B` to unbind
+Styling section (5.4.5), or press `Ctrl + Shift + B` to unbind
 the selection from any style it currently carries.
 
 ## ❺ Right-click on a chip
@@ -145,11 +145,13 @@ App-tier styles never export — they're code, not user data.
 
 ## Where to next
 
-- The **Appearance** section (5.4.5) inside the inspector is where
+- The **Styling** section (5.4.5) inside the inspector is where
   bindings show up per-object, and where you can unbind without a
   shortcut.
 - The colour picker used by the Style Editor's fill and stroke
   rows is covered in **Color picker & paint editor** (3.7).
-- For more about how Curvz packages full-document appearance
-  presets — Motif plus styles plus swatches as a single transferable
-  unit — see **Themes** (9.1).
+- For Curvz's other named-preset system — the doc-level **Theme
+  bundle** that packages Canvas colours, Margins, Grid, Guides,
+  units, and snap settings as one applyable unit — see the
+  **Themes** panel (6.7) and the conceptual chapter **Themes**
+  (9.1).

@@ -66,6 +66,31 @@ To change any of these for the *next* text you create, set them
 on the current selection in the inspector, draw your text, and
 the inspector's last values seed the next defaults.
 
+## Right-click for precise placement
+
+Right-click the Text button in the toolbox to open the **Place
+Text** popover — a numeric alternative to click-and-type when
+you want the text to land at exact coordinates with specific
+styling:
+
+- **X**, **Y** — coordinates in document units (defaults to 10%
+  width and 75% height of the canvas).
+- **Size (pt)** — font size in points (1 to 2000; default 72).
+- **Font** — searchable dropdown of every font family Pango can
+  resolve on the system. Defaults to "Sans".
+- **Bold** / **Italic** — independent checkboxes.
+- **Align** — Left / Centre / Right / Justify.
+- **Place** button — drops the text at the typed coordinates
+  with the selected styling and dismisses the popover.
+
+Unlike the click flow, the popover places an *empty* text node
+at the specified coordinates — no inline entry opens. Switch to
+the Text tool and click the placed node to type its content, or
+edit content via the inspector. The popover defaults to 72 pt to
+match common headline sizing; the click flow defaults to 24 pt
+to match icon-caption sizing. Both routes drop a real text node
+with the same downstream behaviour.
+
 ## Where the text sits
 
 The click point becomes the text's **anchor**, with the text

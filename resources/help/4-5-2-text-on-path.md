@@ -61,29 +61,28 @@ a no-op — the link stays intact, you stay in phase 2.
 
 ## Detaching and releasing
 
-Two paths to undo a text-on-path link:
+Three paths to undo a text-on-path link, depending on which is
+in reach:
 
-- **Detach** — keeps the text where it currently sits along the
-  path, but breaks the link. The text becomes free-floating
-  again, with `text_x` and `text_y` set to the visual position
-  it had on the path.
-- **Release** — same idea, applies to the whole selection (so
-  multi-text-on-path workflows can release in batch). The
-  shortcut is **Shift + U** when the canvas has focus.
+- **Detach button** in the **Text** inspector section (5.4.2),
+  shown only when the selection is text-on-path. Keeps the text
+  where it currently sits along the path, but breaks the link.
+  The text becomes free-floating again, with `text_x` and
+  `text_y` set to the visual position it had on the path.
+- **Right-click anywhere** on the canvas with the Text on Path
+  tool active. If a text-on-path is currently the target, it
+  releases that one; otherwise the right-click hit-tests for any
+  text-on-path under the cursor and releases that. Same effect
+  as the Detach button — the text stays where it sits, the link
+  breaks. No menu appears; the right-click *is* the release.
+- **Shift + U** with the canvas focused. Releases every
+  text-on-path in the current selection in one gesture. For
+  multi-text-on-path workflows where you want to batch-release
+  several linked nodes at once.
 
-The Detach button lives in the **Text** inspector section
-(5.4.2), shown only when the selection is text-on-path. Detach is
-the affordance you'll use most often; Shift + U release is for
-when you've selected several linked text nodes at once.
-
-## Right-click for the editor
-
-Right-clicking with the Text on Path tool active opens a small
-context menu over the hit object. The menu's contents depend on
-what was hit (link / detach / cancel are the main verbs).
-
-For most workflows the click flow above is enough; the right-click
-is a fallback when you want to reach a verb without dragging.
+The Detach button is the affordance you'll use most often;
+right-click is the fastest single-text release without leaving
+the tool; Shift + U is for batch release.
 
 ## What gets stored on the text node
 

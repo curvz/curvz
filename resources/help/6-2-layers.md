@@ -101,8 +101,9 @@ A few row types ❻ exist for non-content layers:
 - **Reference image layers** hold imported raster references — your
   template, your sketch, the icon you're matching. They render
   beneath everything but don't export.
-- **Measure layers** hold the persistent measurements drawn with the
-  Ruler tool. Each measurement is one row.
+- **Measurements layer** — holds the persistent measurements
+  drawn with the **Measure** tool (4.6.3). Each measurement is
+  one row.
 - **Blend rows** appear when a blend operation has produced an
   intermediate-step output. Right-click the blend row to rebuild
   the steps after editing the source paths.

@@ -27,18 +27,30 @@ The two paths also need to match on:
 - **Closed flag** — both open or both closed. You can't blend an
   open path with a closed one.
 - **Node count** — same number of nodes on each side. If they
-  don't match, the dialog warns and offers to **Equalize** them
+  don't match, the popover warns and offers to **Equalize** them
   for you (see below).
 
 If either side fails these rules, Curvz refuses to start the
 blend and the status bar tells you why.
 
-## Opening the dialog
+## Opening the Blend popover
 
-With two valid paths selected, choose **Path → Blend** from the
-menu. The dialog opens non-modally — the canvas stays interactive
-so you can click somewhere else to bail out, or pick a different
-pair without losing the dialog state.
+Blend is configured in a **popover anchored to the Blend toolbar
+button**. Three ways to open it:
+
+- **Path → Blend** menu item.
+- **Ctrl + B** keyboard shortcut.
+- **Right-click the Blend toolbar button.**
+
+A **left-click on the Blend toolbar button** is a separate path:
+it re-applies the *last* Blend settings to the currently selected
+two paths without opening the popover. If the node counts don't
+match, left-click falls through and opens the popover so you can
+see the warning banner and hit Equalize.
+
+The popover opens non-modally — the canvas stays interactive so
+you can click somewhere else to bail out, or pick a different pair
+without losing the popover state.
 
 ## ❶ Steps
 
@@ -79,7 +91,7 @@ for a stroke that pinches off into nothing.
 
 ## ❹ Node-count mismatch warning
 
-When the two source paths have different node counts, the dialog
+When the two source paths have different node counts, the popover
 shows a warning banner ❹ at the top with an **Equalize** button.
 
 Click **Equalize** and Curvz inserts nodes into whichever path
@@ -113,11 +125,12 @@ right-click the Blend's row in the Layers panel and choose
 
 ## Releasing a blend
 
-Select a Blend and choose **Path → Release Blend**. The two source
-paths return as normal siblings, the cached steps return as a
-group named "Steps" between them, and the Blend container is
-removed. The result preserves the bake: you keep the geometry
-the blend produced as ordinary editable paths.
+Select a Blend and choose **Path → Release Blend** (or press
+`Ctrl + Shift + B`). The two source paths return as normal
+siblings, the cached steps return as a group named "Steps"
+between them, and the Blend container is removed. The result
+preserves the bake: you keep the geometry the blend produced as
+ordinary editable paths.
 
 If you want only the sources back without the bake, delete the
 Steps group after releasing.
@@ -131,7 +144,7 @@ linearly interpolated:
   shape morphs).
 - **Fill colour** and **stroke colour**.
 - **Stroke width**, unless the override is enabled (which uses
-  the dialog's range instead).
+  the popover's range instead).
 - **Opacity**.
 
 Properties that don't interpolate continuously (dash arrays of
@@ -142,7 +155,7 @@ from the start source for every intermediate.
 
 - For *cloned* sequences without geometric morphing, see
   **Step and Repeat** (7.1).
-- For per-path stroke and fill controls, see **Appearance**
+- For per-path stroke and fill controls, see **Styling**
   (5.4.5).
 - For combining paths into one shape rather than animating
   between them, see **Boolean operations** (8.2).

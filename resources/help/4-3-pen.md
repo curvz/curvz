@@ -55,18 +55,21 @@ control the node's type:
 - **No modifier — Symmetric** — the inbound handle mirrors the
   outbound: same length, same angle through the anchor. The
   smoothest possible curve.
-- **Shift — Cusp** — the inbound handle locks to the previous
-  segment's tangent at one-third its length. The outbound handle
-  is whatever you drag. The two handles can have different angles
-  through the anchor — produces a soft kink.
-- **Alt — Corner** — handles are independent in length and angle.
-  Drag the outbound; the inbound resolves to whatever produces
-  the cleanest segment from the previous node. The hardest break
-  in the curve direction.
+- **Shift — Cusp** — the **inbound** handle retracts to the
+  anchor (zero-length), and the **outbound** handle locks its
+  direction to the **incoming tangent** of the previous segment.
+  You still control its *length* by how far you drag. Produces a
+  smooth curve into the new anchor that immediately changes
+  direction on the way out — a soft kink.
+- **Alt — Corner** — the inbound handle retracts to the anchor,
+  and the outbound is fully free in both length and angle. The
+  hardest break in the curve direction.
 
-The modifier is read at the moment of click. A Cusp node with the
-inbound mid-drag adjusted by Shift is committed as Cusp; releasing
-Shift after the click does not change it.
+Both Cusp and Alt retract the inbound; the difference is whether
+the outbound is constrained to the incoming tangent (Cusp) or
+free (Corner). The modifier is read at the moment of click. A
+Cusp node committed with Shift held stays Cusp even if you
+release Shift afterwards — the type is baked at commit.
 
 ## Continuing an existing path
 
@@ -83,18 +86,25 @@ resume gesture only fires when you have no WIP active.
 To **add a node to a closed path** or to a path's interior, use
 the Node tool (4.2.2) instead — click the segment to insert.
 
-## Snapping to existing nodes
+## Snapping when starting a new path
 
-The Pen tool snaps to existing path nodes within 6 pixels. When
-you click near an anchor on any path in the document, Curvz uses
-that exact node position rather than the click location. Useful
-for connecting new artwork to existing artwork at exact points.
+When the Pen is active and there is **no WIP** yet, the first
+click snaps to two things:
 
-The snap is screen-pixel based, so it scales with zoom — zoom in
-for fine work, zoom out for forgiving snaps over larger
-distances. The 6 px tolerance is below the close-detection 8 px
-tolerance for the path's own first node, so the close gesture
-takes priority when you are near the path you are drawing.
+- **Existing path nodes within 6 screen pixels** — Curvz uses
+  the exact node position from any path in the document. Useful
+  for starting a new path off an existing anchor.
+- **Integer document units** otherwise — every click position
+  rounds to whole doc-space units, so paths land on the pixel
+  grid by default. This applies to subsequent clicks in the WIP
+  too, not just the first.
+
+The 6 px node-snap only fires on the first click of a new path
+(i.e. when there is no WIP). Once you have a WIP active, the
+close-detection 8 px tolerance on the WIP's own first node takes
+over for the close gesture, and node-snap to *other* paths is no
+longer in play — that's the design, to keep the rubber-band from
+locking onto the path you're drawing.
 
 ## Closing the path
 

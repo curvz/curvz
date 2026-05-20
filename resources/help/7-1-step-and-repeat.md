@@ -6,12 +6,23 @@ optionally rotating each copy around a pivot. It's the tool for
 building radial spokes, arrow strips, evenly-spaced grids, and
 anywhere you'd otherwise duplicate-and-nudge in a loop.
 
-The operation is a single dialog with a live mini preview. Open it
-from **Path → Step and Repeat…** or with `Ctrl + Alt + D`. You need
-at least one object selected; the dialog refuses to apply with an
-empty selection.
+The operation is configured in a **popover anchored to the SnR
+toolbar button**, with a live mini preview. Three ways to open it:
 
-![The Step and Repeat dialog with copies, offset, rotate and pivot fields](img/7-1-stepandrepeat-dialog.png)
+- **Path → Step and Repeat…** menu item.
+- **Ctrl + Alt + D** keyboard shortcut.
+- **Right-click the SnR toolbar button.**
+
+A **left-click on the SnR toolbar button** is a separate path:
+it re-applies the *last* Step and Repeat settings to the current
+selection without opening the popover. Useful for repeating the
+same operation across many sources once you've dialled in the
+values you want.
+
+You need at least one object selected; without a selection the
+popover refuses to apply.
+
+![The Step and Repeat popover with copies, offset, rotate and pivot fields](img/7-1-stepandrepeat-dialog.png)
 
 ## ❶ Copies
 
@@ -65,17 +76,17 @@ spinners give you the X and Y in document units, with the same
 Y-up convention as the offset.
 
 The default pivot is the **selection's bounding-box centre**, set
-by the dialog the moment it opens. Override it via the spinners or
+the moment the popover opens. Override it via the spinners or
 by dragging the pivot directly:
 
 - **In the mini preview** — the dot in the small preview canvas is
   draggable. The spinners follow.
-- **On the canvas** — while the dialog is open Curvz draws a
+- **On the canvas** — while the popover is open Curvz draws a
   crosshair on the canvas at the pivot location. Click and drag
   the crosshair and the preview + spinners follow.
 
 The two surfaces stay in sync; pick whichever one is easier to
-target. Closing the dialog (apply or cancel) hides the canvas
+target. Closing the popover (apply or cancel) hides the canvas
 crosshair.
 
 ## ❺ Mini preview
@@ -110,16 +121,17 @@ afterwards, select them all and `Ctrl + G`.
 
 ## Sticky values
 
-The dialog remembers the last values you used between invocations
-within a session — copies, offset, rotate state, angle, mode. The
-pivot resets to the new selection's bounding centre on each open
-because the previous pivot is rarely meaningful for a different
-target. Restart Curvz and the values reset to defaults.
+The popover remembers the last values you used between invocations
+within a session — copies, offset, rotate state, angle, mode.
+These are also what the toolbar SnR left-click repeats. The pivot
+resets to the new selection's bounding centre on each open because
+the previous pivot is rarely meaningful for a different target.
+Restart Curvz and the values reset to defaults.
 
 ## Where to next
 
-- For arranging existing objects without cloning, see **Selection**
-  (5.4.1) — alignment and distribution sit there.
+- For arranging existing objects without cloning, see
+  **Align & Distribute** (7.4).
 - For deriving a *new* shape from existing geometry (offset,
   expand stroke), see **Compound & derived** (8.3).
 - For combining two paths interpolatively rather than by copies,

@@ -54,34 +54,34 @@ the standard preview blue with rounded line caps for clarity.
 
 ### ❷ Turns
 
-A spinner controlling how many full revolutions the spiral makes
-from outer to inner. Fractional values are allowed — 1.5 turns
-gives a half-revolution past one full loop.
+A spinner from 0.25 to 20.0 controlling how many full revolutions
+the spiral makes from outer to inner. Fractional values are
+allowed — 1.5 turns gives a half-revolution past one full loop.
 
 For tight spirals (a clock-face spiral, a snail-shell spiral),
 2 to 4 turns is typical. For loose decorative spirals, fewer
-turns work better. Very high counts (10+) produce a dense
+turns work better. Very high counts produce a dense
 visually-saturated coil that reads as a filled disc at icon
 sizes.
 
 ### ❸ Inner
 
-A spinner from 0 to nearly 100, controlling the **inner radius
-as a percentage of the outer**. Small values (5–20%) produce
-spirals that nearly close on themselves at the centre. Large
-values (50%+) produce open spirals that look more like ring
-fragments than full coils.
+A spinner from 0 to 95%, labelled **Inner r %:**, controlling the
+**inner radius as a percentage of the outer**. Small values
+(5–20%) produce spirals that nearly close on themselves at the
+centre. Large values (50%+) produce open spirals that look more
+like ring fragments than full coils.
 
 The inner-percent and turns values together define the spiral's
 density — fewer turns plus a larger inner radius gives an open,
 airy spiral; more turns plus a smaller inner radius gives a
 tightly-wound coil.
 
-### ❹ X / Y / Radius
+### ❹ CX / CY / R
 
 Numeric placement fields:
 
-- **X**, **Y** — the spiral's centre position in document
+- **CX**, **CY** — the spiral's centre position in document
   coordinates.
 - **R** — the outer radius.
 - **Units** — read-only label showing the active display unit.

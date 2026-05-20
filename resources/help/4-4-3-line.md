@@ -115,7 +115,7 @@ straight segments become curves with whatever tension you set.
 - **Pen** (4.3) — for paths that mix straight and curved segments.
 - **Rectangle** (4.4.1), **Ellipse** (4.4.2) — drag-to-create
   closed shapes.
-- **Ruler** (4.6.3) — when the line you actually want is a
+- **Measure** (4.6.3) — when the line you actually want is a
   measurement, not a drawing.
 
 If your path turns out to need curves between the existing

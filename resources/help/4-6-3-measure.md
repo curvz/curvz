@@ -16,70 +16,94 @@ page covers the picking flow.
 
 ## Picking endpoints
 
-A measurement is two endpoints: **A** and **B**. The clicks pick
-them:
+A measurement is two endpoints: **A** and **B**. Plain clicks
+walk you through the pair:
 
-- **Click on a node or refpt** within 8 pixels — sets that as **A**
-  and clears any previous measurement.
-- **Shift + click on a different node or refpt** — promotes the
-  current A to **B** and sets the clicked one as the new A.
-  Confusingly worded but useful: the *most recent click is always
-  A*, the previous A becomes B, so a measurement reads forward.
+- **1st click** on a node or refpt — sets that as **A**. A
+  dashed track line follows the cursor so you can see the tool
+  is in flight.
+- **2nd click** on a different node or refpt — sets that as **B**
+  and completes the measurement. If **Save measurements** is on
+  in the popover, the completion auto-saves to the Measurements
+  layer.
+- **3rd click** — starts a fresh measurement. The previous
+  measurement is replaced (or, if saved, left in place as a
+  saved annotation while you build the next one).
 
-Once both A and B are set, Curvz draws the measurement triangle
-between them with three labels — distance, horizontal Δx, and
-vertical Δy.
+Re-clicking A while only A is set is a no-op — use Space (below)
+to clear if you want to start over.
 
 The 8-pixel pick tolerance is in screen space, so it scales with
 zoom. Zoom in for fine work; zoom out for forgiving snaps over
 larger distances.
 
+## Shift+click — corrections
+
+**Shift + click** is the corrective gesture for when you've
+mispicked:
+
+- **Shift+click an already-set A** — drops A, promotes B (if
+  set) to A, clears B. Equivalent to "undo my first pick."
+- **Shift+click an already-set B** — drops B only; A is kept.
+- **Shift+click a fresh node** — promotes the current A to B
+  and sets the new node as A. Completes the pair if A was set
+  alone, with auto-save firing if the flag is on.
+
+The third case is useful when you've picked A, then realise you
+want to keep that point as the *second* endpoint with a new A
+elsewhere — one shift-click does the swap.
+
 ## Marquee shortcut
 
-Drag a **marquee** on empty canvas to box-select **exactly two
-nodes**. If the marquee contains exactly two nodes, those
-become A and B; if it contains zero or more than two, the
-measurement clears.
+Drag a **marquee** on empty canvas to box-select endpoints
+inside the rectangle:
 
-This is faster than two clicks when the two endpoints are clearly
-isolated within a region — drag a small box around both, release,
-done.
+- **Exactly 2 nodes inside** — those become A and B in one
+  gesture, with auto-save firing if the flag is on.
+- **Exactly 1 node inside** — that node becomes A only; the
+  measurement is half-complete and waits for a B click.
+- **0 nodes** — Curvz toasts "No measurement point at this
+  location" at the marquee origin; A/B are left unchanged.
+- **More than 2 nodes** — Curvz shows an alert dialog ("Only 2
+  nodes can be measured at a time"); A/B are left unchanged.
+
+The 2-node marquee is faster than two clicks when the two
+endpoints are clearly isolated within a region — drag a small
+box around both, release, done.
 
 ## Promote (Enter) and Clear (Space)
 
 Two keyboard verbs supplement the click flow:
 
 - **Enter** — when both A and B are set, **commits the
-  measurement** (places it on the canvas as a saved annotation,
-  if save-on; otherwise leaves it as a transient overlay).
-  Exactly the same as the auto-save that fires when shift-click
-  completes the pair.
+  measurement** to the Measurements layer (the same auto-save
+  that fires on shift-click and marquee completions). Useful
+  if your plain-click 2nd-click completed the pair but
+  save-on-completion was off at the time and you've since
+  decided to keep this one.
 - **Space** — clears the current A/B picks. The tool stays
   active; the next click starts fresh.
 
-The Enter verb is what you reach for if you've built up a
-measurement via two plain clicks (no shift) and want it saved —
-plain clicks don't auto-save by themselves, only shift-click
-completions do.
-
 ## What the labels show
 
-Three labels appear on the measurement triangle:
+A completed measurement draws a triangle between A and B with
+several on-canvas labels:
 
-- The **hypotenuse label** at the midpoint of the A-B line shows
-  **distance** (in the document's display unit).
-- The **horizontal label** along the bottom of the triangle shows
-  **Δx** — the X-axis distance from A to B.
-- The **vertical label** along the side shows **Δy** — the
-  Y-axis distance.
+- **Distance** — at the midpoint of the A→B hypotenuse, in the
+  document's display unit.
+- **Δx** — along the horizontal leg, the X-axis distance from
+  A to B (always positive — magnitude only).
+- **Δy** — along the vertical leg, the Y-axis distance from A
+  to B.
+- **α at A** — the interior angle at A in degrees.
+- **β at B** — the interior angle at B in degrees (α + β = 90°,
+  since the triangle has a right angle at the C corner).
+- **(x, y) at A** and **(x, y) at B** — small coordinate pills
+  pinned to each endpoint, in document units.
 
-A small arrow on the line marks direction (A to B).
-
-In addition to the three labels, two **angle annotations** show
-the slope angle relative to horizontal and the complement
-relative to vertical, in degrees. They're useful for measuring
-"is this perfectly horizontal" or "what angle does this slope
-sit at."
+The triangle is drawn with the hypotenuse in blue and the two
+legs in dashed green, with a small right-angle box at the C
+corner where the legs meet.
 
 ## Click-to-copy
 
@@ -88,42 +112,44 @@ measurement data** to the system clipboard. Format is a
 multi-line text block:
 
 ```
-A: x1, y1
-B: x2, y2
-Δ: dx, dy
-distance: d
-angle: θ°
+x₁ = …,  y₁ = …
+x₂ = …,  y₂ = …
+ΔX = …,  ΔY = …
+Distance = …
+Angle = …°,  α = …°,  β = …°
 ```
 
-A small "Copied measurement data" toast appears briefly above the
-label to confirm.
+Every label copies the same block — so you don't have to hit
+the "right" one. The block reports the full angle (CCW from +X
+axis, 0–360°) alongside α and β; the on-canvas labels show only
+α and β to keep the overlay readable.
 
-The same copy block goes regardless of which label you clicked —
-so you don't have to hit the right one. Click distance, click
-Δx, click Δy: same data either way.
+A small "Copied measurement data" toast appears briefly above
+the label to confirm.
 
 ## Save versus transient
 
 What happens after you complete a measurement depends on the
-**Measure** inspector section's settings (5.3.7):
+**Measure** tool button's right-click popover settings:
 
-- **Save measurements ON**: every completion (shift-click pair
-  or Enter on a click pair) appends to the document's
-  Measurements layer. Persists across save/load.
+- **Save measurements ON**: every completion (plain 2nd-click,
+  shift-click, marquee, or Enter on a click pair) appends to
+  the document's Measurements layer. Persists across save/load.
 - **Save measurements OFF** (default): the measurement is
   transient — visible until you dismiss it, but not part of the
   document. **Delete on copy** controls whether copying the
   label dismisses the transient measurement.
 
 Saved measurements are real document objects on the
-**Measurements** layer. Delete them via Layers panel × button
-or the inspector's per-measurement controls.
+**Measurements** layer. Delete them via the Layers panel × button.
 
 ## Where to next
 
 For the **measurement preferences** (save versus transient,
 delete on copy), **right-click the Measure tool button** —
-both toggles live in the popover.
+both toggles live in the popover. These used to live in a
+Measure inspector section; that section was retired when the
+toggles moved to the toolbar popover.
 
 For static **rulers** along the canvas edges (the coordinate
 strips at the top and left), see **Canvas, rulers & corner**

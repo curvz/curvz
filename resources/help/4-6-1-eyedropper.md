@@ -108,7 +108,7 @@ inspector section (5.4.5), where the new colour shows in the
 fill or stroke paint editor. Open the Color picker (3.7) from
 there to fine-tune the sampled colour after the fact.
 
-The companion utility tools are **Zoom** (4.6.2) and **Ruler**
+The companion utility tools are **Zoom** (4.6.2) and **Measure**
 (4.6.3) — together they cover the three tools that don't draw
 new artwork but support every other aspect of the workflow.
 

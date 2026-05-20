@@ -54,7 +54,7 @@ Right-click the Rectangle button in the toolbox to open the
   coordinates.
 - **W**, **H** — width and height in document coordinates.
 - **Units** — read-only label showing the active display unit
-  (set in the **Canvas** inspector section, 5.3.2).
+  (set in the **Dimensions** inspector section, 5.3.2).
 - **Place** button — commits the rectangle and dismisses the
   popover.
 

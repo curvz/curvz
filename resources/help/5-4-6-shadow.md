@@ -3,7 +3,7 @@
 The **Shadow** section adds a drop shadow to a selection — a
 soft-edged offset duplicate beneath the artwork. It's the bottom
 section of the **Object** group when present, sitting below
-Appearance per the convention that effects layer on top of fill
+Styling per the convention that effects layer on top of fill
 and stroke.
 
 > **Appears when:** the primary selection is a node type that
@@ -116,7 +116,7 @@ radius and the shadowed object's bounding box.
 
 ## Where to next
 
-- **Appearance** (5.4.5) — fill, stroke, and overall opacity. The
+- **Styling** (5.4.5) — fill, stroke, and overall opacity. The
   section directly above Shadow.
 - **Color picker & paint editor** (3.7) — the picker that opens
   from the COLOUR swatch.

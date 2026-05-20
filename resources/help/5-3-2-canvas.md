@@ -1,12 +1,19 @@
-# Canvas
+# Dimensions
 
-The **Canvas** section sets the size, orientation, and unit
-system of the active document. It is the second section in the
-inspector's **Document** group and the one you reach for whenever
-the icon you are designing needs different dimensions, a different
-working unit, or a quick portrait/landscape flip.
+The **Dimensions** section sets the size, orientation, and unit
+system of the active document. It is the bottom section in the
+inspector's **Document** group — the doc's underlying geometric
+bones — and the one you reach for whenever the icon you are
+designing needs different dimensions, a different working unit, or
+a quick portrait/landscape flip.
 
-![The Canvas section in Pixel mode with W/H spinners and the orientation buttons](img/5-3-2-canvas-section.png)
+The section's *function* name in the source is still
+`build_canvas_section` for historical reasons; the user-facing
+label was renamed from "Canvas" to "Dimensions" in s148 to free
+the "Canvas" name for the document's surface-colours section
+inside the Theme disclosure (5.3.8).
+
+![The Dimensions section in Pixel mode with W/H spinners and the orientation buttons](img/5-3-2-canvas-section.png)
 
 ## ❶ Units
 
@@ -131,11 +138,14 @@ representations to match.
 
 ## Where to next
 
-The Canvas section is the most numeric of the Document-group
-sections. The four that follow — **Guides, Grid, Margins, Snap**
-— are the layout helpers Curvz draws *on top of* the canvas. None
-of them export with the SVG; they exist to make precise layout
-easier while you draw.
+Dimensions sits at the bottom of the Document group so it abuts
+the Object group — the doc's frame, sitting at the boundary
+between doc-level and object-level editing where you spend most
+of your time.
+
+The doc-level surfaces stacked above Dimensions are inside the
+**Theme** disclosure (5.3.8): **Canvas** colours (artboard,
+workspace, creation), **Margins** (5.3.5), and **Grid** (5.3.4).
 
 If you are looking to change *which* unit the rulers display,
 remember that Units here is a Document-group setting and applies

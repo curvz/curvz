@@ -99,11 +99,11 @@ A few related controls live elsewhere:
 
 - **Source A and B's appearance** is edited by selecting the
   source individually inside the Blend container (use the Layers
-  panel to dive in). Their Appearance widgets work as for any
+  panel to dive in). Their Styling widgets work as for any
   path. The cache regenerates on the next change.
 - **The Blend's own fill/stroke** is unusual — the cache picks up
   per-step interpolated paint from A and B. The container's own
-  Appearance values are ignored. To recolour a blend, recolour A
+  Styling values are ignored. To recolour a blend, recolour A
   and B; the cache follows.
 
 ## Where to next

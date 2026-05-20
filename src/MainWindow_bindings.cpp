@@ -5,6 +5,7 @@
 #include "CurvzLog.hpp"
 #include "CurvzProject.hpp"
 #include "DocTabBar.hpp"
+#include "DocUnits.hpp" // s273 m7c: canonical doc→display unit pump for statusbar X/Y
 #include "RecentProjects.hpp" // s144 m3 — Open Recent submenu
 #include "Ruler.hpp"
 #include "SvgOptimiser.hpp"
@@ -649,10 +650,18 @@ void MainWindow::connect_signals() {
     auto *doc = m_project->active_doc();
     if (!doc)
       return;
-    CoordSpace cs{(double)doc->canvas_height()};
-    // Apply ruler origin offset to status bar display
-    double ux = cs.to_user_x(x) - doc->ruler_origin_x;
-    double uy = cs.to_user_y(y) - doc->ruler_origin_y;
+    // s273 m7c: route statusbar X/Y through DocUnits — the canonical
+    // doc→display pump the rulers and inspector use. Previously this
+    // applied the ruler-origin offset manually but skipped the unit
+    // conversion, so the statusbar always read in pixels regardless
+    // of the doc's display unit (mm / in / pt) or render-intent.
+    // DocUnits handles all four branches (intent / Physical /
+    // RatioQuality / Pixel) plus the Y-flip; the resulting value is
+    // exactly what the rulers label at the same cursor position.
+    double ux = DocUnits::doc_to_display_x(x, &doc->canvas,
+                                           doc->ruler_origin_x);
+    double uy = DocUnits::doc_to_display_y(y, &doc->canvas,
+                                           doc->ruler_origin_y);
     m_statusbar.set_cursor_pos(ux, uy);
     // Update cursor marker in rulers (cheap — just update cursor fields)
     update_rulers();

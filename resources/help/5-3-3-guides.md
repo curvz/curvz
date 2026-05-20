@@ -10,6 +10,13 @@ This section does two things at once: it edits the
 **document-wide guide colour**, and — when one or more guides
 are selected — it edits **the guides themselves**.
 
+> **Section location:** Guides moved from the Document group to
+> the **Object** group in s179. Guides are objects on the canvas
+> with a selection model, not a doc-level surface setting, so
+> they sit alongside Selection/Blend/Node now. The section
+> remains numbered 5.3.3 here for stable bookmarking even
+> though its inspector home is in the Object tier.
+
 ![The Guides section with one guide selected, showing X/Y/A spinners](img/5-3-3-guides-section.png)
 
 ## Section header swatch
@@ -24,6 +31,10 @@ The colour is a single document-wide value — Curvz does not
 support per-guide colours. If you want some guides to read
 differently, the convention is to lock or hide the ones you are
 not using rather than try to recolour them.
+
+The theme bundle (5.3.8) round-trips the guide colour as part of
+its saved palette, so applying a theme reapplies the guide
+colour you saved with it.
 
 ## ❶ Color row
 
@@ -118,7 +129,11 @@ first — see **Canvas, rulers & corner** (3.6).
 ## Where to next
 
 Guides are usually paired with **snap** so the cursor catches on
-them — see **Snap** (5.3.6) for the snap toggles. The other two
-layout overlays — **Grid** (5.3.4) and **Margins** (5.3.5) —
-are similar in shape (document-wide, non-exporting), but each
-has its own geometry and its own colour.
+them. Snap is no longer an inspector section — it's a toolbar
+popover; right-click the Snap button (Q) for its options.
+
+The other doc-level layout overlays — **Grid** (5.3.4) and
+**Margins** (5.3.5) — sit inside the **Theme** disclosure
+(5.3.8). Each has its own geometry and its own colour, and all
+three (Guides, Grid, Margins) travel together in the theme
+bundle.

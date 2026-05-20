@@ -19,9 +19,11 @@ Curvz scans two folders on startup ❶:
 - **System library** — `/usr/share/curvz/library/`. Read-only.
   Items shipped with the Curvz install live here; on most systems
   it is empty unless the package included sample artwork.
-- **User library** — `~/.config/curvz/library/`. Yours to fill.
-  Items dropped here are picked up the next time the panel
-  refreshes.
+- **User library** — `~/.config/curvz/library/` by default. Yours
+  to fill. Items dropped here are picked up the next time the
+  panel refreshes. The path is overridable via **User library** in
+  the inspector's **Application ▸ Paths** subsection — set a
+  different folder there and Curvz scans that instead.
 
 Inside each location the **immediate sub-folders become categories**:
 `~/.config/curvz/library/Symbols/heart.svg` shows up under a
@@ -51,7 +53,7 @@ a flow-grid of thumbnails: each one a card showing a small Cairo
 render of the SVG and the file's name underneath (the name is
 the filename minus the `.svg` extension).
 
-The thumbnail respects the project's current motif — artboard
+The thumbnail respects the project's current theme — artboard
 colour, workspace colour — so the preview matches the surface the
 icon will sit on once placed.
 

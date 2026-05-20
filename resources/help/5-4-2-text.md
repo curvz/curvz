@@ -8,9 +8,16 @@ baseline, letter spacing, and optional linking to a path.
 
 > **Appears when:** a text node is the primary selection. Created
 > with the **Text** tool (T) or **Text on Path** tool (U). For any
-> other selection — paths, groups, images, refs — the Text section
-> header still appears but its body is empty, since none of these
+> other selection — paths, groups, images, refs — an empty
+> "Text" placeholder collapsible appears below Selection in the
+> Object group, but its body is empty since none of these
 > properties apply.
+
+> **Section position:** The Text section is a sibling of Selection
+> inside the Object group, not nested inside it. For text nodes,
+> the Selection section is not built at all and Text takes its
+> place; for non-text nodes, both headers appear (Selection
+> populated, Text empty).
 
 ![The Text section showing content, font, size, alignment, and on-path controls](img/5-4-2-text-section.png)
 
@@ -131,7 +138,7 @@ A few common text properties live elsewhere or do not exist in
 Curvz today:
 
 - **Fill and stroke** — the text's appearance lives in the
-  **Appearance** section (5.4.5), the same widget every other
+  **Styling** section (5.4.5), the same widget every other
   paintable node uses. Text honours both fill and stroke; for
   monochrome icons leave stroke at None.
 - **Drop shadow** — the **Shadow** section (5.4.6) applies to text
@@ -147,5 +154,4 @@ covers the U-tool flow that produces a linked text node. The
 **Text** tool (4.5.1) covers free-floating text creation.
 
 For the inspector sections that paint and shadow text the same way
-they paint paths, see **Appearance** (5.4.5) and **Shadow**
-(5.4.6).
+they paint paths, see **Styling** (5.4.5) and **Shadow** (5.4.6).

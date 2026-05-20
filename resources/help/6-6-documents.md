@@ -34,7 +34,7 @@ Curvz asks for confirmation before doing it.
 ## ❷ Project tab — thumbnail view
 
 The default view ❷ is a flow-grid of thumbnails. Each card shows a
-small Cairo render of the document on its motif-correct artboard,
+small Cairo render of the document on its current artboard colour,
 with the document's name underneath. Click a card to open that
 document in the editor; the active document gets a highlighted
 outline so you can see at a glance which one is open.
@@ -111,8 +111,8 @@ Each document inside the project carries its own:
 - Per-document inspector settings (artboard size, units).
 - Optional reference images you've imported.
 
-Project-level state — Motif, Swatches, Styles — is shared across
-every document and stored once.
+Project-level state — Swatches, Styles, and the Themes library —
+is shared across every document and stored once.
 
 ## Where to next
 
@@ -123,6 +123,8 @@ every document and stored once.
   see 3.1.
 - For exporting documents as SVG icons, see **Import & export**
   (2.3).
-- For the project-level appearance settings shared across every
-  document in this panel, see **Motif** (5.2.1) and **Themes**
-  (9.1).
+- For the doc-level appearance settings that travel with each
+  document (Canvas colours, Margins, Grid), see the **Theme**
+  disclosure (5.3.8) — the in-inspector edit surface — and the
+  **Themes** panel (6.7) and conceptual chapter **Themes** (9.1)
+  for the saveable, applyable preset library.

@@ -9,6 +9,11 @@ drawing.
 The grid is **off by default**. Enable it from this section, then
 configure spacing, offset, style, and colour.
 
+> **Section location:** Grid sits inside the **Theme** disclosure
+> (5.3.8) alongside Canvas (surface colours) and Margins. The
+> three travel together in the saveable theme bundle — applying a
+> theme reapplies the grid's geometry and colour to match.
+
 ![The Grid section with the grid enabled and Spacing/Offset rows visible](img/5-3-4-grid-section.png)
 
 ## ❶ Enable
@@ -47,8 +52,8 @@ A pair of numeric fields under a **SPACING** label:
 - **Y** — vertical distance between grid rows.
 
 Both spinners respect the document's display unit (set in the
-**Canvas** section, 5.3.2). Edits commit on Enter or focus loss
-and update the canvas live.
+**Dimensions** section, 5.3.2). Edits commit on Enter or focus
+loss and update the canvas live.
 
 You almost always want **X = Y** for an isometric-feeling grid.
 Setting them differently is useful when the artwork itself has
@@ -84,9 +89,10 @@ item).
 ## Snap to grid
 
 The grid is just an overlay — the cursor does not snap to it
-unless you explicitly opt in. The toggle for that lives in the
-**Snap** section (5.3.6) as **Snap to grid**. With snap to grid
-enabled, dragging or nudging an object catches on the grid's
+unless you explicitly opt in. Snap toggles are no longer an
+inspector section; they live in the **Snap toolbar popover**
+(right-click the Snap button, **Q**). The **Snap to grid**
+toggle there catches dragging or nudging on the grid's
 spacing+offset lattice.
 
 ## Locking and disabling
@@ -104,7 +110,9 @@ keeps your geometry intact.
 
 ## Where to next
 
-The grid pairs with **Snap to grid** in the **Snap** section
-(5.3.6). The other layout overlays are **Guides** (5.3.3) and
-**Margins** (5.3.5). All three follow the same shape: an
-enable toggle, geometry fields, and a colour swatch.
+The grid pairs with **Snap to grid** in the Snap toolbar popover
+(see above). The other layout overlays are **Margins** (5.3.5),
+which sits next to Grid inside the Theme disclosure, and
+**Guides**, which moved to the Object group in s179. All three
+follow the same shape: an enable toggle, geometry fields, and a
+colour swatch.

@@ -56,7 +56,7 @@ a regular polygon.
 The preview highlights two snap states with a green stroke and a
 caption:
 
-- **"polygon"** — inflection is at 1.0 (or within 1.5%); the
+- **"polygon"** — inflection is at the top of the range; the
   shape is a regular polygon.
 - **"perfect star"** — inflection matches the geometric ratio
   `cos(2π/sides) / cos(π/sides)`, producing the canonical
@@ -67,26 +67,27 @@ near them — so you don't have to be pixel-perfect.
 
 ### ❷ Sides
 
-A spinner from 3 to (a generous upper bound). Sets the number of
-**vertices** on the polygon — for a regular polygon, this is the
-edge count; for a star, the point count.
+A spinner from 3 to 64. Sets the number of **vertices** on the
+polygon — for a regular polygon, this is the edge count; for a
+star, the point count.
 
 ### ❸ Inflection
 
-A spinner from 0 to 100% — the same value the preview handle sets
-visually. 100% is a regular polygon; lower values pull the
-alternating vertices toward the centre, producing a star. At 0%
-the inner vertices coincide with the centre (a thin radial
-spiked shape).
+A spinner from 1 to 100%, labelled **Inflect %:** — the same
+value the preview handle sets visually. 100% is a regular
+polygon; lower values pull the alternating vertices toward the
+centre, producing a star. Near the bottom of the range the inner
+vertices approach the centre and the shape reads as thin radial
+spikes.
 
 The spinner and the preview drag stay in sync — edit either, the
 other follows.
 
-### ❹ X / Y / Radius
+### ❹ CX / CY / R
 
 Numeric placement fields:
 
-- **X**, **Y** — the polygon's centre position in document
+- **CX**, **CY** — the polygon's centre position in document
   coordinates.
 - **R** — the centre-to-outer-vertex radius.
 - **Units** — read-only label showing the active display unit.
@@ -106,7 +107,7 @@ To draw a five-pointed star:
 3. Drag the inflection handle until the preview labels itself
    "perfect star". (Or set inflection to about 38%, which is the
    geometric value for 5 sides.)
-4. Set X, Y, and R to whatever you want, or click **Place** and
+4. Set CX, CY, and R to whatever you want, or click **Place** and
    move it after.
 
 For other star counts, the same workflow holds — the "perfect

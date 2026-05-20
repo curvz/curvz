@@ -9,6 +9,11 @@ the SVG, and exist only as a layout helper while drawing.
 Margins are **off by default**. Enable from this section, then
 set inset distances and (optionally) a column/row breakdown.
 
+> **Section location:** Margins sits inside the **Theme**
+> disclosure (5.3.8) alongside Canvas (surface colours) and Grid.
+> The three travel together in the saveable theme bundle —
+> applying a theme reapplies the margin geometry and colour.
+
 ![The Margins section with TOP/BOTTOM, LEFT/RIGHT, and column/row pairs visible](img/5-3-5-margins-section.png)
 
 ## ❶ Enable
@@ -94,10 +99,10 @@ colour. There is no per-axis colour control.
 ## Snap to margins
 
 Like the other layout overlays, margins do nothing on their own
-unless you opt into snapping. The toggle is in the **Snap**
-section (5.3.6) as **Snap to margins**. With snap to margins
-enabled, dragging or nudging catches on the inset frame edges
-and on every column/row gutter line.
+unless you opt into snapping. Snap toggles live in the **Snap
+toolbar popover** (right-click the Snap button, **Q**). The
+**Snap to margins** toggle there catches dragging or nudging on
+the inset frame edges and on every column/row gutter line.
 
 ## Locking and disabling
 
@@ -112,9 +117,15 @@ panel instead.
 
 ## Where to next
 
-The full layout overlay trio is **Guides** (5.3.3), **Grid**
-(5.3.4), and **Margins** (5.3.5). All three feed into **Snap**
-(5.3.6), which decides which of them the cursor catches on.
+Margins, Grid (5.3.4), and Canvas colours all live inside the
+Theme disclosure (5.3.8) — the three doc-level surfaces that
+travel together as a saveable style preset. **Guides** moved to
+the Object group in s179; the section is still documented at
+5.3.3 for stable bookmarking.
+
+All snap toggles for these overlays — Snap to margins, Snap to
+grid, Snap to guides — live in the toolbar popover at the Snap
+button (Q), not in the inspector.
 
 If you are coming to Curvz from a print-layout background,
 margins here are deliberately kept simple — Curvz is an icon

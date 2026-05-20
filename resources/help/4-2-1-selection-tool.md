@@ -66,21 +66,28 @@ container*. Two modifiers let you reach inside:
   **Layers** panel (6.2) and click the inner object there
   instead.
 
+**Ctrl + Alt + click** toggles the **align anchor** on the
+clicked object — a marker that pins the next Align op to that
+object. The anchor clears automatically when the object leaves
+the selection. See **Align and distribute** (7.4).
+
 ## Modifier-drag idioms
 
 A handful of click-and-drag combinations are worth knowing:
 
 - **Drag** — move the selection. Snap targets engage if Snap
-  (5.3.6) is on. Hold **Shift** mid-drag to constrain motion to
-  the closest axis (horizontal or vertical only).
+  (toolbar Snap popover) is on. Hold **Shift** mid-drag to
+  constrain motion to the closest axis (horizontal or vertical
+  only).
 - **Alt + drag** — duplicate in place, then drag the duplicate.
   The original stays put; the new copies follow the cursor. Push
   one Ctrl+Z to remove the duplicates.
 - **Drag a corner handle** — scale around the opposite corner.
   Hold **Shift** to scale uniformly.
 - **Drag an edge-mid handle** — scale along that one axis.
-- **Right-click drag** — pan the canvas (also: hold **Space** and
-  drag with left-button).
+- **Middle-drag** — pan the canvas. Also: hold **Space** and
+  drag with the left button — same effect, useful when the
+  middle mouse button isn't comfortable to reach.
 
 Bounding-box handles only appear when something is selected. With
 nothing selected, drag-from-empty starts a marquee instead.
@@ -117,19 +124,42 @@ not in today.
 
 ## Right-click
 
-Right-clicking with the Selection tool opens a small **context
-menu** at the click point, with verbs that apply to whatever was
-hit:
+Right-clicking on an object with the Selection tool opens a
+**context menu** at the click point. The menu is assembled from
+whatever's actionable on the current selection — sections only
+appear when at least one of their verbs applies, so it's always
+exactly what's currently doable.
 
-- **Path / group / compound / clip group / blend / image / text**
-  — at minimum a "Save to Library…" entry; some types add
-  type-specific entries (rebuild blend steps, image-info dialog,
-  etc.).
-- **Empty canvas** — currently a no-op.
-- **Reference points and guides** have their own targeted menus.
+The sections, in order:
 
-For document-level verbs, use the application menu (☰) at the
-right end of the title bar instead.
+- **Lifecycle** — Cut, Copy, Paste, Duplicate, Duplicate in
+  Place, Delete.
+- **Structure** — Group / Ungroup; Make Compound / Release
+  Compound.
+- **Boolean** (submenu) — Union, Subtract, Intersect. Appears
+  when the selection has two or more eligible paths.
+- **Arrange** (submenu) — Bring to Front / Forward, Send
+  Backward / Back.
+- **Translate…** — opens the Translate hub dialog (Move,
+  Scale, Rotate, Skew).
+- **Effects** (submenu) — Make / Edit / Release Warp, Make /
+  Release Blend, Flatten, Expand Stroke, Offset Path…,
+  Convert to Path. Items appear only for selections they
+  apply to.
+- **Save to Library…** — always present; the handler does its
+  own pre-flight on whether the selection is library-saveable.
+
+Right-clicking on **empty canvas** is currently a no-op.
+Right-clicking on a **guide** opens a small "Set position…"
+dialog targeted at that guide. Right-clicking on a **reference
+point** opens its picker popover. Right-clicking on a **blend
+container** opens a one-button "Rebuild Blend Steps" popover.
+Right-clicking on an **image** opens an Image Info dialog with
+the source file path, pixel dimensions, and current size.
+
+For document-level verbs (New, Save, Export, Preferences) the
+application menu (☰) at the right end of the title bar is the
+home — none of those live on the object context menu.
 
 ## Where to next
 

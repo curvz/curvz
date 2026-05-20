@@ -35,6 +35,12 @@ origin.
 > either label retracts both handles at once, since the
 > symmetric constraint would otherwise force one to follow the
 > other.
+>
+> The same operations have keyboard shortcuts: **Ctrl + ←**
+> retracts the IN handle, **Ctrl + →** retracts the OUT handle.
+> Both work across the entire multi-node selection in a single
+> undo step. Symmetric nodes retract both handles regardless of
+> which key was pressed, matching the label-click behaviour.
 
 ## ❷ Type
 
@@ -136,10 +142,19 @@ tool** (N) is active.
 - `Tab` / `Shift + Tab` — cycle through nodes on the current
   path.
 - `Delete` / `Backspace` — delete the selected node. The path's
-  curvature smooths across the gap.
+  curvature smooths across the gap. Multi-node selections delete
+  every selected node in one composite undo step.
 - `←` / `→` / `↑` / `↓` — nudge the selected node by about 2
   screen pixels. `Shift + arrow` is 8 px, `Alt + arrow` is 32 px.
-  `Ctrl + arrow` is reserved for arrange.
+- `Ctrl + ←` — retract the IN handle of every node in the
+  multi-selection to its anchor. Symmetric nodes retract both
+  handles. Composite undo.
+- `Ctrl + →` — retract the OUT handle of every node in the
+  multi-selection. Symmetric nodes retract both handles.
+  Composite undo.
+- `Ctrl + ↑` / `Ctrl + ↓` — pass through to arrange actions
+  (Ctrl-arrow on the horizontal axis is bound to retraction
+  inside the Node tool).
 
 The letter keys also accept the lowercase form (`a`, `m`, `c`,
 `k`, `r`, `j`, `b`). If a spin button has focus, letters type into

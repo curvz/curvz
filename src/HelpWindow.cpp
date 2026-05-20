@@ -673,22 +673,25 @@ void HelpWindow::build_topic_list() {
 
     { RowKind::Chapter, 0, false, "", "5 Inspector" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/5-1-inspector-overview.md",     "5.1 Inspector overview" },
-    { RowKind::Group, 1, false, "", "5.2 Project group" },
-    { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-2-1-motif.md",                "5.2.1 Motif" },
+    // 5.2 Project group retired in s148 m2 (empty group). 5.2.1 Motif
+    // file deleted in s273 m7b — concept fragmented into Application
+    // ▸ Appearance (theme switch) and Document ▸ Theme disclosure
+    // (Canvas colours).
     { RowKind::Group, 1, false, "", "5.3 Document group" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-3-1-metadata.md",             "5.3.1 Metadata" },
-    { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-3-2-canvas.md",               "5.3.2 Canvas" },
+    { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-3-2-canvas.md",               "5.3.2 Dimensions" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-3-3-guides.md",               "5.3.3 Guides" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-3-4-grid.md",                 "5.3.4 Grid" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-3-5-margins.md",              "5.3.5 Margins" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-3-6-snap.md",                 "5.3.6 Snap" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-3-7-measure.md",              "5.3.7 Measure" },
+    { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-3-8-theme.md",                "5.3.8 Theme" },
     { RowKind::Group, 1, false, "", "5.4 Object group" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-4-1-selection.md",            "5.4.1 Selection" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-4-2-text.md",                 "5.4.2 Text" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-4-3-blend.md",                "5.4.3 Blend" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-4-4-node.md",                 "5.4.4 Node" },
-    { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-4-5-appearance.md",           "5.4.5 Appearance" },
+    { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-4-5-appearance.md",           "5.4.5 Styling" },
     { RowKind::Leaf, 2, true,  "/com/curvz/app/help/5-4-6-shadow.md",               "5.4.6 Shadow" },
 
     { RowKind::Chapter, 0, false, "", "6 Content" },
@@ -698,6 +701,7 @@ void HelpWindow::build_topic_list() {
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/6-4-swatches.md",               "6.4 Swatches" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/6-5-styles.md",                 "6.5 Styles" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/6-6-documents.md",              "6.6 Documents" },
+    { RowKind::Leaf, 1, true,  "/com/curvz/app/help/6-7-themes.md",                 "6.7 Themes" },
 
     { RowKind::Chapter, 0, false, "", "7 Working with objects" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/7-1-step-and-repeat.md",        "7.1 Step and Repeat" },

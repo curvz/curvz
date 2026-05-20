@@ -80,11 +80,14 @@ Beyond shift-click, a handful of useful gestures:
 - **Drag a handle** — adjusts curvature. Handle behaviour depends
   on node type — Symmetric mirrors the other handle, Smooth
   keeps it collinear, Cusp/Corner leave the other alone.
-- **Retract a handle** — click the **IN** or **OUT** row label
-  in the inspector's **Node** section (5.4.4). The handle is
-  set to the anchor position, producing a perfectly straight
-  segment on that side. For Symmetric nodes, clicking either
-  label retracts both handles at once.
+- **Retract a handle** — two ways. Press **Ctrl + Left** to
+  retract the **IN** handle (`cx1`, `cy1`) to the anchor, or
+  **Ctrl + Right** to retract the **OUT** handle (`cx2`, `cy2`)
+  to the anchor. Either produces a perfectly straight segment
+  on that side. Symmetric nodes retract both handles regardless
+  of which side you press — the node type's invariant requires
+  it. You can also click the **IN** or **OUT** row label in the
+  inspector's **Node** section (5.4.4) for the same effect.
 
 ## Path-state actions (J, B, R)
 
@@ -141,6 +144,26 @@ first, edit, then re-blend.
 The handle adjustments and anchor moves are unrestricted — only
 operations that change the node *count* are gated.
 
+## Right-click
+
+Right-clicking on the canvas while the Node tool is active —
+with a path selected and at least one node picked — opens a
+small **node context menu** at the click point. The menu mirrors
+the most common node-tool keys so you can reach the same verbs
+without leaving the mouse:
+
+- **Join or Close (J)** — close the path if open, open it if
+  closed, or join two open paths if one node on each is
+  selected.
+- **Break Path (B)** — break the path at the selected node.
+- **Make Symmetric (A)**, **Make Smooth (M)**, **Make Cusp (C)**,
+  **Make Corner (K)** — set the type of the selected node(s).
+
+The menu dispatches through the same handlers as the keys, so
+blend-source rejection, atomic undo wrapping, and the explanatory
+error dialogs all behave identically whether you used the menu
+or the keypress.
+
 ## Where to next
 
 The companion creation tool is the **Pen** (4.3) — once you've
@@ -172,11 +195,16 @@ keys exactly.
   into two; closed path → opens at the node.
 - `Tab` / `Shift + Tab` — cycle through nodes on the current
   path.
+- `Ctrl + Left` — retract IN handle on the selected node(s) to
+  the anchor.
+- `Ctrl + Right` — retract OUT handle on the selected node(s) to
+  the anchor. Symmetric nodes retract both handles regardless of
+  which side you press.
 - `Delete` / `Backspace` — delete the selected node. The path's
   curvature smooths across the gap.
 - `←` / `→` / `↑` / `↓` — nudge the selected node by about 2
-  screen pixels. `Shift` = 8 px, `Alt` = 32 px. `Ctrl + arrow`
-  is reserved for arrange.
+  screen pixels. `Shift` = 8 px, `Alt` = 32 px. `Ctrl + Up` /
+  `Ctrl + Down` are reserved for arrange operations.
 
 The letter keys also accept their lowercase form. If a spin
 button has focus, letters type into the spinner; click the canvas
