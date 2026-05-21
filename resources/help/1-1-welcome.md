@@ -35,6 +35,13 @@ in front of you. **Chapter 11 (Reference)** holds the macros page, the
 keyboard-shortcut cheatsheet, and a troubleshooting page — all three
 worth a bookmark.
 
+> **Note:** A quick tip for the new user: right-click everything, find out
+> how many context menus Curvz has. If there is a menuitem for something
+> then there is probably a context menu that gives you absolute control
+> over the object you are working with.Try the tools, the group, the center
+> point or an "R" command on a selected object. You will find an easy
+> popup dailog or menu will present itself.
+
 ## A note on the manual itself
 
 The manual lives inside the app. There is no online copy and no external

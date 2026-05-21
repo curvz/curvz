@@ -731,6 +731,26 @@ void HelpWindow::build_topic_list() {
 
     { RowKind::Chapter, 0, false, "", "12 Workflow strategies" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/12-1-workflow-strategies.md",   "12.1 Workflow strategies" },
+
+    // s281 m1 — Addendums chapter. Sits outside the numbered sequence
+    // because addendums document subsystems that aren't part of the
+    // core canvas-and-tools narrative (Developer surfaces today; future
+    // packaging / platform notes could land here as siblings). The
+    // Developer subgroup holds the Scripter pages — Overview (Part 1),
+    // Reference index, and per-surface reference leaves (Language,
+    // Singletons, …). s281 m2 ships the Reference index, Language, and
+    // Singletons leaves; s282 m1 adds Header & menus; s282 m2 adds
+    // Toolbar; s282 m3 adds Inspector. Remaining reference leaves land
+    // in future sessions.
+    { RowKind::Chapter, 0, false, "", "Addendums" },
+    { RowKind::Group,   1, false, "", "Developer" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-overview.md",     "Scripter overview" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-reference.md",    "Scripter reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-language.md",     "Language reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-singletons.md",   "Singletons reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-header-menus.md", "Header & menus reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-toolbar.md",      "Toolbar reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-inspector.md",    "Inspector reference" },
   };
 }
 

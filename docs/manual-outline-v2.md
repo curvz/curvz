@@ -1,8 +1,8 @@
 # Curvz user manual — outline v2
 
-Locked s128. Resynced with disk + ToC in s279 (5.2.1 Motif removed as never-shipped; 5.3.8 / 6.7 / 7.4 / 7.5 added to match runtime; 5.3.2 and 5.4.5 labels updated to match ToC). Supersedes `manual-outline-v1.svg` (s114, pre-Motif, pre-Content, pre-Interface chapter).
+Locked s128. Resynced with disk + ToC in s279 (5.2.1 Motif removed as never-shipped; 5.3.8 / 6.7 / 7.4 / 7.5 added to match runtime; 5.3.2 and 5.4.5 labels updated to match ToC). Resynced again in s281 (7.6 Warp added — its help page and ToC entry shipped in s280 m1 but the outline bump never reached disk; Addendums chapter added with Developer → Scripter overview). s281 m2 added the Reference index plus Language and Singletons reference leaves, with future-session placeholders for the six remaining surface-area pages; the Overview was amended in m2 to correct three factual errors caught during reference-page drafting (a nonexistent `clip` Scriptable, an invented tutorial-script list, and a stale "log line at registration" claim). s282 m1 shipped the Header & menus reference leaf; s282 m2 added the Toolbar reference; s282 m3 added the Inspector reference. Supersedes `manual-outline-v1.svg` (s114, pre-Motif, pre-Content, pre-Interface chapter).
 
-**11 chapters · 45 sections · 66 leaves.** Flat list — depth is encoded in the dotted nomenclature (e.g. `4.4.1` is third-level). Sidebar will collapse to chapter and section level; only the leaves load topic content.
+**12 chapters · 46 sections · 74 leaves.** Flat list — depth is encoded in the dotted nomenclature (e.g. `4.4.1` is third-level). Sidebar will collapse to chapter and section level; only the leaves load topic content.
 
 ## Status legend
 
@@ -94,6 +94,7 @@ Moving an item from `[ ]` → `[~]` → `[D]` → `[S]` is the workflow. Update 
   7.3   [ ] Blends                                     → 7-3-blends.md
   7.4   [ ] Align & Distribute               ### Keys  → 7-4-align-distribute.md
   7.5   [ ] Group and Ungroup                          → 7-5-group-ungroup.md
+  7.6   [D] Warp                             ### Keys  → 7-6-warp.md                 (shipped s280 m1)
 
 8 Path operations
   8.1   [ ] Editing paths                    ### Keys  → 8-1-editing-paths.md
@@ -112,6 +113,19 @@ Moving an item from `[ ]` → `[~]` → `[D]` → `[S]` is the workflow. Update 
   11.1  [ ] Macros                                     → 11-1-macros.md
   11.2  [ ] Keyboard shortcuts                         → 11-2-keyboard-shortcuts.md
   11.3  [ ] Troubleshooting                            → 11-3-troubleshooting.md
+
+Addendums                                                                                 (NEW chapter — outside numbered sequence)
+  Developer
+    [D] Scripter overview                              → addendum-developer-scripter-overview.md      (s281 m1, corrected s281 m2)
+    [D] Scripter reference                             → addendum-developer-scripter-reference.md     (s281 m2 — index page)
+    [D] Language reference                             → addendum-developer-scripter-language.md      (s281 m2)
+    [D] Singletons reference                           → addendum-developer-scripter-singletons.md    (s281 m2)
+    [D] Toolbar reference                              → addendum-developer-scripter-toolbar.md       (s282 m2)
+    [D] Inspector reference                            → addendum-developer-scripter-inspector.md     (s282 m3)
+    [ ] Content reference                              → addendum-developer-scripter-content.md       (future session)
+    [ ] Canvas & objects reference                     → addendum-developer-scripter-canvas-objects.md (future session)
+    [ ] Dialogs & popovers reference                   → addendum-developer-scripter-dialogs.md       (future session)
+    [D] Header & menus reference                       → addendum-developer-scripter-header-menus.md  (s282 m1)
 ```
 
 ## Notes for writers (me)

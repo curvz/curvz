@@ -41,7 +41,8 @@ also have a keyboard shortcut, listed beside the menu item.
   rather than the menu.
 - **Developer** — power-user surfaces. Currently houses the
   Scripting toggle, which enables the Scripter window and the
-  script-driven test harness. See the Developers appendix.
+  script-driven test harness. See **Scripter overview** in the
+  Addendums.
 
 Below the submenus, three top-level items live in their own
 section:
