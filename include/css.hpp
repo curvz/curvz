@@ -758,6 +758,21 @@ popover modelbutton:disabled {
     opacity: 0.4;
 }
 
+/* s283 m7: tight density for the Context bar's right-click help menu.
+   The menu lists 23 + 1 entries; with the default modelbutton padding
+   (4px 8px, see ~line 746) it overflows the visible area on shorter
+   laptop screens. Scoping the override via .curvz-ctx-help-menu (the
+   CSS class ContextBar adds to its PopoverMenu) keeps every other
+   popover menu in the app at the standard density. The padding
+   override drops vertical space per item from ~24px to ~14px, which
+   keeps the full menu within 14" laptop bounds with room to spare.
+   Horizontal padding stays at 8px so the labels still breathe. */
+popover.curvz-ctx-help-menu modelbutton,
+.curvz-ctx-help-menu modelbutton {
+    padding: 1px 8px;
+    min-height: 0;
+}
+
 /* ── Scale (slider) ──────────────────────────────────────── */
 /* S117 m10: re-tuned for light motif. Original used --fg-dim for the
    filled trough and --fg-secondary for the knob, which both work on

@@ -11,9 +11,31 @@ glanceable cheat-sheet for the active tool, intended to remind you
 of the shortcuts for whatever you are about to do without forcing a
 trip to the keyboard-shortcuts dialog.
 
-Right-click anywhere on the context bar to open a small popover with
-**Open Help: \<Tool>**, which jumps the manual to the active tool's
-page in Chapter 4.
+Right-click anywhere on the context bar to open a small menu with
+two sections:
+
+- **Open Help: \<Tool>** — at the top. Jumps the manual to the
+  active tool's page in Chapter 4. The active tool is whichever
+  one is showing in the bar's left glyph at the time of the
+  right-click.
+- The full **manual index for tools and workflow operations** —
+  below a separator. Every tool plus every major workflow page
+  Curvz has (Align & Distribute, Blend, Boolean Operations,
+  Fill & Stroke, Macros, Snap, Step and Repeat, Warp, plus all
+  15 tools — 23 entries, alphabetised). Clicking any entry
+  jumps the manual to that page.
+
+The second section's broader reach is useful for two situations
+the top entry can't cover:
+
+- **Looking up a tool you aren't currently using.** The top
+  entry only covers the active tool. To read about the Pen while
+  the Rectangle tool is active, pick Pen from the list directly
+  — no need to switch tools first.
+- **Looking up an operation that isn't a tool.** Boolean ops,
+  Step and Repeat, Align, Warp, Macros, and so on aren't toolbar
+  buttons; they live in menus or dialogs. The list gives them
+  the same one-click manual access the tools have.
 
 ## Anatomy
 

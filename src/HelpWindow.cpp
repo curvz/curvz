@@ -740,8 +740,11 @@ void HelpWindow::build_topic_list() {
     // Reference index, and per-surface reference leaves (Language,
     // Singletons, …). s281 m2 ships the Reference index, Language, and
     // Singletons leaves; s282 m1 adds Header & menus; s282 m2 adds
-    // Toolbar; s282 m3 adds Inspector. Remaining reference leaves land
-    // in future sessions.
+    // Toolbar; s282 m3 adds Inspector; s283 m1 adds Content (partial —
+    // layers / swatches / guides); s283 m2 extends Content with styles /
+    // themes / palettes; s283 m3 completes Content with pnl_styles.
+    // Remaining reference leaves (Canvas & objects, Dialogs & popovers)
+    // land in future sessions.
     { RowKind::Chapter, 0, false, "", "Addendums" },
     { RowKind::Group,   1, false, "", "Developer" },
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-overview.md",     "Scripter overview" },
@@ -751,6 +754,7 @@ void HelpWindow::build_topic_list() {
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-header-menus.md", "Header & menus reference" },
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-toolbar.md",      "Toolbar reference" },
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-inspector.md",    "Inspector reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-content.md",      "Content reference" },
   };
 }
 

@@ -1,8 +1,8 @@
 # Curvz user manual — outline v2
 
-Locked s128. Resynced with disk + ToC in s279 (5.2.1 Motif removed as never-shipped; 5.3.8 / 6.7 / 7.4 / 7.5 added to match runtime; 5.3.2 and 5.4.5 labels updated to match ToC). Resynced again in s281 (7.6 Warp added — its help page and ToC entry shipped in s280 m1 but the outline bump never reached disk; Addendums chapter added with Developer → Scripter overview). s281 m2 added the Reference index plus Language and Singletons reference leaves, with future-session placeholders for the six remaining surface-area pages; the Overview was amended in m2 to correct three factual errors caught during reference-page drafting (a nonexistent `clip` Scriptable, an invented tutorial-script list, and a stale "log line at registration" claim). s282 m1 shipped the Header & menus reference leaf; s282 m2 added the Toolbar reference; s282 m3 added the Inspector reference. Supersedes `manual-outline-v1.svg` (s114, pre-Motif, pre-Content, pre-Interface chapter).
+Locked s128. Resynced with disk + ToC in s279 (5.2.1 Motif removed as never-shipped; 5.3.8 / 6.7 / 7.4 / 7.5 added to match runtime; 5.3.2 and 5.4.5 labels updated to match ToC). Resynced again in s281 (7.6 Warp added — its help page and ToC entry shipped in s280 m1 but the outline bump never reached disk; Addendums chapter added with Developer → Scripter overview). s281 m2 added the Reference index plus Language and Singletons reference leaves, with future-session placeholders for the six remaining surface-area pages; the Overview was amended in m2 to correct three factual errors caught during reference-page drafting (a nonexistent `clip` Scriptable, an invented tutorial-script list, and a stale "log line at registration" claim). s282 m1 shipped the Header & menus reference leaf; s282 m2 added the Toolbar reference; s282 m3 added the Inspector reference. s283 m1 shipped the Content reference (partial — layers / swatches / guides; styles / themes / palettes / pnl_styles forthcoming in m2 / m3). s283 m2 extended Content with styles / themes / palettes; pnl_styles still forthcoming in m3. s283 m3 added pnl_styles, completing the Content reference. Supersedes `manual-outline-v1.svg` (s114, pre-Motif, pre-Content, pre-Interface chapter).
 
-**12 chapters · 46 sections · 74 leaves.** Flat list — depth is encoded in the dotted nomenclature (e.g. `4.4.1` is third-level). Sidebar will collapse to chapter and section level; only the leaves load topic content.
+**12 chapters · 46 sections · 75 leaves.** Flat list — depth is encoded in the dotted nomenclature (e.g. `4.4.1` is third-level). Sidebar will collapse to chapter and section level; only the leaves load topic content.
 
 ## Status legend
 
@@ -122,7 +122,7 @@ Addendums                                                                       
     [D] Singletons reference                           → addendum-developer-scripter-singletons.md    (s281 m2)
     [D] Toolbar reference                              → addendum-developer-scripter-toolbar.md       (s282 m2)
     [D] Inspector reference                            → addendum-developer-scripter-inspector.md     (s282 m3)
-    [ ] Content reference                              → addendum-developer-scripter-content.md       (future session)
+    [D] Content reference                              → addendum-developer-scripter-content.md       (s283 m1+m2+m3 — layers / swatches / guides / styles / themes / palettes / pnl_styles, complete)
     [ ] Canvas & objects reference                     → addendum-developer-scripter-canvas-objects.md (future session)
     [ ] Dialogs & popovers reference                   → addendum-developer-scripter-dialogs.md       (future session)
     [D] Header & menus reference                       → addendum-developer-scripter-header-menus.md  (s282 m1)

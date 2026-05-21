@@ -4,6 +4,12 @@
 #include "widgets/Button.hpp"  // s209 m1: unregistered substrate Button
 #include "widgets/ToggleButton.hpp"  // s209 m2: unregistered substrate ToggleButton
 #include <gtkmm/gestureclick.h>
+#include <gtkmm/popovermenu.h>  // s283 m5: PopoverMenu for the Open Other submenu
+#include <giomm/simpleaction.h>      // s283 m5
+#include <giomm/simpleactiongroup.h> // s283 m5
+#include <giomm/menu.h>              // s283 m5
+#include <glibmm/main.h>             // s283 m5: Glib::signal_idle for popover unparent
+#include <iterator>                  // s283 m5: std::size for the entry array
 
 namespace Curvz {
 
@@ -224,58 +230,177 @@ Gtk::ToggleButton* ContextBar::add_toggle(const std::string& icon, const std::st
     return btn;
 }
 
-// ── Right-click context menu (s132 m1) ────────────────────────────────────────
+// ── Right-click context menu (s132 m1, s283 m5, s283 m7) ──────────────────────
 //
-// One-item popover today — "Open Help: <Tool>" — but the structure (Box of
-// flat Buttons inside a Popover) leaves room for future tool-scoped verbs
-// without rewriting the controller. Mirrors the Canvas right-click popover
-// idiom rather than the PopoverMenu+action-group style; matches the
-// codebase convention for these compact context menus.
+// Flat menu. Top section: "Open Help: <Tool>" for the active tool. Bottom
+// section: 23 alphabetised entries covering every tool and major workflow
+// operation in Curvz. Each entry opens the corresponding manual page via
+// m_help_cb.
+//
+// s283 m5/m7 evolution. m5 used an outer/submenu nesting (Open Other → 23).
+// On shorter laptop screens the submenu's default modelbutton padding made
+// the 23-item list overflow the visible area; m7 flattens to one popover
+// styled with the .curvz-ctx-help-menu CSS class for tight vertical density.
+// The submenu hop is gone too — one click reaches any leaf.
+//
+// s283 m5: rationale for the universal list. Some tools are disabled in the
+// active-tool Context bar (Pen, Ref, Corner, Eyedropper — tools whose
+// Context bar shape was never written) and even the wired tools' bars
+// don't always expose every affordance the tool offers. Right-clicking
+// the Context bar gives a universal, always-available path to the
+// manual page for any tool or workflow operation, regardless of whether
+// its own Context bar exists or covers the verb the user wants.
+// Sidesteps the disabled-Context-bar problem without touching the
+// Context bar surface itself.
+//
+// Implementation idiom: Gtk::PopoverMenu driven by a Gio::Menu model,
+// with an "open-other-<index>" SimpleAction per entry. Same shape as
+// Canvas's right-click context menu (see build_object_context_menu in
+// Canvas.cpp): Gio::Menu::create() → bind actions to a SimpleActionGroup
+// inserted under a local scope.
+//
+// Lifetime: the popover is parented via set_parent(*this) which doesn't
+// participate in managed-widget cleanup. Every right-click would leak a
+// PopoverMenu against the long-lived ContextBar otherwise. Canvas's
+// pattern: hook signal_closed and unparent from an idle, breaking the
+// popdown→destroy ordering race. Same trick applied here — also closes
+// the pre-existing leak from the s132 m1 implementation.
+namespace {
+
+// The combined tool + operation list, alphabetised by display label.
+// Used by the "Open Other" submenu. Each entry pairs the label scripts
+// see in the menu with the gresource path the help window opens. Keep
+// alphabetised: if a future entry is added, slot it in the right spot
+// rather than appending at the end.
+struct HelpEntry { const char* label; const char* path; };
+
+constexpr HelpEntry kOpenOtherEntries[] = {
+    {"Align & Distribute",     "/com/curvz/app/help/7-4-align-distribute.md"},
+    {"Blend",                  "/com/curvz/app/help/7-3-blends.md"},
+    {"Boolean Operations",     "/com/curvz/app/help/8-2-boolean-operations.md"},
+    {"Corner",                 "/com/curvz/app/help/4-8-corner.md"},
+    {"Ellipse",                "/com/curvz/app/help/4-4-2-ellipse.md"},
+    {"Eyedropper",             "/com/curvz/app/help/4-6-1-eyedropper.md"},
+    {"Fill & Stroke",          "/com/curvz/app/help/5-4-5-appearance.md"},
+    {"Line",                   "/com/curvz/app/help/4-4-3-line.md"},
+    {"Macros",                 "/com/curvz/app/help/11-1-macros.md"},
+    {"Measure",                "/com/curvz/app/help/4-6-3-measure.md"},
+    {"Node",                   "/com/curvz/app/help/4-2-2-node-tool.md"},
+    {"Pen",                    "/com/curvz/app/help/4-3-pen.md"},
+    {"Polygon",                "/com/curvz/app/help/4-4-4-polygon.md"},
+    {"Rectangle",              "/com/curvz/app/help/4-4-1-rectangle.md"},
+    {"Reference Point",        "/com/curvz/app/help/4-7-reference-points.md"},
+    {"Select",                 "/com/curvz/app/help/4-2-1-selection-tool.md"},
+    {"Snap",                   "/com/curvz/app/help/5-3-6-snap.md"},
+    {"Spiral",                 "/com/curvz/app/help/4-4-5-spiral.md"},
+    {"Step and Repeat",        "/com/curvz/app/help/7-1-step-and-repeat.md"},
+    {"Text",                   "/com/curvz/app/help/4-5-1-text.md"},
+    {"Text on Path",           "/com/curvz/app/help/4-5-2-text-on-path.md"},
+    {"Warp",                   "/com/curvz/app/help/7-6-warp.md"},
+    {"Zoom",                   "/com/curvz/app/help/4-6-2-zoom.md"},
+};
+
+} // anon namespace
+
 void ContextBar::show_context_menu(double x, double y) {
     auto meta = tool_meta(m_tool);
-    auto* popover = Gtk::make_managed<Gtk::Popover>();
+    const std::string active_path = tool_help_resource(m_tool);
+
+    // ── Build the action group ────────────────────────────────────────────────
+    //
+    // Two action sources feed one SimpleActionGroup, inserted under the local
+    // "ctxhelp" scope on the ContextBar widget. The menu items below reference
+    // these by "ctxhelp.<name>".
+    //
+    //   1. "open-active" — opens the active tool's help page (same outcome
+    //      the original s132 m1 button had).
+    //   2. "open-other-N" (N = 0..22) — opens kOpenOtherEntries[N].path.
+    auto ag = Gio::SimpleActionGroup::create();
+
+    {
+        auto act = Gio::SimpleAction::create("open-active");
+        act->signal_activate().connect(
+            [this, active_path](const Glib::VariantBase&) {
+                if (m_help_cb) {
+                    m_help_cb(active_path);
+                } else {
+                    LOG_WARN("ContextBar: help callback not wired; "
+                             "cannot open '{}'", active_path);
+                }
+            });
+        ag->add_action(act);
+    }
+
+    for (size_t i = 0; i < std::size(kOpenOtherEntries); ++i) {
+        std::string name = "open-other-" + std::to_string(i);
+        const char* path = kOpenOtherEntries[i].path;
+        auto act = Gio::SimpleAction::create(name);
+        act->signal_activate().connect(
+            [this, path](const Glib::VariantBase&) {
+                if (m_help_cb) {
+                    m_help_cb(path);
+                } else {
+                    LOG_WARN("ContextBar: help callback not wired; "
+                             "cannot open '{}'", path);
+                }
+            });
+        ag->add_action(act);
+    }
+
+    insert_action_group("ctxhelp", ag);
+
+    // ── Build the menu model ──────────────────────────────────────────────────
+    //
+    // One flat PopoverMenu with two sections: the active-tool quick-access at
+    // the top, and the full 23-entry alphabetised list below. Sections
+    // separated by append_section produce a visual divider in PopoverMenu.
+    //
+    // s283 m7: flattened from the m5 outer/submenu structure. A submenu adds
+    // a popover-spawn step that GTK4 styles with the default modelbutton
+    // padding (4px 8px each side, 6px vertical per item) — too tall for 23
+    // items on a 14" laptop. Flattening puts every entry under one CSS class
+    // we can scope tight (.curvz-ctx-help-menu, see CURVZ_CSS in css.hpp)
+    // and lets the user reach any leaf in one click instead of two. The
+    // alphabetised order and the active-tool quick-access at the top
+    // preserve the m5 affordances; only the nesting depth changes.
+    auto menu = Gio::Menu::create();
+
+    // Section 1: active tool quick-access.
+    {
+        auto sec = Gio::Menu::create();
+        sec->append(std::string("Open Help: ") + meta.name,
+                    "ctxhelp.open-active");
+        menu->append_section("", sec);
+    }
+
+    // Section 2: full alphabetised list.
+    {
+        auto sec = Gio::Menu::create();
+        for (size_t i = 0; i < std::size(kOpenOtherEntries); ++i) {
+            std::string action = "ctxhelp.open-other-" + std::to_string(i);
+            sec->append(kOpenOtherEntries[i].label, action);
+        }
+        menu->append_section("", sec);
+    }
+
+    // ── Pop up the menu ───────────────────────────────────────────────────────
+    auto* popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
     popover->set_parent(*this);
     popover->set_has_arrow(true);
-
-    auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
-    box->set_spacing(2);
-    box->set_margin_start(4);
-    box->set_margin_end(4);
-    box->set_margin_top(4);
-    box->set_margin_bottom(4);
-
-    // s209 m2 — substrate Button with the unregistered tag. Per-click
-    // popover construction: every right-click rebuilds the popover from
-    // scratch, so a registered abbrev would collide on the second
-    // right-click. The button is a one-shot affordance ("Open Help:
-    // <Tool>") whose work fires a single callback; no per-instance
-    // script addressability is meaningful. Third and final raw site
-    // in ContextBar — file is now fully substrate.
-    auto* help_btn = Gtk::make_managed<curvz::widgets::Button>(
-                          curvz::scripting::unregistered);
-    help_btn->set_has_frame(false);
-    help_btn->set_halign(Gtk::Align::FILL);
-    auto* help_lbl = Gtk::make_managed<Gtk::Label>(
-        std::string("Open Help: ") + meta.name);
-    help_lbl->set_xalign(0.0f);
-    help_lbl->set_hexpand(true);
-    help_btn->set_child(*help_lbl);
-
-    const std::string path = tool_help_resource(m_tool);
-    help_btn->signal_clicked().connect([this, popover, path]() {
-        popover->popdown();
-        if (m_help_cb) {
-            m_help_cb(path);
-        } else {
-            LOG_WARN("ContextBar: help callback not wired; cannot open '{}'",
-                      path);
-        }
-    });
-    box->append(*help_btn);
-
-    popover->set_child(*box);
+    popover->add_css_class("curvz-ctx-help-menu");  // s283 m7: tight padding
     Gdk::Rectangle rect((int)x, (int)y, 1, 1);
     popover->set_pointing_to(rect);
+
+    // Lifetime: set_parent() popovers don't participate in managed-widget
+    // cleanup, so each right-click would leak its own PopoverMenu against
+    // the long-lived ContextBar. Canvas.cpp's pattern (s125 m1a era):
+    // hook signal_closed, unparent from an idle to break the popdown→
+    // destroy ordering race. The popover survives until the idle runs
+    // (Glib::signal_idle keeps managed widgets alive across the callback).
+    popover->signal_closed().connect([popover]() {
+        Glib::signal_idle().connect_once([popover]() { popover->unparent(); });
+    });
+
     popover->popup();
 }
 
