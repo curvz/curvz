@@ -56,9 +56,14 @@ Both operations are undoable as single steps.
 - Compounds need **closed paths** to work as fillable regions.
   Open paths in a compound paint with the even/odd rule for any
   edge crossings, which usually isn't what you want.
-- Compounds are **not yet supported as inputs to boolean
-  operations** (Union / Subtract / Intersect). Split first,
-  boolean, re-compound if needed.
+- **Boolean operations** (Union / Subtract / Intersect) accept a
+  compound as one operand against a simple path — Curvz uses
+  per-child role dispatch so outer-minus-hole topology survives.
+  For *two or more compounds* in one boolean selection, or for
+  selections of three or more inputs with any compounds in them,
+  the topology may not survive — release first (`Ctrl + Shift + 8`),
+  boolean the simple paths, re-compound. See **Boolean operations**
+  (8.2) ❶ for the full story.
 - The **direction** of each constituent path matters for the
   even/odd computation. If a hole isn't appearing as a hole, try
   reversing that path (`R` with the Node tool, then re-compound).
@@ -125,10 +130,13 @@ separate filled blocks, one per dash.
 ## ❹ Convert Text to Path
 
 **Convert Text to Path** breaks a text node into editable Bézier
-outlines — one path per glyph. After conversion the text is gone:
-you can't change the wording or restyle it as text. What you have
-is paths, which can be edited at the node level, used as boolean
-inputs, expanded, offset, and so on.
+outlines and wraps them in a **compound path** — one Path child
+per contour, with the even/odd fill rule cutting holes where a
+glyph has them (the inside of an "O", the counter of an "a").
+After conversion the text is gone: you can't change the wording
+or restyle it as text. What you have is path geometry, which can
+be edited at the node level, used as boolean inputs, expanded,
+offset, and so on.
 
 Open with **Path → Convert Text to Path** or `Ctrl + Alt + T`
 with one or more text nodes selected.
@@ -142,11 +150,16 @@ This is useful for:
   If your icon needs to read identically on machines that don't
   have your typeface installed, convert first.
 - **Boolean inputs** — text becomes valid material for Union /
-  Subtract / Intersect once it's path geometry.
+  Subtract / Intersect once it's path geometry. Because the
+  result is a compound, the common one-compound-plus-one-path
+  boolean case (see 8.2 ❶) covers it directly.
 
 The operation is undoable as a single step. Once converted, you
-can split the result (each glyph is one path object inside a
-group), or use the whole group as a single object.
+can split the resulting compound (`Ctrl + Shift + 8`) if you want
+the contours as independent path objects — though for glyphs with
+holes this loses the even/odd "this is a hole" relationship and
+you'll see the inner contour as a filled region. Keep the
+compound unless you specifically need the contours apart.
 
 ## Where to next
 

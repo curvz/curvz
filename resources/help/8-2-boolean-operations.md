@@ -23,15 +23,24 @@ two valid candidates the menu items dim out.
 A few practical points:
 
 - The selected paths must be **closed**. Open paths are skipped
-  with a status-bar message — they have no enclosed area for the
-  set logic to work on. Close them first, or convert to filled
-  regions, before running a boolean op.
+  with a notice — they have no enclosed area for the set logic to
+  work on. Close them first, or convert to filled regions, before
+  running a boolean op.
 - **Compound paths** (paths with holes — see **Compound & derived**,
-  8.3) are accepted as inputs, but the topology of the result is
-  not always what you'd expect. For predictable results, release
-  the compound first (right-click → Release Compound, or
-  `Ctrl+Shift+G`), run the boolean on the constituent paths, and
-  re-form the compound if needed.
+  8.3) work correctly as boolean inputs in the common case of
+  *one compound combined with one simple path*. Curvz decomposes
+  the compound by its child stacking order — the bottom-most
+  child is treated as the outer outline; children stacked above
+  alternate hole, island, hole, and so on — and runs the boolean
+  per role against the path operand, so outer-minus-hole
+  semantics survive the operation. For *two or more compounds*
+  in one selection, or for selections of three or more inputs
+  with any compounds in them, the result still falls through to
+  Clipper2's general N-way path and the topology may not be what
+  you'd expect. In those cases release the compound(s) first
+  (right-click → Release Compound, or `Ctrl + Shift + 8`), run
+  the boolean on the simple paths, and re-form the compound if
+  needed.
 
 ## ❷ The three operations
 
@@ -60,12 +69,18 @@ Three ways to fire a boolean op:
 - **Hotkeys** — `Ctrl + Shift + U` Union, `Ctrl + Shift + E`
   Subtract (E for *exclude*), `Ctrl + Shift + I` Intersect.
 - **Right-click** on the canvas with a valid selection of two or
-  more closed paths.
+  more closed paths. The three ops live under a **Boolean**
+  submenu on the context menu, sitting between the Structure
+  section (Group / Compound) and Arrange.
 
 The menu items and the hotkeys consult the same enable/disable
 state. If a hotkey doesn't fire, check the menu — the item will
-be dim, and the status bar will explain why (wrong selection
-size, wrong types, open paths).
+be dim, which means the current selection doesn't satisfy the op
+(needs two or more closed Path objects). When an op *does* fire
+but the inputs filter down to fewer than two closed paths
+(because some were open or weren't paths), Curvz shows a
+"Boolean Operation Failed" notice with a count of what was
+skipped.
 
 ## ❹ The result
 
@@ -95,29 +110,32 @@ segments. A union of two circles can come back with **hundreds of
 nodes** describing what should be a smooth boundary. The geometry
 is right; the editing experience isn't.
 
-The **Clean Boolean Output** option (Path menu) turns on a
-post-pass that walks the result and reduces it to the smaller
-node set Curvz can recognize: the original input anchors that
-survived the operation, the points where the input curves
-crossed each other, and a one-node guard band on either side of
-each of those to keep the curve shape stable. Everything else
-gets removed, and the curve flows through what remains.
+The **Boolean cleanup** subsection in the inspector's
+**Application** group controls a post-pass that walks the result
+and reduces it to the smaller node set Curvz can recognize: the
+original input anchors that survived the operation, the points
+where the input curves crossed each other, and a one-node guard
+band on either side of each of those to keep the curve shape
+stable. Everything else gets removed, and the curve flows through
+what remains.
 
-The toggle is **off by default**. Flip it on once and Curvz
-remembers the choice across launches; the menu item shows a
-checkmark when active. Behaviour with the toggle off is
-identical to running with no cleanup at all — the diagnostic
-fallback is always available.
+The control is a single slider, range 0 to 10. Lower values
+favour fewer nodes at the cost of shape fidelity; higher values
+keep more nodes for a tighter match. The end labels read
+**Approximate (fewer nodes)** and **Faithful (more nodes)**. The
+default sits in the middle at 5; the right-most stop, labelled
+**Raw**, turns the post-pass off entirely and hands back the
+unprocessed Clipper2 output. Curvz remembers the slider position
+across launches.
 
-A worked example from the test suite: a rectangle plus a circle,
-unioned. Without cleanup the result is around 140 nodes, all
-straight cusps tracing a polyline approximation of the circle.
-With cleanup on the result drops to around 15 nodes — the
-rectangle's corners, the circle's symmetric anchors, the two
-points where the circle crossed the rectangle's right edge, and
-the guard band protecting them. The curve flows through every
-keeper as a clean cusp; the segments between keepers carry the
-curvature.
+A worked example: a rectangle plus a circle, unioned. At the Raw
+end (10) the result is around 140 nodes, all straight cusps
+tracing a polyline approximation of the circle. At the default
+(5) the result drops to around 15 nodes — the rectangle's
+corners, the circle's symmetric anchors, the two points where
+the circle crossed the rectangle's right edge, and the guard
+band protecting them. The curve flows through every keeper as a
+clean cusp; the segments between keepers carry the curvature.
 
 **The result is a starting point, not a finished shape.** Curvz
 hands you a clean, editable boundary; you take it the rest of
@@ -135,11 +153,14 @@ paths reliably for all three operations.
 
 A few caveats to be aware of.
 
-**Compound paths.** A compound path's topology (which subpath is a
-hole, which is a fill) doesn't always survive a boolean op the way
-you'd expect. Release the compound first, run the operation on the
-simple paths, then re-form the compound if needed. See ❶ for the
-release shortcut.
+**Compound paths.** Compound + simple Path works correctly via
+per-child role dispatch — outer-minus-hole topology survives the
+operation. Compound + Compound, or three-or-more inputs with any
+compounds in the mix, falls through to the general Clipper2 path
+and the result may not preserve the source compound's hole
+structure. Release the compound(s) first, run the operation on
+the simple paths, then re-form the compound if needed. See ❶ for
+the release shortcut.
 
 **Small canvases produce coarse curve output.** Boolean operations
 work at the canvas's native resolution. On small canvases —
@@ -155,11 +176,11 @@ is preserved regardless of canvas dimensions. In Pixel mode the
 coarse output is the contract — the canvas committed to a pixel
 grid, and the boolean honors it.
 
-**Cleanup keeps a guard band.** When **Clean Boolean Output** is
-on, the post-pass holds onto the immediate neighbours of every
-keeper anchor — one node on each side, regardless of whether
-that node carries useful curvature. The guard makes the result
-robust on adversarial inputs but means the node count is
+**Cleanup keeps a guard band.** Anywhere the slider sits below
+the Raw end, the post-pass holds onto the immediate neighbours
+of every keeper anchor — one node on each side, regardless of
+whether that node carries useful curvature. The guard makes the
+result robust on adversarial inputs but means the node count is
 typically higher than an optimal hand-cleanup of the same shape.
 Expect 2–3× the keeper count in practice. If you want fewer
 nodes than Curvz produced, delete the redundant ones by hand —
@@ -175,13 +196,15 @@ this looks correct; on adversarial inputs (very different
 curvatures meeting at a sharp angle) the curve can bulge slightly
 past the original boundary near the cusp. If you see overshoot,
 delete the cusp by hand and re-add a node where you'd prefer the
-curve to pin — or turn cleanup off for that operation.
+curve to pin — or slide the Boolean cleanup control to Raw,
+re-run the operation to see the unprocessed shape, and pick the
+result that suits.
 
-Open paths are gracefully **skipped** rather than producing wrong
-geometry — if your selection includes some open paths, you'll get
-a status-bar message telling you how many were skipped and the
-operation will proceed on the closed remainder. If fewer than two
-closed paths remain after filtering, the operation aborts.
+Open paths are **skipped** rather than producing wrong geometry —
+if your selection includes some open paths, the op proceeds on
+the closed remainder. If fewer than two closed paths remain after
+filtering, the operation aborts and Curvz shows a "Boolean
+Operation Failed" notice with a count of what was skipped.
 
 ## When to use which
 

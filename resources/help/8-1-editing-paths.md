@@ -164,8 +164,12 @@ selection rather than a single node.
 - `Delete` / `Backspace` — delete the selected node (Node tool)
   or the selected object (Selection tool).
 - `←` / `→` / `↑` / `↓` — nudge by 2 screen pixels;
-  `Shift + arrow` 8 px; `Alt + arrow` 32 px. `Ctrl + arrow` is
-  reserved for arrange (z-order).
+  `Shift + arrow` 8 px; `Alt + arrow` 32 px.
+- `Ctrl + ←` / `Ctrl + →` — with the Node tool active, retract the
+  selected anchor's IN / OUT handle onto the anchor itself. See
+  **Node** (5.4.4) for the full retraction story. `Ctrl + ↑` /
+  `Ctrl + ↓` still drive arrange (z-order); only the horizontal
+  pair is bound to retraction.
 - **Plain click on a curve segment with the Node tool** inserts a
   new anchor at the click point — no modifier required.
 
