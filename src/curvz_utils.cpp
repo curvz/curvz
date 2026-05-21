@@ -285,6 +285,62 @@ Curvz::CurvzDocument* find_doc_by_iid(const Curvz::CurvzProject& proj,
     return nullptr;
 }
 
+// ── find_object_parent (s275 m12 — hoisted from LayersPanel.cpp) ─────
+// Walks the doc tree to find the immediate parent of `target`. The
+// recursion only descends into container types (Group / Compound /
+// ClipGroup / Blend / Warp) — there is no other place a SceneNode can
+// have children in this codebase. Originally lived in LayersPanel's
+// anonymous namespace (s274 m11); promoted here when Canvas became
+// the second consumer.
+Curvz::SceneNode* find_object_parent(Curvz::CurvzDocument* doc,
+                                     Curvz::SceneNode* target) {
+    if (!doc || !target) return nullptr;
+    auto is_container = [](const Curvz::SceneNode* n) {
+        return n && (n->type == Curvz::SceneNode::Type::Group ||
+                     n->type == Curvz::SceneNode::Type::Compound ||
+                     n->type == Curvz::SceneNode::Type::ClipGroup ||
+                     n->type == Curvz::SceneNode::Type::Blend ||
+                     n->type == Curvz::SceneNode::Type::Warp);
+    };
+    std::function<Curvz::SceneNode*(Curvz::SceneNode*)> walk =
+        [&](Curvz::SceneNode* node) -> Curvz::SceneNode* {
+            if (!is_container(node)) return nullptr;
+            for (auto& c : node->children) {
+                if (c.get() == target) return node;
+                if (auto* r = walk(c.get())) return r;
+            }
+            return nullptr;
+        };
+    for (auto& layer : doc->layers) {
+        for (auto& child : layer->children) {
+            if (child.get() == target) return nullptr;  // top-level
+            if (auto* r = walk(child.get())) return r;
+        }
+    }
+    return nullptr;
+}
+
+// ── layer_display_name (s275 m12 — hoisted from LayersPanel.cpp) ─────
+// Falls back name → id → "Layer N" so a layer that has neither name
+// nor id still renders a non-empty, disambiguated label. Hoisted from
+// LayersPanel for canvas-side menu reuse (s275 m12).
+std::string layer_display_name(const Curvz::SceneNode& layer, int idx) {
+    if (!layer.name.empty()) return layer.name;
+    if (!layer.id.empty())   return layer.id;
+    return "Layer " + std::to_string(idx + 1);
+}
+
+// ── is_ordinary_target_layer (s275 m12 — hoisted from LayersPanel.cpp)
+// Eligibility predicate for Move-to-layer destinations. Excludes the
+// special-layer types (Guide / Grid / Margin / Ref / Measurement —
+// see SceneNode::is_special_layer) and any locked layer. Hoisted
+// from LayersPanel for canvas-side menu reuse (s275 m12).
+bool is_ordinary_target_layer(const Curvz::SceneNode& layer) {
+    if (layer.is_special_layer()) return false;
+    if (layer.locked)             return false;
+    return true;
+}
+
 // ── iid_breadcrumb (s175 m3) ─────────────────────────────────────────
 // User-facing label for an iid. Rendered "<Layer Name> → <Node Name>"
 // where the layer name is the top-level container's name and the node

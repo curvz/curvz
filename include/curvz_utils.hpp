@@ -289,6 +289,61 @@ int find_layer_index_by_iid(const Curvz::CurvzDocument& doc,
 Curvz::CurvzDocument* find_doc_by_iid(const Curvz::CurvzProject& proj,
                                       const std::string& iid);
 
+// ── Doc-tree helpers (s275 m12 — hoisted from LayersPanel.cpp) ───────
+//
+// These three helpers were file-statics in LayersPanel.cpp's anonymous
+// namespace, used by the row-context-menu wiring (s274 m11). The s275
+// m12 work brings the same Move-to-layer ▸ verb to the canvas right-
+// click menu — which means two call sites now want the same answers
+// from the same shape of question, so the helpers move here.
+//
+// Why now rather than during s274 m11: only one consumer existed at
+// that point, so anonymous-namespace placement was correct (locality
+// over premature generalisation). The second consumer is the seam
+// that justifies the lift.
+
+// Walk the doc tree to find the immediate parent of `target`.
+//
+//   - Returns nullptr if `target` is a top-level layer child (i.e. it
+//     sits directly in some `doc->layers[i]->children`).
+//   - Returns nullptr if `target` is not found anywhere under any
+//     container in the doc.
+//   - Otherwise returns a non-owning pointer to the container SceneNode
+//     (Group / Compound / ClipGroup / Blend / Warp) that holds it.
+//
+// Use case: gating "Move to layer ▸" — only top-level objects can move
+// directly between layers; nested objects must be released from their
+// container first.
+//
+// Performance: recursive descent through the container types listed
+// above. The recursion never enters non-container SceneNodes, so the
+// walk visits each container once.
+Curvz::SceneNode* find_object_parent(Curvz::CurvzDocument* doc,
+                                     Curvz::SceneNode* target);
+
+// Return the display name of a layer for menu/UI labels.
+//
+//   - If `layer.name` is non-empty, returns that.
+//   - Else if `layer.id` is non-empty, returns that.
+//   - Else returns "Layer N" where N = idx + 1 (1-based).
+//
+// Mirrors the fallback chain in the LayersPanel row renderer, so a
+// menu label and the on-panel row label agree on what to call a
+// layer that the user hasn't bothered to name.
+std::string layer_display_name(const Curvz::SceneNode& layer, int idx);
+
+// Is this layer a valid Move-to-layer destination for ordinary objects?
+//
+//   - Special layers (Guide / Grid / Margin / Ref / Measurement) are
+//     never targets — they hold typed contents that ordinary objects
+//     don't belong in.
+//   - Locked layers are never targets — locked is locked.
+//
+// Centralising this here means the canvas right-click menu and the
+// LayersPanel right-click menu compute eligibility identically; a
+// future tightening (e.g. excluding hidden layers) lands in one place.
+bool is_ordinary_target_layer(const Curvz::SceneNode& layer);
+
 // ── iid_breadcrumb (s175 m3) ─────────────────────────────────────────
 // Resolves an iid to a human-readable "Layer Name → Node Name" string
 // suitable for inspector labels and any other place where users would

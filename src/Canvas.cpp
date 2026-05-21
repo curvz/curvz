@@ -79,7 +79,11 @@ namespace Curvz {
 //   2. Structure  (Group/Ungroup/Compound/Release)
 //   3. Boolean    (Union/Subtract/Intersect)
 //   4. Arrange    (Bring Front/Forward, Send Backward/Back)
-//   5. Effects    (Make/Edit/Release Warp+Blend, Flatten, Expand Stroke,
+//   4.5 Move to layer ▸ (s275 m12 — cross-parent move; pairs with Arrange's
+//                  z-order-within-parent)
+//   4.7 Translate… (s205 m4 — Move/Scale/Rotate/Skew hub)
+//   5. Effects    (Make/Edit/Release Warp+Blend, Release Clip, Rebuild
+//                  Blend Steps, Flatten, Expand Stroke, Offset Path,
 //                  Convert to Path)
 //   6. Library    (Save to Library…) — always present
 //
@@ -88,8 +92,28 @@ namespace Curvz {
 // inspector visibility row per the s145 "in your face" rule, and align/distribute
 // already have a dedicated toolbar group plus inspector section. Both are
 // trivial follow-ups if Scott wants them later.
+//
+// s275 m12 — three additions bring this menu to parity with the layers
+// panel row right-click menu (s274 m11):
+//   • Move to layer ▸ — built inline from m_doc + m_selection rather than
+//     an ObjectActions bit. Same logic as LayersPanel; both call sites
+//     use curvz::utils::is_ordinary_target_layer + layer_display_name.
+//     Gated on every selection member being top-level.
+//   • Release Clip — uses the existing win.clip-release action (Ctrl+
+//     Alt+7). Inline-gated because SelectionInfo doesn't carry an
+//     any_clip flag (ClipGroup falls through `default:` in the kind
+//     switch; deeper threading is a separate refactor).
+//   • Rebuild Blend Steps — uses a local ctx.rebuild-blend action that
+//     calls Canvas::rebuild_blend on the lone Blend, mirroring the
+//     LayersPanel m11 wiring.
+//
+// `doc` and `selection` are passed in for the inline-gating work. They
+// may be null/empty — the function handles both cases (sections just
+// stay empty and get filtered out).
 static Glib::RefPtr<Gio::Menu>
-build_object_context_menu(const ObjectActions &oa) {
+build_object_context_menu(const ObjectActions &oa,
+                          const CurvzDocument *doc,
+                          const std::vector<SceneNode *> &selection) {
   auto menu = Gio::Menu::create();
 
   // Helper: build a section, append non-empty sections to `menu`. Appending
@@ -209,7 +233,81 @@ build_object_context_menu(const ObjectActions &oa) {
     }
   }
 
-  // ── 4.5. Translate hub (s205 m4) ─────────────────────────────────────────
+  // ── 4.5. Move to layer ▸ (s275 m12) ─────────────────────────────────────
+  // Cross-parent reparent. Sits next to Arrange because the two are
+  // siblings — Arrange moves an object within its parent layer (z-order);
+  // Move to layer ▸ moves an object between parent layers. Same shape
+  // of "do something to this object's parent slot."
+  //
+  // Inline-gated rather than ObjectActions-bit-gated, for two reasons:
+  // (a) the eligibility depends on `doc->layers` and on each selection
+  // member's parent, neither of which lives in ObjectActions today;
+  // (b) the submenu items themselves are doc-driven (one per ordinary
+  // layer), so the bit gate would only tell us "show the submenu"
+  // anyway — we still have to walk layers to populate it. Doing both
+  // here keeps the rule in one place.
+  //
+  // Eligibility (mirrors LayersPanel row right-click, s274 m11):
+  //   • doc and selection both non-empty
+  //   • every selection member is a top-level layer child (nested
+  //     objects must be released from their container first via the
+  //     Ungroup / Release Compound / Release Clip / Release Blend /
+  //     Release Warp verbs above)
+  //   • at least one ordinary unlocked target layer exists
+  //     where not every selected object already lives there (no-op
+  //     destinations are skipped)
+  //
+  // Action wiring: each item dispatches to ctx.move-to-layer-N (local
+  // per-popup action group). The action's handler calls
+  // Canvas::move_top_level_selection_to_layer(N). See the right-click
+  // setup site for the per-popup ctx action group, and Canvas.cpp's
+  // method for the iid-capture + push pattern.
+  if (doc && !selection.empty()) {
+    bool all_top_level = true;
+    for (SceneNode *s : selection) {
+      if (curvz::utils::find_object_parent(
+              const_cast<CurvzDocument*>(doc), s) != nullptr) {
+        all_top_level = false;
+        break;
+      }
+    }
+    if (all_top_level) {
+      // Compute the layer every selection member is in, if they all share
+      // one — that layer is the "home" we exclude from the target list
+      // (moving everyone to where they already are is a no-op).
+      int common_home = -1;
+      bool same = true;
+      for (SceneNode *s : selection) {
+        int found = -1;
+        for (int li = 0; li < (int)doc->layers.size(); ++li) {
+          for (auto &c : doc->layers[li]->children) {
+            if (c.get() == s) { found = li; break; }
+          }
+          if (found >= 0) break;
+        }
+        if (found < 0) { same = false; break; }
+        if (common_home < 0) common_home = found;
+        else if (common_home != found) { same = false; break; }
+      }
+
+      auto sub = Gio::Menu::create();
+      for (int li = 0; li < (int)doc->layers.size(); ++li) {
+        if (!curvz::utils::is_ordinary_target_layer(*doc->layers[li])) continue;
+        if (same && li == common_home) continue;
+        std::string action = "ctx.move-to-layer-" + std::to_string(li);
+        std::string label  = curvz::utils::layer_display_name(*doc->layers[li], li);
+        auto item = Gio::MenuItem::create(label, action);
+        sub->append_item(item);
+      }
+      if (sub->get_n_items() > 0) {
+        auto sec = Gio::Menu::create();
+        sec->append_submenu("Move to layer", sub);
+        menu->append_section("", sec);
+      }
+    }
+  }
+
+  // ── 4.7. Translate hub (s205 m4) ─────────────────────────────────────────
   // Always-present entry that opens the Translate hub dialog — one place
   // for Move / Scale / Rotate / Skew sharing the same refpt picker. Not
   // gated on ObjectAction bits; the dialog no-ops on empty / non-path
@@ -228,15 +326,23 @@ build_object_context_menu(const ObjectActions &oa) {
   // Blend, Stroke, and primitive→path conversion — too many to leave at top
   // level and a coherent group. ConvertToPath maps to text-to-path (font-
   // glyph rasterisation) — the only primitive→path conversion currently
-  // wired. EditBlend has no discrete action — Blend editing happens via
-  // the dedicated Blend popover reached via its own right-click branch
-  // above this menu — so it's omitted here. Make Warp and Make Blend
-  // (s162 m3) appear at the top of this section so creation reads before
-  // lifecycle/release verbs.
+  // wired. EditBlend is a bit in EffectAction but no win.blend-edit
+  // action exists; the verb is not surfaced anywhere in the menu today.
+  // Make Warp and Make Blend (s162 m3) appear at the top of this section
+  // so creation reads before lifecycle/release verbs.
   //
   // Most Effects items have no hotkey wired in the CAPTURE controller;
   // those omit the accel attribute. Expand Stroke (Ctrl+Shift+X) is the
   // exception.
+  //
+  // s275 m12: Release Clip and Rebuild Blend Steps added for parity with
+  // the LayersPanel row right-click (s274 m11). Both inline-gated on the
+  // selection rather than via ObjectActions bits — ClipGroup currently
+  // falls through `default:` in SelectionInfo's kind switch (no any_clip
+  // flag), and Rebuild Blend Steps is a cache-maintenance verb that
+  // doesn't fit the Make/Edit/Release bit family. Release Clip uses the
+  // existing win.clip-release action; Rebuild Blend Steps uses a local
+  // ctx.rebuild-blend action (handler wired at the right-click site).
   {
     auto sub = Gio::Menu::create();
     if (any(oa.effect & EffectAction::MakeWarp))
@@ -249,6 +355,20 @@ build_object_context_menu(const ObjectActions &oa) {
       add(sub, "Release Warp",   "win.warp-release");
     if (any(oa.effect & EffectAction::ReleaseBlend))
       add(sub, "Release Blend",  "win.blend-release");
+    // Release Clip — single ClipGroup. Inline-gated, no action bit.
+    if (selection.size() == 1 && selection[0]
+        && selection[0]->type == SceneNode::Type::ClipGroup
+        && !selection[0]->locked) {
+      add(sub, "Release Clip",   "win.clip-release", "<Primary><Alt>7");
+    }
+    // Rebuild Blend Steps — single Blend. Inline-gated, no action bit.
+    // Wired via local ctx.rebuild-blend at the right-click setup site;
+    // the action calls Canvas::rebuild_blend on the lone Blend.
+    if (selection.size() == 1 && selection[0]
+        && selection[0]->type == SceneNode::Type::Blend
+        && !selection[0]->locked) {
+      add(sub, "Rebuild Blend Steps", "ctx.rebuild-blend");
+    }
     if (any(oa.effect & EffectAction::Flatten))
       add(sub, "Flatten",        "win.warp-flatten");
     if (any(oa.effect & EffectAction::ExpandStroke))
@@ -460,17 +580,20 @@ Canvas::Canvas() {
   });
   add_controller(dbl_click);
 
-  // Right-click context menu. Three branches by hit type:
-  //   • Blend (or one of its A/B/cache children) → "Rebuild Blend Steps"
-  //     popover (the original branch).
+  // Right-click context menu. Two branches by hit type:
   //   • Image → modal "Image Info" dialog with file/pixel/size details
   //     (the s124-era branch).
-  //   • Anything else hit-testable (path, text, group, compound, ref) →
-  //     general object context menu, currently one entry: "Save to
-  //     Library…" (s125 m1a). Future entries (Group, Cut/Copy/Paste,
-  //     Bring Forward, …) append in that branch.
+  //   • Anything else hit-testable (path, text, group, compound, ref,
+  //     blend, warp, clip-group) → unified object context menu driven
+  //     by SelectionContext, with inline-gated additions for Move to
+  //     layer ▸ / Release Clip / Rebuild Blend Steps (s275 m12).
   // Empty-canvas right-click is intentionally a no-op (no document-level
   // verbs wired yet).
+  //
+  // History: through s274 the Blend case had a separate one-button
+  // popover ("Rebuild Blend Steps" and nothing else) that pre-empted the
+  // unified menu. s275 m12 folded that verb into the unified menu —
+  // mirrors what s274 m11 did for the LayersPanel row right-click.
   auto rclick = Gtk::GestureClick::create();
   rclick->set_button(3);
   rclick->signal_pressed().connect([this](int, double x, double y) {
@@ -870,88 +993,19 @@ Canvas::Canvas() {
     }
 
     SceneNode *hit = hit_test(dx, dy);
-    // Blend right-click: show a small popover with "Rebuild steps".
-    // Owns the Blend whose A or B was hit, or the Blend itself when
-    // hit_test returns it directly (unlikely — Blend isn't hit-testable
-    // as a whole, just its A/B/cache children). We walk up via
-    // find_blend_owner — if the hit is A or B, that returns the Blend.
-    // If the hit is a cached step (which find_blend_owner doesn't cover),
-    // we fall back to scanning all Blends for one whose cache contains
-    // the hit pointer.
-    if (hit) {
-      SceneNode *blend = nullptr;
-      if (hit->is_blend()) {
-        blend = hit;
-      } else if (auto *owner = find_blend_owner(hit)) {
-        blend = owner;
-      } else {
-        // Could be a cache step — walk doc looking for a Blend whose
-        // cache owns `hit`. Rare path; cheap walk.
-        std::function<SceneNode *(SceneNode *)> find =
-            [&](SceneNode *n) -> SceneNode * {
-          if (!n)
-            return nullptr;
-          if (n->is_blend()) {
-            for (auto &s : n->blend_cache)
-              if (s.get() == hit)
-                return n;
-          }
-          for (auto &c : n->children)
-            if (auto *r = find(c.get()))
-              return r;
-          if (n->is_blend()) {
-            if (auto *r = find(n->blend_source_a.get()))
-              return r;
-            if (auto *r = find(n->blend_source_b.get()))
-              return r;
-          }
-          if (n->is_warp()) {
-            if (auto *r = find(n->warp_source.get()))
-              return r;
-            if (auto *r = find(n->warp_glyph_cache.get()))
-              return r;
-            if (auto *r = find(n->warp_cache.get()))
-              return r;
-          }
-          return nullptr;
-        };
-        if (m_doc)
-          for (auto &layer : m_doc->layers)
-            if (auto *r = find(layer.get())) {
-              blend = r;
-              break;
-            }
-      }
-      if (blend) {
-        auto *popover = Gtk::make_managed<Gtk::Popover>();
-        popover->set_parent(*this);
-        popover->set_has_arrow(true);
-        auto *box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
-        box->set_spacing(2);
-        box->set_margin_start(4);
-        box->set_margin_end(4);
-        box->set_margin_top(4);
-        box->set_margin_bottom(4);
-        // s209 m5 — substrate Button with the unregistered tag.
-        // Per-click popover (blend right-click rebuild affordance);
-        // rebuilt every right-click on a blend node. Sibling of the
-        // spiral-Apply migration above and ContextBar::show_context_menu
-        // (s209 m2) — same per-click costume.
-        auto *btn = Gtk::make_managed<curvz::widgets::Button>(
-                        curvz::scripting::unregistered, "Rebuild Blend Steps");
-        btn->set_has_frame(false);
-        btn->signal_clicked().connect([this, blend, popover]() {
-          rebuild_blend(blend);
-          popover->popdown();
-        });
-        box->append(*btn);
-        popover->set_child(*box);
-        Gdk::Rectangle rect((int)x, (int)y, 1, 1);
-        popover->set_pointing_to(rect);
-        popover->popup();
-        return;
-      }
-    }
+    // s275 m12: the s162 m3 "Blend right-click shows a one-button popover
+    // with Rebuild Blend Steps and nothing else" branch was removed here.
+    // It was the canvas-side counterpart of the popover the LayersPanel
+    // folded into its unified row menu in s274 m11, and it had the same
+    // problem: right-clicking a Blend gave you ONLY Rebuild Blend Steps
+    // and missed every other verb (Delete, Move to layer, Cut, Copy,
+    // Release Blend, Flatten...). The s274 m11 fix on the panel side was
+    // to fold the Rebuild Blend Steps verb into the unified menu via a
+    // local ctx.rebuild-blend action. This change does the same here:
+    // Blends now flow through the standard object-context menu, which
+    // surfaces Rebuild Blend Steps as one item in Effects (gated on
+    // single-Blend selection) alongside everything else a Blend can do.
+    // One right-click behaviour for Blends, not two competing ones.
     if (!hit) {
       // Right-click on empty canvas — no menu. Affinity/Illustrator convention:
       // an empty-canvas context menu would only carry document-level verbs
@@ -985,15 +1039,32 @@ Canvas::Canvas() {
         queue_draw();
       }
 
-      // Build the menu from the now-current SelectionContext.
-      auto menu = build_object_context_menu(m_sel_ctx.object_actions());
+      // Build the menu from the now-current SelectionContext. s275 m12
+      // also passes m_doc + m_selection so the builder can inline-build
+      // the Move to layer ▸ submenu and the Release Clip / Rebuild Blend
+      // Steps gates that don't fit the ObjectActions bit scheme.
+      auto menu = build_object_context_menu(m_sel_ctx.object_actions(),
+                                            m_doc, m_selection);
 
-      // Local "ctx" action group: hosts only Save to Library, since that
-      // verb's target lives on Canvas (m_sig_request_save_to_library) rather
-      // than as a MainWindow action. Same pattern as DocTabBar's "tabctx"
-      // and LibraryPanel's "libctx" — a per-popup action group attached to
-      // the parent of the PopoverMenu.
+      // Local "ctx" action group: hosts the verbs whose targets live on
+      // Canvas rather than as MainWindow win.* actions. Same per-popup
+      // action group pattern as DocTabBar's "tabctx" and LibraryPanel's
+      // "libctx" — attached to the parent of the PopoverMenu, scoped to
+      // the popover's lifetime.
+      //
+      //   • save-to-library — emits m_sig_request_save_to_library
+      //   • rebuild-blend (s275 m12) — calls rebuild_blend on the lone
+      //     Blend selection. The menu only references this action when
+      //     selection is a single Blend, so unconditional registration
+      //     here is fine.
+      //   • move-to-layer-N (s275 m12) — one per ordinary unlocked
+      //     layer, calls move_top_level_selection_to_layer(N). The menu
+      //     only references each layer's action when that layer is an
+      //     eligible target, but we register actions for ALL ordinary
+      //     layers (uniformity over conditional registration). Per-popup
+      //     namespace pollution dies with the popover.
       auto ag = Gio::SimpleActionGroup::create();
+
       auto act_save_lib = Gio::SimpleAction::create("save-to-library");
       act_save_lib->signal_activate().connect(
           [this](const Glib::VariantBase &) {
@@ -1006,6 +1077,37 @@ Canvas::Canvas() {
                 [this]() { m_sig_request_save_to_library.emit(); });
           });
       ag->add_action(act_save_lib);
+
+      // rebuild-blend — single-Blend gating happens at menu-build time.
+      // Acts on m_selected (the primary selection); the menu only adds
+      // the item when selection size is 1 and that one is a Blend.
+      auto act_rebuild_blend = Gio::SimpleAction::create("rebuild-blend");
+      act_rebuild_blend->signal_activate().connect(
+          [this](const Glib::VariantBase &) {
+            if (m_selected && m_selected->is_blend())
+              rebuild_blend(m_selected);
+          });
+      ag->add_action(act_rebuild_blend);
+
+      // move-to-layer-N — register one per ordinary layer in the current
+      // doc. Each action calls Canvas::move_top_level_selection_to_layer
+      // with the captured layer index. Per-popup; eligible-target gating
+      // happens at menu-build time inside build_object_context_menu.
+      if (m_doc) {
+        for (int li = 0; li < (int)m_doc->layers.size(); ++li) {
+          if (!curvz::utils::is_ordinary_target_layer(*m_doc->layers[li]))
+            continue;
+          std::string name = "move-to-layer-" + std::to_string(li);
+          auto act = Gio::SimpleAction::create(name);
+          int captured_li = li;
+          act->signal_activate().connect(
+              [this, captured_li](const Glib::VariantBase &) {
+                move_top_level_selection_to_layer(captured_li);
+              });
+          ag->add_action(act);
+        }
+      }
+
       insert_action_group("ctx", ag);
 
       auto *popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);

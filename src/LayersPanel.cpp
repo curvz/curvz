@@ -850,55 +850,11 @@ void LayersPanel::setup_path_drop(Gtk::Widget *w, int layer_idx, int obj_idx) {
 // are NOT cleaned up as normal children; without the idle-unparent, each
 // right-click would leak a popover for the lifetime of the row widget.
 
-namespace {
-
-// Walk the doc tree to find `obj`'s immediate parent. Returns nullptr if
-// `obj` is a top-level layer child (or not found). Matches the recursive
-// descent in add_child_row's walker (lines ~1281). Cheap — the panel
-// already does this whenever rendering nested rows.
-SceneNode *find_object_parent(CurvzDocument *doc, SceneNode *target) {
-  if (!doc || !target) return nullptr;
-  auto is_container = [](const SceneNode *n) {
-    return n && (n->type == SceneNode::Type::Group ||
-                 n->type == SceneNode::Type::Compound ||
-                 n->type == SceneNode::Type::ClipGroup ||
-                 n->type == SceneNode::Type::Blend ||
-                 n->type == SceneNode::Type::Warp);
-  };
-  std::function<SceneNode *(SceneNode *)> walk = [&](SceneNode *node) -> SceneNode * {
-    if (!is_container(node)) return nullptr;
-    for (auto &c : node->children) {
-      if (c.get() == target) return node;
-      if (auto *r = walk(c.get())) return r;
-    }
-    return nullptr;
-  };
-  for (auto &layer : doc->layers) {
-    for (auto &child : layer->children) {
-      if (child.get() == target) return nullptr; // top-level
-      if (auto *r = walk(child.get())) return r;
-    }
-  }
-  return nullptr;
-}
-
-// Return the (panel-display) name of a layer for menu labels. Falls back to
-// "Layer N" when the layer's name is empty, mirroring the row renderer.
-std::string layer_display_name(const SceneNode &layer, int idx) {
-  if (!layer.name.empty()) return layer.name;
-  if (!layer.id.empty())   return layer.id;
-  return "Layer " + std::to_string(idx + 1);
-}
-
-// Is this layer a valid Move-to-layer target for ordinary objects?
-// Ordinary = non-special (no guide/ref/grid/margin/measure), non-locked.
-bool is_ordinary_target_layer(const SceneNode &layer) {
-  if (layer.is_special_layer()) return false;
-  if (layer.locked)             return false;
-  return true;
-}
-
-} // anonymous namespace
+// s275 m12: find_object_parent / layer_display_name / is_ordinary_target_layer
+// were file-statics in this TU through s274 m11. They moved to curvz::utils
+// when Canvas became a second consumer (same Move-to-layer ▸ verb hosted in
+// both the layers-panel row right-click and the canvas right-click). See
+// curvz_utils.hpp for the docstrings and the lift rationale.
 
 void LayersPanel::setup_row_context_menu(Gtk::Widget *w, SceneNode *obj,
                                          int layer_idx, bool is_top_level) {
@@ -939,7 +895,7 @@ void LayersPanel::setup_row_context_menu(Gtk::Widget *w, SceneNode *obj,
         bool all_top_level = true;
         if (obj_in_selection) {
           for (SceneNode *s : m_canvas_selection) {
-            if (find_object_parent(m_doc, s) != nullptr) {
+            if (curvz::utils::find_object_parent(m_doc, s) != nullptr) {
               all_top_level = false;
               break;
             }
@@ -979,7 +935,7 @@ void LayersPanel::setup_row_context_menu(Gtk::Widget *w, SceneNode *obj,
         // "ctx.move-to-layer-3" with no Variant wrangling. Action group
         // is per-popup, so the namespace pollution dies with the popover.
         for (int li = 0; li < (int)m_doc->layers.size(); ++li) {
-          if (!is_ordinary_target_layer(*m_doc->layers[li])) continue;
+          if (!curvz::utils::is_ordinary_target_layer(*m_doc->layers[li])) continue;
           // Skip the source layer for *some* selection member — for
           // top-level move we exclude layers where all selected objects
           // already live (no-op move). We compute eligibility per layer
@@ -1083,10 +1039,10 @@ LayersPanel::build_row_context_menu(const std::vector<SceneNode*> &selection,
 
     auto sub = Gio::Menu::create();
     for (int li = 0; li < (int)m_doc->layers.size(); ++li) {
-      if (!is_ordinary_target_layer(*m_doc->layers[li])) continue;
+      if (!curvz::utils::is_ordinary_target_layer(*m_doc->layers[li])) continue;
       if (home_for_all.count(li)) continue;
       std::string action = "ctx.move-to-layer-" + std::to_string(li);
-      std::string label  = layer_display_name(*m_doc->layers[li], li);
+      std::string label  = curvz::utils::layer_display_name(*m_doc->layers[li], li);
       // No accel for these — there's no hotkey for "move to layer N".
       auto item = Gio::MenuItem::create(label, action);
       sub->append_item(item);
@@ -1145,7 +1101,7 @@ void LayersPanel::move_top_level_selection_to_layer(int dst_layer_idx) {
   if (!m_doc || m_rebuilding) return;
   if (dst_layer_idx < 0 || dst_layer_idx >= (int)m_doc->layers.size()) return;
   auto &dst_layer = m_doc->layers[dst_layer_idx];
-  if (!is_ordinary_target_layer(*dst_layer)) return;
+  if (!curvz::utils::is_ordinary_target_layer(*dst_layer)) return;
 
   // Snapshot the selection — we mutate doc->layers below, which may
   // invalidate iterators if any selection member shifts position. Copy

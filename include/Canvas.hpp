@@ -271,6 +271,22 @@ public:
   //   sets the dirty flag and requests a redraw.
   void rebuild_blend(SceneNode *b);
 
+  // move_top_level_selection_to_layer(dst_li): move every top-level
+  //   member of the current canvas selection to layer index `dst_li`,
+  //   pushing one MoveObjectToLayerCommand per moved object. Mirrors
+  //   the LayersPanel version (s274 m11) — same command shape, same
+  //   command granularity, same hidden-destination-clears-selection
+  //   behaviour. Distinguished by selection source: this one acts on
+  //   `m_selection`; the panel's acts on `m_canvas_selection`.
+  //
+  //   Caller is the canvas right-click "Move to layer ▸ <name>" menu
+  //   item (s275 m12). Gating belongs to the menu — by the time this
+  //   runs every selection member is expected to be top-level and
+  //   the destination is expected to be an ordinary unlocked layer.
+  //   Re-checks both inside for belt-and-braces. No-ops cleanly on a
+  //   bad index or empty selection.
+  void move_top_level_selection_to_layer(int dst_layer_idx);
+
   // ── Warp (envelope distortion) — M1 stub API ─────────────────────────
   // find_warp_owner(target): if `target` is warp_source (or lives
   //   inside warp_source's subtree) of some Warp node in the document,

@@ -2047,6 +2047,120 @@ void Canvas::rebuild_blend(SceneNode *b) {
   LOG_INFO("Canvas::rebuild_blend: forced refresh on Blend '{}'", b->name);
 }
 
+// ── Canvas::move_top_level_selection_to_layer ────────────────────────────────
+// Mirror of LayersPanel::move_top_level_selection_to_layer (s274 m11)
+// from the canvas side (s275 m12). The right-click "Move to layer ▸"
+// submenu on the canvas calls this; the equivalent on the layers panel
+// calls the panel version. The two methods do the same work on
+// different selection sources — Canvas reads m_selection; the panel
+// reads m_canvas_selection (which mirrors it).
+//
+// Per-object MoveObjectToLayerCommand push, not a composite. Granularity
+// established by s171 m2 for DnD; multi-object DnD relies on this shape
+// and undo replays in reverse. Source layer for each object is located
+// fresh inside the loop (it may differ across selection members in a
+// cross-layer multi-selection).
+//
+// Belt-and-braces re-checks: destination index sanity, ordinariness,
+// per-source-layer lock state. The menu gates eligibility but a stale
+// menu against a mutated doc could in principle slip through; failing
+// closed on each object is cheap.
+//
+// Hidden-destination clears selection: matches the DnD precedent. The
+// moved objects survive but become unreachable through canvas selection
+// until the layer is unhidden. Without this, the canvas would have a
+// "ghost selection" that still drives the inspector but has no visual
+// representation.
+void Canvas::move_top_level_selection_to_layer(int dst_layer_idx) {
+  if (!m_doc || !m_history || !m_project) return;
+  if (dst_layer_idx < 0 || dst_layer_idx >= (int)m_doc->layers.size()) return;
+  auto &dst_layer = m_doc->layers[dst_layer_idx];
+  if (!curvz::utils::is_ordinary_target_layer(*dst_layer)) return;
+
+  // Snapshot — we mutate doc->layers below, which may invalidate
+  // iterators if any selection member shifts position.
+  std::vector<SceneNode*> moving = m_selection;
+  if (moving.empty()) return;
+
+  bool any_moved = false;
+  for (SceneNode *obj : moving) {
+    // Locate the source layer + slot. Only top-level matches — the
+    // menu gates on all_top_level, but if a stale selection includes
+    // a nested object this loop simply skips it.
+    int src_li = -1, src_oi = -1;
+    for (int li = 0; li < (int)m_doc->layers.size(); ++li) {
+      auto &ch = m_doc->layers[li]->children;
+      for (int oi = 0; oi < (int)ch.size(); ++oi) {
+        if (ch[oi].get() == obj) { src_li = li; src_oi = oi; break; }
+      }
+      if (src_li >= 0) break;
+    }
+    if (src_li < 0 || src_oi < 0) continue;             // not top-level
+    if (src_li == dst_layer_idx)  continue;             // already there
+    auto &src_layer = m_doc->layers[src_li];
+    if (src_layer->locked)        continue;             // source locked
+
+    // Refpts never leave their layer. Top-level menu shouldn't surface
+    // them, but guard.
+    if (src_layer->children[src_oi]->is_ref()) continue;
+
+    // Capture for the command BEFORE mutating.
+    std::string src_layer_iid = src_layer->internal_id;
+    std::string dst_layer_iid = dst_layer->internal_id;
+    std::string obj_iid       = src_layer->children[src_oi]->internal_id;
+    int saved_src_index       = src_oi;
+    // Insert at the FRONT (index 0) of the destination layer, matching
+    // the LayersPanel convention of "top of the layer in display order
+    // = front of children." Same idiom DnD uses.
+    int saved_dst_index = 0;
+
+    std::unique_ptr<SceneNode> snap_for_cmd;
+    if (!src_layer_iid.empty() && !dst_layer_iid.empty()
+        && !obj_iid.empty()) {
+      snap_for_cmd = clone_node(*src_layer->children[src_oi]);
+    }
+
+    // Mutate the live tree.
+    auto moving_obj = std::move(src_layer->children[src_oi]);
+    src_layer->children.erase(src_layer->children.begin() + src_oi);
+    auto &dst = dst_layer->children;
+    dst.insert(dst.begin() + saved_dst_index, std::move(moving_obj));
+    m_doc->invalidate_iid_index();
+
+    if (snap_for_cmd) {
+      auto cmd = std::make_unique<MoveObjectToLayerCommand>(
+          m_project,
+          std::move(src_layer_iid),
+          std::move(dst_layer_iid),
+          std::move(obj_iid),
+          std::move(snap_for_cmd),
+          saved_src_index,
+          saved_dst_index);
+      m_history->push(std::move(cmd));
+    }
+    any_moved = true;
+  }
+
+  if (!any_moved) return;
+
+  // If destination layer is hidden, the moved objects can no longer be
+  // canvas-selected. Match the DnD precedent (LayersPanel does the
+  // same): clear the canvas selection.
+  if (!dst_layer->visible) {
+    m_selection.clear();
+    m_selected = nullptr;
+    m_selected_node = -1;
+    m_node_selection.clear();
+    notify_object_selection_changed();
+    notify_node_selection_changed();
+  }
+
+  m_sig_doc_changed.emit();
+  queue_draw();
+  LOG_INFO("Canvas::move_top_level_selection_to_layer: moved {} object(s) "
+           "to layer index {}", (int)moving.size(), dst_layer_idx);
+}
+
 // ── Canvas::release_blend ────────────────────────────────────────────────────
 // Dissolves the currently-selected Blend into three siblings in its
 // parent, z-order bottom→top:
