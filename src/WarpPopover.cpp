@@ -75,7 +75,7 @@ void WarpPopover::build_form() {
         m_top_spin->set_width_chars(4);
         m_top_spin->set_tooltip_text(
             "Default top-envelope anchor count for new Warps.\n"
-            "Range 2–4. Wave preset auto-bumps to 3 if needed.");
+            "Range 2–4. Arc / Bulge / Squeeze / Wave presets auto-bump to 3 if needed.");
         m_outer->append(*make_row("Top anchors", *m_top_spin));
 
         m_top_spin->signal_value_changed().connect([this]() {
@@ -96,7 +96,7 @@ void WarpPopover::build_form() {
         m_bot_spin->set_width_chars(4);
         m_bot_spin->set_tooltip_text(
             "Default bottom-envelope anchor count for new Warps.\n"
-            "Range 2–4. Wave preset auto-bumps to 3 if needed.");
+            "Range 2–4. Arc / Bulge / Squeeze / Wave presets auto-bump to 3 if needed.");
         m_outer->append(*make_row("Bottom anchors", *m_bot_spin));
 
         m_bot_spin->signal_value_changed().connect([this]() {

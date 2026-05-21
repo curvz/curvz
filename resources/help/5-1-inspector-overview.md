@@ -103,9 +103,7 @@ and the lede on each page says exactly when:
 - **Warp** is always visible per s155. When no Warp is selected
   it edits the AppPreferences template (the defaults a new Warp
   will inherit); when a Warp is selected it edits that instance.
-  Warp has its own dedicated documentation, which is in
-  preparation — the section will slot into the Object tier
-  numbering when it ships.
+  See **Warp** (7.6) for the full topic.
 - **Node** (5.4.4) appears when a single Bézier node is selected
   on a path.
 - **Shadow** (5.4.6) appears for any node that can carry a drop

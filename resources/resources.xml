@@ -184,6 +184,7 @@
     <file alias="7-3-blends.md">help/7-3-blends.md</file>
     <file alias="7-4-align-distribute.md">help/7-4-align-distribute.md</file>
     <file alias="7-5-group-ungroup.md">help/7-5-group-ungroup.md</file>
+    <file alias="7-6-warp.md">help/7-6-warp.md</file>
     <file alias="8-1-editing-paths.md">help/8-1-editing-paths.md</file>
     <file alias="8-2-boolean-operations.md">help/8-2-boolean-operations.md</file>
     <file alias="8-3-compound-and-derived.md">help/8-3-compound-and-derived.md</file>
@@ -228,6 +229,17 @@
     <file alias="img/icons/curvz-ruler-symbolic.svg">help/img/icons/curvz-ruler-symbolic.svg</file>
     <file alias="img/icons/curvz-ref-symbolic.svg">help/img/icons/curvz-ref-symbolic.svg</file>
     <file alias="img/icons/curvz-corner-symbolic.svg">help/img/icons/curvz-corner-symbolic.svg</file>
+    <!-- s279 m1 Transforms-section icons + s280 m2 warp icon (belt-and-braces:
+         these icons resolve via the icon-theme path /com/curvz/app/icons
+         registered in Application.cpp; the help-prefix registrations here
+         are the texture-path fallback that mirrors the chapter-4 tool icons
+         above. The on-disk copies live in resources/help/img/icons/ so the
+         fallback can find them). -->
+    <file alias="img/icons/curvz-align-symbolic.svg">help/img/icons/curvz-align-symbolic.svg</file>
+    <file alias="img/icons/curvz-blend-symbolic.svg">help/img/icons/curvz-blend-symbolic.svg</file>
+    <file alias="img/icons/curvz-union-symbolic.svg">help/img/icons/curvz-union-symbolic.svg</file>
+    <file alias="img/icons/curvz-step-repeat-symbolic.svg">help/img/icons/curvz-step-repeat-symbolic.svg</file>
+    <file alias="img/icons/curvz-warp-symbolic.svg">help/img/icons/curvz-warp-symbolic.svg</file>
     <file alias="img/2-2-template-gallery.png">help/img/2-2-template-gallery.png</file>
     <file alias="img/2-3-export-dialog.png">help/img/2-3-export-dialog.png</file>
     <file alias="img/3-1-header-bar.png">help/img/3-1-header-bar.png</file>

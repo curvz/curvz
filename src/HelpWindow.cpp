@@ -709,6 +709,7 @@ void HelpWindow::build_topic_list() {
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/7-3-blends.md",                 "7.3 Blends" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/7-4-align-distribute.md",       "7.4 Align & Distribute" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/7-5-group-ungroup.md",          "7.5 Group and Ungroup" },
+    { RowKind::Leaf, 1, true,  "/com/curvz/app/help/7-6-warp.md",                   "7.6 Warp" },
 
     { RowKind::Chapter, 0, false, "", "8 Path operations" },
     { RowKind::Leaf, 1, true,  "/com/curvz/app/help/8-1-editing-paths.md",          "8.1 Editing paths" },

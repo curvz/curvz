@@ -87,7 +87,7 @@ and hotkey.
 - **Step & Repeat** — duplicate the selection along a grid or
   path. See **Step and repeat** (7.1).
 - **Warp** — make, edit, or release a Warp container that
-  envelope-distorts its child geometry.
+  envelope-distorts its child geometry. See **Warp** (7.6).
 
 The Transforms entries other than Corner aren't single-letter
 hotkey tools — they're toolbar buttons that open a popover or run

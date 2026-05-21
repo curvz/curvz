@@ -133,8 +133,9 @@ Vertically) are menu-only; reach them through **Align**.
   with Manage Templates — see the File and project section.*
 - `Ctrl + B` — Blend.
 - `Ctrl + Shift + Y` — Warp.
-- `Ctrl + Alt + Y` — Edit Warp (opens the legacy dialog;
-  scheduled for replacement by an inspector section).
+- `Ctrl + Alt + Y` — Edit Warp. Refreshes the inspector's
+  Object → Warp section for the selected Warp; no dialog
+  opens. See **Warp** (7.6).
 - `Ctrl + Alt + F` — Flatten Warp.
 - `Shift + U` (no Ctrl) — release Text on Path.
 
