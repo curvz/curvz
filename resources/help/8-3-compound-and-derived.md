@@ -36,10 +36,11 @@ the **bottom-most** path in the selection. The other paths' fills
 are discarded — the compound has one fill, not many.
 
 In the Layers panel a compound shows as a single row. The
-constituent outlines are still individually editable: enter the
-compound (double-click with the Selection tool, or pick nodes
-directly with the Node tool) and the anchors of every member are
-exposed.
+constituent outlines are still individually editable: pick their
+nodes directly with the Node tool (which descends into the
+compound's children and hits the closest leaf path), or expand
+the compound's row in the Layers panel and click a member to
+select it as the active path before editing.
 
 ### Splitting a compound
 
@@ -84,14 +85,19 @@ The dialog has three controls:
 
 - **Distance** — how far from the source, in document units. The
   spinner honours the active display unit.
-- **Side** — *Outside* (grow), *Inside* (shrink), or *Both*
-  (produce two paths, one each side, offset by the same
-  distance).
+- **Side** — *Outside* (grow), *Inside* (shrink), or *Both* (an
+  outward and inward offset at the same distance, producing the
+  band on either side of the source).
 - **Keep original path** — leave the source in place and add the
   offset as a new sibling. With it off, the source is replaced.
 
-The result inherits the source's appearance (fill, stroke). For
-*Both*, two new paths share the source appearance.
+The result inherits the source's appearance (fill, stroke). When
+**Keep original** is on, multi-loop results land as sibling Path
+objects above the source — handy when you want to edit each
+offset shape separately. When **Keep original** is off, multi-loop
+results are wrapped in a **compound path** so the band renders as
+one shape under the even/odd rule; release the compound
+(`Ctrl + Shift + 8`) if you need the loops apart.
 
 Inside-offsets on tight curves can self-intersect or pinch off
 into nothing if the distance exceeds the local radius. Curvz

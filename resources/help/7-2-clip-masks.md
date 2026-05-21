@@ -47,20 +47,35 @@ After a successful clip:
 
 The ClipGroup behaves as a single object for selection, drag,
 move, and z-order. It appears in the Layers panel as one row,
-with the clipped contents nested inside; the clip shape itself is
-hidden from the panel.
+with the clipped contents nested inside; the **clip shape**
+shows as the topmost pseudo-row in the expanded group, marked
+with a `✂` badge.
 
 ## Editing inside a clip
 
-Double-click a ClipGroup with the Selection tool to enter it.
-You'll see the contents as if the clip wasn't there — full
-artwork, normal handles — but the rendered output remains masked.
-Edit anything you like; close the group (Esc, or click outside)
-to return to the parent context.
+Open the **Layers** panel (6.2) and expand the ClipGroup row
+(click its `▸` arrow). You'll see:
 
-The clip shape itself isn't directly editable through this entry
-gesture in the current build; release the clip if you need to
-re-cut the mask, edit the shape, then re-clip.
+- The **clip shape** as the topmost pseudo-row, badged `✂`.
+- The **clipped objects** below it, in z-order, nested under the
+  group.
+
+Click any of those rows to make that node the canvas selection,
+then edit it with whatever tool fits — the Node tool to push
+nodes around, the Selection tool to move/scale, the Text tool to
+re-edit a text child, and so on. The rendered output remains
+masked while you work; only the artwork being edited shows its
+normal handles.
+
+Editing the **clip shape** uses the same gesture: expand the
+ClipGroup row, click the `✂` pseudo-row, switch to the Node tool.
+The mask reshapes in real time as you drag its nodes — no need to
+release the clip to adjust the cropping outline.
+
+To return to selecting the whole ClipGroup as one object, click
+the ClipGroup itself in the Layers panel, or click on any of its
+visible artwork on the canvas (canvas hits always promote to the
+top-level container).
 
 ## Releasing a clip
 
@@ -78,10 +93,12 @@ shape: release, edit, re-clip.
 ## Deleting through a clip
 
 Deleting one of the clipped objects from inside a ClipGroup
-removes just that object — the group survives. Deleting the clip
-shape (or the entire clipped subject) collapses the group: Curvz
-unwinds the wrapper as if you'd pressed Release before deleting.
-This keeps clipped content from being orphaned by accident.
+removes just that object — the group survives. Deleting the
+**clip shape** collapses the group: Curvz unwinds the wrapper as
+if you'd pressed Release before deleting, with the clipped
+artwork returned to the parent as ordinary siblings. This keeps
+clipped content from being orphaned when the mask itself is
+deleted.
 
 ## Clipping with compound paths
 

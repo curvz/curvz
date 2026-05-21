@@ -15,9 +15,13 @@ A group is a container. Internally it is a node in the scene tree
 whose children are the objects you grouped — the same paths, text,
 images or sub-groups you selected, now living one level deeper. The
 container has no fill, no stroke, no geometry of its own; it is purely
-structural. Click anywhere on a child and you select the whole group;
-double-click to enter the group and edit a specific child; press `Esc`
-to step back out.
+structural. Click anywhere on a child with the Selection tool and you
+select the whole group — the click promotes from the child up to its
+top-level container. To get at a specific child for individual editing,
+open the **Layers** panel (6.2), expand the group's row (click its
+`▸` arrow), and click the child you want. The child becomes the
+selection; the group falls away. Clicking back on the canvas with the
+Selection tool re-promotes to the group.
 
 A compound acts similarly in that it bundles paths in a single
 container, but it renders very differently. A group draws each child
