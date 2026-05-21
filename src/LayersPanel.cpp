@@ -22,6 +22,10 @@
 #include <gtkmm/eventcontrollerfocus.h>
 #include <gtkmm/gestureclick.h>
 #include <gtkmm/popover.h>
+#include <gtkmm/popovermenu.h>      // s274 m11 — row right-click context menu
+#include <giomm/menu.h>             // s274 m11
+#include <giomm/simpleaction.h>     // s274 m11 — per-popup "ctx" actions
+#include <giomm/simpleactiongroup.h>// s274 m11
 #include <gtkmm/revealer.h>
 #include <gtkmm/separator.h>
 #include <gtkmm/window.h>
@@ -807,6 +811,430 @@ void LayersPanel::setup_path_drop(Gtk::Widget *w, int layer_idx, int obj_idx) {
   w->add_controller(tgt);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// s274 m11 — row right-click context menu
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Three methods land together because they form one feature:
+//
+//   setup_row_context_menu      — wires the button-3 gesture on a row widget
+//   build_row_context_menu      — builds the Gio::Menu model on each click
+//   move_top_level_selection_to_layer
+//                               — executes the move when the user picks a
+//                                 target layer (mirrors DnD push-site shape)
+//
+// Two design notes worth keeping near the code:
+//
+// (1) The menu's verbs operate on Canvas::m_selection (mirrored here via
+//     m_canvas_selection). If the right-clicked row's object isn't in the
+//     current selection, the open handler replaces the selection with just
+//     that row before showing options. This matches what canvas right-click
+//     does and avoids the "delete deleted the wrong thing" foot-gun when
+//     the user thinks they're acting on the row their pointer is over.
+//
+// (2) Most verbs route through MainWindow's app-wide win.* actions
+//     directly from the Gio::Menu (Delete / Ungroup / Release Compound /
+//     Release Clip / Release Blend / Release Warp — all already wired as
+//     win.* actions in MainWindow_zones). PopoverMenu invokes them
+//     automatically through the action group system; no signal hop needed.
+//     Move-to-layer is executed in-panel because the panel already owns
+//     the iid-capture + MoveObjectToLayerCommand push site (see
+//     setup_path_drop ~line 755). Reusing that logic keeps the move flow
+//     consistent with DnD. Rebuild Blend Steps continues to fire
+//     signal_rebuild_blend, folded into this menu — the s162 m3
+//     standalone popover is gone.
+//
+// Lifetime: the PopoverMenu uses set_parent + signal_closed + idle unparent,
+// matching Canvas's object context menu (Canvas.cpp:~1011-1027) and
+// DocumentGallery's per-row menu. Managed widgets attached via set_parent
+// are NOT cleaned up as normal children; without the idle-unparent, each
+// right-click would leak a popover for the lifetime of the row widget.
+
+namespace {
+
+// Walk the doc tree to find `obj`'s immediate parent. Returns nullptr if
+// `obj` is a top-level layer child (or not found). Matches the recursive
+// descent in add_child_row's walker (lines ~1281). Cheap — the panel
+// already does this whenever rendering nested rows.
+SceneNode *find_object_parent(CurvzDocument *doc, SceneNode *target) {
+  if (!doc || !target) return nullptr;
+  auto is_container = [](const SceneNode *n) {
+    return n && (n->type == SceneNode::Type::Group ||
+                 n->type == SceneNode::Type::Compound ||
+                 n->type == SceneNode::Type::ClipGroup ||
+                 n->type == SceneNode::Type::Blend ||
+                 n->type == SceneNode::Type::Warp);
+  };
+  std::function<SceneNode *(SceneNode *)> walk = [&](SceneNode *node) -> SceneNode * {
+    if (!is_container(node)) return nullptr;
+    for (auto &c : node->children) {
+      if (c.get() == target) return node;
+      if (auto *r = walk(c.get())) return r;
+    }
+    return nullptr;
+  };
+  for (auto &layer : doc->layers) {
+    for (auto &child : layer->children) {
+      if (child.get() == target) return nullptr; // top-level
+      if (auto *r = walk(child.get())) return r;
+    }
+  }
+  return nullptr;
+}
+
+// Return the (panel-display) name of a layer for menu labels. Falls back to
+// "Layer N" when the layer's name is empty, mirroring the row renderer.
+std::string layer_display_name(const SceneNode &layer, int idx) {
+  if (!layer.name.empty()) return layer.name;
+  if (!layer.id.empty())   return layer.id;
+  return "Layer " + std::to_string(idx + 1);
+}
+
+// Is this layer a valid Move-to-layer target for ordinary objects?
+// Ordinary = non-special (no guide/ref/grid/margin/measure), non-locked.
+bool is_ordinary_target_layer(const SceneNode &layer) {
+  if (layer.is_special_layer()) return false;
+  if (layer.locked)             return false;
+  return true;
+}
+
+} // anonymous namespace
+
+void LayersPanel::setup_row_context_menu(Gtk::Widget *w, SceneNode *obj,
+                                         int layer_idx, bool is_top_level) {
+  if (!w || !obj) return;
+  // Defensive: refpts are explicitly excluded per design — they can't
+  // leave the ref layer and have no container release verb. The two
+  // wiring sites (add_path_row, the nested-path branch of add_child_row,
+  // and add_group_row) shouldn't pass refpts here, but guard anyway in
+  // case future row builders forget.
+  if (obj->is_ref()) return;
+
+  auto rclick = Gtk::GestureClick::create();
+  rclick->set_button(3);
+  rclick->signal_pressed().connect(
+      [this, obj, layer_idx, is_top_level, w](int, double x, double y) {
+        if (m_rebuilding || !m_doc) return;
+
+        // Selection promotion: if the clicked row isn't currently in the
+        // canvas selection, replace the selection with just this row.
+        // Matches the convention canvas right-click follows — what you
+        // right-click is what you operate on, unless you'd already
+        // multi-selected and the clicked row was part of that.
+        bool obj_in_selection =
+            std::find(m_canvas_selection.begin(), m_canvas_selection.end(),
+                      obj) != m_canvas_selection.end();
+        if (!obj_in_selection) {
+          m_canvas_selection = {obj};
+          m_sig_object_selected.emit(obj);
+          refresh_highlights();
+        }
+
+        // Compute whether EVERY object in the (possibly multi-) selection
+        // is top-level. Move-to-layer is gated on this — mixing nested
+        // and top-level moves is suppressed per m11 design. For the
+        // single-row promotion path above, is_top_level (passed in by
+        // the caller) is authoritative for the clicked row, but other
+        // pre-existing selection members may be nested — recompute.
+        bool all_top_level = true;
+        if (obj_in_selection) {
+          for (SceneNode *s : m_canvas_selection) {
+            if (find_object_parent(m_doc, s) != nullptr) {
+              all_top_level = false;
+              break;
+            }
+          }
+        } else {
+          all_top_level = is_top_level;
+        }
+
+        auto menu = build_row_context_menu(m_canvas_selection, all_top_level);
+        if (!menu || menu->get_n_items() == 0) return;
+
+        // Per-popup action group hosts the panel-local verbs that aren't
+        // app-wide actions: each "Move to layer ▸ <name>" item, plus
+        // "Rebuild Blend Steps". Standard verbs (Delete, Ungroup,
+        // Release Compound/Clip/Blend/Warp) stay on the win.* group.
+        //
+        // Same idiom Canvas uses for "save-to-library" (Canvas.cpp:996),
+        // DocTabBar's "tabctx", and LibraryPanel's "libctx" — local
+        // action group attached to the parent of the PopoverMenu.
+        auto ag = Gio::SimpleActionGroup::create();
+
+        // "rebuild-blend" — fires the existing signal_rebuild_blend so
+        // MainWindow routes to Canvas::rebuild_blend. Wired
+        // unconditionally; menu only references it for Blend rows.
+        {
+          auto act = Gio::SimpleAction::create("rebuild-blend");
+          act->signal_activate().connect(
+              [this, obj](const Glib::VariantBase &) {
+                m_sig_rebuild_blend.emit(obj);
+              });
+          ag->add_action(act);
+        }
+
+        // "move-to-layer-N" — one action per eligible target layer.
+        // We bake the layer index into the action name (rather than a
+        // parameter) so the menu item activation path is plain
+        // "ctx.move-to-layer-3" with no Variant wrangling. Action group
+        // is per-popup, so the namespace pollution dies with the popover.
+        for (int li = 0; li < (int)m_doc->layers.size(); ++li) {
+          if (!is_ordinary_target_layer(*m_doc->layers[li])) continue;
+          // Skip the source layer for *some* selection member — for
+          // top-level move we exclude layers where all selected objects
+          // already live (no-op move). We compute eligibility per layer
+          // in build_row_context_menu; here we just register the action.
+          std::string name = "move-to-layer-" + std::to_string(li);
+          auto act = Gio::SimpleAction::create(name);
+          int captured_li = li;
+          act->signal_activate().connect(
+              [this, captured_li](const Glib::VariantBase &) {
+                move_top_level_selection_to_layer(captured_li);
+              });
+          ag->add_action(act);
+        }
+
+        w->insert_action_group("ctx", ag);
+
+        auto *popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
+        popover->set_parent(*w);
+        popover->set_has_arrow(false);
+        Gdk::Rectangle rect((int)x, (int)y, 1, 1);
+        popover->set_pointing_to(rect);
+
+        // Lifetime: PopoverMenu attached via set_parent isn't a normal
+        // child — managed-widget cleanup doesn't reach it. Hook
+        // signal_closed and unparent from idle to avoid leaks. Pattern
+        // from Canvas.cpp:1025-1027 and DocumentGallery.cpp.
+        popover->signal_closed().connect([popover]() {
+          Glib::signal_idle().connect_once(
+              [popover]() { popover->unparent(); });
+        });
+
+        popover->popup();
+      });
+  w->add_controller(rclick);
+}
+
+Glib::RefPtr<Gio::Menu>
+LayersPanel::build_row_context_menu(const std::vector<SceneNode*> &selection,
+                                    bool all_top_level) {
+  auto menu = Gio::Menu::create();
+  if (selection.empty() || !m_doc) return menu;
+
+  auto append_section_if_nonempty = [&menu](Glib::RefPtr<Gio::Menu> sec) {
+    if (sec->get_n_items() > 0)
+      menu->append_section("", sec);
+  };
+
+  auto add_item = [](Glib::RefPtr<Gio::Menu> &sec, const char *label,
+                     const char *action, const char *accel = nullptr) {
+    auto item = Gio::MenuItem::create(label, action);
+    if (accel)
+      item->set_attribute_value(
+          "accel", Glib::Variant<Glib::ustring>::create(accel));
+    sec->append_item(item);
+  };
+
+  // ── 1. Lifecycle: Delete ────────────────────────────────────────────────
+  // Delete always applies to a non-empty object selection. Acts via the
+  // app-wide win.delete-selected (which reads Canvas::m_selection).
+  // Same action the canvas right-click and Delete-key path use.
+  {
+    auto sec = Gio::Menu::create();
+    add_item(sec, "Delete", "win.delete-selected", "Delete");
+    append_section_if_nonempty(sec);
+  }
+
+  // ── 2. Move to layer ▸  (top-level only) ────────────────────────────────
+  // Suppressed when any selected object is nested — per m11 design, nested
+  // children must be released first (via the next section) before they can
+  // move between layers. Also suppressed if no eligible target layer exists.
+  //
+  // Eligible target = ordinary (non-special, non-locked), and not a layer
+  // every selected object already lives in (would be a no-op).
+  if (all_top_level) {
+    // Compute the set of layers every selected object already lives in.
+    // If any layer is "the home layer" for ALL selected objects, exclude
+    // it from the target list (moving everyone to where they already are
+    // is a no-op). Cross-layer multi-selections may have nothing to
+    // exclude — perfectly fine.
+    std::set<int> home_for_all;
+    if (!selection.empty()) {
+      // Find each selected object's home layer index. If they're all in
+      // the same layer, mark that layer to exclude.
+      int common_home = -1;
+      bool same = true;
+      for (SceneNode *s : selection) {
+        int found = -1;
+        for (int li = 0; li < (int)m_doc->layers.size(); ++li) {
+          for (auto &c : m_doc->layers[li]->children) {
+            if (c.get() == s) { found = li; break; }
+          }
+          if (found >= 0) break;
+        }
+        if (found < 0) { same = false; break; }
+        if (common_home < 0) common_home = found;
+        else if (common_home != found) { same = false; break; }
+      }
+      if (same && common_home >= 0)
+        home_for_all.insert(common_home);
+    }
+
+    auto sub = Gio::Menu::create();
+    for (int li = 0; li < (int)m_doc->layers.size(); ++li) {
+      if (!is_ordinary_target_layer(*m_doc->layers[li])) continue;
+      if (home_for_all.count(li)) continue;
+      std::string action = "ctx.move-to-layer-" + std::to_string(li);
+      std::string label  = layer_display_name(*m_doc->layers[li], li);
+      // No accel for these — there's no hotkey for "move to layer N".
+      auto item = Gio::MenuItem::create(label, action);
+      sub->append_item(item);
+    }
+    if (sub->get_n_items() > 0) {
+      auto sec = Gio::Menu::create();
+      sec->append_submenu("Move to layer", sub);
+      menu->append_section("", sec);
+    }
+  }
+
+  // ── 3. Container release verbs ───────────────────────────────────────────
+  // Surfaced when the selection is a SINGLE container row. We don't try to
+  // be clever about multi-selection of containers — Ungroup-three-Groups
+  // is a perfectly valid op but the visual confirmation flow (which one
+  // dissolved into what?) is best left to the menu bar at that point.
+  // Single-container case covers the common right-click-this-thing flow.
+  if (selection.size() == 1) {
+    SceneNode *only = selection[0];
+    auto sec = Gio::Menu::create();
+    switch (only->type) {
+      case SceneNode::Type::Group:
+        add_item(sec, "Ungroup", "win.group-release", "<Primary><Shift>g");
+        break;
+      case SceneNode::Type::Compound:
+        add_item(sec, "Release Compound", "win.split-compound",
+                 "<Primary><Shift>8");
+        break;
+      case SceneNode::Type::ClipGroup:
+        // Clip-release hotkey is Ctrl+Alt+7 per Application.cpp:278.
+        add_item(sec, "Release Clip", "win.clip-release", "<Primary><Alt>7");
+        break;
+      case SceneNode::Type::Blend:
+        // Blend-release hotkey is Ctrl+Shift+B per Application.cpp:280.
+        add_item(sec, "Release Blend", "win.blend-release",
+                 "<Primary><Shift>b");
+        // Rebuild Blend Steps — folded in from the s162 m3 standalone
+        // popover. Local "ctx" action so the verb stays panel-scoped.
+        add_item(sec, "Rebuild Blend Steps", "ctx.rebuild-blend");
+        break;
+      case SceneNode::Type::Warp:
+        // Warp-release has no hotkey (Application.cpp doesn't bind one).
+        add_item(sec, "Release Warp", "win.warp-release");
+        break;
+      default:
+        // Path / Text / Image / etc. — no release verb applies.
+        break;
+    }
+    append_section_if_nonempty(sec);
+  }
+
+  return menu;
+}
+
+void LayersPanel::move_top_level_selection_to_layer(int dst_layer_idx) {
+  if (!m_doc || m_rebuilding) return;
+  if (dst_layer_idx < 0 || dst_layer_idx >= (int)m_doc->layers.size()) return;
+  auto &dst_layer = m_doc->layers[dst_layer_idx];
+  if (!is_ordinary_target_layer(*dst_layer)) return;
+
+  // Snapshot the selection — we mutate doc->layers below, which may
+  // invalidate iterators if any selection member shifts position. Copy
+  // the pointer vector first.
+  std::vector<SceneNode*> moving = m_canvas_selection;
+  if (moving.empty()) return;
+
+  // For each selected object, locate its source layer + index, capture
+  // iids, mutate, push command. Same shape as setup_path_drop's cross-
+  // layer branch (~line 755). One command per moved object (not a
+  // composite); s171 m2 established this granularity for DnD and
+  // multi-object DnD relies on it. Undo replays in reverse order.
+  bool any_moved = false;
+  for (SceneNode *obj : moving) {
+    // Locate the source layer + slot. Only top-level matches — by
+    // contract, callers gate on all_top_level before reaching here.
+    int src_li = -1, src_oi = -1;
+    for (int li = 0; li < (int)m_doc->layers.size(); ++li) {
+      auto &ch = m_doc->layers[li]->children;
+      for (int oi = 0; oi < (int)ch.size(); ++oi) {
+        if (ch[oi].get() == obj) { src_li = li; src_oi = oi; break; }
+      }
+      if (src_li >= 0) break;
+    }
+    if (src_li < 0 || src_oi < 0) continue;             // not top-level
+    if (src_li == dst_layer_idx)  continue;             // already there
+    auto &src_layer = m_doc->layers[src_li];
+    if (layer_at_locked(src_li))  continue;             // source locked
+    // Destination ordinariness was checked above. (Locked-or-special
+    // destinations were filtered out at menu-build time; this re-check
+    // is belt-and-braces.)
+
+    // Refpts never leave their layer. They shouldn't appear in a
+    // top-level menu selection (the row builder skips them), but guard.
+    if (src_layer->children[src_oi]->is_ref()) continue;
+
+    // Capture for the command BEFORE mutating.
+    std::string src_layer_iid = src_layer->internal_id;
+    std::string dst_layer_iid = dst_layer->internal_id;
+    std::string obj_iid       = src_layer->children[src_oi]->internal_id;
+    int saved_src_index       = src_oi;
+    // Insert at the FRONT (index 0) of the destination layer, matching
+    // the layers-panel convention of "top of the layer in display order
+    // = front of children". Same convention used by the paste handler
+    // and other insertion sites (see setup_path_drop comments at
+    // ~line 707).
+    int saved_dst_index = 0;
+
+    std::unique_ptr<SceneNode> snap_for_cmd;
+    if (m_history && m_project
+        && !src_layer_iid.empty() && !dst_layer_iid.empty()
+        && !obj_iid.empty()) {
+      snap_for_cmd = clone_node(*src_layer->children[src_oi]);
+    }
+
+    // Mutate the live tree.
+    auto moving_obj = std::move(src_layer->children[src_oi]);
+    src_layer->children.erase(src_layer->children.begin() + src_oi);
+    auto &dst = dst_layer->children;
+    dst.insert(dst.begin() + saved_dst_index, std::move(moving_obj));
+    m_doc->invalidate_iid_index();
+
+    if (snap_for_cmd) {
+      auto cmd = std::make_unique<MoveObjectToLayerCommand>(
+          m_project,
+          std::move(src_layer_iid),
+          std::move(dst_layer_iid),
+          std::move(obj_iid),
+          std::move(snap_for_cmd),
+          saved_src_index,
+          saved_dst_index);
+      m_history->push(std::move(cmd));
+    }
+    any_moved = true;
+  }
+
+  if (!any_moved) return;
+
+  m_sig_layer_changed.emit();
+  // If destination layer is hidden, the moved objects can no longer be
+  // canvas-selected. Match the DnD precedent: clear the canvas selection
+  // when this happens.
+  if (!dst_layer->visible) {
+    m_canvas_selection.clear();
+    m_sig_object_selected.emit(nullptr);
+  }
+  Glib::signal_idle().connect_once([this]() { rebuild(); });
+}
+
 // ── add_layer_row
 // ─────────────────────────────────────────────────────────────
 void LayersPanel::add_layer_row(int i, Gtk::Box *parent) {
@@ -1222,6 +1650,10 @@ void LayersPanel::add_path_row(int layer_idx, int obj_idx, Gtk::Box *parent) {
   setup_path_drag(row, layer_idx, obj_idx);
   setup_path_drop(row, layer_idx, obj_idx);
 
+  // s274 m11 — right-click context menu (Delete, Move to layer ▸).
+  // Top-level path row → is_top_level=true.
+  setup_row_context_menu(row, &obj, layer_idx, /*is_top_level=*/true);
+
   parent->append(*row);
 }
 
@@ -1398,6 +1830,10 @@ void LayersPanel::add_child_row(SceneNode *obj, int layer_idx, int indent,
           });
           name_lbl->add_controller(click);
           row->append(*name_lbl);
+          // s274 m11 — right-click context menu (Delete, plus container
+          // release verb if applicable). Nested path → is_top_level=false,
+          // so Move-to-layer is suppressed (release the container first).
+          setup_row_context_menu(row, obj, layer_idx, /*is_top_level=*/false);
           parent->append(*row);
           return;
       }
@@ -1575,12 +2011,21 @@ void LayersPanel::add_group_row(SceneNode *group, int layer_idx, int indent,
 
   card->append(*hdr);
 
-  // ── DnD: top-level group-like rows reuse the path-row drag/drop pump
-  //   so Compound/Group/ClipGroup/Blend/Warp can be reordered within a
-  //   layer and moved between layers. Wired only when this group is a
-  //   direct child of m_doc->layers[layer_idx] — nested groups have no
-  //   stable obj_idx in the path-payload and (consistent with nested
-  //   paths) are not draggable from within their parent.
+  // ── DnD + right-click: group-like rows
+  //   DnD reuses the path-row drag/drop pump so Compound/Group/ClipGroup/
+  //   Blend/Warp can be reordered within a layer and moved between layers.
+  //   Wired only when this group is a direct child of m_doc->layers[layer_idx]
+  //   — nested groups have no stable obj_idx in the path-payload and
+  //   (consistent with nested paths) are not draggable from within their
+  //   parent.
+  //
+  //   s274 m11: right-click context menu is wired in BOTH cases (top-level
+  //   AND nested). The menu adapts:
+  //     top-level → Delete, Move to layer ▸, Release verb, [Rebuild for Blend]
+  //     nested    → Delete, Release verb, [Rebuild for Blend]
+  //   This replaces the Blend-only Rebuild Steps popover from s162 m3, which
+  //   is now folded into the unified menu as one item alongside Delete.
+  bool is_top_level_group = false;
   if (layer_idx >= 0 && layer_idx < (int)m_doc->layers.size()) {
     auto &siblings = m_doc->layers[layer_idx]->children;
     int top_obj_idx = -1;
@@ -1593,41 +2038,11 @@ void LayersPanel::add_group_row(SceneNode *group, int layer_idx, int indent,
     if (top_obj_idx >= 0) {
       setup_path_drag(hdr, layer_idx, top_obj_idx);
       setup_path_drop(hdr, layer_idx, top_obj_idx);
+      is_top_level_group = true;
     }
   }
+  setup_row_context_menu(hdr, group, layer_idx, is_top_level_group);
 
-  // ── Right-click on a Blend's header row → Rebuild context menu ───────
-  // Only Blends get the popover; other container types (Group/Compound/
-  // ClipGroup) fall through to existing behaviour (nothing, currently).
-  if (group->type == SceneNode::Type::Blend) {
-    auto rclick = Gtk::GestureClick::create();
-    rclick->set_button(3);
-    rclick->signal_pressed().connect(
-        [this, group, hdr](int, double x, double y) {
-          if (m_rebuilding) return;
-          auto *popover = Gtk::make_managed<Gtk::Popover>();
-          popover->set_parent(*hdr);
-          popover->set_has_arrow(true);
-          auto *box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
-          box->set_spacing(2);
-          box->set_margin_start(4);
-          box->set_margin_end(4);
-          box->set_margin_top(4);
-          box->set_margin_bottom(4);
-          auto *btn = Gtk::make_managed<Gtk::Button>("Rebuild Blend Steps");
-          btn->set_has_frame(false);
-          btn->signal_clicked().connect([this, group, popover]() {
-            m_sig_rebuild_blend.emit(group);
-            popover->popdown();
-          });
-          box->append(*btn);
-          popover->set_child(*box);
-          Gdk::Rectangle rect((int)x, (int)y, 1, 1);
-          popover->set_pointing_to(rect);
-          popover->popup();
-        });
-    hdr->add_controller(rclick);
-  }
 
   // ── Revealer for children
   auto *revealer = Gtk::make_managed<Gtk::Revealer>();

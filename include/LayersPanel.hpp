@@ -9,6 +9,7 @@
 #include <gtkmm/revealer.h>
 #include <gtkmm/drawingarea.h>
 #include <gtkmm/gestureclick.h>
+#include <giomm/menu.h>          // s274 m11 — Gio::Menu return type on build_row_context_menu
 #include <set>
 #include <unordered_map>
 #include <vector>
@@ -168,6 +169,49 @@ private:
     void setup_layer_drop(Gtk::Widget* w, int layer_idx);
     void setup_path_drag(Gtk::Widget* w, int layer_idx, int obj_idx);
     void setup_path_drop(Gtk::Widget* w, int layer_idx, int obj_idx);
+
+    // ── Row right-click context menu (s274 m11) ───────────────────────────
+    // Attach a button-3 gesture to `w` that opens a popover menu of verbs
+    // appropriate to `obj`. The menu adapts to row type (Path / Group /
+    // Compound / ClipGroup / Blend / Warp) and position (top-level direct
+    // layer child vs. nested inside a container) per the m11 design.
+    //
+    //   is_top_level=true  → Delete, Move to layer ▸ (if eligible targets
+    //                        exist), plus the release verb for container
+    //                        types (Ungroup / Release Compound / Clip /
+    //                        Blend / Warp), plus Rebuild Blend Steps for
+    //                        Blends.
+    //   is_top_level=false → Delete + container release verb only
+    //                        (Move to layer is gated to top-level rows;
+    //                        nested children must be released first).
+    //
+    // Refpts are never wired with this menu — they can't leave the ref
+    // layer and have no container release verb. Caller is responsible
+    // for skipping refpts.
+    //
+    // The menu's verbs operate on Canvas::m_selection (mirrored here via
+    // m_canvas_selection). If the right-clicked row isn't currently in
+    // the selection, the menu's open handler replaces the selection with
+    // just that row before showing options.
+    void setup_row_context_menu(Gtk::Widget* w, SceneNode* obj,
+                                int layer_idx, bool is_top_level);
+
+    // Build the popover menu's Gio::Menu model for a given selection.
+    // The menu always begins with Delete; adds a "Move to layer ▸" submenu
+    // when all_top_level=true and at least one eligible target layer
+    // exists; and adds the container release verb when the selection
+    // contains exactly one container-type row.
+    Glib::RefPtr<Gio::Menu>
+    build_row_context_menu(const std::vector<SceneNode*>& selection,
+                           bool all_top_level);
+
+    // Execute a move-to-layer for the entire current canvas selection.
+    // All selected objects must be top-level (their direct parent is a
+    // layer); caller guarantees this via build_row_context_menu's
+    // all_top_level gate. Pushes one MoveObjectToLayerCommand per moved
+    // object onto m_history. Mirrors the cross-layer DnD push site at
+    // setup_path_drop ~line 755 of LayersPanel.cpp.
+    void move_top_level_selection_to_layer(int dst_layer_idx);
 
     // ── Palette ───────────────────────────────────────────────────────────
     static constexpr int PALETTE_SIZE = 8;
