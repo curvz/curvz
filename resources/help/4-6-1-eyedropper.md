@@ -103,7 +103,7 @@ open picker → read hex".
 
 ## Where to next
 
-The destination of an Eyedropper pick is the **Appearance**
+The destination of an Eyedropper pick is the **Styling**
 inspector section (5.4.5), where the new colour shows in the
 fill or stroke paint editor. Open the Color picker (3.7) from
 there to fine-tune the sampled colour after the fact.

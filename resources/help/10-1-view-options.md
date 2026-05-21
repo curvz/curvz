@@ -96,13 +96,16 @@ toggle from anywhere — same key documented in the Snap leaf.
 A few things that look like view options conceptually but live
 elsewhere:
 
-- **Theme** (Dark / Light app chrome) — this is in the
-  inspector's **Motif** section (5.2.1), saved per project.
-- **Artboard and workspace colours** — also in Motif. They
-  affect how the editor looks but aren't transient like outline
-  mode.
+- **Theme** (Dark / Light app chrome) — this lives at
+  **Application ▸ Appearance**, the top section of the
+  inspector. Per-project; saved with the project.
+- **Artboard and workspace colours** — these live in the
+  **Theme disclosure** (5.3.8) inside the Document group.
+  Per-document, with separate Dark / Light pairs. They
+  affect how the editor looks but aren't transient like
+  outline mode.
 - **Display unit** (px / in / mm / pt) — this is in the
-  inspector's **Canvas** section (5.3.2) per document.
+  inspector's **Dimensions** section (5.3.2) per document.
 
 The View menu is for transient editing-time toggles. Things
 that should travel with the project go in the inspector instead.
@@ -113,8 +116,10 @@ that should travel with the project go in the inspector instead.
   see **Canvas, rulers & corner** (3.6).
 - For per-document units (the cousin of zoom — both control
   what numbers you see while editing), see **Units** (10.2).
-- For app theme (Dark / Light), artboard colour, and workspace
-  colour, see **Motif** (5.2.1).
+- For the app theme (Dark / Light), see **Application ▸
+  Appearance** at the top of the inspector. For the per-document
+  artboard / workspace / creation colours, see the **Theme
+  disclosure** (5.3.8).
 - For the master keyboard cheatsheet covering every shortcut in
   Curvz, see **Keyboard shortcuts** (11.2).
 

@@ -82,7 +82,7 @@ display unit's natural precision instead.
 The rectangle inherits whatever is on the **Toolbar's fill/stroke
 well** at creation time. To preview a rectangle's appearance
 before drawing, set fill and stroke first via the well (or via the
-Appearance section, 5.4.5, with no selection).
+Styling section, 5.4.5, with no selection).
 
 After drawing, the rectangle behaves like any other path — switch
 to the Node tool to round its corners with the **Corner** tool

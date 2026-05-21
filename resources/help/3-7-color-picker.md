@@ -1,10 +1,10 @@
 # Color picker and paint editor
 
 Curvz has one colour picker that pops up wherever a colour value
-needs choosing — the Motif chips, the Appearance fill and stroke
-swatches, guide / grid / margin colours, swatch creation in the
-Swatches panel, style editing. The same widget lives behind every
-one of those entry points.
+needs choosing — the Canvas chips in the Theme disclosure, the
+Styling fill and stroke swatches, guide / grid / margin colours,
+swatch creation in the Swatches panel, style editing. The same
+widget lives behind every one of those entry points.
 
 The **paint editor** is the wider widget around the picker. It adds
 type selection (Solid / None / currentColor / Swatch / Gradient)
@@ -45,8 +45,8 @@ The popover has four surfaces, top to bottom:
   highly chromatic regions.
 - **Alpha slider** — a horizontal slider below the spectrum,
   shown only when the picker was opened with alpha enabled.
-  Surfaces that don't accept transparency (like a Motif chip)
-  open the picker without alpha.
+  Surfaces that don't accept transparency (like a Canvas chip
+  in the Theme disclosure) open the picker without alpha.
 - **Hex entry + preview swatch** — a hex value field and a
   preview chip showing the new colour over the original on a
   diagonal split. Type a hex value (with or without `#`) and
@@ -67,7 +67,7 @@ end.
 
 When the picker is opened from a surface that supports more than
 just "a single solid colour" — typically the inspector's
-Appearance section — the picker is wrapped in a wider **paint
+Styling section — the picker is wrapped in a wider **paint
 editor**. The paint editor adds:
 
 - **Type toggle** — a row of buttons selecting what kind of paint
@@ -102,9 +102,10 @@ actually paint with — regardless of which type produced it.
 
 ## Where to next
 
-- **Motif** (5.2.1) is the simplest entry point to the picker —
-  just two colour chips and a theme toggle.
-- **Appearance** (5.4.5) is where the paint editor lives in its
+- **Theme disclosure** (5.3.8) is the simplest entry point to
+  the picker — three Canvas colour chips (artboard, workspace,
+  creation) with no alpha and no paint-type toggle.
+- **Styling** (5.4.5) is where the paint editor lives in its
   fullest form, with both fill and stroke slots.
 - **Swatches** (6.4) — the palette the Swatch type binds to.
 - **currentColor and symbolic icons** (9.2) — why the

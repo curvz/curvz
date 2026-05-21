@@ -104,7 +104,7 @@ on the canvas, which can mask the difference between a path
 that's actually `currentColor` and a path that happens to be
 black (or white, etc.).
 
-To check: select the path, look at the inspector's **Appearance**
+To check: select the path, look at the inspector's **Styling**
 section (5.4.5). The fill and stroke rows show the paint kind.
 If it's a literal colour and you wanted symbolic, switch to
 **currentColor** from the paint editor's type toggle.

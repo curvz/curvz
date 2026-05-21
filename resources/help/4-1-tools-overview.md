@@ -148,7 +148,7 @@ colour squares — the **fill well** and the **stroke well**. These
 show the active paint pair and are clickable: click either to
 edit the corresponding paint with the popover editor.
 
-The wells are a quick-access mirror of the **Appearance**
+The wells are a quick-access mirror of the **Styling**
 inspector section (5.4.5). Picking from the well applies to the
 current selection if there is one; otherwise it sets the default
 paint for the next object you draw.
