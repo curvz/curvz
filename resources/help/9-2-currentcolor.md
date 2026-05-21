@@ -51,12 +51,13 @@ This matters for two reasons:
 - **The Curvz canvas can render `currentColor`-aware icons
   correctly while you edit.** Curvz substitutes a theme-aware
   contrasting colour at draw time so your work-in-progress is
-  visible against your chosen Motif (5.2.1). The exported file
-  still says `currentColor`; only the on-screen render
-  resolves to a literal value.
+  visible against your chosen canvas backdrop (the **Theme
+  disclosure**, 5.3.8). The exported file still says
+  `currentColor`; only the on-screen render resolves to a
+  literal value.
 
 You can override the default per object. Pick a literal colour
-in the inspector's **Appearance** section (5.4.5), or bind to a
+in the inspector's **Styling** section (5.4.5), or bind to a
 swatch — and the export will use that. But for symbolic icon
 work, leaving everything at `currentColor` is normally the right
 choice.
@@ -133,7 +134,7 @@ A few things that catch people:
 - **Paste-from-elsewhere often comes in as literal colour.** If
   you paste an icon from a stock SVG library or another vector
   editor, its paths probably have literal colours. Open the
-  inspector's Appearance section (5.4.5), set fill to
+  inspector's Styling section (5.4.5), set fill to
   `currentColor`, and the icon becomes symbolic-ready.
 - **Some pasted SVGs use CSS classes for colour.** Curvz
   imports them as literal colours. The conversion to
@@ -148,11 +149,12 @@ A few things that catch people:
 
 ## Where to next
 
-- For per-icon paint editing, see **Appearance** (5.4.5).
+- For per-icon paint editing, see **Styling** (5.4.5).
 - For exporting a Curvz project as a freedesktop icon theme,
   see **Import & export** (2.3).
 - For seeing the icon against a different surface tint while
-  you draw, see **Motif** (5.2.1) — the workspace and artboard
-  colours are configurable per project.
+  you draw, see the **Theme disclosure** (5.3.8) — the
+  artboard, workspace, and creation colours are configurable
+  per document.
 - For a colour library shared across the project's icons, see
   **Swatches** (6.4).

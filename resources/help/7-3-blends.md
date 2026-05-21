@@ -120,8 +120,10 @@ the next draw whenever they change.
 
 If editing didn't trigger a rebuild for some reason — a property
 that wasn't covered by the dirty signal, an external change —
-right-click the Blend's row in the Layers panel and choose
-**Rebuild Blend Steps**.
+right-click the Blend and choose **Rebuild Blend Steps**. The
+verb is in the **Effects** submenu of the canvas right-click
+context menu and on the Blend row's right-click menu in the
+Layers panel; either surface works.
 
 ## Releasing a blend
 

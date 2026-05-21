@@ -47,7 +47,7 @@ Three ways to build a multi-object selection:
   existing selection rather than replacing it.
 
 For multi-select transforms — recolour, move, scale, distribute —
-the Inspector's **Selection** section (5.4.1) and **Appearance**
+the Inspector's **Selection** section (5.4.1) and **Styling**
 section (5.4.5) broadcast changes to every object in the set as
 single composite undo steps.
 
@@ -140,22 +140,32 @@ The sections, in order:
   when the selection has two or more eligible paths.
 - **Arrange** (submenu) — Bring to Front / Forward, Send
   Backward / Back.
+- **Move to layer ▸** (submenu) — one item per ordinary
+  unlocked layer in the document. Appears when every selected
+  object is top-level (nested children must be released from
+  their container first). The layer all selected objects
+  already live in is omitted from the list. See **Layers**
+  (6.2) for the same verb in the panel's row right-click menu.
 - **Translate…** — opens the Translate hub dialog (Move,
   Scale, Rotate, Skew).
 - **Effects** (submenu) — Make / Edit / Release Warp, Make /
-  Release Blend, Flatten, Expand Stroke, Offset Path…,
-  Convert to Path. Items appear only for selections they
-  apply to.
+  Release Blend, Release Clip, Rebuild Blend Steps, Flatten,
+  Expand Stroke, Offset Path…, Convert to Path. Items appear
+  only for selections they apply to. *Release Clip* surfaces
+  on a single Clip Group selection; *Rebuild Blend Steps*
+  surfaces on a single Blend.
 - **Save to Library…** — always present; the handler does its
   own pre-flight on whether the selection is library-saveable.
 
 Right-clicking on **empty canvas** is currently a no-op.
 Right-clicking on a **guide** opens a small "Set position…"
 dialog targeted at that guide. Right-clicking on a **reference
-point** opens its picker popover. Right-clicking on a **blend
-container** opens a one-button "Rebuild Blend Steps" popover.
-Right-clicking on an **image** opens an Image Info dialog with
-the source file path, pixel dimensions, and current size.
+point** opens its picker popover. Right-clicking on an **image**
+opens an Image Info dialog with the source file path, pixel
+dimensions, and current size. Right-clicking on a **Blend** has
+no special behaviour — it goes through the unified context menu
+above, where *Rebuild Blend Steps* sits inside the Effects
+submenu alongside Release Blend and Flatten.
 
 For document-level verbs (New, Save, Export, Preferences) the
 application menu (☰) at the right end of the title bar is the
@@ -169,7 +179,7 @@ anchors and handles individually.
 
 For numeric editing of a selection's position, size, and
 transforms, use the inspector's **Selection** section (5.4.1).
-For appearance edits, **Appearance** (5.4.5).
+For paint and stroke edits, **Styling** (5.4.5).
 
 ### Keys
 
