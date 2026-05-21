@@ -37,7 +37,8 @@ or using a complicated effects pipeline.
 1. Activate the **Corner tool** (4.8 — keyboard **K**).
 2. Click or shift-click to select the specific Corner/Cusp
    nodes you want rounded. Marquee-select for many at once.
-3. Set the radius. Click Apply.
+3. Pick a treatment type (**Round**, **Chamfer**, or **Inverse
+   Round**) and set the radius. Click Apply.
 
 That's it. The treatment runs only on the picked nodes. Smooth
 and Symmetric nodes — anywhere on any path — are skipped
@@ -72,7 +73,8 @@ visual looks right.
    (Selection tool, drag a corner rotation handle).
 2. Switch to the **Measure tool** (4.6.3 — keyboard **M**) and
    measure along the edge that should be parallel to an axis.
-   The angle reads in the Inspector.
+   The angle shows on the measurement label drawn on the canvas
+   alongside the measure triangle.
 3. Read the angle off the measurement (e.g. "−2.4° from
    horizontal").
 4. Activate the rotation field in the Inspector and apply the
