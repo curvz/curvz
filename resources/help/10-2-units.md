@@ -43,8 +43,13 @@ inches. Typography work tends to be points.
 
 ## ❸ Expressions in spinners
 
-Numeric spinners in the inspector accept **expressions**, not
-just plain numbers. Type something like
+Most numeric spinners — inspector position and dimension
+fields, toolbar fields, dialog fields, transform rows in
+the Selection tool's context bar — accept **expressions**,
+not just plain numbers. (A handful of older spinners, like
+the Scale and Skew rows and the New Document dialog's
+dimensions, are still plain-number-only; they're slated for
+the same upgrade.) Type something like
 
 ```
 4.25in + 16mm * 2

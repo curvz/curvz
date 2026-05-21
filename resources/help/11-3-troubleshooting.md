@@ -60,13 +60,22 @@ doesn't take, or the row lands somewhere unexpected.
 
 Drag-and-drop on **compounds, deeply-nested groups, and
 reference images** is occasionally inconsistent in the current
-build. The workaround: right-click the row and use the
-**Move to back** / **Move to front** entries from the context
-menu.
+build. Two reliable workarounds for the cases where DnD
+misbehaves:
 
-Layer-to-layer reordering works reliably. So does dragging a
-plain path between layers. The unreliability is mainly for
-container types being dropped *into* other containers.
+- **Cross-layer moves** — right-click the row and use the
+  **Move to layer ▸** submenu (top-level rows only; nested
+  children must be released from their container first via
+  the right-click's release verb).
+- **Z-order reordering within a layer** — use the arrange
+  hotkeys: `Ctrl + ↑` / `Ctrl + ↓` to step, `Ctrl + Shift +
+  ↑` / `Ctrl + Shift + ↓` to jump to front / back.
+
+Layer-to-layer reordering of layer headers themselves (the
+top stripe of each layer card) works reliably. So does
+dragging a plain path between layers. The unreliability is
+mainly for container types being dropped *into* other
+containers.
 
 ## Boolean operations producing artefacts
 

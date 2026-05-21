@@ -12,10 +12,22 @@ The page survives offline; the dialog is faster mid-task.
 
 ## File and project
 
-- `Ctrl + N` — new project.
+- `Ctrl + N` — new document (added to the current project).
+- `Ctrl + Shift + N` — new project.
 - `Ctrl + O` — open project.
+- `Ctrl + Shift + W` — close project.
 - `Ctrl + S` — save project.
 - `Ctrl + Shift + S` — save project as.
+- `Ctrl + Alt + S` — save as template.
+- `Ctrl + Alt + T` — manage templates. *Note: this chord also
+  appears on Convert Text to Path in the Path menu; on
+  current builds the two collide and GTK picks one.*
+- `Ctrl + I` — import SVG.
+- `Ctrl + Alt + I` — import as icon.
+- `Ctrl + Shift + P` — place image.
+- `Ctrl + Shift + T` — export.
+- `Ctrl + P` — print / export dialog.
+- `Ctrl + Q` / `Ctrl + W` — quit.
 - `Ctrl + Tab` / `Ctrl + Page Down` — next document in project.
 - `Ctrl + Shift + Tab` / `Ctrl + Page Up` — previous document.
 
@@ -27,6 +39,7 @@ The page survives offline; the dialog is faster mid-task.
 - `Ctrl + C` — copy.
 - `Ctrl + V` — paste.
 - `Ctrl + D` — duplicate.
+- `Alt + D` — duplicate in place (zero-offset duplicate).
 - `Ctrl + A` — select all.
 - `Ctrl + Shift + A` — deselect all.
 - `Ctrl + Alt + D` — Step and Repeat.
@@ -81,6 +94,8 @@ These work with the canvas focused and no modifier.
 - `Ctrl + ↓` — send backward.
 - `Ctrl + Shift + ↑` — bring to front.
 - `Ctrl + Shift + ↓` — send to back.
+- `Ctrl + Shift + H` — flip horizontal.
+- `Ctrl + Alt + V` — flip vertical.
 - `Ctrl + G` — group.
 - `Ctrl + Shift + G` — ungroup.
 
@@ -109,12 +124,26 @@ Vertically) are menu-only; reach them through **Align**.
 - `Ctrl + Shift + I` — Intersect.
 - `Ctrl + 8` — make compound path.
 - `Ctrl + Shift + 8` — split compound path.
-- `Ctrl + 7` — make clip group.
+- `Ctrl + 7` — make clip group (arms pick mode — see
+  **Clip masks**, 7.2).
 - `Ctrl + Alt + 7` — release clip.
 - `Ctrl + Shift + O` — Offset Path…
 - `Ctrl + Shift + X` — Expand Stroke.
-- `Ctrl + Alt + T` — Convert Text to Path.
+- `Ctrl + Alt + T` — Convert Text to Path. *Note: collides
+  with Manage Templates — see the File and project section.*
+- `Ctrl + B` — Blend.
+- `Ctrl + Shift + Y` — Warp.
+- `Ctrl + Alt + Y` — Edit Warp (opens the legacy dialog;
+  scheduled for replacement by an inspector section).
+- `Ctrl + Alt + F` — Flatten Warp.
 - `Shift + U` (no Ctrl) — release Text on Path.
+
+Release Blend and Release Warp have menu entries (under
+**Object** and on the Layers panel's row right-click) but
+no working keyboard chord at present. The menu shows
+`Ctrl+Shift+B` next to Release Blend, but that chord
+currently fires **Unbind Style** (see **Style binding**
+below).
 
 ## Node tool keys
 
@@ -132,6 +161,15 @@ on the current path.
 - `B` — break the path at the selected node.
 - `Tab` / `Shift + Tab` — next / previous node on the active
   path.
+- `←` / `→` / `↑` / `↓` — nudge selected node(s) by 2 px.
+- `Shift + arrow` — nudge by 8 px.
+- `Alt + arrow` — nudge by 32 px.
+- `Ctrl + ←` — retract the IN handle of every selected node
+  (handle collapses to anchor). Symmetric nodes retract both
+  handles at once. See **Editing paths** (8.1) for the
+  detail.
+- `Ctrl + →` — retract the OUT handle of every selected
+  node, with the same Symmetric-pair behaviour.
 - **Plain click on a curve segment** — insert a new anchor at
   the click point.
 
@@ -151,6 +189,18 @@ These fire only when the **Selection tool** is active.
 
 - `Ctrl + Shift + B` — unbind selection from any style it's
   bound to.
+
+This chord is also wired as Release Blend's menu accel, but
+the canvas controller catches it first and runs Unbind Style.
+Release Blend has no working keyboard binding today; use the
+menu entry (or the Layers panel's row right-click ▸ Release
+Blend).
+
+## Developer
+
+- `Ctrl + Shift + D` — open the GTK Inspector.
+- `Ctrl + Alt + Shift + B` — toggle the Clipper2 boolean
+  engine (developer A/B switch).
 
 ## Modifier conventions
 

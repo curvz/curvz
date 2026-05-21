@@ -4,6 +4,7 @@
 #include "CurvzProject.hpp"  // s116 m6 — m_project field reads workspace appearance
 #include "CurvzSpinButton.hpp"
 #include "MacroSystem.hpp"
+#include "MainWindow.hpp"  // s277 m2 — progress_dialog() accessor for long-op wrap
 #include "SvgParser.hpp"
 #include "curvz_utils.hpp"  // S97 m2 — box_blur_argb32 for drop-shadow render
 #include "widgets/Entry.hpp"  // s208 m5 — substrate text-overlay entry
@@ -3320,57 +3321,190 @@ void Canvas::boolean_op(BooleanOpType op) {
     }
   }
 
-  std::vector<std::vector<BezierPath>> enriched_operands;
-  Curvz::refit::KeeperSet m3_keepers;
-  const auto* operands_for_clipper = &operands;
-  if (cleanup_on) {
-    // s142 m4 — targeted enrichment on BOTH sides of every intersection.
-    // Inject intersection anchors + flanking triplet guards into every
-    // operand at its analytic intersection points. Originals away from
-    // intersections are not touched. Keepers built in the same call.
-    m3_keepers = Curvz::refit::enrich_at_intersections_and_build_keepers(
-        operands, enriched_operands, op);
-    operands_for_clipper = &enriched_operands;
-    LOG_INFO("Canvas: boolean {} — s142 m4 targeted enrichment ON "
-             "(quality={}, apex={:.1f}°, max_run={}); "
-             "{} operands modified at their intersection points; "
-             "{} keepers ready for cleanup_loop_v4.",
-             op_name, q, apex_min_turn_deg, max_untagged_run,
-             (int)operands.size(), m3_keepers.size());
-  } else {
-    LOG_INFO("Canvas: boolean {} — quality={} → raw Clipper2 mode "
-             "(enrichment + cleanup both bypassed).",
-             op_name, q);
-  }
+  // ── s277 m5 — chunked per-operand processing for determinate progress ────
+  //
+  // m4 made the dialog visible from t=0, but the bar pulsed
+  // indeterminately because Clipper2 has no progress hooks during its
+  // one N-way library call. m5 trades that single call for N-1 small
+  // calls — running a 2-operand boolean per iteration and accumulating
+  // the result. After each iteration the bar ticks 1/(N-1) forward.
+  //
+  // The math is sound for all three ops Curvz exposes:
+  //   Union:     associative — ((A∪B)∪C)∪... = A∪B∪C∪...
+  //   Intersect: associative — ((A∩B)∩C)∩... = A∩B∩C∩...
+  //   Subtract:  (Affinity convention) bottom minus union of rest —
+  //              implemented here as A then iteratively A := A − op[i].
+  //              Equivalent: A − (B∪C∪...) ≡ ((A−B)−C)−... when the
+  //              right-hand operands are pairwise disjoint or each is
+  //              a positive subtract of the running. Curvz's Subtract
+  //              semantics already match this iterative shape (each
+  //              step strips more material from A).
+  //
+  // Trade-off:
+  //   + Determinate progress — bar fills visibly, user sees the work
+  //     happening. "Illusion of speed beats accurate but silent."
+  //   - More Clipper2 calls (N-1 instead of 1). Clipper2's internal
+  //     sweep-line algorithm is more efficient seeing all N inputs at
+  //     once, so wall time grows somewhat. On dense input (the s277
+  //     test case) the dominant cost was enrichment, not Clipper2
+  //     itself, so the slowdown should be modest.
+  //   - More enrichment calls (N-1 small ones instead of 1 big one).
+  //     Each enrichment is between `running` and one new operand, so
+  //     the intersection count per step is smaller than the all-pairs
+  //     count of the single-shot version. Often this is net-faster
+  //     because all-pairs scales quadratically.
+  //
+  // Cleanup runs per-step (each iteration's keeper set is valid only
+  // for that step's two-operand pair; deferring cleanup to the end
+  // would lose the keeper context).
+  //
+  // Wrap-decision setup (carried from m2): resolve MainWindow via
+  // get_root(); skip dialog when canvas is detached or when replaying
+  // a macro.
+  auto* root_win = dynamic_cast<Gtk::Window*>(get_root());
+  auto* mw = root_win ? dynamic_cast<MainWindow*>(root_win) : nullptr;
+  const bool use_dialog = (mw != nullptr) && !m_in_macro_replay;
 
-  final_loops = Curvz::boolean_op_clipper(*operands_for_clipper, op);
+  // s277 m5 — compute_phase now takes the ProgressHandle so it can
+  // call p.update(i, msg) between iterations. The handle is wired up
+  // by ProgressDialog::run() when use_dialog is true; for the
+  // synchronous fallback (macro replay / detached canvas) we pass a
+  // null-owner ProgressHandle whose update/pulse/cancelled are all
+  // no-ops. That keeps the body of compute_phase identical across
+  // both paths instead of duplicating the loop.
+  auto compute_phase = [&](Curvz::ProgressHandle* p_or_null) {
+    auto tick = [&](int i, int total) {
+      if (!p_or_null) return;
+      p_or_null->update(i, "Computing " + std::string(op_name) +
+                              " — step " + std::to_string(i) +
+                              " of " + std::to_string(total));
+    };
+    auto cancelled = [&]() {
+      return p_or_null && p_or_null->cancelled();
+    };
 
-  if (cleanup_on && !final_loops.empty()) {
-    // s142 m6 — keepers from m4 (both-sides intersection triplets) +
-    // apex pinning (m5) + span filler (m6).
-    //
-    // s143 m1 — apex_min_turn_deg and max_untagged_run are no longer
-    // hardcoded; they're derived from m_boolean_cleanup_quality (the
-    // user-facing slider).  See the mapping at the top of this block.
-    LOG_INFO("Canvas: boolean {} — cleanup: {} keepers across {} loops "
-             "(s142 m6 — apex+span_filler at apex>={:.1f}°, max_run={} "
-             "from quality={} via cleanup_loop_v4)",
-             op_name, m3_keepers.size(), final_loops.size(),
-             apex_min_turn_deg, max_untagged_run, q);
-    for (auto &loop : final_loops) {
-      // s142 m6 — using cleanup_loop_v4 with both promotion passes.
-      // Rollback options:
-      //   - To s142 m5 (apex only): hardcode max_untagged_run = 0 below.
-      //   - To s142 m4 (no promotion): change v4 → v3, drop tunables.
-      //   - To s142 m3 (subject-only triplets): also revert m4's
-      //     enrich_at_intersections_and_build_keepers loop.
-      //   - To s140 m3 (byte-for-byte): change v4 → cleanup_loop and
-      //     use compute_keeper_set instead.
-      loop = Curvz::refit::cleanup_loop_v4(std::move(loop), m3_keepers,
-                                           apex_min_turn_deg,
-                                           max_untagged_run);
+    const int N = (int)operands.size();
+
+    // Single-operand selection is gated at the top of boolean_op
+    // (requires >=2). Two-operand case still benefits from chunking
+    // by reading as one iteration with the bar going 0→1; same
+    // shape as N-operand case.
+    if (N < 2) {
+      // Defensive — should never trigger given the gate above.
+      LOG_WARN("Canvas: boolean {} — chunked path saw N={} (<2); "
+               "delegating to one-shot Clipper2 call.", op_name, N);
+      final_loops = Curvz::boolean_op_clipper(operands, op);
+      return;
     }
+
+    // running = operands[0]. Subsequent iterations fold operand[i] in.
+    std::vector<BezierPath> running = operands[0];
+    int total_keepers_logged = 0;
+
+    for (int i = 1; i < N; ++i) {
+      if (cancelled()) return;
+
+      // Build the 2-operand vector for this step. Move `running`
+      // into pair[0] to avoid a deep-copy each iteration — on dense
+      // intermediates this saves N copies of an ever-growing subpath
+      // list. `running` is empty after this; we rebuild it from
+      // step_loops below for the next iteration (or stash into
+      // final_loops on the last iteration).
+      std::vector<std::vector<BezierPath>> pair;
+      pair.reserve(2);
+      pair.push_back(std::move(running));
+      pair.push_back(operands[i]);
+
+      // Per-step enrichment + Clipper2 + cleanup. Same three-phase
+      // shape as the single-shot path in m4, applied to this pair.
+      const std::vector<std::vector<BezierPath>>* step_operands = &pair;
+      Curvz::refit::KeeperSet step_keepers;
+      std::vector<std::vector<BezierPath>> step_enriched;
+      if (cleanup_on) {
+        step_keepers =
+            Curvz::refit::enrich_at_intersections_and_build_keepers(
+                pair, step_enriched, op);
+        step_operands = &step_enriched;
+        total_keepers_logged += (int)step_keepers.size();
+      }
+
+      if (cancelled()) return;
+
+      std::vector<PathData> step_loops =
+          Curvz::boolean_op_clipper(*step_operands, op);
+
+      if (cleanup_on && !step_loops.empty()) {
+        for (auto& loop : step_loops) {
+          loop = Curvz::refit::cleanup_loop_v4(
+              std::move(loop), step_keepers,
+              apex_min_turn_deg, max_untagged_run);
+        }
+      }
+
+      // Last iteration: stash result and exit. Earlier iterations:
+      // convert step_loops (PathData) back to BezierPath form for
+      // the next iteration's `running`.
+      if (i == N - 1) {
+        final_loops = std::move(step_loops);
+      } else {
+        running.clear();
+        running.reserve(step_loops.size());
+        for (const auto& pd : step_loops) {
+          running.push_back(BezierPath::from_path_data(pd));
+        }
+        // Early exit if intermediate became empty — no point
+        // continuing to subtract from nothing or union with nothing
+        // meaningful. final_loops stays empty; caller emits "empty
+        // result" message.
+        if (running.empty()) {
+          final_loops.clear();
+          LOG_INFO("Canvas: boolean {} — intermediate result empty at "
+                   "step {} of {}; aborting chain.", op_name, i, N - 1);
+          return;
+        }
+      }
+
+      // Tick after the work for this step is done, so the bar shows
+      // "i of N-1 steps complete" rather than "starting step i."
+      tick(i, N - 1);
+    }
+
+    LOG_INFO("Canvas: boolean {} — chunked path complete: {} iterations, "
+             "{} total keepers across all enrichment passes, "
+             "{} loops in final result.",
+             op_name, N - 1, total_keepers_logged,
+             (int)final_loops.size());
+  };
+
+  if (use_dialog) {
+    // s277 m3 — title includes operand count so the user knows what
+    // they're waiting on. "Boolean Union — 10 operands" reads better
+    // than just "Boolean Union…" especially when the slowness scales
+    // with N (as it does for Clipper2).
+    //
+    // s277 m5 — determinate progress bar. total = N-1 because that's
+    // the number of pair-wise steps. Each step ticks the bar one notch.
+    const int total_steps = std::max(1, (int)operands.size() - 1);
+    const std::string dlg_title =
+        std::string("Boolean ") + op_name + " — " +
+        std::to_string(operands.size()) + " operand" +
+        (operands.size() == 1 ? "" : "s");
+    bool completed = mw->progress_dialog().run(
+        *root_win, total_steps, dlg_title,
+        [&](Curvz::ProgressHandle& p) -> bool {
+          compute_phase(&p);
+          if (p.cancelled()) return false;
+          return true;
+        });
+    if (!completed) {
+      LOG_INFO("Canvas: boolean {} cancelled by user — result discarded",
+               op_name);
+      return;  // skip mutation block + history push
+    }
+  } else {
+    compute_phase(nullptr);
   }
+
 
   if (final_loops.empty()) {
     LOG_WARN("Canvas: boolean {} returned empty result", op_name);
@@ -5749,6 +5883,16 @@ void Canvas::run_macro(const std::string &macro_id, int from_step) {
     m_selection = saved_sel;
     m_selected = saved_selected;
   };
+
+  // s277 m2 — gate the long-op progress dialog while replaying.
+  // The flag is read by boolean_op (and future long-op verbs) to
+  // skip the modal envelope during macro replay. Cleared on exit
+  // even if an exception is thrown by some macro step.
+  struct ReplayGuard {
+    bool& flag;
+    ReplayGuard(bool& f) : flag(f) { flag = true; }
+    ~ReplayGuard()              { flag = false; }
+  } _replay_guard(m_in_macro_replay);
 
   if (iterate_per_object) {
     // Run once per top-level selected object

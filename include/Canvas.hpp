@@ -1084,6 +1084,21 @@ private:
   SceneNode *m_selected = nullptr;
   CommandHistory *m_history = nullptr;
 
+  // ── s277 m2 — macro-replay guard for long-op progress dialog ──────
+  //
+  // When set true (only inside run_macro's replay loop), Canvas's
+  // long-op verbs (currently boolean_op; future Step and Repeat,
+  // Expand Stroke, etc.) skip the modal progress dialog and run
+  // synchronously. Macros are batch — the user initiated the macro
+  // and is happy to wait; mid-macro modals would interrupt that
+  // flow with one dialog per slow step.
+  //
+  // Set/cleared with RAII around run_steps in run_macro. A bool not
+  // a counter — Curvz macros don't currently invoke other macros, so
+  // nesting isn't a case to handle. If recursive macros land someday,
+  // change to an int and increment/decrement.
+  bool m_in_macro_replay = false;
+
   // Non-owning pointer to the project's swatch library. Used by
   // apply_swatch_to_selection to route writes through the set_paint
   // choke point. May be null during early boot — callers guard.

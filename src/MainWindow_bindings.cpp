@@ -25,6 +25,7 @@
 #include "style/StyleInterop.hpp" // mutate_appearance — inspector-driven appearance edits
 #include <algorithm>
 #include <cctype> // s136 m4: std::isspace for library item name trim
+#include <chrono> // s277 m1: smoke-test sleep
 #include <filesystem>
 #include <fstream>
 #include <giomm/file.h> // s125 m1a: Gio::File::create_for_path (folder picker)
@@ -46,6 +47,7 @@
 #include <gtkmm/stack.h> // s117 m19: custom About dialog flip animation
 #include <gtkmm/stylecontext.h>
 #include <nlohmann/json.hpp>
+#include <thread> // s277 m1: smoke-test sleep
 
 // GDK key definitions
 #include <gdk/gdkkeysyms.h>
@@ -2384,6 +2386,35 @@ void MainWindow::connect_signals() {
 
         if (!shift && (kv == GDK_KEY_3 || kv == GDK_KEY_KP_3)) {
           m_canvas.zoom_to_selection(); // Ctrl+3 — zoom to fit selection
+          return true;
+        }
+
+        // ── s277 m1: Ctrl+Shift+Alt+P — ProgressDialog smoke test ────────
+        //
+        // Temporary diagnostic hook for m1 verification. Wires the
+        // dialog to a fake 100-step task with 50ms per step. Verify:
+        //   (1) dialog appears after ~300ms,
+        //   (2) bar fills smoothly to 100%,
+        //   (3) elapsed counter ticks up, ETA updates,
+        //   (4) Cancel button dismisses immediately and the log shows
+        //       "smoke: cancelled at step N" with N < 100.
+        // Remove before m2 ships.
+        if (ctrl && shift && alt && (kv == GDK_KEY_P || kv == GDK_KEY_p)) {
+          LOG_INFO("s277 m1 smoke: launching ProgressDialog test (100 steps × 50ms)");
+          bool ok = m_progress_dialog.run(
+              *this, 100, "Smoke test",
+              [](ProgressHandle& p) -> bool {
+                for (int i = 0; i < 100; ++i) {
+                  if (p.cancelled()) {
+                    LOG_INFO("s277 m1 smoke: cancelled at step {}", i);
+                    return false;
+                  }
+                  p.update(i, "Step " + std::to_string(i) + " of 100");
+                  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                return true;
+              });
+          LOG_INFO("s277 m1 smoke: run() returned {}", ok ? "true" : "false");
           return true;
         }
 

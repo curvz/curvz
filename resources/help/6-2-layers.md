@@ -30,12 +30,13 @@ layer also clears all the guides on it.
 Above the layer list is a collapsible **Macros** ❷ section. It lists
 every macro you've starred in the Macro Manager so you can run them
 in one click without leaving the canvas. The strip starts collapsed
-on a fresh project — its arrow expands it. The expanded state is
-remembered across sessions on a per-document basis.
+the first time it appears and remembers your last toggle state for
+the rest of the session.
 
-If you haven't starred any macros, the section stays empty. Star a
-macro in **Macro Manager** (Ctrl+Shift+M) to populate it. See
-**Macros** (11.1) for the full macro story.
+The strip is hidden entirely when no macros are starred — it
+appears as soon as you star one. Star a macro in **Macro Manager**
+(Ctrl+Shift+M) to populate it. See **Macros** (11.1) for the full
+macro story.
 
 ## ❸ Layer rows
 
@@ -43,7 +44,7 @@ Each layer row ❸ has, from left to right:
 
 - A **collapse arrow** (▾ / ▸) to fold the layer's contents.
 - A small **colour dot** drawn from the layer's palette colour. Click
-  to open a colour picker. Layers cycle through eight palette
+  to open a colour picker. Layers cycle through seven palette
   colours by default; the dot is purely a visual tag for the panel
   — it doesn't affect rendering.
 - The **layer name** (double-click to rename).
@@ -83,10 +84,16 @@ between layers by dragging into a different layer's frame. Group
 rows accept drops the same way — drop an object onto a group's frame
 and it joins the group.
 
+Layer order in this panel matches the SVG render order: rows nearer
+the top draw on top of rows below them. Within a layer, objects
+follow the same convention. Drag-reordering rearranges rendering as
+well as the panel.
+
 > **Note:** drag-and-drop on compounds, deep groups, and reference
-> images is occasionally inconsistent — if a drop doesn't take,
-> right-click the row and use the **Move to back / front** entries
-> as a workaround.
+> images is occasionally inconsistent — if a drop doesn't take, try
+> starting the drag from a different part of the row, or use the
+> menu-bar verbs (Path → Group / Compound / Clip) on the canvas
+> selection to compose the relationship explicitly.
 
 ## ❻ Special layer types
 
@@ -105,33 +112,78 @@ A few row types ❻ exist for non-content layers:
   drawn with the **Measure** tool (4.6.3). Each measurement is
   one row.
 - **Blend rows** appear when a blend operation has produced an
-  intermediate-step output. Right-click the blend row to rebuild
-  the steps after editing the source paths.
+  intermediate-step output. The row's right-click menu includes
+  **Rebuild Blend Steps** for forcing a cache refresh after
+  editing the source paths (see Right-click context below).
 
 ## Right-click context
 
-Right-click any row to get its context menu. The exact items vary by
-row type:
+Right-click an **object row** (path, group, compound, clip group,
+blend, warp, text, image) to open its context menu. The same menu
+appears whether you right-click a top-level row or a nested child,
+adapting to the row's depth and type. Right-clicking a row that
+isn't currently part of the canvas selection first promotes that
+row to be the selection, then opens the menu — the verbs always
+act on what the menu says they will. Right-clicking a row already
+inside a multi-selection keeps the multi-selection and the verbs
+act on every member.
 
-- Layers: rename, delete, move up / down, change palette colour.
-- Paths: rename, raise / lower in z-order, move to back / front,
-  send to a different layer, group / ungroup.
-- Blends: rebuild steps, release.
-- Compound paths: split.
+The menu contents:
 
-Layer order in this panel matches the SVG render order: rows nearer
-the top draw on top of rows below them. Within a layer, objects
-follow the same convention.
+- **Delete** — always present. Removes every selected object,
+  same as the Delete key on canvas.
+- **Move to layer ▸** — submenu listing every ordinary unlocked
+  layer in the document, minus the home layer if every selected
+  object already lives in the same layer (moving to where you
+  already are is a no-op). Only appears when every selected
+  object is **top-level** in its layer. If any selected object
+  is nested inside a container (group, compound, clip group,
+  blend, or warp), this submenu is suppressed — release the
+  nested object from its container first.
+- **Release verb** — surfaced when the selection is a single
+  container row, naming the verb appropriate to the type:
+  *Ungroup* for Group (`Ctrl+Shift+G`), *Release Compound* for
+  Compound (`Ctrl+Shift+8`), *Release Clip* for Clip Group
+  (`Ctrl+Alt+7`), *Release Blend* for Blend (`Ctrl+Shift+B`),
+  *Release Warp* for Warp (no hotkey).
+- **Rebuild Blend Steps** — only on a single Blend selection,
+  below Release Blend. Forces the cached intermediate steps to
+  refresh on the next draw, for the rare case where editing a
+  source didn't trigger an automatic rebuild.
+
+Three row types are intentionally menu-less by construction:
+**Reference points** (these belong to the Refpoints layer and
+can't move between layers); **Clip-shape pseudo-rows** inside a
+Clip Group (the clip shape is structurally tied to its group —
+right-click the group instead); and **Blend A / B / Steps
+pseudo-rows** (these are inline references into the parent Blend's
+slots — right-click the Blend row itself).
+
+> **Layer header rows have no right-click menu yet.** Layer-level
+> verbs (Duplicate Layer, Merge Down, Move Up / Down, Lock /
+> Visibility toggles) are reachable through other surfaces — the
+> ▲▼ arrow buttons on the row, the eye and padlock toggles, the
+> ✎ rename gesture. Right-click on layer headers is a logged
+> follow-up but isn't wired today.
+
+The same Move to layer ▸ submenu and the same release verbs are
+also available from the **canvas right-click context menu** (4.2.1)
+as of s275 m12, alongside the canvas's lifecycle / arrange /
+translate / effects verbs. Use whichever surface is closer to
+your cursor; both push the same commands onto the same undo
+history.
 
 ## Where to next
 
 - The arrange menu and z-order keys are documented in
   **Editing paths** (8.1).
 - For panels that hold *reusable* assets across documents — clip
-  art, named colours, named appearance bundles — see **Library**
+  art, named colours, named styles — see **Library**
   (6.3), **Swatches** (6.4), and **Styles** (6.5).
-- The right-click "Send to back / front / forward / backward" verbs
-  also surface as the four arrow shortcuts below.
+- The arrow shortcuts below send the canvas selection through
+  z-order within its parent. They are the keyboard counterpart
+  to the **Arrange** submenu in the canvas right-click menu
+  (4.2.1) and the **Path → Arrange** menu-bar verbs.
 
 ### Keys
 

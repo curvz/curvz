@@ -100,6 +100,7 @@
 #include "SaveAsTemplateDialog.hpp"
 #include "ShortcutsDialog.hpp"
 #include "HelpWindow.hpp"
+#include "ProgressDialog.hpp"  // s277 m1 — long-op progress envelope
 #include "ManageTemplatesDialog.hpp"
 #include "ThemeEditDialog.hpp"  // s200 m1 — hide-on-close singleton
 #include "StyleEditorDialog.hpp"  // s201 m1 — hide-on-close singleton
@@ -311,6 +312,19 @@ public:
     // re-asserts the transient relationship; hide is just a visibility
     // flip.
     void show_scripter(bool visible);
+
+    // ── s277 m2 — long-op progress dialog accessor ────────────────────
+    //
+    // Public handle on the ProgressDialog member so Canvas (and any
+    // other widget child of MainWindow) can wrap its long ops without
+    // owning a ProgressDialog itself. Canvas reaches it via
+    // dynamic_cast<MainWindow*>(get_root())->progress_dialog().
+    //
+    // Mirrors the convention used for scripter / save helpers: rather
+    // than friend-classing Canvas or routing through signals (which
+    // can't return synchronously, and the dialog needs to block its
+    // caller until the worker completes), expose a typed reference.
+    ProgressDialog& progress_dialog() { return m_progress_dialog; }
 
     // ── s246 m1 — script-side proj save helpers ───────────────────────
     //
@@ -1238,6 +1252,7 @@ private:
     RotateFromPointDialog         m_rotate_from_point_dialog;  // s210 m2
     ShortcutsDialog               m_shortcuts_dialog;
     HelpWindow                    m_help_window;
+    ProgressDialog                m_progress_dialog;  // s277 m1
 
     // Guide-construct review dialog (M3) — created lazily.  A tiny non-modal
     // window with Perpendicular checkbox + OK + Cancel.
@@ -1260,6 +1275,20 @@ private:
     std::unique_ptr<ClipboardViewWindow>  m_clipboard_view_win;
     ActiveTool                    m_active_tool    = ActiveTool::Selection;
     ActiveTool                    m_inspector_tool = ActiveTool::Selection;
+    // s268 — track last applied motif so apply_motif_to_window can short-
+    // circuit when the motif hasn't actually changed. signal_prop_changed
+    // calls apply_motif_to_window on every inspector edit ("just in case
+    // motif was the edited prop"); without this gate every node-coord
+    // spinner click triggered a full motif walk + inspector rebuild,
+    // destroying the spinner mid-click and killing GTK4's auto-repeat.
+    // std::optional so the first real call always runs.
+    //
+    // s277 m1 — ported from stray src/MainWindow.hpp during the
+    // ProgressDialog header sweep. The s268 edit had landed in the
+    // wrong file (CMake's include path resolves to include/, so the
+    // src/ copy was off-path); MainWindow_helpers.cpp:766 references
+    // this field, so the canonical header needs it.
+    std::optional<Motif>          m_last_applied_motif;
     // S58m: remember previous selection size so shift-click add/remove
     // (which keeps the primary pointer but changes the set) triggers an
     // inspector rebuild. Without this the Appearance panel stays showing

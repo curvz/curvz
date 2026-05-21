@@ -163,7 +163,7 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   // ── Help ──────────────────────────────────────────────────────────────
   r = add_spacer(m_keyboard_grid, r);
   r = add_heading(m_keyboard_grid, "Help", r);
-  r = add_row(m_keyboard_grid, "?  or  /", "Show this shortcuts window", r);
+  r = add_row(m_keyboard_grid, "?  or  Ctrl+/", "Show this shortcuts window", r);
   r = add_row(m_keyboard_grid, "F1  or  Alt+?", "Open the help manual", r);
 
   // ── Line Tool ─────────────────────────────────────────────────────────
@@ -197,6 +197,8 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   r = add_row(m_keyboard_grid, "↑↓←→", "Nudge node (2 screen px)", r);
   r = add_row(m_keyboard_grid, "Shift+↑↓←→", "Nudge node (8 screen px)", r);
   r = add_row(m_keyboard_grid, "Alt+↑↓←→", "Nudge node (32 screen px)", r);
+  r = add_row(m_keyboard_grid, "Ctrl+←", "Retract IN handle of selected node(s)", r);
+  r = add_row(m_keyboard_grid, "Ctrl+→", "Retract OUT handle of selected node(s)", r);
 
   // ── Object ────────────────────────────────────────────────────────────
   r = add_spacer(m_keyboard_grid, r);
@@ -219,7 +221,6 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   r = add_row(m_keyboard_grid, "Ctrl+Shift+X", "Expand Stroke", r);
   r = add_row(m_keyboard_grid, "Ctrl+Alt+T", "Convert Text to Path", r);
   r = add_row(m_keyboard_grid, "Ctrl+B", "Blend", r);
-  r = add_row(m_keyboard_grid, "Ctrl+Shift+B", "Release Blend", r);
   r = add_row(m_keyboard_grid, "Ctrl+Shift+Y", "Warp", r);
   r = add_row(m_keyboard_grid, "Ctrl+Alt+Y", "Edit Warp", r);
   r = add_row(m_keyboard_grid, "Ctrl+Alt+F", "Flatten Warp", r);
@@ -235,6 +236,16 @@ Gtk::Widget &ShortcutsDialog::build_keyboard_tab() {
   r = add_heading(m_keyboard_grid, "Measure Tool", r);
   r = add_row(m_keyboard_grid, "Enter", "Place measurement annotation", r);
   r = add_row(m_keyboard_grid, "Space", "Clear and start new measurement", r);
+
+  // ── Style ─────────────────────────────────────────────────────────────
+  // Ctrl+Shift+B is also wired as Release Blend's menu accel, but the
+  // CAPTURE controller in MainWindow_bindings.cpp catches it first and
+  // runs Unbind Style. Release Blend currently has no working hotkey;
+  // it's available via the Object menu and the Layers panel's row
+  // right-click ▸ Release Blend.
+  r = add_spacer(m_keyboard_grid, r);
+  r = add_heading(m_keyboard_grid, "Style", r);
+  r = add_row(m_keyboard_grid, "Ctrl+Shift+B", "Unbind style (selection)", r);
 
   // ── Text ──────────────────────────────────────────────────────────────
   r = add_spacer(m_keyboard_grid, r);

@@ -1,0 +1,4 @@
+# Placeholder. s267 m3 will populate this folder with 8-12 regression
+# scripts. The .gitkeep keeps the directory in source control until
+# then; CMake's install() rule filters by *.curvzs, so this file is
+# not bundled into the install tree.

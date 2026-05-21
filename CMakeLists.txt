@@ -260,6 +260,7 @@ set(SOURCES
     src/ManageTemplatesDialog.cpp
     src/ShortcutsDialog.cpp
     src/HelpWindow.cpp
+    src/ProgressDialog.cpp  # s277 m1 — long-op progress envelope
     src/StepRepeatPopover.cpp
     src/BlendPopover.cpp
     src/WarpPopover.cpp
