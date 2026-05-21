@@ -193,7 +193,7 @@ If this is your first time in Curvz, two next steps work well:
 - **Projects and documents** (see 2.1) explains what the project
   wrapper around your documents is, and how saving works. Worth
   reading before you commit serious work.
-- **Tools overview** (see 3.1) gives a one-paragraph rundown of every
+- **Tools overview** (see 4.1) gives a one-paragraph rundown of every
   tool in the toolbox, with pointers into the deep-dive topics.
 
 Both are short. After that, the rest of the manual fans out by topic

@@ -1,8 +1,8 @@
 # Curvz user manual — outline v2
 
-Locked s128. Supersedes `manual-outline-v1.svg` (s114, pre-Motif, pre-Content, pre-Interface chapter).
+Locked s128. Resynced with disk + ToC in s279 (5.2.1 Motif removed as never-shipped; 5.3.8 / 6.7 / 7.4 / 7.5 added to match runtime; 5.3.2 and 5.4.5 labels updated to match ToC). Supersedes `manual-outline-v1.svg` (s114, pre-Motif, pre-Content, pre-Interface chapter).
 
-**11 chapters · 44 sections · 63 leaves.** Flat list — depth is encoded in the dotted nomenclature (e.g. `4.4.1` is third-level). Sidebar will collapse to chapter and section level; only the leaves load topic content.
+**11 chapters · 45 sections · 66 leaves.** Flat list — depth is encoded in the dotted nomenclature (e.g. `4.4.1` is third-level). Sidebar will collapse to chapter and section level; only the leaves load topic content.
 
 ## Status legend
 
@@ -62,22 +62,21 @@ Moving an item from `[ ]` → `[~]` → `[D]` → `[S]` is the workflow. Update 
 
 5 Inspector
   5.1   [ ] Inspector overview                         → 5-1-inspector-overview.md
-  5.2     Project group
-  5.2.1 [D] Motif                                      → 5-2-1-motif.md                (was 6-1-workspace-appearance.md — RENAMED)
   5.3     Document group
   5.3.1 [ ] Metadata                                   → 5-3-1-metadata.md
-  5.3.2 [ ] Canvas                                     → 5-3-2-canvas.md
+  5.3.2 [ ] Dimensions                                 → 5-3-2-canvas.md                (filename predates Canvas → Dimensions rename)
   5.3.3 [ ] Guides                                     → 5-3-3-guides.md
   5.3.4 [ ] Grid                                       → 5-3-4-grid.md
   5.3.5 [ ] Margins                                    → 5-3-5-margins.md
   5.3.6 [ ] Snap                             ### Keys  → 5-3-6-snap.md
   5.3.7 [ ] Measure                                    → 5-3-7-measure.md
+  5.3.8 [ ] Theme                                      → 5-3-8-theme.md
   5.4     Object group
   5.4.1 [ ] Selection                        ### Keys  → 5-4-1-selection.md
   5.4.2 [ ] Text                         (C)           → 5-4-2-text.md
   5.4.3 [ ] Blend                        (C)           → 5-4-3-blend.md
   5.4.4 [ ] Node                             ### Keys  → 5-4-4-node.md
-  5.4.5 [ ] Appearance                                 → 5-4-5-appearance.md
+  5.4.5 [ ] Styling                                    → 5-4-5-appearance.md            (filename predates Appearance → Styling rename)
   5.4.6 [ ] Shadow                       (C)           → 5-4-6-shadow.md
 
 6 Content                                                                               (NEW chapter — was missing)
@@ -87,11 +86,14 @@ Moving an item from `[ ]` → `[~]` → `[D]` → `[S]` is the workflow. Update 
   6.4   [ ] Swatches                                   → 6-4-swatches.md
   6.5   [ ] Styles                                     → 6-5-styles.md
   6.6   [ ] Documents                                  → 6-6-documents.md
+  6.7   [ ] Themes                                     → 6-7-themes.md                 (the panel doc — concept page at 9.1)
 
 7 Working with objects
   7.1   [ ] Step and Repeat                            → 7-1-step-and-repeat.md
   7.2   [ ] Clip masks                                 → 7-2-clip-masks.md
   7.3   [ ] Blends                                     → 7-3-blends.md
+  7.4   [ ] Align & Distribute               ### Keys  → 7-4-align-distribute.md
+  7.5   [ ] Group and Ungroup                          → 7-5-group-ungroup.md
 
 8 Path operations
   8.1   [ ] Editing paths                    ### Keys  → 8-1-editing-paths.md
@@ -126,15 +128,14 @@ Moving an item from `[ ]` → `[~]` → `[D]` → `[S]` is the workflow. Update 
   - Document tab right-click → covered in §3.1 Header & Document tabs.
   - Same idiom across the manual: surface lives on the page that triggers it.
 - **Color picker / paint editor** has its own page (§3.7) because it's a popover invoked from many surfaces (Motif chips, Appearance fill/stroke, guide colour, swatches, styles). Pages that open the picker reference §3.7 with a one-line link rather than re-documenting it.
-- **Themes** (§9.1) and **Macros** (§11.1) are self-contained dialogs documented as single pages — concept + UI in one.
+- **Themes** is split across two pages by intent — **§6.7 Themes** is the panel doc (UI, save/apply, library, import/export); **§9.1 Themes** is the concept doc (what a theme is, what it bundles, the apply model). Each cross-references the other. **Macros** (§11.1) remains a single self-contained page — concept + UI in one.
 
 ## Migration notes
 
 - `1-3-workspace-overview.png` (existing PNG) gets re-used by `1-3-workspace-tour.md`.
-- `6-1-workspace-appearance.md` (existing) becomes `5-2-1-motif.md`. Same content, accurate file name.
 - `3-1-tools-overview.md` (existing) becomes `4-1-tools-overview.md`.
 - `1-1-welcome.md`, `1-2-about-curvz.md`, `1-3-workspace-tour.md` keep their numbers.
-- `6-1-motif-section.png` (newly added in s128 m1 v3) belongs to `5-2-1-motif.md` — rename inbound to `5-2-1-motif-section.png` to keep the chapter prefix consistent. (`6-1-workspace-color-picker.png` from the old md → `5-2-1-workspace-color-picker.png` when made.)
+- The s128-planned `5.2.1 Motif` page (was to be derived from `6-1-workspace-appearance.md`) was removed from the outline in s279 — the page never shipped to disk or ToC, and the Project-group section was empty as a result. If a Motif page is wanted later, restore both the 5.2 group heading and the leaf row.
 
 ## Open scope decisions captured
 

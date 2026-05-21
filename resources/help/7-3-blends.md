@@ -1,4 +1,4 @@
-# Blends
+# ![Blend icon](img/icons/curvz-blend-symbolic.svg) Blends
 
 A **Blend** interpolates between two paths to produce a sequence
 of in-between shapes. Pick a start path and an end path, choose a
@@ -12,6 +12,11 @@ where one shape needs to flow into another. They're the
 "variable-width stroke" surrogate in Curvz — make a fat copy and a
 thin copy of the same path, blend them, and you have a stroke
 that pulses or tapers along its length.
+
+Blend lives in the **Transforms** section of the toolbar alongside
+Align, Bool, Corner, Step and Repeat, and Warp — a block of
+selection-modifying operations grouped together because they all
+act on the current selection rather than on the canvas at large.
 
 ![Two source paths with a blend's steps between them](img/7-3-blend-result.png)
 

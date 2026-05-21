@@ -1,14 +1,20 @@
-# Align & Distribute
+# ![Align & Distribute icon](img/icons/curvz-align-symbolic.svg) Align & Distribute
 
 **Align** moves selected objects so their edges or centres line up.
 **Distribute** spaces objects out evenly along an axis. Both work on
 the current selection; both need at least two objects selected.
 
+Align & Distribute lives in the **Transforms** section of the
+toolbar alongside Blend, Bool, Corner, Step and Repeat, and Warp —
+a block of selection-modifying operations grouped together because
+they all act on the current selection rather than on the canvas at
+large.
+
 Reach the eight ops three ways:
 
-- **Toolbar** — the Align & Distribute button below the tools opens
-  a popover with all eight ops as icons. The button is disabled
-  unless the gate below is satisfied.
+- **Toolbar** — the Align & Distribute button in the Transforms
+  section opens a popover with all eight ops as icons. The button
+  is disabled unless the gate below is satisfied.
 - **Align menu** — every op has a menu entry. The six align ops
   also have keyboard shortcuts (see **Keys** at the end of this
   topic). The two distribute ops are menu-only.

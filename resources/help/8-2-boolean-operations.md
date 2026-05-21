@@ -1,10 +1,23 @@
-# Boolean operations
+# ![Boolean operations icon](img/icons/curvz-union-symbolic.svg) Boolean operations
 
 Boolean operations combine paths into one new path by geometric
 set logic — keep the area covered by every input, by any input,
 or by one minus the others. **Union**, **Subtract**, and
-**Intersect** are the three operations Curvz offers. They live
-under the **Path** menu and as Ctrl+Shift hotkeys.
+**Intersect** are the three operations Curvz offers.
+
+The Bool button lives in the **Transforms** section of the
+toolbar alongside Align, Blend, Corner, Step and Repeat, and Warp —
+a block of selection-modifying operations grouped together because
+they all act on the current selection rather than on the canvas at
+large. A single toolbar button covers all three booleans: its icon
+shows the *last-picked* op (Union, Subtract, or Intersect),
+**left-click opens the picker popover** to choose which op to run,
+and the chosen op fires immediately on the current selection.
+**Right-click** also opens the picker, but in pre-select mode —
+the click that follows updates the toolbar icon without firing
+the op, so you can dial in an op before a valid selection exists.
+Each op also has a **Path** menu entry and a **Ctrl + Shift**
+hotkey.
 
 The result is a single new path that *replaces* the inputs.
 Boolean ops change geometry permanently, unlike clip masks which

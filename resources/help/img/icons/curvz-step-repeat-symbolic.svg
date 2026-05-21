@@ -1,0 +1,16 @@
+<svg data-curvz-export-units="px" data-curvz-export-size="1000.0000" data-curvz-export-fit="width" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="48" height="48">
+  <g data-curvz-layer="1" id="Layer_1¶54b0eab2" data-curvz-iid="54b0eab2-9b1b-4df2-a8ba-4c8772337632" data-curvz-name="Layer 1">
+    <path id="0ae14d2b" data-curvz-iid="0ae14d2b-533f-48dc-9ca9-aa61a406f190" d="M 300 300 L 700 300 L 700 700 L 300 700 L 300 300 Z" data-curvz-types="K K K K" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    <path id="69e5fcc6" data-curvz-iid="69e5fcc6-8ab8-4ede-b097-58b60483a99b" d="M 349.994 350.531 L 650.006 350.531 L 650.006 649.469 L 349.994 649.469 L 349.994 350.531 Z" data-curvz-types="K K K K" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    <g data-curvz-group="1" id="Group_1¶8873dee7" data-curvz-iid="8873dee7-3ce8-4434-80b9-c5e5bc905a48" data-curvz-name="Group 1">
+      <path id="Rectangle_3¶ff70b56b" data-curvz-iid="ff70b56b-dbc3-4db4-92cf-d8251f41db6d" d="M 865.658 169.161 L 685.901 350 L 650.546 314.645 L 830.303 133.805 C 694.394 170.222 583.194 200.049 583.194 200.049 L 570.253 151.753 C 570.253 151.753 837.308 80.1958 950 50 L 847.717 429.204 L 800.447 417.25 L 865.658 169.161 Z" data-curvz-types="K K K K K K K K K" data-curvz-name="Rectangle 3" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+      <path id="Rectangle_3_2¶74b30976" data-curvz-iid="74b30976-9484-4422-ac3a-2073a4175379" d="M 134.342 830.839 L 315.677 650 L 351.032 685.355 L 169.697 866.195 C 305.606 829.778 416.806 799.951 416.806 799.951 L 429.747 848.247 C 429.747 848.247 162.692 919.804 50 950 L 152.283 570.796 L 199.553 582.75 L 134.342 830.839 Z" data-curvz-types="K K K K K K K K K" data-curvz-name="Rectangle 3 (2)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+      <path id="Rectangle_3_3¶323fd85f" data-curvz-iid="323fd85f-08d6-4bd4-8091-e12d529cdcfb" d="M 830.839 865.658 L 650 677.858 L 685.355 642.502 L 866.195 830.303 C 829.778 694.394 799.951 583.194 799.951 583.194 L 848.247 570.253 C 848.247 570.253 919.804 837.308 950 950 L 570.796 847.717 L 582.75 800.447 L 830.839 865.658 Z" data-curvz-types="K K K K K K K K K" data-curvz-name="Rectangle 3 (3)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+      <path id="Rectangle_3_4¶bf9138af" data-curvz-iid="bf9138af-cc5d-4baa-8253-cf5c78f7fc9a" d="M 169.161 134.342 L 350 317.2 L 314.645 352.556 L 133.805 169.697 C 170.222 305.606 200.049 416.806 200.049 416.806 L 151.753 429.747 C 151.753 429.747 80.1958 162.692 50 50 L 429.204 152.283 L 417.25 199.553 L 169.161 134.342 Z" data-curvz-types="K K K K K K K K K" data-curvz-name="Rectangle 3 (4)" fill="currentColor" stroke="currentColor" stroke-width="0"/>
+    </g>
+  </g>
+  <g data-curvz-ref-layer="1" data-curvz-color="#D91ABF" data-curvz-iid="0e654916-6165-4157-80f0-5eb81cd38ddd" data-curvz-name="References">
+  </g>
+  <g data-curvz-guide-layer="1" data-curvz-guide-color="0,0.749,1" data-curvz-iid="b266d878-c789-480a-ab63-bf6762af1636" data-curvz-name="Guides">
+  </g>
+</svg>

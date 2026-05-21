@@ -1,17 +1,23 @@
-# Step and Repeat
+# ![Step and Repeat icon](img/icons/curvz-step-repeat-symbolic.svg) Step and Repeat
 
 **Step and Repeat** clones the current selection in a regular
 sequence — N copies offset by the same X/Y from one to the next,
-optionally rotating each copy around a pivot. It's the tool for
-building radial spokes, arrow strips, evenly-spaced grids, and
+optionally rotating each copy around a pivot. It's the operation
+for building radial spokes, arrow strips, evenly-spaced grids, and
 anywhere you'd otherwise duplicate-and-nudge in a loop.
+
+Step and Repeat lives in the **Transforms** section of the
+toolbar alongside Align, Blend, Bool, Corner, and Warp — a block
+of selection-modifying operations grouped together because they
+all act on the current selection rather than on the canvas at
+large.
 
 The operation is configured in a **popover anchored to the SnR
 toolbar button**, with a live mini preview. Three ways to open it:
 
+- **Right-click the SnR toolbar button.**
 - **Path → Step and Repeat…** menu item.
 - **Ctrl + Alt + D** keyboard shortcut.
-- **Right-click the SnR toolbar button.**
 
 A **left-click on the SnR toolbar button** is a separate path:
 it re-applies the *last* Step and Repeat settings to the current
