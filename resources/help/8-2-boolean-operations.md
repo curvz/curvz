@@ -102,7 +102,39 @@ The whole operation is one undo step. Ctrl+Z restores the
 original paths exactly as they were, including bindings to
 swatches or styles.
 
-## ❺ Cleaning the output
+## ❺ Progress and cancel
+
+Boolean ops on heavy input — dense paths, many operands, text
+that's been outlined and warped — can take several seconds. Curvz
+shows a **progress dialog** while the op runs, with the operation
+name and operand count in the title (e.g. *Boolean Union — 10
+operands*), a determinate bar that ticks once per operand, an
+elapsed-time counter, and a **Cancel** button.
+
+The dialog appears immediately on operation start, not after a
+delay. Fast operations flicker it briefly — that's the click
+confirming itself. Slow operations stay open with the bar
+advancing so you know work is happening rather than wondering if
+the app has hung.
+
+Cancel takes effect between per-operand steps. Each step has
+three internal phases (intersection enrichment, Clipper2,
+cleanup) and Cancel is checked between them and between
+iterations, so on a 10-operand op the worst-case wait after
+clicking Cancel is one step's three phases — typically a few
+seconds, occasionally longer on adversarial input. When Cancel
+lands, nothing is committed: the document is unchanged, no undo
+entry is created, the original paths remain exactly as they
+were. There's no partial result to clean up.
+
+Macros that invoke booleans don't pop the dialog per step —
+during macro replay the operations run silently in sequence with
+no per-step dialog and no completion notice; the only feedback
+is the document updating when the macro finishes. This keeps the
+user out of a click-cancel-per-step trap on long recorded
+sequences.
+
+## ❻ Cleaning the output
 
 The clipping engine produces topologically-correct results, but
 the curves it emits are flattened into many short polyline-style
@@ -145,7 +177,7 @@ handles when you remove a node, so each delete preserves the
 shape locally and you can polish at your own pace. The cleanup
 gets you most of the way; your eye finishes it.
 
-## ❻ Current limits
+## ❼ Current limits
 
 The boolean implementation is backed by Clipper2 (Angus Johnson's
 robust polygon clipping library) and handles two-or-more closed

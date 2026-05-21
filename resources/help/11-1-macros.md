@@ -82,6 +82,15 @@ Three ways to run a macro:
 A run is one undo step. Ctrl+Z reverts the entire macro's
 effect; you don't have to undo step-by-step.
 
+Macros that include long operations (boolean ops on heavy input,
+typically) replay **without** the per-step progress dialog those
+operations would normally show — the macro runs straight through
+in silence and the document updates when it's done. This avoids
+a click-cancel-per-step trap on long recorded sequences. If a
+macro you're running feels stuck, give it a moment before
+assuming it's hung; the same heavy boolean that takes 30 seconds
+interactively takes 30 seconds inside a macro too.
+
 ## ❹ Editing a macro
 
 Open a macro and click **Edit** to launch the **Macro Editor**
