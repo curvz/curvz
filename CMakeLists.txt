@@ -182,6 +182,49 @@ else()
     set(CURVZ_CMARK_TARGET cmark)
 endif()
 
+# ── Widget names DB (regenerated from source) ────────────────────────────────
+# s283 m8: widget_names.db is a tab-separated abbrev → long_name → file:line
+# map, bundled into the binary via gresource and read at runtime by
+# WidgetNameResolver. Source is the single source of truth — every named
+# widget calls curvz::utils::set_name(widget, "abbrev", "long_name") or a
+# naming-funnel (add_tool_button / make_tool_button) that forwards to it.
+# The widget_names_sync harvester scans src/ and include/ for these calls and
+# produces one DB row per match.
+#
+# Before s283 m8 the DB was hand-synced — Scott or Claude ran
+# ./widget_names_sync after sessions that added widgets, otherwise the DB
+# drifted behind source. Stale DB shows as `tb_bop_un (?)` instead of
+# `tb_bop_un (toolbar_boolean_op_union_btn)` in trace lines — cosmetic, not
+# functional, but real (s282 m2 finding flagged tb_bop_un/sb/in missing from
+# the DB despite live set_name calls in Toolbar.cpp).
+#
+# This block puts the harvester in the build graph: any change to a .cpp or
+# .hpp under src/ or include/ that's newer than the DB triggers a rerun
+# before the gresource bundle picks up the output. CONFIGURE_DEPENDS on the
+# glob means new files are picked up automatically without a cmake re-run.
+#
+# The harvester is fast (greps source files, milliseconds on this codebase
+# size) and incremental (CMake skips the rule when DB is newer than every
+# source). No measurable build-time cost in the common case.
+set(WIDGET_NAMES_DB     "${CMAKE_SOURCE_DIR}/resources/data/widget_names.db")
+set(WIDGET_NAMES_SYNC   "${CMAKE_SOURCE_DIR}/widget_names_sync")
+
+file(GLOB_RECURSE WIDGET_NAMES_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_SOURCE_DIR}/src/*.hpp"
+    "${CMAKE_SOURCE_DIR}/include/*.hpp")
+
+add_custom_command(
+    OUTPUT  "${WIDGET_NAMES_DB}"
+    COMMAND "${WIDGET_NAMES_SYNC}"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    DEPENDS ${WIDGET_NAMES_SOURCES} "${WIDGET_NAMES_SYNC}"
+    COMMENT "Regenerating widget_names.db from source"
+    VERBATIM
+)
+
+add_custom_target(curvz_widget_names_gen DEPENDS "${WIDGET_NAMES_DB}")
+
 # ── GLib resources ───────────────────────────────────────────────────────────
 # Compile resources.xml → src/curvz-resources.c + include/curvz-resources.h
 # Output goes into the source tree (src/ include/) which always exist.
@@ -209,7 +252,7 @@ add_custom_command(
             --generate-source
             resources.xml
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/resources"
-    DEPENDS "${RESOURCES_XML}" ${RESOURCE_FILES}
+    DEPENDS "${RESOURCES_XML}" ${RESOURCE_FILES} "${WIDGET_NAMES_DB}"
     COMMENT "Compiling GLib resources (source)"
     VERBATIM
 )
@@ -222,7 +265,7 @@ add_custom_command(
             --generate-header
             resources.xml
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/resources"
-    DEPENDS "${RESOURCES_XML}" ${RESOURCE_FILES}
+    DEPENDS "${RESOURCES_XML}" ${RESOURCE_FILES} "${WIDGET_NAMES_DB}"
     COMMENT "Compiling GLib resources (header)"
     VERBATIM
 )

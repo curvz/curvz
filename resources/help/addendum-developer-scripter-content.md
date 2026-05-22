@@ -1204,9 +1204,9 @@ get pnl_styles section_open
 This page now covers all seven Content-area Scriptables: the
 six collection routers (`layers`, `swatches`, `guides`,
 `styles`, `themes`, `palettes`) and the one panel widget
-(`pnl_styles`). The remaining Scripter reference pages —
-**Canvas & objects** and **Dialogs & popovers** — cover the
-on-canvas object surface and the modal dialog widget
-catalogue respectively; both land in future sessions.
+(`pnl_styles`). The **Canvas & objects** reference covers
+the on-canvas object surface; **Dialogs & popovers** covers
+the modal-dialog widget catalogue. Both shipped in s284 —
+the eight-leaf Scripter reference set is complete.
 
 

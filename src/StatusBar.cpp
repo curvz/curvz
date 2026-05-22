@@ -26,9 +26,9 @@ StatusBar::StatusBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL) {
   sep1->set_margin_end(8);
 
   // s223 m2: placeholder is "--" rather than a real-looking number. The
-  // signal-driven set_zoom path (Canvas zoom-fit on first draw → connect_signals
-  // listener) is what populates this label with the truth; if for any
-  // reason that path hasn't fired yet, the user sees a benign dash
+  // signal-driven set_zoom path (Canvas zoom-fit on first draw →
+  // connect_signals listener) is what populates this label with the truth; if
+  // for any reason that path hasn't fired yet, the user sees a benign dash
   // rather than a stale-looking percentage. Pre-s223 the placeholder
   // was "1600%" — which was specifically the user-visible symptom of
   // the s217 backlog bug (the idle-callback in setup_layout was
@@ -67,9 +67,9 @@ StatusBar::StatusBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL) {
 
   append(m_pos_label);
   append(*sep1);
-  append(m_zoom_label);
-  append(*sep2);
   append(m_units_label);
+  append(*sep2);
+  append(m_zoom_label);
   append(*sep_un);
   append(m_count_label);
 

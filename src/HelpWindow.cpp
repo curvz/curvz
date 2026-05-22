@@ -743,18 +743,22 @@ void HelpWindow::build_topic_list() {
     // Toolbar; s282 m3 adds Inspector; s283 m1 adds Content (partial —
     // layers / swatches / guides); s283 m2 extends Content with styles /
     // themes / palettes; s283 m3 completes Content with pnl_styles.
-    // Remaining reference leaves (Canvas & objects, Dialogs & popovers)
-    // land in future sessions.
+    // s284 m1 adds Canvas & objects (the `objects` collection and
+    // proxy plus the canvas widget's substrate-name trailer). s284 m2
+    // adds Dialogs & popovers, completing the eight-leaf Scripter
+    // reference set.
     { RowKind::Chapter, 0, false, "", "Addendums" },
     { RowKind::Group,   1, false, "", "Developer" },
-    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-overview.md",     "Scripter overview" },
-    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-reference.md",    "Scripter reference" },
-    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-language.md",     "Language reference" },
-    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-singletons.md",   "Singletons reference" },
-    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-header-menus.md", "Header & menus reference" },
-    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-toolbar.md",      "Toolbar reference" },
-    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-inspector.md",    "Inspector reference" },
-    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-content.md",      "Content reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-overview.md",        "Scripter overview" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-reference.md",       "Scripter reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-language.md",        "Language reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-singletons.md",      "Singletons reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-header-menus.md",    "Header & menus reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-toolbar.md",         "Toolbar reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-inspector.md",       "Inspector reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-content.md",         "Content reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-canvas-objects.md",  "Canvas & objects reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-dialogs.md",         "Dialogs & popovers reference" },
   };
 }
 

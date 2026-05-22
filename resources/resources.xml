@@ -198,13 +198,13 @@
     <file alias="12-1-workflow-strategies.md">help/12-1-workflow-strategies.md</file>
 
     <!-- s281 m1 / m2 — Addendums chapter, Developer subcategory.
-         m1 shipped the Overview (Part 1). m2 ships the Reference
-         index plus the first two reference leaves (Language and
-         Singletons). s282 m1 ships the Header & menus reference
-         leaf; s282 m2 ships the Toolbar reference; s282 m3 ships
-         the Inspector reference. Remaining reference leaves
-         (Content, Canvas & objects, Dialogs & popovers) land in
-         future sessions as parallel leaf rows. -->
+         m1 shipped the Overview (Part 1). m2 shipped the Reference
+         index plus Language and Singletons. s282 m1/m2/m3 added
+         Header & menus, Toolbar, and Inspector (their alias entries
+         were not landed at the time; s284 m1 retro-fits them along
+         with Content and the new Canvas & objects leaf). s284 m2
+         adds the final Dialogs & popovers leaf, completing the
+         eight-leaf Scripter reference set. -->
     <file alias="addendum-developer-scripter-overview.md">help/addendum-developer-scripter-overview.md</file>
     <file alias="addendum-developer-scripter-reference.md">help/addendum-developer-scripter-reference.md</file>
     <file alias="addendum-developer-scripter-language.md">help/addendum-developer-scripter-language.md</file>
@@ -213,6 +213,8 @@
     <file alias="addendum-developer-scripter-toolbar.md">help/addendum-developer-scripter-toolbar.md</file>
     <file alias="addendum-developer-scripter-inspector.md">help/addendum-developer-scripter-inspector.md</file>
     <file alias="addendum-developer-scripter-content.md">help/addendum-developer-scripter-content.md</file>
+    <file alias="addendum-developer-scripter-canvas-objects.md">help/addendum-developer-scripter-canvas-objects.md</file>
+    <file alias="addendum-developer-scripter-dialogs.md">help/addendum-developer-scripter-dialogs.md</file>
 
     <!-- Live image aliases — files exist on disk -->
     <file alias="img/1-3-workspace-overview.png">help/img/1-3-workspace-overview.png</file>
