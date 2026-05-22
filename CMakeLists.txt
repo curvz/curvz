@@ -577,6 +577,14 @@ set(SOURCES
     # remaining 44 wrap-now win.* actions by menu domain. See
     # tier2_action_audit.md for the full classification.
     src/scripting/Action.cpp
+
+    # s288 m2 — welcome-demo animation subsystem. WelcomeAnimator runs
+    # phantom-overlay performances on a Canvas layer to simulate the
+    # Pen tool (and eventually colour picker, etc.) building an SVG
+    # avatar piece by piece, committing a real Path SceneNode at the
+    # end of each performance. See animation/WelcomeAnimator.hpp.
+    src/animation/WelcomeAnimator.cpp
+
     src/widgets/ToggleButton.cpp
     src/widgets/Button.cpp
     src/widgets/CheckButton.cpp

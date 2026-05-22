@@ -499,8 +499,22 @@ MainWindow::MainWindow(Application & /*app*/) {
   // export.svg; Macro is OUT because recorded-macro replay on a
   // different build/system means the recorded value is stale at
   // replay time, violating the recorded-macro mental model).
+  //
+  // s288 m2 — second ctor arg: EnactPenPath callback. Forwards to
+  // Canvas's thin entry point which forwards to the WelcomeAnimator.
+  // The animation runs asynchronously via Glib::Timeout owned by the
+  // animator; this lambda returns immediately.
+  // s288 m3 — third ctor arg: AnimateSvgFile callback. Sibling routing
+  // for the SVG orchestrator entry point.
   m_app_scriptable =
-      std::make_unique<curvz::scripting::AppScriptable>(this);
+      std::make_unique<curvz::scripting::AppScriptable>(
+          this,
+          [this](const std::string& d_string, double speed) {
+              m_canvas.welcome_enact_pen_path(d_string, speed);
+          },
+          [this](const std::string& svg_path, double speed) {
+              m_canvas.welcome_animate_svg_file(svg_path, speed);
+          });
 
   // s219 m1 — Scripter window construction. Previously lived in
   // Application::on_activate; moved here so MainWindow owns the

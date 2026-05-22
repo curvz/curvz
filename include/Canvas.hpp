@@ -13,6 +13,7 @@
 #include "math/CornerTreatment.hpp"
 #include "math/PathOffset.hpp"
 #include "tools/PenTool.hpp"
+#include "animation/WelcomeAnimator.hpp"  // s288 m2 — welcome-demo phantom overlay
 
 // Forward-declare the rest of the swatch-library types we reference in the
 // public interface. Keeping SwatchLibrary.hpp out of this header avoids
@@ -829,6 +830,42 @@ public:
 
   // Apply a node type to all nodes in the current multi-node selection.
   void set_selected_nodes_type(BezierNode::Type type);
+
+  // ── animate_handle (s288 m1) ───────────────────────────────────────────
+  // BANKED but compiled in. m1's literal-mouse-drag-impersonation approach
+  // turned out to be the wrong architecture for the welcome demo (the
+  // Node-tool overlay gates on selection state, which makes script-minted
+  // paths invisible during animation). m2 supersedes with theatre: the
+  // WelcomeAnimator's phantom overlay (see below). This method is kept
+  // as a primitive for future edit-style beats — e.g. a color picker
+  // slider that visibly drags during Phase 2 — but is not invoked by the
+  // welcome-demo spine.
+  void animate_handle(SceneNode* path, int node_idx,
+                      HitResult::Kind which,
+                      Vec2 start, Vec2 end,
+                      double duration_ms);
+
+  // ── Welcome demo (s288 m2) ─────────────────────────────────────────────
+  // Kick off a Pen-path performance: a phantom-overlay animation that
+  // simulates the Pen tool building one path anchor-by-anchor, then
+  // commits a real Path SceneNode at the end. The actual heavy lifting
+  // lives in animation::WelcomeAnimator; this method is a thin entry
+  // point that resolves the active doc/layer from m_doc and forwards.
+  //
+  // Returns immediately; the animation runs asynchronously via a
+  // Glib::Timeout owned by the animator. See animation/WelcomeAnimator.hpp
+  // for the full architecture and m2 scope.
+  void welcome_enact_pen_path(const std::string& d_string, double speed);
+
+  // ── Welcome demo SVG orchestrator (s288 m3) ────────────────────────────
+  // Kick off a multi-path performance: parses an SVG file via Curvz's
+  // own SvgParser, enqueues one Pen-path performance per Path SceneNode
+  // found, plays them back-to-back with a small inter-path breath.
+  // Each committed Path lands with the SVG's original fill/stroke.
+  //
+  // Returns immediately; the orchestration runs asynchronously on the
+  // GTK main loop. Same thin-forwarder pattern as welcome_enact_pen_path.
+  void welcome_animate_svg_file(const std::string& svg_path, double speed);
 
   // ── Warp envelope drag (M4b) ─────────────────────────────────────────
   // Which part of an envelope is being dragged. None = not dragging.
@@ -1789,6 +1826,14 @@ private:
   // ── Pen tool state ───────────────────────────────────────────────────
   PenTool m_pen_tool;
   bool m_pen_closing = false;
+
+  // ── Welcome-demo animator (s288 m2) ──────────────────────────────────
+  // Phantom-overlay animation engine for the first-launch welcome
+  // ceremony. is_playing() gates the welcome-overlay branch in
+  // Canvas_draw.cpp's on_draw; when idle it costs nothing. Initialised
+  // in the Canvas ctor with `this` so the animator can call queue_draw
+  // per tick. See animation/WelcomeAnimator.hpp.
+  animation::WelcomeAnimator m_welcome_animator{this};
 
   // Line tool WIP state
   struct LineTool {

@@ -73,9 +73,13 @@
 
 namespace curvz::scripting {
 
-AppScriptable::AppScriptable(Curvz::MainWindow* main_window)
+AppScriptable::AppScriptable(Curvz::MainWindow* main_window,
+                             EnactPenPath  enact_pen_path,
+                             AnimateSvgFile animate_svg)
     : Scriptable("app")
-    , m_main_window(main_window) {
+    , m_main_window(main_window)
+    , m_enact_pen_path(std::move(enact_pen_path))
+    , m_animate_svg(std::move(animate_svg)) {
     // Registry registration happens in the Scriptable base ctor under
     // the name "app". MainWindow holds us as a member; the registry
     // entry lives for the window's lifetime. The MainWindow pointer
@@ -129,6 +133,85 @@ ScriptValue AppScriptable::invoke(std::string_view verb,
         return ScriptValue::text(s);
     }
 
+    // s288 m2 — `enact_pen_path "<d>" <speed>` verb. Kicks off a
+    // welcome-demo Pen-path performance via the m_enact_pen_path
+    // callback (MainWindow wires it to Canvas::welcome_enact_pen_path).
+    //
+    // Args (positional):
+    //   0  d_string : SVG-d attribute string in user-space (Y-up,
+    //                 bottom-left origin)
+    //   1  speed    : double, multiplier on beat durations (1.0 nominal)
+    //
+    // Returns immediately. The animation runs asynchronously on the
+    // main loop via Glib::Timeout owned by the WelcomeAnimator. The
+    // script's next line dispatches before the animation completes.
+    //
+    // Gift-shape graceful degradation: missing args, empty d-string,
+    // empty callback — all return ScriptValue::null() silently. No
+    // exception, no error dialog. The audience sees no animation
+    // rather than a broken state.
+    //
+    // This verb is m2's TESTING surface — the welcome demo's eventual
+    // shape is a single `app.animate_svg` verb that orchestrates many
+    // enact_pen_path calls (plus enact_color_pick, etc.) internally
+    // from a parsed SVG. m2 exposes the lower-level verb so the smoke
+    // can prove the Pen-path performance in isolation.
+    if (verb == "enact_pen_path") {
+        if (args.size() < 1) return ScriptValue::null();
+        if (!m_enact_pen_path) return ScriptValue::null();
+
+        std::string d_string;
+        if (args[0].kind == ValueKind::String) d_string = args[0].s;
+        if (d_string.empty()) return ScriptValue::null();
+
+        double speed = 1.0;
+        if (args.size() >= 2) {
+            if      (args[1].kind == ValueKind::Double) speed = args[1].d;
+            else if (args[1].kind == ValueKind::Int)
+                speed = static_cast<double>(args[1].i);
+        }
+        if (speed <= 0.0) speed = 1.0;
+
+        m_enact_pen_path(d_string, speed);
+        return ScriptValue::null();
+    }
+
+    // s288 m3 — `animate_svg "<path>" <speed>` verb. SVG orchestrator
+    // entry point. Same shape as enact_pen_path, different payload:
+    // arg 0 is a filesystem path to an SVG file (m3 takes literal
+    // filesystem paths; gresource-alias resolution is a future
+    // enhancement).
+    //
+    // The animator parses the SVG via Curvz's own SvgParser, walks
+    // the resulting temp doc tree, enqueues one Pen-path performance
+    // per Path SceneNode, and plays them back-to-back with a small
+    // inter-path breath. By orchestration end the doc has the SVG's
+    // paths rendered as committed SceneNodes with their original
+    // fill/stroke.
+    //
+    // Returns immediately. Same gift-shape graceful degradation as
+    // enact_pen_path — empty path, missing file, parse failure, no
+    // paths in the SVG: all silent no-ops.
+    if (verb == "animate_svg") {
+        if (args.size() < 1) return ScriptValue::null();
+        if (!m_animate_svg) return ScriptValue::null();
+
+        std::string svg_path;
+        if (args[0].kind == ValueKind::String) svg_path = args[0].s;
+        if (svg_path.empty()) return ScriptValue::null();
+
+        double speed = 1.0;
+        if (args.size() >= 2) {
+            if      (args[1].kind == ValueKind::Double) speed = args[1].d;
+            else if (args[1].kind == ValueKind::Int)
+                speed = static_cast<double>(args[1].i);
+        }
+        if (speed <= 0.0) speed = 1.0;
+
+        m_animate_svg(svg_path, speed);
+        return ScriptValue::null();
+    }
+
     // Unknown verb falls through to a structured error. Same shape
     // as the unknown-verb branches in proj / export Scriptables.
     throw std::runtime_error(
@@ -169,9 +252,13 @@ ScriptValue AppScriptable::query(std::string_view property) const {
 
 std::vector<std::string> AppScriptable::verbs() const {
     // s263 m2 / s263 m3 — two pure-read verbs.
+    // s288 m2 — added the welcome-demo Pen-path performance verb.
+    // s288 m3 — added the SVG orchestrator verb.
     return {
         "version",
         "gtk_version",
+        "enact_pen_path",
+        "animate_svg",
     };
 }
 
@@ -213,6 +300,19 @@ AppScriptable::context_mask(std::string_view verb) const {
         return ctx::Scripter | ctx::TestRunner;
     }
     if (verb == "gtk_version") {
+        return ctx::Scripter | ctx::TestRunner;
+    }
+    // s288 m2 — welcome-demo Pen-path performance. Scripter for
+    // interactive testing during dev (Scott runs it in the Scripter
+    // window during the welcome demo arc); TestRunner for headless
+    // smokes. Macro OUT: animation is wall-clock-dependent, replaying
+    // a recorded macro would land at unpredictable times and the
+    // recorded timing wouldn't be meaningful at replay.
+    if (verb == "enact_pen_path") {
+        return ctx::Scripter | ctx::TestRunner;
+    }
+    // s288 m3 — SVG orchestrator. Same rationale as enact_pen_path.
+    if (verb == "animate_svg") {
         return ctx::Scripter | ctx::TestRunner;
     }
     return ctx::all_three;

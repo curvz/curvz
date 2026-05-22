@@ -1,0 +1,172 @@
+# 66_anim_handle_pump — OPENS the welcome-demo animation arc (s288 m1).
+#
+# The welcome demo banked in HANDOFF.md s287→s288 ("Banked for end-of-
+# Curvz") needs a load-bearing primitive: a timed-motion pump that
+# drives a real model value toward a target over a duration, with the
+# canvas redrawing each frame. Every visible beat of the eventual
+# demo — anchor placement, handle extension, segment growth, opacity
+# crossfade, fade-delete — composes the same pump with a different
+# per-tick callback.
+#
+# m1 ships the primitive and proves it works on one handle of one
+# anchor. If the pump's timeout→mutate→redraw loop is smooth on this
+# minimal case, every subsequent welcome-demo milestone is structural
+# copies of the same pattern. If it isn't smooth — if there's a
+# redraw barrier, a signal-loop fight, a Canvas-update timing issue —
+# we find out on ~30 lines of script instead of after building 800
+# lines of orchestrator.
+#
+# ── Shape ────────────────────────────────────────────────────────────────
+#
+# The script:
+#   1. Switches to the Node tool (so handles are visibly rendered).
+#   2. Mints a test layer, activates it.
+#   3. Mints a Path object.
+#   4. Sets its path data to a single anchor at the page centre, with
+#      both handles initially collapsed at the anchor.
+#   5. Calls `animate_handle 0 "out" 200 200 2000` — drive the out-
+#      handle from (150, 150) to (200, 200) in user-space, over 2
+#      seconds.
+#   6. Script ends.
+#
+# After the script returns, the animation continues to run on the GTK
+# main loop via Glib::Timeout. Scott sees the out-handle slide
+# diagonally outward from the anchor over two seconds.
+#
+# ── No teardown ──────────────────────────────────────────────────────────
+#
+# Unlike most owns-its-conditions smokes, this one does NOT tear down
+# the layer / path / anchor at the end. The animation lives PAST the
+# script's natural end — the pump self-holds via shared_ptr into the
+# timeout closure, and tearing down the path mid-animation would
+# remove the model state the pump is writing into. (Per the verb's
+# defensive shape, this is safe — the pump's tick re-resolves by iid
+# and no-ops if the node is gone — but the visual result would be the
+# handle disappearing mid-slide, which masks whether the primitive
+# is working.)
+#
+# Scott manually closes the test layer (or just closes the doc) after
+# watching the animation complete. The smoke's purpose is the visual
+# channel — a convergent-evidence acceptance, not an asserts-pass
+# headcount.
+#
+# ── Three-channel acceptance ─────────────────────────────────────────────
+#
+# Trace channel: the script runs to completion without errors. All
+#   `objects new`, `set_path_data`, `animate_handle` dispatches show
+#   `ok`. No `error` lines.
+#
+# Visual channel (THE load-bearing channel for m1): Scott runs the
+#   script with the Scripter window's "Step" mode off (timed mode at
+#   default 50ms delay) so the script completes quickly. Then watches
+#   the canvas for ~2 seconds. The out-handle of the lone anchor
+#   slides diagonally from on-top-of-the-anchor (collapsed) to a
+#   visible up-and-to-the-right position. Motion is smooth, not
+#   stuttery. No flicker, no tearing, no visible model corruption.
+#
+# Build channel: Scott's compile.
+#
+# ── Why one anchor ───────────────────────────────────────────────────────
+#
+# A path with a single BezierNode is a degenerate case (no segments,
+# nothing to fill or stroke), but the Node tool's overlay renders the
+# anchor and its handles regardless. That's exactly what we need: the
+# visible artifact is the anchor + handle, not any geometry between
+# anchors. A two-anchor path would work too but introduces a second
+# variable (the segment growing as the handles change shape it).
+# Keep m1's variable count to one.
+#
+# ── Page-relative coords ─────────────────────────────────────────────────
+#
+# The smoke assumes the default new-document page size; the anchor at
+# (150, 150) lands roughly mid-page on most defaults. If the user
+# happens to have a smaller doc loaded, the anchor still places
+# correctly; only the visual centring is affected. The animation
+# from (150, 150) → (200, 200) is a 50-unit offset on each axis,
+# legible at any reasonable zoom.
+#
+# ── No sleep at end ──────────────────────────────────────────────────────
+#
+# Tempting to add `sleep 2500` at the end so the animation completes
+# before the script's done-marker fires. But the existing `sleep`
+# uses g_usleep, which BLOCKS the main loop — exactly what would
+# PREVENT the Glib::Timeout-driven animation from firing during the
+# sleep. A non-blocking `wait` verb is backlog (logged on s288 m1
+# close); m1 lets the animation run past script-end.
+#
+# ── Verbs exercised ──────────────────────────────────────────────────────
+#
+# `tb_nod click`              — toolbar tool selection (substrate)
+# `layers new` + `activate`   — layer mint (s225 et al.)
+# `objects new "path"`        — Path mint (s231 m2)
+# `objects.<iid> set_path_data` — geometry seed (s236 m1)
+# `objects.<iid> animate_handle` — THE NEW VERB (s288 m1)
+
+#[sub] === Phase 1: Switch to Node tool ===
+#[sub] Make handles visible by selecting the Node tool. Without this,
+#[sub] the canvas renders only the path's stroke/fill (here: nothing,
+#[sub] since the path has no segments), and the handle's motion would
+#[sub] be invisible.
+
+tb_nod click
+assert tb_nod active == true
+
+#[sub] === Phase 2: BUILD UP — mint test layer ===
+
+layers new
+set test_layer to result
+layers.test_layer rename "anim_handle_pump_smoke_s288_m1"
+layers.test_layer activate
+
+#[sub] === Phase 3: BUILD UP — mint Path with one anchor ===
+#[sub] Single BezierNode at user-space (500, 500) — centre of a
+#[sub] 1000×1000 page. The d-string "M 500 500" parses to one
+#[sub] anchor with both handles collapsed at the anchor
+#[sub] (cx1=cy1=cx2=cy2=anchor.x/anchor.y). After s237 m1, user-
+#[sub] space coords land Y-flipped in doc-space.
+
+objects new "path"
+set p to result
+objects.p set_path_data "M 500 500"
+
+assert objects.p type == "path"
+assert objects.p node_count == 1
+
+#[sub] === Phase 4a: SEED — snap the out-handle to a visible start ===
+#[sub] A handle collapsed at its anchor (cx2 == anchor.x,
+#[sub] cy2 == anchor.y) draws nothing — the renderer sees "handle is
+#[sub] zero units from anchor" and the handle-dot overdraws the
+#[sub] anchor-dot with no line between them. To make the animation
+#[sub] visible from frame one, snap-seed the out-handle to (600, 600)
+#[sub] first — that's 100 user-units up-right of the anchor, so the
+#[sub] Node-tool overlay draws a visible handle line from (500, 500)
+#[sub] to (600, 600).
+#[sub]
+#[sub] Same animate_handle verb, with duration=0. MotionPump's
+#[sub] degenerate-duration branch fires one immediate tick at t=1.0
+#[sub] and returns — equivalent to a snap-set. No timeout installed,
+#[sub] no self-hold. The shape of the orchestration matches Phase 4b
+#[sub] below; only the duration differs.
+
+objects.p animate_handle 0 "out" 600 600 0
+
+#[sub] === Phase 4b: ANIMATE — slide the out-handle to a new target ===
+#[sub] Drive the out-handle from (600, 600) — its current position
+#[sub] after Phase 4a — to (800, 300) over 2000 ms. That's a 200-unit
+#[sub] X swing and a 300-unit Y swing, both unambiguous. The handle
+#[sub] line visibly rotates and lengthens as the tip moves.
+#[sub]
+#[sub] Visual expectation: at the moment Phase 4a runs, a handle line
+#[sub] appears from (500, 500) anchor to (600, 600) tip — pointing
+#[sub] up-right. Then over 2 seconds, the tip slides smoothly from
+#[sub] (600, 600) to (800, 300) — moving right AND down. The handle
+#[sub] line stays connected to the anchor at its base and rotates
+#[sub] downward as the tip moves.
+
+objects.p animate_handle 0 "out" 800 300 2000
+
+#[sub] === Script-end ===
+#[sub] Script returns here. Animation continues on the main loop.
+#[sub] Scott watches the handle slide for ~2 seconds, then has a
+#[sub] static anchor + extended out-handle in the test layer. No
+#[sub] teardown — closing the test layer or doc cleans up.

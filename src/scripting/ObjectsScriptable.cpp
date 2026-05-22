@@ -1176,11 +1176,13 @@ public:
     ObjectProxy(ObjectsScriptable::ProjectGetter get_project,
                 Curvz::CommandHistory* history,
                 ObjectsScriptable::NotifyDocChanged notify_doc_changed,
+                ObjectsScriptable::AnimateHandle animate_handle,
                 std::string iid)
         : Scriptable(unregistered)
         , m_get_project(std::move(get_project))
         , m_history(history)
         , m_notify_doc_changed(std::move(notify_doc_changed))
+        , m_animate_handle(std::move(animate_handle))
         , m_iid(std::move(iid)) {}
 
     ScriptValue invoke(std::string_view verb,
@@ -1254,6 +1256,15 @@ private:
                                                      // mutating verb. May be
                                                      // empty; refresh step
                                                      // silently skips.
+    ObjectsScriptable::AnimateHandle    m_animate_handle;  // s288 m1 —
+                                                     // welcome-demo animation
+                                                     // callback. Routes the
+                                                     // animate_handle verb to
+                                                     // Canvas::animate_handle
+                                                     // via MainWindow's
+                                                     // lambda. May be empty;
+                                                     // verb is a silent
+                                                     // no-op in that case.
     std::string                         m_iid;
 };
 
@@ -1409,6 +1420,89 @@ ScriptValue ObjectProxy::invoke(std::string_view verb,
             m_history->push(std::move(cmd));
         }
         notify_doc_changed();
+        return ScriptValue::null();
+    }
+
+    // ── animate_handle <node_index> <which> <x> <y> <ms> (s288 m1) ───────
+    //
+    // OPENS the welcome-demo animation arc. Args (all positional):
+    //   0  node_index : int     — index into node->path->nodes
+    //   1  which      : string  — "in" or "out"
+    //   2  target_x   : double  — user-space X of the final handle pos
+    //   3  target_y   : double  — user-space Y of the final handle pos
+    //   4  duration_ms: double  — animation duration in milliseconds
+    //
+    // The verb resolves the target node, reads the current handle
+    // position (the animation's `start`), flips the target to doc-
+    // space, and hands the gesture off to the m_animate_handle
+    // callback. MainWindow wires the callback to Canvas::animate_handle
+    // which owns the actual loop — entering the mouse-drag idiom at
+    // begin, writing per-frame through BezierPath::move_handle_*,
+    // leaving the idiom at end. The renderer sees identical state to
+    // a real mouse drag and animates the live handle line frame by
+    // frame.
+    //
+    // Why the verb doesn't do the loop directly: the renderer's Node-
+    // tool overlay branch only draws anchors+handles when m_selected
+    // == <the path>. A script-minted path is never auto-selected, so
+    // direct PathData mutation per tick from this verb produces no
+    // visible result. The fix is to use the same path a real drag
+    // uses — and the right home for that is Canvas, which owns the
+    // drag state.
+    //
+    // No-op early returns (verb dispatches OK but does nothing):
+    //   - args.size() < 5
+    //   - which is not "in" or "out"
+    //   - node->path == nullptr (non-Path types)
+    //   - node_index out of range
+    //   - m_animate_handle callback is empty (MainWindow didn't wire)
+    //
+    // Non-positive duration_ms passes through to Canvas::animate_handle
+    // which treats it as a snap (write end immediately, no timeout).
+    if (verb == "animate_handle") {
+        if (args.size() < 5) return ScriptValue::null();
+        if (!node->path) return ScriptValue::null();
+        if (!m_animate_handle) return ScriptValue::null();
+
+        int  node_idx    = (int)arg_as_double(args[0], -1.0);
+        auto which       = arg_as_string(args[1]);
+        double tx_user   = arg_as_double(args[2], 0.0);
+        double ty_user   = arg_as_double(args[3], 0.0);
+        double duration  = arg_as_double(args[4], 0.0);
+
+        if (which != "in" && which != "out") return ScriptValue::null();
+        if (node_idx < 0
+            || node_idx >= (int)node->path->nodes.size()) {
+            return ScriptValue::null();
+        }
+
+        auto* proj = m_get_project ? m_get_project() : nullptr;
+        if (!proj) return ScriptValue::null();
+
+        // Read the start position from the live node, in doc-space
+        // (that's how the model stores). The handle in question is
+        // either cx1/cy1 (in-handle) or cx2/cy2 (out-handle).
+        const auto& bn = node->path->nodes[node_idx];
+        const bool is_in = (which == "in");
+        const double sx_doc = is_in ? bn.cx1 : bn.cx2;
+        const double sy_doc = is_in ? bn.cy1 : bn.cy2;
+
+        // User-space → doc-space Y-flip for the target. Mirrors the
+        // s237 m1 convention set_path_data adopted. find_doc_by_iid
+        // walks every doc to locate the owner and read canvas_height.
+        double tx_doc = tx_user;
+        double ty_doc = ty_user;
+        if (auto* owner = curvz::utils::find_doc_by_iid(*proj, m_iid)) {
+            double ch = (double)owner->canvas_height();
+            ty_doc = ch - ty_user;
+        }
+
+        // Hand off. The callback owns everything from here — Canvas
+        // re-resolves the SceneNode via the iid (the proxy is
+        // transient and may not survive the timeout loop), enters
+        // drag state, runs the timeout, leaves drag state.
+        m_animate_handle(m_iid, node_idx, is_in,
+                         sx_doc, sy_doc, tx_doc, ty_doc, duration);
         return ScriptValue::null();
     }
 
@@ -2610,6 +2704,15 @@ std::vector<std::string> ObjectProxy::verbs() const {
         // mutation precedes the push. Refuses on non-Path
         // node types (silent no-op).
         "set_path_data",
+        // s288 m1 — first timed-motion verb on ObjectProxy. Drives a
+        // single BezierNode handle (in or out) from its current
+        // position to a target over a duration. Routes through the
+        // m_animate_handle callback to Canvas::animate_handle which
+        // owns the timeout loop and the drag-idiom impersonation.
+        // NO undo entry — animation is presentation, not edit.
+        // Refuses on non-Path / out-of-range index / unknown handle
+        // token / empty callback (silent no-op each).
+        "animate_handle",
         // s238 m1 — appearance-bearing mutating verb. Pushes
         // EditAppearanceCommand (whole-FillStyle replace plus
         // swatch-id / bound-style break-on-override capture;
@@ -2724,11 +2827,13 @@ std::vector<std::string> ObjectProxy::properties() const {
 
 ObjectsScriptable::ObjectsScriptable(ProjectGetter get_project,
                                      Curvz::CommandHistory* history,
-                                     NotifyDocChanged notify_doc_changed)
+                                     NotifyDocChanged notify_doc_changed,
+                                     AnimateHandle animate_handle)
     : Scriptable("objects")
     , m_get_project(std::move(get_project))
     , m_history(history)
-    , m_notify_doc_changed(std::move(notify_doc_changed)) {
+    , m_notify_doc_changed(std::move(notify_doc_changed))
+    , m_animate_handle(std::move(animate_handle)) {
     // Registry registration happens in the Scriptable base ctor under
     // the name "objects". MainWindow holds us as a member; the
     // registry entry lives for the window's lifetime.
@@ -2749,6 +2854,7 @@ ObjectsScriptable::proxy_for(std::string_view key) {
     if (!can_resolve(key)) return nullptr;
     return std::make_unique<ObjectProxy>(m_get_project, m_history,
                                          m_notify_doc_changed,
+                                         m_animate_handle,
                                          std::string(key));
 }
 

@@ -3693,6 +3693,38 @@ void Canvas::set_selection_single(SceneNode *node) {
   notify_object_selection_changed();
 }
 
+// ── Canvas::welcome_enact_pen_path (s288 m2) ─────────────────────────────
+// Thin forwarder to the WelcomeAnimator member. Resolves active doc and
+// active layer from m_doc (the animator can't see m_doc directly — it's
+// private — but Canvas knows how to find both). The animator does
+// everything else: parses the d-string, builds the beat list, runs the
+// timeout, commits at end.
+void Canvas::welcome_enact_pen_path(const std::string& d_string,
+                                    double speed) {
+  if (!m_doc) return;
+  SceneNode* layer = m_doc->active_layer();
+  if (!layer && !m_doc->layers.empty()) {
+    layer = m_doc->layers[0].get();
+  }
+  if (!layer) return;
+  m_welcome_animator.enact_pen_path(d_string, speed, m_doc, layer);
+}
+
+// ── Canvas::welcome_animate_svg_file (s288 m3) ─────────────────────────
+// Sibling thin forwarder for the SVG orchestrator entry point. Resolves
+// active doc + layer from m_doc; the animator does the rest (parses,
+// enqueues, plays the queue back-to-back).
+void Canvas::welcome_animate_svg_file(const std::string& svg_path,
+                                      double speed) {
+  if (!m_doc) return;
+  SceneNode* layer = m_doc->active_layer();
+  if (!layer && !m_doc->layers.empty()) {
+    layer = m_doc->layers[0].get();
+  }
+  if (!layer) return;
+  m_welcome_animator.animate_svg_file(svg_path, speed, m_doc, layer);
+}
+
 // s161 split: path_anchor_bbox moved here from Canvas_ops.cpp.
 //   Original Canvas.cpp routed it to OPS, but its sole caller
 //   subtree_path_bbox is in CORE. Keep call site in-TU.

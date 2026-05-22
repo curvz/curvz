@@ -45,6 +45,7 @@
 #include <glibmm/main.h>
 #include <gtkmm/gestureclick.h>
 #include <limits>
+#include <memory>     // s288 m1 — shared_ptr for animate_handle's keepalive token
 #include <numeric>
 #include <set>
 #include <string>
@@ -7298,6 +7299,190 @@ void Canvas::cancel_guide_drag() {
   m_guide_drag_node = nullptr;
   m_guide_drag_active = false;
   queue_draw();
+}
+
+// ── Canvas::animate_handle (s288 m1) ─────────────────────────────────────
+//
+// Programmatically drives a single BezierNode handle from start to end
+// over duration_ms, by impersonating the mouse-drag state machine. The
+// renderer doesn't know or care whether m_node_drag_kind was set by
+// on_node_begin (a real mouse-down on a handle) or by this method (a
+// scripted animation); it draws the live handle line the same way in
+// both cases. That's the whole point of using the existing drag idiom —
+// the visible state IS what a real drag would show, because it IS what
+// a real drag uses.
+//
+// Begin → set the same fields on_node_begin sets for a handle grab:
+//   - m_selected (the path)
+//   - m_selection (single-element vector)
+//   - m_selected_node (the BezierNode index)
+//   - m_node_drag_kind (HandleIn or HandleOut)
+//   - m_node_drag_before (snapshot of the pre-drag PathData — required
+//     because some downstream invariants read it, e.g. the shift-axis
+//     constraint at line ~6311. The animation doesn't take that path
+//     but the field still has to be a valid snapshot.)
+//   - m_node_drag_started = true (the gate the per-frame update logic
+//     reads to know a drag is in progress; if false, the per-frame
+//     write would be ignored as pre-drag noise.)
+//
+// Tick → write the interpolated handle position via the exact same
+//   BezierPath::move_handle_in/out + back-assign shape on_node_update
+//   uses (line ~6339). Emit m_sig_node_changed so the inspector tracks
+//   the live handle. queue_draw to invalidate the canvas; GTK redraws
+//   the dirty region from scratch — the "clear" half of "draw, clear,
+//   draw" is implicit, owned by GTK.
+//
+// End → clear m_node_drag_kind back to None and m_node_drag_started
+//   back to false. Selection persists (a user finishing a drag still
+//   has the path selected); the animation leaves the user looking at
+//   the post-animation state with the path selected and the Node tool
+//   active, ready to be the start state for the next animated beat.
+//
+// NO undo entry. The animation is presentation, not edit. The mouse-
+// drag path pushes EditPathCommand on on_node_end (line ~6453); this
+// method skips that push deliberately. A 235-anchor welcome with ~3
+// handle moves per anchor would otherwise pollute the undo stack with
+// ~50,000 entries from one user-perceived gesture.
+//
+// Self-holding loop: the Glib::Timeout's lambda captures a shared_ptr
+// to a keepalive struct that holds the per-animation state. The lambda
+// owns the struct via the timeout's lifetime; when the loop ends
+// (returns false), the struct is destroyed. The Canvas itself doesn't
+// hold a reference to the loop — that's fine because Canvas outlives
+// any reasonable animation, and a re-entry to this method while one
+// is in flight just starts a parallel animation (last-writer-wins
+// per tick). m1 doesn't need cancellation; if welcome orchestration
+// later wants it, the keepalive struct gains a cancel flag and Canvas
+// holds a weak_ptr to it.
+//
+// Non-positive duration_ms is a snap: write end once and return, no
+// timeout installed. Lets callers share the call shape across timed
+// and instant beats.
+void Canvas::animate_handle(SceneNode* path, int node_idx,
+                            HitResult::Kind which,
+                            Vec2 start, Vec2 end,
+                            double duration_ms) {
+    if (!path || !path->path) return;
+    if (node_idx < 0
+        || node_idx >= (int)path->path->nodes.size()) return;
+    if (which != HitResult::Kind::HandleIn
+        && which != HitResult::Kind::HandleOut) return;
+
+    // Snap case: write end once and return. Caller is using the
+    // animate_handle call shape but wants instant. No drag-state
+    // setup (the drag begins and ends in the same frame — there's
+    // nothing for the renderer to animate, just write the final
+    // value and let the next paint pick it up).
+    if (duration_ms <= 0.0) {
+        BezierPath bp = BezierPath::from_path_data(*path->path);
+        if (which == HitResult::Kind::HandleIn)
+            bp.move_handle_in(node_idx, end);
+        else
+            bp.move_handle_out(node_idx, end);
+        *path->path = bp.to_path_data();
+        m_sig_node_changed.emit(path, node_idx);
+        queue_draw();
+        return;
+    }
+
+    // ── Begin: enter the drag state so the renderer treats this path
+    //    and node as the active drag target. set_selection_single
+    //    folds in notify_object_selection_changed which propagates to
+    //    the inspector and selection-context cascade — same as a
+    //    user clicking the path then beginning a handle drag.
+    set_selection_single(path);
+    m_selected_node     = node_idx;
+    m_node_drag_kind    = which;
+    m_node_drag_before  = *path->path;  // snapshot — invariant for
+                                        // shift-axis constraint reads
+                                        // even when shift isn't held
+    m_node_drag_started = true;
+
+    // ── Loop: capture the per-animation state in a shared struct
+    //    so the lambda owns it across timeout invocations. A bare
+    //    capture of `start`/`end` would work but bundling makes the
+    //    closure smaller and the next addition (e.g. easing function,
+    //    cancel flag) drops in trivially.
+    struct AnimState {
+        SceneNode*       path;
+        int              node_idx;
+        HitResult::Kind  which;
+        Vec2             start;
+        Vec2             end;
+        double           duration_ms;
+        std::chrono::steady_clock::time_point t_start;
+    };
+    auto st = std::make_shared<AnimState>();
+    st->path        = path;
+    st->node_idx    = node_idx;
+    st->which       = which;
+    st->start       = start;
+    st->end         = end;
+    st->duration_ms = duration_ms;
+    st->t_start     = std::chrono::steady_clock::now();
+
+    // 60fps target — 16ms tick interval is the standard frame budget;
+    // close enough to 1/60s that the cadence reads as smooth on any
+    // reasonable display. The loop derives t from wall-clock elapsed
+    // (not tick count) so a stutter — long redraw, GC pause — still
+    // lands at the correct t when the next tick fires. Duration is
+    // the contract; smoothness is best-effort.
+    Glib::signal_timeout().connect(
+        [this, st]() -> bool {
+            const auto now = std::chrono::steady_clock::now();
+            const double elapsed_ms =
+                std::chrono::duration<double, std::milli>(
+                    now - st->t_start).count();
+            double t = elapsed_ms / st->duration_ms;
+            bool finished = (t >= 1.0);
+            if (finished) t = 1.0;
+
+            // Defensive re-check: the path could have been deleted
+            // between ticks (user closed doc, undo wiped it). The
+            // existing on_node_update has no such check because the
+            // mouse-event surface can't outlive its target — m_selected
+            // is cleared on selection change. Our timeout CAN outlive
+            // its target, so we re-validate.
+            if (!st->path || !st->path->path) {
+                // Bail. Don't try to clear the drag state — m_selected
+                // may already be pointing at someone else's path now.
+                return false;
+            }
+            if (st->node_idx < 0
+                || st->node_idx >= (int)st->path->path->nodes.size()) {
+                return false;
+            }
+
+            // Interpolate. Linear easing in m1; pluggable easing is
+            // a later milestone.
+            const double x = st->start.x + (st->end.x - st->start.x) * t;
+            const double y = st->start.y + (st->end.y - st->start.y) * t;
+
+            // Write through the same idiom on_node_update uses. The
+            // BezierPath round-trip looks heavy at 60fps for a single-
+            // node edit, but it's how the rest of the codebase keeps
+            // its invariants (smooth-pair constraints, etc.) — going
+            // around it would risk subtle divergence between this
+            // animation and a real drag.
+            BezierPath bp = BezierPath::from_path_data(*st->path->path);
+            if (st->which == HitResult::Kind::HandleIn)
+                bp.move_handle_in(st->node_idx, Vec2{x, y});
+            else
+                bp.move_handle_out(st->node_idx, Vec2{x, y});
+            *st->path->path = bp.to_path_data();
+
+            m_sig_node_changed.emit(st->path, st->node_idx);
+            queue_draw();
+
+            if (finished) {
+                // ── End: clear drag state. Selection persists.
+                m_node_drag_kind    = HitResult::Kind::None;
+                m_node_drag_started = false;
+                return false;  // stop timeout
+            }
+            return true;  // continue
+        },
+        16);
 }
 
 } // namespace Curvz

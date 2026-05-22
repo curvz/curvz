@@ -194,6 +194,7 @@
 #include "ScriptValue.hpp"
 #include "RunContext.hpp"
 
+#include <functional>   // s288 m2 — EnactPenPath callback type
 #include <string>
 #include <string_view>
 #include <vector>
@@ -206,6 +207,21 @@ namespace curvz::scripting {
 
 class AppScriptable : public Scriptable {
 public:
+    // s288 m2 — welcome-demo Pen-path performance callback. The
+    // enact_pen_path verb routes through this; MainWindow wires it to
+    // a lambda that calls Canvas::welcome_enact_pen_path. May be empty;
+    // the verb is a silent no-op in that case (gift-shape graceful
+    // degradation — the audience sees nothing rather than an error).
+    using EnactPenPath = std::function<void(const std::string& d_string,
+                                            double speed)>;
+
+    // s288 m3 — welcome-demo SVG orchestrator callback. The animate_svg
+    // verb routes through this; MainWindow wires it to a lambda that
+    // calls Canvas::welcome_animate_svg_file. Same shape as EnactPenPath
+    // — May be empty (silent no-op).
+    using AnimateSvgFile = std::function<void(const std::string& svg_path,
+                                              double speed)>;
+
     // Registers as "app" via the Scriptable base ctor.
     // `main_window` is non-owning; the Scriptable is held as a member
     // of MainWindow and destroyed in MainWindow's dtor, so the pointer
@@ -213,7 +229,14 @@ public:
     // (both verbs read process-scope state, not MainWindow state) but
     // kept in the ctor signature for symmetry with proj / export and
     // for future verbs that will need it.
-    explicit AppScriptable(Curvz::MainWindow* main_window);
+    //
+    // s288 m2 — second ctor arg: EnactPenPath callback for the
+    // welcome-demo arc's first beat verb.
+    // s288 m3 — third ctor arg: AnimateSvgFile callback for the
+    // SVG-orchestrator verb.
+    explicit AppScriptable(Curvz::MainWindow* main_window,
+                           EnactPenPath  enact_pen_path  = {},
+                           AnimateSvgFile animate_svg    = {});
     ~AppScriptable() override = default;
 
     ScriptValue invoke(std::string_view verb,
@@ -243,6 +266,15 @@ public:
 
 private:
     Curvz::MainWindow* m_main_window;
+    EnactPenPath       m_enact_pen_path;  // s288 m2 — welcome-demo
+                                          // Pen-path performance hook.
+                                          // Routes to Canvas via
+                                          // MainWindow lambda. May be
+                                          // empty (silent no-op).
+    AnimateSvgFile     m_animate_svg;     // s288 m3 — SVG-orchestrator
+                                          // hook. Routes to Canvas via
+                                          // MainWindow lambda. May be
+                                          // empty (silent no-op).
 };
 
 } // namespace curvz::scripting

@@ -1,0 +1,85 @@
+# 67_welcome_pen_path — OPENS the welcome-demo theatre arc (s288 m2).
+#
+# m1 (Canvas::animate_handle) proved the timeout→write→redraw loop works
+# for editing an existing handle. m2 takes a different shape: THEATRE.
+# The audience sees what looks like the Pen tool building a path, but
+# nothing real is touched until the very end. The performance is staged
+# entirely on a phantom overlay layer that the WelcomeAnimator owns;
+# at the final tick, ONE real Path SceneNode is committed.
+#
+# ── Shape ────────────────────────────────────────────────────────────────
+#
+# The script:
+#   1. Asserts the new verb is in the `app` Scriptable's verb list.
+#   2. Calls `app enact_pen_path "<d>" 1.0` — kicks off a Pen-path
+#      performance over a hand-coded 5-anchor closed shape centred on
+#      the test page.
+#   3. Script ends.
+#
+# After the script returns, the WelcomeAnimator's Glib::Timeout runs the
+# performance on the main loop. Scott watches the canvas for ~2 seconds
+# as anchors appear (scale-in), out-handles extend, segments grow
+# between them, the path closes, and at the end a real Path SceneNode
+# materialises in the active layer (outline-only — no fill or stroke
+# yet; that's Phase-2 work for a future milestone).
+#
+# ── No teardown ──────────────────────────────────────────────────────────
+#
+# Like the m1 smoke, this one does NOT tear down the layer. The
+# animation lives past the script's natural end. Scott manually cleans
+# up by closing the test layer or doc.
+#
+# ── Three-channel acceptance ─────────────────────────────────────────────
+#
+# Trace channel: script runs to completion without errors. The verb
+#   surface check passes; the enact_pen_path call dispatches "ok".
+#
+# Visual channel (THE load-bearing channel for m2): Scott sees a
+#   sequence of phantom anchor squares appear on the canvas, each
+#   with its handle extending outward from the anchor, with a Bezier
+#   segment growing from the previous anchor to it. The motion is
+#   smooth, not stuttery. At the end of the performance, the phantoms
+#   clear and a real outlined path is left on the canvas in their
+#   place. The shape resembles the d-string's intended geometry: a
+#   5-anchor closed curve roughly centred on the page.
+#
+# Build channel: Scott's compile.
+#
+# ── Hand-coded test geometry ─────────────────────────────────────────────
+#
+# A simple 5-anchor closed curvy shape in user-space (Y-up, bottom-
+# left origin). Centred near (500, 500) on a 1000×1000 page, with
+# anchors arranged in a star-like configuration so the path-closing
+# segment is unambiguously visible. Each anchor has out-handles
+# pointing outward to make the lever lines obvious.
+#
+# Anchor 0: (500, 700) — top, handle out to (600, 700)
+# Anchor 1: (700, 550) — upper right, handle out to (700, 450)
+# Anchor 2: (600, 350) — lower right, handle out to (500, 350)
+# Anchor 3: (400, 350) — lower left, handle out to (300, 450)
+# Anchor 4: (300, 550) — upper left, handle out to (400, 700)
+# Close → back to anchor 0
+#
+# d-string composed by hand from these anchors with cubic Bezier
+# segments. Each C command has 3 coords: control-1 (out-handle of
+# previous), control-2 (in-handle of current), endpoint (anchor).
+# Z closes the path.
+
+#[sub] === Phase 1: Verb surface check ===
+#[sub] List registered Scriptables — `app` should appear in the list.
+#[sub] The trace shows the verb list per Scriptable; visual inspection
+#[sub] confirms enact_pen_path is present under `app`.
+
+list
+
+#[sub] === Phase 2: Kick off the performance ===
+#[sub] Single d-string arg + speed multiplier. Returns immediately;
+#[sub] the animation runs asynchronously on the GTK main loop via
+#[sub] Glib::Timeout. Script ends after this line — Scott watches
+#[sub] the canvas for the next ~2 seconds.
+
+app enact_pen_path "M 500 700 C 600 700 700 650 700 550 C 700 450 650 400 600 350 C 500 350 400 350 400 350 C 300 450 300 450 300 550 C 400 700 400 700 500 700 Z" 1.0
+
+#[sub] === Script-end ===
+#[sub] Animation continues on the main loop. Phantoms appear, then
+#[sub] resolve to a real Path SceneNode at the end of the performance.

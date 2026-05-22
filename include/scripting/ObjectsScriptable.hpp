@@ -628,6 +628,84 @@
 // known type) and bind an iid; `find_by_iid` would be a no-op
 // (iid in, iid out).
 //
+// s288 m1 — OPENS the welcome-demo animation arc. Adds the first
+// timed-motion verb on ObjectProxy: `animate_handle <node_index>
+// <which> <target_x> <target_y> <duration_ms>`. Drives a single
+// BezierNode in-handle or out-handle from its current position to a
+// target position over a duration, tick-by-tick, with the canvas
+// redrawing each frame.
+//
+// The verb is the first of a family. The welcome demo's "Curvz draws
+// itself" choreography (see HANDOFF.md s287→s288 "Banked for end-of-
+// Curvz") needs per-beat real model mutations on the live document:
+// anchor placement, handle extension, segment growth, view-mode
+// crossfade, fade-delete. m1 ships handle-extension as the load-
+// bearing primitive — if the timeout→mutate→redraw loop works
+// smoothly on one real handle of one real path, every subsequent
+// beat in the family is structural copies of the same pattern.
+//
+// ── Routing ──────────────────────────────────────────────────────────────
+//
+// The actual animation loop lives on Canvas, not in this Scriptable.
+// Canvas owns the drag idiom (m_selected, m_selected_node,
+// m_node_drag_kind), the Glib::Timeout loop, the per-frame writes,
+// and the queue_draw cascade. The verb's role is parameter
+// resolution: it takes the script-facing args, looks up the node by
+// iid, reads the current handle position as the start, flips the
+// target user-space coords to doc-space, and routes through a new
+// AnimateHandle callback in this Scriptable's ctor. MainWindow
+// supplies the callback; MainWindow's lambda calls
+// Canvas::animate_handle. The Scriptable stays decoupled from
+// Canvas — same posture notify_doc_changed established.
+//
+// ── Why route through Canvas instead of mutating the model directly ──────
+//
+// First draft tried direct PathData mutation per timeout tick from
+// the verb body. The trace passed (the BezierNode's cx2/cy2 values
+// did update each tick) but nothing was visible on canvas. The Node-
+// tool overlay branch in Canvas_draw.cpp draws anchors+handles ONLY
+// when m_selected == <the path>. A script-minted path is never
+// auto-selected, so the overlay had nothing to draw and the path
+// itself had no fill or stroke to render as fallback.
+//
+// The fix isn't "set m_selected on the side." The right shape is
+// "use the same code path a real drag uses." A user dragging a
+// handle has m_selected set, m_node_drag_kind set to HandleIn or
+// HandleOut, m_selected_node set to the BezierNode index, and the
+// per-frame write happens through BezierPath::move_handle_*. The
+// renderer doesn't know or care whether mouse events or a timeout
+// is driving that state. So Canvas::animate_handle impersonates the
+// drag — enters drag state at begin, writes through the existing
+// per-frame idiom at each tick, leaves drag state at end. The
+// renderer sees identical state to a real drag and draws the live
+// handle line frame by frame, no new render branch needed.
+//
+// ── User-space args ──────────────────────────────────────────────────────
+//
+// The verb's target coords are user-space (Y-up, origin at bottom-
+// left of artboard), same convention set_path_data adopted in s237
+// m1. The flip to doc-space happens once at verb entry via the
+// per-doc canvas_height; the callback receives doc-space coords;
+// Canvas operates in doc-space throughout.
+//
+// ── No undo entry ────────────────────────────────────────────────────────
+//
+// Animation is presentation, not edit; the per-tick writes would
+// otherwise flood the undo stack. The proxy's m_history pointer is
+// not touched by this verb; Canvas::animate_handle also skips the
+// EditPathCommand push that on_node_end does at the end of a real
+// drag.
+//
+// ── Returns immediately ──────────────────────────────────────────────────
+//
+// The verb returns as soon as the callback dispatches. The animation
+// runs asynchronously on the GTK main loop via the Canvas-owned
+// Glib::Timeout; the script's next line dispatches before the
+// animation completes. Multi-beat orchestration needs a future non-
+// blocking wait verb between beats — the existing `sleep` uses
+// g_usleep which blocks the main loop and would freeze the
+// animation. Logged on backlog.
+//
 // ── Diagnostic-only ──────────────────────────────────────────────────────
 //
 // This header is included only from .cpp files compiled in the
@@ -658,6 +736,30 @@ public:
     using ProjectGetter    = std::function<Curvz::CurvzProject*()>;
     using NotifyDocChanged = std::function<void()>;
 
+    // s288 m1 — animate-handle callback. The verb body in
+    // ObjectProxy::invoke resolves the target node, computes
+    // doc-space start/end positions, and hands the gesture to
+    // MainWindow's lambda which routes to Canvas::animate_handle.
+    // The Scriptable stays decoupled from Canvas / SceneNode pointer
+    // ownership; the lambda Knows How.
+    //
+    // Arguments mirror Canvas::animate_handle's surface, with
+    // SceneNode* replaced by `iid` (the lambda re-resolves the
+    // pointer through the project for the same outlive-the-proxy
+    // reasons notify_doc_changed has). `is_in` is true for the
+    // BezierNode's in-handle, false for the out-handle — flatter
+    // shape than passing HitResult::Kind enum across the Scriptable
+    // boundary.
+    using AnimateHandle = std::function<void(
+        const std::string& iid,
+        int                node_idx,
+        bool               is_in,
+        double             start_x_doc,
+        double             start_y_doc,
+        double             end_x_doc,
+        double             end_y_doc,
+        double             duration_ms)>;
+
     // Registers as "objects" via the Scriptable base ctor. The project
     // getter is called fresh on every verb invocation — never cached —
     // so MainWindow can swap its m_project unique_ptr freely (open
@@ -684,9 +786,17 @@ public:
     // external mutators (mirrors s227 m1's themes_refresh_cascade).
     // May be nullptr; verbs silently skip the refresh step in that
     // case (same graceful-degradation shape as the history pointer).
+    //
+    // `animate_handle` is the s288 m1 welcome-demo animation hook.
+    // The animate_handle verb on ObjectProxy routes through this
+    // callback; MainWindow wires it to a lambda that resolves the
+    // iid to a SceneNode and calls Canvas::animate_handle. May be
+    // empty; the verb silently skips the call in that case (same
+    // graceful-degradation as notify_doc_changed / history).
     ObjectsScriptable(ProjectGetter get_project,
                       Curvz::CommandHistory* history,
-                      NotifyDocChanged notify_doc_changed = {});
+                      NotifyDocChanged notify_doc_changed = {},
+                      AnimateHandle animate_handle = {});
     ~ObjectsScriptable() override = default;
 
     ScriptValue invoke(std::string_view verb,
@@ -719,6 +829,15 @@ private:
                                         // can fire the cascade too.
                                         // May be empty; verbs skip the
                                         // refresh step in that case.
+    AnimateHandle          m_animate_handle;  // s288 m1 — welcome-demo
+                                        // animation hook. Threaded
+                                        // into ObjectProxy via the
+                                        // proxy ctor so the
+                                        // animate_handle verb can
+                                        // route through MainWindow to
+                                        // Canvas::animate_handle.
+                                        // May be empty; verb is a
+                                        // silent no-op in that case.
 };
 
 } // namespace curvz::scripting
