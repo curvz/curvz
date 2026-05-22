@@ -5,22 +5,27 @@
 //
 //   • Preset mode (default) — 9 toggle points laid out on a 3x3 grid:
 //     NW N NE / W C E / SW S SE. The 4 corners + 4 edge midpoints +
-//     center. The X/Y inputs are read-only and show the computed
+//     center. The X/Y inputs are editable and show the computed
 //     (doc-x, doc-y) for the picked preset against the current bbox.
 //     X/Y refresh live as set_bbox() changes the source rectangle.
 //
-//   • Arbitrary mode (checkbox checked) — the preset grid greys out
-//     and becomes click-deaf; X/Y inputs become editable. The user
-//     types literal doc coordinates which the widget reports verbatim,
+//   • Arbitrary mode — entered implicitly when the user types into the
+//     X or Y spinner. The preset grid greys out and deselects (no dot
+//     highlighted); the user's typed values are reported verbatim,
 //     independent of the bbox.
 //
+// s286 — there is no UI checkbox to toggle modes. Mode is inferred
+// from the user's last action: click a preset → Preset; type a number
+// → Arbitrary. The Mode enum, set_mode(), signal_mode_changed, and
+// the `set_checkbox` script verb are all retained for the scripting /
+// signal surface; the change is purely UI.
+//
 // Opaque inside, public action outside. Internally owns a DrawingArea
-// (the 9-grid), a CheckButton (mode toggle), two CurvzSpinButtons
-// (unit-aware X/Y), and an internal Box hierarchy for layout. NONE of
-// these children register with the scriptable registry — only the
-// composite itself does. Scripts see one widget name with one verb
-// table; the internal pieces are implementation detail. The composite
-// is the script object.
+// (the 9-grid), two CurvzSpinButtons (unit-aware X/Y), and an internal
+// Box hierarchy for layout. NONE of these children register with the
+// scriptable registry — only the composite itself does. Scripts see
+// one widget name with one verb table; the internal pieces are
+// implementation detail. The composite is the script object.
 //
 // State remembered across mode flips:
 //   - Last picked preset persists when the user switches to Arbitrary
@@ -39,7 +44,6 @@
 #include "scripting/ScriptableWidget.hpp"
 
 #include <gtkmm/box.h>
-#include <gtkmm/checkbutton.h>
 #include <gtkmm/drawingarea.h>
 #include <gtkmm/label.h>
 
@@ -129,7 +133,11 @@ private:
   // *this (the Gtk::Box). None of these are scriptable in their own
   // right. The composite IS the script object.
   Gtk::DrawingArea m_grid_area;
-  Gtk::CheckButton m_arbitrary_chk;
+  // s286: Arbitrary checkbox removed from the UI. Mode is now inferred
+  // implicitly: clicking a preset → Preset; typing into X/Y → Arbitrary.
+  // The Mode enum, set_mode(), signal_mode_changed, and the
+  // `set_checkbox` script verb all remain — the scripting / signal
+  // surface is preserved.
   Gtk::Label m_x_lbl;
   Gtk::Label m_y_lbl;
   Curvz::CurvzSpinButton *m_sp_x = nullptr;
@@ -159,7 +167,6 @@ private:
   double preset_doc_y(Preset p) const;
   bool pixel_to_preset(double px, double py, Preset *out_p) const;
   void refresh_xy_display();
-  void apply_mode_appearance();
   void on_grid_draw(const Cairo::RefPtr<Cairo::Context> &cr, int width,
                     int height);
   static const char *preset_name(Preset p);

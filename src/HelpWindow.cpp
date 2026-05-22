@@ -5,17 +5,34 @@
 
 #include <cmark.h>
 #include <gio/gio.h>
+#include <giomm/liststore.h>       // s287 — widget-index table model
 #include <gdkmm/texture.h>
+#include <gtkmm/box.h>             // s287 — widget-index filter bar
 #include <gtkmm/button.h>          // s129 m7 — flat-button leaf rows
+#include <gtkmm/columnview.h>      // s287 — widget-index table
+#include <gtkmm/columnviewcolumn.h>// s287 — widget-index columns
+#include <gtkmm/dropdown.h>        // s287 — widget-index facet dropdowns
 #include <gtkmm/eventcontrollerkey.h>  // s132 m1 — Ctrl+F focuses search
+#include <gtkmm/filter.h>          // s287 — Gtk::Filter base for LambdaFilter
+#include <gtkmm/filterlistmodel.h> // s287 — widget-index filter pipeline
 #include <gtkmm/frame.h>
 #include <gtkmm/gestureclick.h>    // s129 m7 — click-toggle on header rows
 #include <gtkmm/image.h>           // s131 v4 — fixed-size icon for headings
 #include <gtkmm/label.h>
+#include <gtkmm/multifilter.h>     // s287 — Gtk::EveryFilter AND-combine
+#include <gtkmm/noselection.h>     // s287 — widget-index read-only rows
 #include <gtkmm/picture.h>
+#include <gtkmm/scrolledwindow.h>  // s287 — widget-index scroll container
+#include <gtkmm/searchentry.h>     // s287 — widget-index live search
 #include <gtkmm/separator.h>
+#include <gtkmm/signallistitemfactory.h>  // s287 — widget-index cell factory
+#include <gtkmm/sorter.h>          // s287 — Gtk::Sorter base for LambdaSorter
+#include <gtkmm/sortlistmodel.h>   // s287 — widget-index click-sort
+#include <gtkmm/stringlist.h>      // s287 — widget-index dropdown models
 
+#include <algorithm>
 #include <cstring>
+#include <set>
 #include <sstream>
 
 namespace Curvz {
@@ -492,7 +509,548 @@ Gtk::Widget *make_image_block(const std::string &url, const std::string &alt) {
 
 } // namespace
 
-// ─── Construction ─────────────────────────────────────────────────────────
+// ─── Widget-index custom rendering (s287) ─────────────────────────────────
+//
+// The "Widget name index" leaf in Addendums -> Developer renders a 545-row
+// table sourced from widget_names.db. cmark base parses markdown tables as
+// pipe-text paragraphs (no table node type) and HelpWindow has no table
+// renderer, so a 545-row markdown table would flatten into a wall of text.
+//
+// Instead, the leaf ships a one-line HTML-block marker (
+// "<!-- WIDGET_INDEX_TABLE -->") in place of the table. When render_markdown
+// walks the cmark tree it detects that marker and substitutes a real
+// Gtk::ColumnView built directly from the .db file -- the same .db the
+// runtime WidgetNameResolver loads. Three facet controls above the table
+// (REF dropdown, Type dropdown, free-text search) AND-combine into a
+// Gtk::EveryFilter feeding a Gtk::FilterListModel; the four column headers
+// click-to-sort via Gtk::SortListModel. The widget is scoped by the CSS
+// classes `widget-index-toolbar` (filter bar) and `widget-index-grid`
+// (ColumnView) so styling does not leak to other help pages.
+
+namespace {
+
+// Row object — one per widget name in the DB. Gtk::ColumnView's model is a
+// Gio::ListModel of Glib::Objects; each cell factory reads its property
+// from the row object. Subclassing Glib::Object via Glib::ObjectBase keeps
+// the lifetime managed by Glib::RefPtr.
+class WidgetIndexRow : public Glib::Object {
+public:
+    Glib::ustring long_name;
+    Glib::ustring abbrev;
+    Glib::ustring type_name;
+    Glib::ustring ref_code;
+
+    static Glib::RefPtr<WidgetIndexRow> create(
+        const std::string& ln, const std::string& ab,
+        const std::string& ty, const std::string& rf) {
+        auto r = Glib::make_refptr_for_instance<WidgetIndexRow>(
+            new WidgetIndexRow());
+        r->long_name = ln;
+        r->abbrev = ab;
+        r->type_name = ty;
+        r->ref_code = rf;
+        return r;
+    }
+
+protected:
+    WidgetIndexRow() : Glib::ObjectBase(typeid(WidgetIndexRow)) {}
+};
+
+// LambdaFilter — gtkmm 4 doesn't expose Gtk::CustomFilter as a typed
+// wrapper (no customfilter.h on disk), so we subclass Gtk::Filter
+// directly. The lambda captures the filter state by shared_ptr; calling
+// notify_changed() on the adapter is the public form of the protected
+// Gtk::Filter::changed() trigger that re-runs the predicate across the
+// FilterListModel.
+//
+// Vfunc note: Filter::match_vfunc takes the wrapped RefPtr — gtkmm 4
+// wraps the GObject* for us on the C->C++ boundary. Sorter::compare_vfunc
+// (see LambdaSorter below) is inconsistent on this — it gets raw gpointer
+// and the wrapper happens at the call site. We match each base's signature
+// individually rather than fighting the framework.
+class LambdaFilter : public Gtk::Filter {
+public:
+    using Predicate = std::function<bool(const Glib::RefPtr<Glib::ObjectBase>&)>;
+
+    static Glib::RefPtr<LambdaFilter> create(Predicate p) {
+        return Glib::make_refptr_for_instance<LambdaFilter>(
+            new LambdaFilter(std::move(p)));
+    }
+
+    // Public trigger — call after mutating the predicate's captured state
+    // (e.g. dropdown selection changed) so the FilterListModel rebuilds.
+    void notify_changed(Gtk::Filter::Change c = Gtk::Filter::Change::DIFFERENT) {
+        changed(c);
+    }
+
+protected:
+    bool match_vfunc(const Glib::RefPtr<Glib::ObjectBase>& item) override {
+        return m_pred ? m_pred(item) : true;
+    }
+
+private:
+    explicit LambdaFilter(Predicate p)
+        : Glib::ObjectBase(typeid(LambdaFilter))
+        , Gtk::Filter()
+        , m_pred(std::move(p)) {}
+    Predicate m_pred;
+};
+
+// LambdaSorter — same story for Gtk::Sorter. gtkmm 4 has multisorter.h,
+// numericsorter.h, and stringsorter.h but no customsorter.h. The C-side
+// gtk_custom_sorter exists; we just don't get a wrapper, so a small
+// subclass over Gtk::Sorter handles arbitrary comparators.
+//
+// Vfunc note: Sorter::compare_vfunc takes raw gpointer pairs (unlike
+// Filter::match_vfunc which gets a wrapped RefPtr). We Glib::wrap() each
+// side on entry so the comparator lambda sees a friendly RefPtr<ObjectBase>.
+// take_copy=true keeps the wrapper's refcount honest.
+class LambdaSorter : public Gtk::Sorter {
+public:
+    using Compare = std::function<Gtk::Ordering(
+        const Glib::RefPtr<Glib::ObjectBase>&,
+        const Glib::RefPtr<Glib::ObjectBase>&)>;
+
+    static Glib::RefPtr<LambdaSorter> create(Compare c) {
+        return Glib::make_refptr_for_instance<LambdaSorter>(
+            new LambdaSorter(std::move(c)));
+    }
+
+protected:
+    Gtk::Ordering compare_vfunc(gpointer item1, gpointer item2) override {
+        if (!m_cmp || !item1 || !item2) return Gtk::Ordering::EQUAL;
+        auto a = Glib::wrap(G_OBJECT(item1), /*take_copy=*/true);
+        auto b = Glib::wrap(G_OBJECT(item2), /*take_copy=*/true);
+        return m_cmp(a, b);
+    }
+
+private:
+    explicit LambdaSorter(Compare c)
+        : Glib::ObjectBase(typeid(LambdaSorter))
+        , Gtk::Sorter()
+        , m_cmp(std::move(c)) {}
+    Compare m_cmp;
+};
+
+// Map a long_name's suffix to a normalized widget-type string. The .db
+// stores the long name as-is (e.g. "main_toolbar_rect_tool_btn"); we
+// derive the type for display by taking the final underscore-separated
+// token and looking it up in this table. Anything unknown falls through
+// to "Container" which is the safest default for a named-but-untyped
+// surface widget.
+const char* widget_index_type_from_suffix(const std::string& long_name) {
+    auto pos = long_name.rfind('_');
+    std::string suffix = (pos == std::string::npos)
+        ? long_name : long_name.substr(pos + 1);
+    if (suffix == "btn" || suffix == "button") return "Button";
+    if (suffix == "spn" || suffix == "spin")   return "SpinButton";
+    if (suffix == "dd")                         return "DropDown";
+    if (suffix == "check")                      return "CheckButton";
+    if (suffix == "entry" || suffix == "field") return "Entry";
+    if (suffix == "lbl" || suffix == "label")  return "Label";
+    if (suffix == "da" || suffix == "well" ||
+        suffix == "square" || suffix == "area" ||
+        suffix == "ruler")                      return "DrawingArea";
+    if (suffix == "toggle")                     return "ToggleButton";
+    if (suffix == "slider" || suffix == "scale") return "Scale";
+    if (suffix == "notebook")                   return "Notebook";
+    if (suffix == "switch")                     return "Switch";
+    if (suffix == "flow")                       return "FlowBox";
+    if (suffix == "window")                     return "Window";
+    if (suffix == "scroll")                     return "ScrolledWindow";
+    if (suffix == "refpt")                      return "RefPointPicker";
+    if (suffix == "png" || suffix == "svg" ||
+        suffix == "thumbnail" || suffix == "icon") return "Image";
+    return "Container";
+}
+
+// Map a source file path (the third TSV column in widget_names.db) to a
+// REF code (HM/TB/IN/CT/CO/DG). The codes are the same ones documented in
+// the leaf's "Doc legend" table and link a widget to the reference page
+// where its zone is documented.
+const char* widget_index_ref_from_file(const std::string& file_line) {
+    auto colon = file_line.find(':');
+    std::string src = (colon == std::string::npos)
+        ? file_line : file_line.substr(0, colon);
+    // Toolbar zone
+    if (src == "src/Toolbar.cpp" || src == "src/ContextBar.cpp") return "TB";
+    // Inspector
+    if (src == "src/PropertiesPanel.cpp") return "IN";
+    // Content panels
+    if (src == "src/LayersPanel.cpp" ||
+        src == "src/SwatchesPanel.cpp" ||
+        src == "src/StylesPanel.cpp" ||
+        src == "src/ThemesPanel.cpp" ||
+        src == "src/LibraryPanel.cpp") return "CT";
+    // Canvas & objects
+    if (src == "src/Canvas.cpp" || src == "src/Canvas_input.cpp") return "CO";
+    // Header / menus / status bar / tabs / help window itself
+    if (src == "src/MainWindow.cpp" ||
+        src == "src/MainWindow_zones.cpp" ||
+        src == "src/DocTabBar.cpp" ||
+        src == "src/StatusBar.cpp" ||
+        src == "src/HelpWindow.cpp") return "HM";
+    // Everything else is a dialog or popover by elimination
+    return "DG";
+}
+
+// Parse the bundled widget_names.db (TSV: abbrev TAB long_name TAB file:line)
+// and emit one WidgetIndexRow per row, sorted alphabetically by long_name.
+// The DB is loaded from gresource each time the page opens — fast enough at
+// this size (~545 rows, ~44 KB) that caching wouldn't be worth the extra
+// state, and the page-open cadence is "user navigated to the Help leaf",
+// not "60 times per second".
+std::vector<Glib::RefPtr<WidgetIndexRow>> widget_index_load_rows() {
+    std::vector<Glib::RefPtr<WidgetIndexRow>> rows;
+    GError* err = nullptr;
+    GBytes* bytes = g_resources_lookup_data(
+        "/com/curvz/app/data/widget_names.db",
+        G_RESOURCE_LOOKUP_FLAGS_NONE, &err);
+    if (!bytes) {
+        LOG_WARN("HelpWindow widget-index: failed to load widget_names.db "
+                 "from gresource: {}", err ? err->message : "?");
+        if (err) g_error_free(err);
+        return rows;
+    }
+    gsize sz = 0;
+    const char* data = static_cast<const char*>(g_bytes_get_data(bytes, &sz));
+    std::string body(data, sz);
+    g_bytes_unref(bytes);
+
+    size_t start = 0;
+    while (start < body.size()) {
+        size_t end = body.find('\n', start);
+        if (end == std::string::npos) end = body.size();
+        std::string line = body.substr(start, end - start);
+        start = end + 1;
+        if (line.empty() || line[0] == '#') continue;
+
+        // Three tab-separated columns: abbrev, long_name, file:line.
+        size_t tab1 = line.find('\t');
+        if (tab1 == std::string::npos) continue;
+        size_t tab2 = line.find('\t', tab1 + 1);
+        if (tab2 == std::string::npos) continue;
+
+        std::string abbrev    = line.substr(0, tab1);
+        std::string long_name = line.substr(tab1 + 1, tab2 - tab1 - 1);
+        std::string file_line = line.substr(tab2 + 1);
+
+        rows.push_back(WidgetIndexRow::create(
+            long_name, abbrev,
+            widget_index_type_from_suffix(long_name),
+            widget_index_ref_from_file(file_line)));
+    }
+
+    // Alphabetical by long_name — matches the .md page's documented order
+    // and is the natural default until the user clicks a column header.
+    std::sort(rows.begin(), rows.end(),
+              [](const auto& a, const auto& b) {
+                  return a->long_name < b->long_name;
+              });
+    return rows;
+}
+
+// Build one Gtk::ColumnViewColumn with a SignalListItemFactory that
+// stamps a Gtk::Label per cell. `text_for_row` extracts the cell text
+// from the row object; `monospace` toggles the .monospace CSS class
+// (used for the long_name / abbrev columns where the names are code-like).
+// `sort_by` returns a string for the click-sort comparator.
+Glib::RefPtr<Gtk::ColumnViewColumn> widget_index_make_column(
+    const Glib::ustring& title,
+    std::function<Glib::ustring(WidgetIndexRow&)> text_for_row,
+    bool monospace) {
+
+    auto factory = Gtk::SignalListItemFactory::create();
+    factory->signal_setup().connect([](const Glib::RefPtr<Gtk::ListItem>& li) {
+        auto* lbl = Gtk::make_managed<Gtk::Label>();
+        lbl->set_xalign(0.0f);
+        lbl->set_halign(Gtk::Align::START);
+        lbl->set_hexpand(true);
+        lbl->set_selectable(true);
+        // .monospace gets added in bind for the two name columns; the type
+        // and REF columns stay in the default proportional font.
+        li->set_child(*lbl);
+    });
+    factory->signal_bind().connect(
+        [text_for_row, monospace](const Glib::RefPtr<Gtk::ListItem>& li) {
+            auto* lbl = dynamic_cast<Gtk::Label*>(li->get_child());
+            auto row = std::dynamic_pointer_cast<WidgetIndexRow>(li->get_item());
+            if (!lbl || !row) return;
+            lbl->set_text(text_for_row(*row));
+            if (monospace) {
+                lbl->add_css_class("monospace");
+            } else {
+                lbl->remove_css_class("monospace");
+            }
+        });
+
+    auto col = Gtk::ColumnViewColumn::create(title, factory);
+    col->set_resizable(true);
+    col->set_expand(true);
+
+    // Click-to-sort comparator. LambdaSorter (our local adapter over
+    // Gtk::Sorter — see top of file) wraps a std::function returning
+    // Gtk::Ordering::{SMALLER,EQUAL,LARGER} for any pair of row objects.
+    auto sorter = LambdaSorter::create(
+        [text_for_row](const Glib::RefPtr<Glib::ObjectBase>& a,
+                       const Glib::RefPtr<Glib::ObjectBase>& b)
+        -> Gtk::Ordering {
+            auto ra = std::dynamic_pointer_cast<WidgetIndexRow>(a);
+            auto rb = std::dynamic_pointer_cast<WidgetIndexRow>(b);
+            if (!ra || !rb) return Gtk::Ordering::EQUAL;
+            auto sa = text_for_row(*ra);
+            auto sb = text_for_row(*rb);
+            if (sa < sb) return Gtk::Ordering::SMALLER;
+            if (sa > sb) return Gtk::Ordering::LARGER;
+            return Gtk::Ordering::EQUAL;
+        });
+    col->set_sorter(sorter);
+    return col;
+}
+
+// Build the full widget-index block: filter bar (3 controls + count) on top
+// of a scrolled ColumnView. Returns the outer Gtk::Box so render_markdown
+// can append it as a single block in place of the marker.
+//
+// Filter pipeline:
+//
+//   ListStore  (raw rows, sorted alphabetically at load)
+//        |
+//        v
+//   FilterListModel  (EveryFilter combining 3 facet filters)
+//        |
+//        v
+//   SortListModel    (driven by ColumnView header clicks)
+//        |
+//        v
+//   NoSelection      (read-only — clicking rows does nothing)
+//        |
+//        v
+//   ColumnView
+//
+// Each of the three facet filters is a Gtk::CustomFilter that closes over a
+// std::shared_ptr<state> holding the dropdown selections and search text.
+// When the user changes any control, we update the state and call
+// filter->changed(DIFFERENT) — FilterListModel re-runs the predicate. The
+// count label updates after each refilter via FilterListModel::property_n_items.
+Gtk::Widget* make_widget_index_block() {
+    auto rows = widget_index_load_rows();
+
+    auto* outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
+    outer->set_margin_top(8);
+    outer->set_margin_bottom(8);
+    outer->set_hexpand(true);
+    outer->set_vexpand(true);
+
+    if (rows.empty()) {
+        auto* err = Gtk::make_managed<Gtk::Label>(
+            "(Widget name index could not be loaded. "
+            "widget_names.db missing from gresource bundle.)");
+        err->add_css_class("dim-label");
+        err->set_xalign(0.0f);
+        outer->append(*err);
+        return outer;
+    }
+
+    // Collect distinct REF codes and Type names in stable order — REFs
+    // follow the canonical HM/TB/IN/CT/CO/DG ordering used in the prose
+    // legend; Types are sorted alphabetically with a leading "All" entry.
+    std::vector<Glib::ustring> ref_options = {"All", "HM", "TB", "IN",
+                                              "CT", "CO", "DG"};
+    std::set<Glib::ustring> type_set;
+    for (const auto& r : rows) type_set.insert(r->type_name);
+    std::vector<Glib::ustring> type_options;
+    type_options.push_back("All");
+    for (const auto& t : type_set) type_options.push_back(t);
+
+    // ── Filter state shared by all three filter predicates and the controls
+    // that drive them. Held in a shared_ptr so the lambdas capture by value
+    // and survive the outer function's stack frame.
+    struct FilterState {
+        Glib::ustring ref_pick = "All";
+        Glib::ustring type_pick = "All";
+        Glib::ustring search_text;
+    };
+    auto state = std::make_shared<FilterState>();
+
+    // ── Filter bar (toolbar) ───────────────────────────────────────────────
+    auto* bar = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    bar->add_css_class("widget-index-toolbar");
+    bar->set_margin_start(4);
+    bar->set_margin_end(4);
+
+    // REF dropdown
+    auto ref_lbl = Gtk::make_managed<Gtk::Label>("REF:");
+    auto ref_model = Gtk::StringList::create({});
+    for (const auto& s : ref_options) ref_model->append(s);
+    auto* ref_dd = Gtk::make_managed<Gtk::DropDown>(ref_model);
+    ref_dd->set_selected(0);
+    bar->append(*ref_lbl);
+    bar->append(*ref_dd);
+
+    // Type dropdown
+    auto type_lbl = Gtk::make_managed<Gtk::Label>("Type:");
+    auto type_model = Gtk::StringList::create({});
+    for (const auto& s : type_options) type_model->append(s);
+    auto* type_dd = Gtk::make_managed<Gtk::DropDown>(type_model);
+    type_dd->set_selected(0);
+    bar->append(*type_lbl);
+    bar->append(*type_dd);
+
+    // Search entry — substring match across long_name + abbrev. The Type
+    // and REF facets are categorical (exact match against the dropdown
+    // selection); search is for "I half-remember the name."
+    auto search_lbl = Gtk::make_managed<Gtk::Label>("Search:");
+    auto* search = Gtk::make_managed<Gtk::SearchEntry>();
+    search->set_placeholder_text("name or abbrev");
+    search->set_hexpand(true);
+    bar->append(*search_lbl);
+    bar->append(*search);
+
+    // Count label — "Showing N of TOTAL"
+    auto* count_lbl = Gtk::make_managed<Gtk::Label>();
+    count_lbl->add_css_class("dim-label");
+    count_lbl->set_xalign(1.0f);
+    bar->append(*count_lbl);
+
+    outer->append(*bar);
+
+    // ── Source list store ──────────────────────────────────────────────────
+    auto store = Gio::ListStore<WidgetIndexRow>::create();
+    for (const auto& r : rows) store->append(r);
+    const guint total = store->get_n_items();
+
+    // ── Three facet filters, AND-combined ─────────────────────────────────
+    auto ref_filter = LambdaFilter::create(
+        [state](const Glib::RefPtr<Glib::ObjectBase>& obj) {
+            if (state->ref_pick == "All") return true;
+            auto row = std::dynamic_pointer_cast<WidgetIndexRow>(obj);
+            return row && row->ref_code == state->ref_pick;
+        });
+
+    auto type_filter = LambdaFilter::create(
+        [state](const Glib::RefPtr<Glib::ObjectBase>& obj) {
+            if (state->type_pick == "All") return true;
+            auto row = std::dynamic_pointer_cast<WidgetIndexRow>(obj);
+            return row && row->type_name == state->type_pick;
+        });
+
+    auto search_filter = LambdaFilter::create(
+        [state](const Glib::RefPtr<Glib::ObjectBase>& obj) {
+            if (state->search_text.empty()) return true;
+            auto row = std::dynamic_pointer_cast<WidgetIndexRow>(obj);
+            if (!row) return false;
+            // Case-insensitive substring against long_name OR abbrev.
+            // Type and REF are intentionally NOT searched — those have
+            // their own dropdown facets and matching them here would
+            // surprise the user ("why does 'btn' match 158 rows?").
+            auto needle = state->search_text.lowercase();
+            return row->long_name.lowercase().find(needle)
+                       != Glib::ustring::npos
+                || row->abbrev.lowercase().find(needle)
+                       != Glib::ustring::npos;
+        });
+
+    // EveryFilter (from multifilter.h) AND-combines child filters.
+    auto every = Gtk::EveryFilter::create();
+    every->append(ref_filter);
+    every->append(type_filter);
+    every->append(search_filter);
+
+    auto filtered = Gtk::FilterListModel::create(store, every);
+
+    // ── Click-sort layer ───────────────────────────────────────────────────
+    // The ColumnView's own sorter (driven by header clicks) goes through a
+    // SortListModel placed between the filter output and the selection.
+    auto sorted = Gtk::SortListModel::create(filtered,
+                                             Glib::RefPtr<Gtk::Sorter>());
+
+    auto selection = Gtk::NoSelection::create(sorted);
+
+    // ── ColumnView with four columns ──────────────────────────────────────
+    auto* view = Gtk::make_managed<Gtk::ColumnView>(selection);
+    view->add_css_class("widget-index-grid");
+    view->set_show_row_separators(true);
+    view->set_show_column_separators(true);
+    view->set_hexpand(true);
+    view->set_vexpand(true);
+
+    auto col_long = widget_index_make_column(
+        "Long name",
+        [](WidgetIndexRow& r) -> Glib::ustring { return r.long_name; },
+        /*monospace=*/true);
+    auto col_abbr = widget_index_make_column(
+        "Abbrev",
+        [](WidgetIndexRow& r) -> Glib::ustring { return r.abbrev; },
+        /*monospace=*/true);
+    auto col_type = widget_index_make_column(
+        "Type",
+        [](WidgetIndexRow& r) -> Glib::ustring { return r.type_name; },
+        /*monospace=*/false);
+    auto col_ref = widget_index_make_column(
+        "REF",
+        [](WidgetIndexRow& r) -> Glib::ustring { return r.ref_code; },
+        /*monospace=*/false);
+
+    view->append_column(col_long);
+    view->append_column(col_abbr);
+    view->append_column(col_type);
+    view->append_column(col_ref);
+
+    // Wire the SortListModel to follow the ColumnView's header-click sorter
+    // (a Gtk::ColumnViewSorter that knows about every column we added).
+    sorted->set_sorter(view->get_sorter());
+
+    // ── ScrolledWindow wrapping the view ──────────────────────────────────
+    auto* scroll = Gtk::make_managed<Gtk::ScrolledWindow>();
+    scroll->add_css_class("widget-index-scroll");
+    scroll->set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::AUTOMATIC);
+    scroll->set_min_content_height(400);
+    scroll->set_hexpand(true);
+    scroll->set_vexpand(true);
+    scroll->set_child(*view);
+    outer->append(*scroll);
+
+    // ── Wire control changes to filter changes + count refresh ─────────────
+    // changed(DIFFERENT) tells FilterListModel to re-run the predicate
+    // across every row. For a 545-row in-memory dataset this is cheap.
+    auto refresh_count = [count_lbl, filtered, total]() {
+        auto shown = filtered->get_n_items();
+        count_lbl->set_text("Showing " + std::to_string(shown)
+                            + " of " + std::to_string(total));
+    };
+    refresh_count();
+
+    ref_dd->property_selected().signal_changed().connect(
+        [ref_dd, ref_filter, state, ref_options, refresh_count]() {
+            guint idx = ref_dd->get_selected();
+            state->ref_pick = (idx < ref_options.size())
+                ? ref_options[idx] : Glib::ustring("All");
+            ref_filter->notify_changed();
+            refresh_count();
+        });
+
+    type_dd->property_selected().signal_changed().connect(
+        [type_dd, type_filter, state, type_options, refresh_count]() {
+            guint idx = type_dd->get_selected();
+            state->type_pick = (idx < type_options.size())
+                ? type_options[idx] : Glib::ustring("All");
+            type_filter->notify_changed();
+            refresh_count();
+        });
+
+    search->signal_search_changed().connect(
+        [search, search_filter, state, refresh_count]() {
+            state->search_text = search->get_text();
+            search_filter->notify_changed();
+            refresh_count();
+        });
+
+    return outer;
+}
+
+} // namespace
+
 
 HelpWindow::HelpWindow() {
   set_title("Curvz Help");
@@ -746,7 +1304,10 @@ void HelpWindow::build_topic_list() {
     // s284 m1 adds Canvas & objects (the `objects` collection and
     // proxy plus the canvas widget's substrate-name trailer). s284 m2
     // adds Dialogs & popovers, completing the eight-leaf Scripter
-    // reference set.
+    // reference set. s287 adds the flat Widget name index — a grep-
+    // target page that catalogues every named widget in one table,
+    // sitting after the per-zone leaves as the lookup-by-name companion
+    // to the lookup-by-zone references.
     { RowKind::Chapter, 0, false, "", "Addendums" },
     { RowKind::Group,   1, false, "", "Developer" },
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-overview.md",        "Scripter overview" },
@@ -759,6 +1320,7 @@ void HelpWindow::build_topic_list() {
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-content.md",         "Content reference" },
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-canvas-objects.md",  "Canvas & objects reference" },
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-dialogs.md",         "Dialogs & popovers reference" },
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-widget-index.md",    "Widget name index" },
   };
 }
 
@@ -1485,6 +2047,21 @@ Gtk::Widget *HelpWindow::render_markdown(const std::string &resource_path) {
         sep->set_margin_top(8);
         sep->set_margin_bottom(8);
         outer->append(*sep);
+        break;
+      }
+      case CMARK_NODE_HTML_BLOCK: {
+        // s287: HTML-block markers reserved for custom-rendered widgets.
+        // The only one currently handled is the widget-index table; the
+        // marker is a single-line HTML comment so it stays invisible to
+        // any other markdown renderer (the .md file remains a valid
+        // standalone document that you could read in a plain viewer
+        // without seeing a placeholder string). Any unrecognised HTML
+        // block falls through silently — matches the pre-s287 default.
+        const char *lit = cmark_node_get_literal(child);
+        std::string text = lit ? lit : "";
+        if (text.find("WIDGET_INDEX_TABLE") != std::string::npos) {
+          outer->append(*make_widget_index_block());
+        }
         break;
       }
       default:

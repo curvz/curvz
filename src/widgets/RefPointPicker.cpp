@@ -13,7 +13,12 @@ using namespace curvz::scripting;
 //
 // Layout (horizontal, 8px spacing):
 //
-//   [ 36x36 grid ]  [ ✓ chk ]  [ X spin + unit ]  [ Y spin + unit ]
+//   [ 36x36 grid ]  [ X spin + unit ]  [ Y spin + unit ]
+//
+// s286 — checkbox removed. Mode is implicit: clicking a preset on the
+// grid → Preset; typing into X or Y → Arbitrary. The grid's selected-
+// dot rendering already keys on m_mode so deselection on mode flip is
+// automatic.
 //
 // CurvzSpinButton owns its companion unit label (get_unit_label) — we
 // append it directly after the spinner so "1.500 in" reads as one
@@ -54,16 +59,8 @@ RefPointPicker::RefPointPicker(std::string_view name,
   }
   append(m_grid_area);
 
-  // ── Mode checkbox ───────────────────────────────────────────────────
-  m_arbitrary_chk.set_valign(Gtk::Align::CENTER);
-  m_arbitrary_chk.set_tooltip_text(
-      "Use arbitrary X/Y instead of a preset bbox point");
-  m_arbitrary_chk.signal_toggled().connect([this]() {
-    if (m_loading)
-      return;
-    set_mode(m_arbitrary_chk.get_active() ? Mode::Arbitrary : Mode::Preset);
-  });
-  append(m_arbitrary_chk);
+  // s286 — Arbitrary checkbox removed. Mode is inferred from user
+  // action via the spinner on_changed handlers below.
 
   // ── X column (label above, spinner+unit below) ──────────────────────
   {
@@ -92,9 +89,19 @@ RefPointPicker::RefPointPicker(std::string_view name,
     m_sp_x->signal_internal_changed().connect([this](double v) {
       if (m_loading)
         return;
-      if (m_mode != Mode::Arbitrary)
-        return; // preset mode ignores edits
+      // s286 — user edit drives the mode flip. Seed BOTH m_arb_x and
+      // m_arb_y BEFORE set_mode runs so that set_mode's
+      // refresh_xy_display call paints back the correct values (the
+      // freshly-typed X and the preset Y the user could see on screen
+      // before typing). Without the m_arb_y seed, set_mode flips and
+      // refresh paints stale m_arb_y (initial 0) over what the user
+      // thought was their refpt's Y.
+      auto [px, py] = point(); // current preset xy, evaluated pre-flip
+      (void)px;
       m_arb_x = v;
+      m_arb_y = py;
+      if (m_mode != Mode::Arbitrary)
+        set_mode(Mode::Arbitrary);
       m_sig_point_changed.emit(m_arb_x, m_arb_y);
       emit("point_changed", ScriptValue::real(m_arb_x));
     });
@@ -123,9 +130,13 @@ RefPointPicker::RefPointPicker(std::string_view name,
     m_sp_y->signal_internal_changed().connect([this](double v) {
       if (m_loading)
         return;
-      if (m_mode != Mode::Arbitrary)
-        return;
+      // s286 — see X handler. Seed both from current preset before flip.
+      auto [px, py] = point();
+      (void)py;
+      m_arb_x = px;
       m_arb_y = v;
+      if (m_mode != Mode::Arbitrary)
+        set_mode(Mode::Arbitrary);
       m_sig_point_changed.emit(m_arb_x, m_arb_y);
       emit("point_changed", ScriptValue::real(m_arb_y));
     });
@@ -137,7 +148,8 @@ RefPointPicker::RefPointPicker(std::string_view name,
     append(*y_col);
   }
 
-  apply_mode_appearance();
+  // s286 — apply_mode_appearance removed; spinners are always editable.
+  // The grid greys out / deselects via on_grid_draw's m_mode check.
   refresh_xy_display();
 
   init_scriptable();
@@ -174,24 +186,20 @@ void RefPointPicker::set_bbox(double x, double y, double w, double h) {
 
 void RefPointPicker::set_mode(Mode m) {
   if (m == m_mode) {
-    m_loading = true;
-    m_arbitrary_chk.set_active(m == Mode::Arbitrary);
-    m_loading = false;
     return;
   }
+  // s286 — checkbox removed; no UI widget to sync. The grid redraw at
+  // the bottom handles the visual mode change (greyout + deselect).
+  //
   // Caveat: Preset → Arbitrary shows whatever m_arb_x/y currently
   // hold, which is (0,0) until the caller sets them via
   // set_arbitrary_xy or a script set_arbitrary. The pivot-popover
   // caller seeds m_arb_x/y to the current pivot position before
-  // showing the picker, so this only manifests in the sandbox /
-  // out-of-context standalone uses. We deliberately do NOT seed arb
-  // from the preset on flip — that would overwrite a user's typed
-  // values on a second flip and break the mode-memory contract.
+  // showing the picker; the user-edit-driven flip seeds them from
+  // the current preset point. We deliberately do NOT seed arb
+  // from the preset INSIDE set_mode — that would overwrite a user's
+  // typed values on a second flip and break the mode-memory contract.
   m_mode = m;
-  m_loading = true;
-  m_arbitrary_chk.set_active(m == Mode::Arbitrary);
-  m_loading = false;
-  apply_mode_appearance();
   refresh_xy_display();
   m_sig_mode_changed.emit(m_mode);
   emit("mode_changed",
@@ -412,16 +420,6 @@ void RefPointPicker::refresh_xy_display() {
   if (m_sp_y)
     m_sp_y->set_internal_value(py);
   m_loading = false;
-}
-
-void RefPointPicker::apply_mode_appearance() {
-  const bool arb = (m_mode == Mode::Arbitrary);
-  // Preset mode: spinners are NOT editable (read-only feel), still
-  // sensitive so the numbers stay legible. Arbitrary mode: editable.
-  if (m_sp_x)
-    m_sp_x->set_editable(arb);
-  if (m_sp_y)
-    m_sp_y->set_editable(arb);
 }
 
 void RefPointPicker::on_grid_draw(const Cairo::RefPtr<Cairo::Context> &cr,

@@ -1995,4 +1995,82 @@ button.clip-view-btn {
     font-size: 12px;
 }
 
+/* s287: widget-index table — the custom-rendered spreadsheet-style table
+   on the "Widget name index" help leaf. The page substitutes a real
+   Gtk::ColumnView for what would otherwise be a 545-row markdown table;
+   these rules give it the dense, monospace, banded-row look that says
+   "data table" rather than "list of buttons."
+
+   Scope: .widget-index-toolbar (the filter bar above) and
+   .widget-index-grid (the ColumnView itself). Neither class is applied
+   anywhere else in the codebase, so styling here cannot leak. Picking up
+   tokens via var() means the table re-themes with the rest of the app
+   when motif switches. */
+.widget-index-toolbar {
+    padding: 4px 6px;
+    background-color: var(--bg-surface);
+    border: 1px solid var(--bg-edge);
+    border-radius: 4px;
+}
+.widget-index-toolbar label {
+    color: var(--fg-muted);
+    font-size: 12px;
+    margin-right: 2px;
+}
+.widget-index-toolbar dropdown {
+    min-height: 24px;
+}
+.widget-index-toolbar entry {
+    min-height: 24px;
+}
+
+/* The grid itself. Header is sticky-feeling (visually distinct surface +
+   bottom border) so it reads as a header even when the ColumnView's own
+   scroll mechanics keep it in place. Row separators are subtle — same hue
+   as bg-edge so they group without screaming. */
+columnview.widget-index-grid {
+    background-color: var(--bg-base);
+    border: 1px solid var(--bg-edge);
+    border-radius: 4px;
+}
+columnview.widget-index-grid > listview > row {
+    padding: 2px 6px;
+    min-height: 22px;
+}
+columnview.widget-index-grid > listview > row label {
+    font-size: 12px;
+}
+columnview.widget-index-grid > listview > row label.monospace {
+    font-family: monospace;
+    color: var(--fg-primary);
+}
+/* Banded rows — even/odd alternation reads as a spreadsheet without the
+   heavy border lines that would clash with the rest of the help-page
+   surface. nth-child(odd) gets the slightly-raised tone; nth-child(even)
+   keeps the base background so the page's surface peeks through. */
+columnview.widget-index-grid > listview > row:nth-child(odd) {
+    background-color: var(--bg-surface);
+}
+columnview.widget-index-grid > listview > row:nth-child(even) {
+    background-color: transparent;
+}
+/* Header strip — paint it on bg-raised so it sits *above* the banded rows
+   visually, and underline with a bottom border so the click-to-sort
+   region reads as interactive. */
+columnview.widget-index-grid > header {
+    background-color: var(--bg-raised);
+    border-bottom: 1px solid var(--bg-edge);
+}
+columnview.widget-index-grid > header > button {
+    background: transparent;
+    border: none;
+    padding: 4px 8px;
+    color: var(--fg-secondary);
+    font-weight: bold;
+    font-size: 12px;
+}
+columnview.widget-index-grid > header > button:hover {
+    background-color: var(--hover-bg);
+}
+
 )css";

@@ -204,7 +204,10 @@
          were not landed at the time; s284 m1 retro-fits them along
          with Content and the new Canvas & objects leaf). s284 m2
          adds the final Dialogs & popovers leaf, completing the
-         eight-leaf Scripter reference set. -->
+         eight-leaf Scripter reference set. s287 adds the flat
+         Widget name index — a grep-target page that catalogues every
+         named widget in one alphabetical table, generated from the
+         same widget_names.db that the runtime resolver loads. -->
     <file alias="addendum-developer-scripter-overview.md">help/addendum-developer-scripter-overview.md</file>
     <file alias="addendum-developer-scripter-reference.md">help/addendum-developer-scripter-reference.md</file>
     <file alias="addendum-developer-scripter-language.md">help/addendum-developer-scripter-language.md</file>
@@ -215,6 +218,7 @@
     <file alias="addendum-developer-scripter-content.md">help/addendum-developer-scripter-content.md</file>
     <file alias="addendum-developer-scripter-canvas-objects.md">help/addendum-developer-scripter-canvas-objects.md</file>
     <file alias="addendum-developer-scripter-dialogs.md">help/addendum-developer-scripter-dialogs.md</file>
+    <file alias="addendum-developer-scripter-widget-index.md">help/addendum-developer-scripter-widget-index.md</file>
 
     <!-- Live image aliases — files exist on disk -->
     <file alias="img/1-3-workspace-overview.png">help/img/1-3-workspace-overview.png</file>

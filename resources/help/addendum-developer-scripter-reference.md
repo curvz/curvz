@@ -41,6 +41,11 @@ area is named in chapters 3 through 6.
   in modal dialogs (Blend, Gradient, Style editor, Theme editor,
   Export, Print, Step and Repeat, New document, Save As, …) and
   the toolbar popovers.
+- **Widget name index** — a flat alphabetical table of every
+  named widget in Curvz with its abbrev, type, and a back-pointer
+  to the reference leaf that documents its zone. The page you
+  grep when you remember the name of a widget but not which
+  surface it lives on.
 
 ## How each page is laid out
 
