@@ -6,7 +6,7 @@
 # verbs dispatch, queries read back.
 #
 # Scope (s198 m1): the two SpinButton members that were value-held
-# (Gtk::SpinButton zoom_spin / width_spin) and got flipped to
+# (CurvzSpinButton zoom_spin / width_spin) and got flipped to
 # pointer-held substrate (curvz::widgets::SpinButton*). Same
 # architectural pattern as s196 m3's Bold/Italic CheckButton flip.
 # Both live in popovers that are built eagerly inside

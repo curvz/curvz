@@ -4051,15 +4051,13 @@ void Canvas::place_ref_at_display(double ux, double uy) {
 // ruler-origin-relative). Convert to doc space (Y-down, absolute) before
 // placing.
 
-void Canvas::place_rect_precise(double ux, double uy, double w, double h) {
+void Canvas::place_rect_precise(double doc_x, double doc_y, double w,
+                                double h) {
   if (!m_doc || w < 0.001 || h < 0.001)
     return;
-  // ux,uy = top-left corner in display space (Y-up)
-  // Doc space: x = ux + ruler_ox, y_bottom = canvas_h - (uy + ruler_oy)
-  // y_top (doc, Y-down) = y_bottom - h
-  double doc_x = ux + m_doc->ruler_origin_x;
-  double doc_yb = m_doc->canvas_height() - (uy + m_doc->ruler_origin_y);
-  double doc_y = doc_yb - h; // top-left corner in Y-down space
+  // s290: doc-px input. (doc_x, doc_y) is the top-left corner in Y-down
+  // doc-space — same convention as everywhere else in the codebase. The
+  // popover handles unit/intent conversion via CurvzSpinButton.
 
   SceneNode obj;
   obj.id = next_id();
@@ -4077,12 +4075,16 @@ void Canvas::place_rect_precise(double ux, double uy, double w, double h) {
            doc_x, doc_y, w, h);
 }
 
-void Canvas::place_ellipse_precise(double ucx, double ucy, double rx,
-                                   double ry) {
-  if (!m_doc || rx < 0.001 || ry < 0.001)
+void Canvas::place_ellipse_precise(double doc_x, double doc_y, double w,
+                                   double h) {
+  if (!m_doc || w < 0.001 || h < 0.001)
     return;
-  double doc_cx = ucx + m_doc->ruler_origin_x;
-  double doc_cy = m_doc->canvas_height() - (ucy + m_doc->ruler_origin_y);
+  // s290: identical contract to place_rect_precise — doc-px bounding box.
+  // ellipse_to_path wants center+radii, so derive them here.
+  double doc_cx = doc_x + w * 0.5;
+  double doc_cy = doc_y + h * 0.5;
+  double rx = w * 0.5;
+  double ry = h * 0.5;
 
   SceneNode obj;
   obj.id = next_id();
@@ -4098,8 +4100,8 @@ void Canvas::place_ellipse_precise(double ucx, double ucy, double rx,
 
   place_shape_node(std::move(obj));
   LOG_INFO(
-      "Ellipse placed via popover: cx={:.2f} cy={:.2f} rx={:.2f} ry={:.2f}",
-      doc_cx, doc_cy, rx, ry);
+      "Ellipse placed via popover: x={:.2f} y={:.2f} w={:.2f} h={:.2f}",
+      doc_x, doc_y, w, h);
 }
 
 void Canvas::place_polygon_precise(double cx, double cy, double radius,

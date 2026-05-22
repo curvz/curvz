@@ -15,7 +15,7 @@ namespace Curvz {
 
 // ── ctor: layout built once, model-dependent spins populated per-show ────────
 StepRepeatPopover::StepRepeatPopover()
-    : m_copies(Gtk::Adjustment::create(3, 1, 999, 1, 10), 0.0, 0),
+    : m_copies(SpinType::Integer),
       m_rotate_enable("Rotate around pivot")
 {
     curvz::utils::set_name(*this, "pop_sr", "step_repeat_popover_root");

@@ -1,6 +1,6 @@
 // widgets/SpinButton.hpp ───────────────────────────────────────────────
 //
-// Scriptable wrapper around Gtk::SpinButton. Lifted from scriptproto/
+// Scriptable wrapper around CurvzSpinButton. Lifted from scriptproto/
 // during s187 m3.
 //
 // Note: Curvz has a larger custom subclass `Curvz::CurvzSpinButton`
@@ -53,7 +53,7 @@ public:
   // signals on it directly, sometimes to share it across widgets,
   // sometimes to read get_value() in lambdas captured by other UI).
   // The wrapper accepts a pre-built Adjustment and routes it through
-  // Gtk::SpinButton's adjustment-taking ctor via the base template's
+  // CurvzSpinButton's adjustment-taking ctor via the base template's
   // perfect-forwarding. climb_rate is the canonical SpinButton
   // parameter — the same value GTK uses for set_increments(step,
   // step*10).
@@ -62,7 +62,7 @@ public:
 
   // s211 m2 — unregistered substrate SpinButton (Adjustment-taking
   // form). The widget IS-A substrate SpinButton (same universal
-  // verbs, same Gtk::SpinButton surface, same lifecycle), but skips
+  // verbs, same CurvzSpinButton surface, same lifecycle), but skips
   // the script registry — its `value_changed` emission is silent on
   // the outbound channel and it can't be addressed by abbrev. Use
   // this at call sites where multiple instances would otherwise
@@ -96,7 +96,7 @@ public:
   // didn't-mutate signal.
   //
   // Open design fork (s187, banked): CurvzSpinButton currently
-  // inherits from Gtk::SpinButton directly, NOT from this substrate
+  // inherits from CurvzSpinButton directly, NOT from this substrate
   // widget. That means CurvzSpinButton instances aren't script-
   // addressable today; the rich Domain-aware parser from s263 m4-m5
   // is reachable only through the user's text-entry path. When the

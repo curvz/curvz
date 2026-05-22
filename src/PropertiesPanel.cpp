@@ -12,17 +12,17 @@
 #include "color/ColorRegion.hpp" // S83 m4h v2: region_name fallback when swatch.header.name is empty
 #include "color/SwatchLibrary.hpp" // S83 m4h: find_swatch + PaintSlot for binding-indicator rows
 #include "curvz_utils.hpp" // s119 — curvz::utils::set_name
+#include "math/BezierPath.hpp"
+#include "style/StyleInterop.hpp" // mutate_appearance — inspector appearance writers
+#include "style/StyleLibrary.hpp" // S80 m4b: find_style for "Bound: <n>" indicator
 #include "widgets/Button.hpp"
 #include "widgets/CheckButton.hpp"
 #include "widgets/DropDown.hpp"
 #include "widgets/Entry.hpp"
-#include "widgets/RefPointPicker.hpp"  // s205 m1 — Selection-section pivot picker
+#include "widgets/RefPointPicker.hpp" // s205 m1 — Selection-section pivot picker
 #include "widgets/Scale.hpp"
 #include "widgets/SpinButton.hpp"
 #include "widgets/ToggleButton.hpp"
-#include "math/BezierPath.hpp"
-#include "style/StyleInterop.hpp" // mutate_appearance — inspector appearance writers
-#include "style/StyleLibrary.hpp" // S80 m4b: find_style for "Bound: <n>" indicator
 #include <algorithm>
 #include <array>
 #include <cairomm/cairomm.h>
@@ -321,12 +321,12 @@ void PropertiesPanel::push_inspector_command(SceneNode *obj) {
              "obj_name='{}' obj_type={}",
              obj->internal_id, obj->name, (int)obj->type);
     m_history->push(std::make_unique<EditObjectCommand>(
-        m_project, obj->internal_id,
-        m_undo_before, m_undo_fill_before, m_undo_stroke_before, cur_path,
-        obj->fill, obj->stroke, m_undo_fill_swatch_id_before,
-        m_undo_stroke_swatch_id_before, obj->fill_swatch_id,
-        obj->stroke_swatch_id, m_undo_bound_style_before, obj->bound_style,
-        m_undo_shadow_before, obj->read_shadow(), "Edit object"));
+        m_project, obj->internal_id, m_undo_before, m_undo_fill_before,
+        m_undo_stroke_before, cur_path, obj->fill, obj->stroke,
+        m_undo_fill_swatch_id_before, m_undo_stroke_swatch_id_before,
+        obj->fill_swatch_id, obj->stroke_swatch_id, m_undo_bound_style_before,
+        obj->bound_style, m_undo_shadow_before, obj->read_shadow(),
+        "Edit object"));
     // Slide before-snapshots to post-edit state for the next window boundary.
     // During a window (same_window), before stays pinned at window-open state.
     m_undo_before = cur_path;
@@ -472,7 +472,7 @@ void PropertiesPanel::do_clear() {
   // force_unregister_subtree so other transient-widget owners
   // (heap-allocated self-deleting dialogs) can use the same pump.
   // Behaviour identical to the prior inline lambda.
-  for (Gtk::Widget* c = m_inner.get_first_child(); c;
+  for (Gtk::Widget *c = m_inner.get_first_child(); c;
        c = c->get_next_sibling()) {
     curvz::utils::force_unregister_subtree(c);
   }
@@ -727,14 +727,14 @@ static void box_add_row(Gtk::Box *box, const char *label,
 // /`make_btn`/`add_op` migrations. The `set_name` calls at each call site
 // stay in place (with literal-string args) so widget_names_sync's harvester
 // still picks up the long-name annotation. The `out_spin` parameter type
-// stays `Gtk::SpinButton**` — substrate IS-A Gtk::SpinButton through
+// stays `CurvzSpinButton**` — substrate IS-A CurvzSpinButton through
 // inheritance, so assignment is an implicit upcast and call sites can
-// continue storing the result as `Gtk::SpinButton*` without downcast.
+// continue storing the result as `CurvzSpinButton*` without downcast.
 static Glib::RefPtr<Gtk::Adjustment>
 box_add_spin(Gtk::Box *box, std::string_view name, const char *label,
-             double val, double lo, double hi,
-             double step, double page, int digits, int label_chars = 6,
-             const char *tip = nullptr, std::function<void()> on_enter = {},
+             double val, double lo, double hi, double step, double page,
+             int digits, int label_chars = 6, const char *tip = nullptr,
+             std::function<void()> on_enter = {},
              Gtk::SpinButton **out_spin = nullptr) {
   auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   row->add_css_class("prop-row");
@@ -743,8 +743,8 @@ box_add_spin(Gtk::Box *box, std::string_view name, const char *label,
   k->set_width_chars(label_chars);
   k->set_xalign(0.0f);
   auto adj = Gtk::Adjustment::create(val, lo, hi, step, page);
-  auto *spin = Gtk::make_managed<curvz::widgets::SpinButton>(
-      name, adj, step, digits);
+  auto *spin =
+      Gtk::make_managed<curvz::widgets::SpinButton>(name, adj, step, digits);
   spin->set_hexpand(true);
   spin->add_css_class("prop-width-entry");
   if (tip)
@@ -864,8 +864,8 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
   // are independent: a Pixel-mode doc can still be displayed in inches
   // if the user is targeting an iPad app at a known DPI, and a Ratio-
   // mode doc can use any unit for the intended delivery size.
-  static const std::array<Unit, 4> k_units_all = {Unit::Px, Unit::In,
-                                                  Unit::Mm, Unit::Pt};
+  static const std::array<Unit, 4> k_units_all = {Unit::Px, Unit::In, Unit::Mm,
+                                                  Unit::Pt};
   auto unit_list_for_mode = [&]() -> std::vector<Unit> {
     return {k_units_all.begin(), k_units_all.end()};
   };
@@ -920,14 +920,17 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
   // between px and physical units uses SVG's 96-dpi default everywhere
   // (formerly cm->dpi was a per-doc value; now Curvz doesn't expose it).
   auto unit_from_str = [](const std::string &s) -> Unit {
-    if (s == "in") return Unit::In;
-    if (s == "mm") return Unit::Mm;
-    if (s == "pt") return Unit::Pt;
+    if (s == "in")
+      return Unit::In;
+    if (s == "mm")
+      return Unit::Mm;
+    if (s == "pt")
+      return Unit::Pt;
     return Unit::Px;
   };
   auto compute_size_wh = [cm, disp_unit, mode, inches_to_display,
-                          display_to_inches, unit_from_str](
-                             double &w_out, double &h_out) {
+                          display_to_inches,
+                          unit_from_str](double &w_out, double &h_out) {
     constexpr int kDPI = 96;
     if (cm->intended_w > 0.0 && cm->intended_h > 0.0) {
       Unit src_unit = unit_from_str(cm->intended_unit);
@@ -991,8 +994,8 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
       if (units_for_mode[i] == disp_unit)
         u_sel = i;
     }
-    auto *u_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_can_un",
-                                                               u_list);
+    auto *u_drop =
+        Gtk::make_managed<curvz::widgets::DropDown>("ins_can_un", u_list);
     curvz::utils::set_name(u_drop, "ins_can_un", "inspector_canvas_units_dd");
     u_drop->set_selected(u_sel);
     u_drop->add_css_class("prop-dropdown");
@@ -1014,8 +1017,8 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
           // size carries across (e.g. 1in -> 25.4mm). Pure unit change
           // shouldn't alter the delivery contract; it just changes how
           // it's spelled.
-          if (cm->intended_w > 0.0 && cm->intended_h > 0.0
-              && new_unit != old_unit) {
+          if (cm->intended_w > 0.0 && cm->intended_h > 0.0 &&
+              new_unit != old_unit) {
             const int dpi = 96;
             double w_in = display_to_inches(cm->intended_w, old_unit, dpi);
             double h_in = display_to_inches(cm->intended_h, old_unit, dpi);
@@ -1040,10 +1043,12 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     const bool is_landscape = (cur_w > cur_h);
     const bool is_portrait = !is_landscape;
 
-    auto *portrait_btn = Gtk::make_managed<curvz::widgets::Button>("ins_can_op");
+    auto *portrait_btn =
+        Gtk::make_managed<curvz::widgets::Button>("ins_can_op");
     curvz::utils::set_name(portrait_btn, "ins_can_op",
                            "inspector_canvas_orient_portrait_btn");
-    auto *landscape_btn = Gtk::make_managed<curvz::widgets::Button>("ins_can_ol");
+    auto *landscape_btn =
+        Gtk::make_managed<curvz::widgets::Button>("ins_can_ol");
     curvz::utils::set_name(landscape_btn, "ins_can_ol",
                            "inspector_canvas_orient_landscape_btn");
 
@@ -1144,8 +1149,8 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
                                            : 0;
     double sz_lo = (disp_unit == Unit::In) ? 0.001 : 1.0;
 
-    auto adj_sw = Gtk::Adjustment::create(size_w, sz_lo, sz_max, sz_step,
-                                          sz_page);
+    auto adj_sw =
+        Gtk::Adjustment::create(size_w, sz_lo, sz_max, sz_step, sz_page);
     auto *sp_w = Gtk::make_managed<curvz::widgets::SpinButton>(
         "ins_can_sw", adj_sw, sz_step, sz_dec);
     curvz::utils::set_name(sp_w, "ins_can_sw", "inspector_canvas_size_w_spn");
@@ -1156,8 +1161,8 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
     block_scroll(sp_w, [this] { emit_canvas_focus(); });
     size_w_spin = sp_w;
 
-    auto adj_sh = Gtk::Adjustment::create(size_h, sz_lo, sz_max, sz_step,
-                                          sz_page);
+    auto adj_sh =
+        Gtk::Adjustment::create(size_h, sz_lo, sz_max, sz_step, sz_page);
     auto *sp_h = Gtk::make_managed<curvz::widgets::SpinButton>(
         "ins_can_sh", adj_sh, sz_step, sz_dec);
     curvz::utils::set_name(sp_h, "ins_can_sh", "inspector_canvas_size_h_spn");
@@ -1174,8 +1179,8 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
 
     // Aspect-lock toggle. Same monochrome bright/dim idiom as
     // build_selection_section's scale link (line ~4582).
-    auto *lock_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
-        "ins_can_sl");
+    auto *lock_btn =
+        Gtk::make_managed<curvz::widgets::ToggleButton>("ins_can_sl");
     curvz::utils::set_name(lock_btn, "ins_can_sl",
                            "inspector_canvas_size_lock_toggle");
     lock_btn->set_active(m_canvas_aspect_locked);
@@ -1221,8 +1226,8 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
       return "px";
     };
     auto commit_size = [this, cm, sp_w, sp_h, s_gen, disp_unit,
-                        unit_str_for_disp, compute_size_wh](
-                           Gtk::SpinButton *driver) {
+                        unit_str_for_disp,
+                        compute_size_wh](Gtk::SpinButton *driver) {
       if (s_gen != m_build_gen || m_loading)
         return;
       double new_w = sp_w->get_value();
@@ -1328,9 +1333,9 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
         double w_in, h_in;
       };
       static const PagePreset PAGE_PRESETS[] = {
-          {"Letter",  8.5,  11.0},
-          {"A4",      8.27, 11.69},
-          {"A5",      5.83, 8.27},
+          {"Letter", 8.5, 11.0},
+          {"A4", 8.27, 11.69},
+          {"A5", 5.83, 8.27},
           {"Tabloid", 11.0, 17.0},
       };
       for (const auto &p : PAGE_PRESETS) {
@@ -1339,25 +1344,25 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
         btn->set_margin_start(1);
         uint32_t b_gen = m_build_gen;
         double bw = p.w_in, bh = p.h_in;
-        btn->signal_clicked().connect([this, cm, bw, bh, b_gen, disp_unit,
-                                       inches_to_display]() {
-          if (b_gen != m_build_gen)
-            return;
-          // Aspect from page (always portrait — user can hit landscape
-          // button afterwards). Quality / display_unit preserved.
-          double s_in = std::min(bw, bh);
-          cm->ratio_w = bw / s_in;
-          cm->ratio_h = bh / s_in;
-          const int dpi = 96;
-          cm->intended_w = inches_to_display(bw, disp_unit, dpi);
-          cm->intended_h = inches_to_display(bh, disp_unit, dpi);
-          cm->intended_unit = (disp_unit == Unit::Mm)   ? "mm"
-                              : (disp_unit == Unit::Pt) ? "pt"
-                                                        : "in";
-          m_sig_canvas_changed.emit(*cm);
-          Glib::signal_idle().connect_once(
-              [this]() { refresh(m_canvas, m_current); });
-        });
+        btn->signal_clicked().connect(
+            [this, cm, bw, bh, b_gen, disp_unit, inches_to_display]() {
+              if (b_gen != m_build_gen)
+                return;
+              // Aspect from page (always portrait — user can hit landscape
+              // button afterwards). Quality / display_unit preserved.
+              double s_in = std::min(bw, bh);
+              cm->ratio_w = bw / s_in;
+              cm->ratio_h = bh / s_in;
+              const int dpi = 96;
+              cm->intended_w = inches_to_display(bw, disp_unit, dpi);
+              cm->intended_h = inches_to_display(bh, disp_unit, dpi);
+              cm->intended_unit = (disp_unit == Unit::Mm)   ? "mm"
+                                  : (disp_unit == Unit::Pt) ? "pt"
+                                                            : "in";
+              m_sig_canvas_changed.emit(*cm);
+              Glib::signal_idle().connect_once(
+                  [this]() { refresh(m_canvas, m_current); });
+            });
         pre_row->append(*btn);
       }
     }
@@ -1397,33 +1402,33 @@ void PropertiesPanel::build_canvas_section(std::shared_ptr<CanvasModel> cm,
       btn->set_margin_start(1);
       uint32_t b_gen = m_build_gen;
       double bw = p.w, bh = p.h;
-      btn->signal_clicked().connect([this, cm, bw, bh, b_gen,
-                                     compute_size_wh]() {
-        if (b_gen != m_build_gen)
-          return;
-        // New ratio (normalised so short axis = 1).
-        double s = std::min(bw, bh);
-        cm->ratio_w = bw / s;
-        cm->ratio_h = bh / s;
-        // Rescale Size: keep the short side, recompute the long one
-        // from the new ratio. If intent isn't set yet, fall through to
-        // canvas dims via compute_size_wh so the user's first ratio
-        // click on a fresh doc still does the right thing.
-        double cur_w = 0.0, cur_h = 0.0;
-        compute_size_wh(cur_w, cur_h);
-        if (cur_w > 0.0 && cur_h > 0.0) {
-          double short_side = std::min(cur_w, cur_h);
-          cm->intended_w = short_side * cm->ratio_w;
-          cm->intended_h = short_side * cm->ratio_h;
-          // Inherit current Units string from cm->intended_unit if set,
-          // else default to "px" (compute_size_wh fallback uses doc-px).
-          if (cm->intended_unit.empty())
-            cm->intended_unit = "px";
-        }
-        m_sig_canvas_changed.emit(*cm);
-        Glib::signal_idle().connect_once(
-            [this]() { refresh(m_canvas, m_current); });
-      });
+      btn->signal_clicked().connect(
+          [this, cm, bw, bh, b_gen, compute_size_wh]() {
+            if (b_gen != m_build_gen)
+              return;
+            // New ratio (normalised so short axis = 1).
+            double s = std::min(bw, bh);
+            cm->ratio_w = bw / s;
+            cm->ratio_h = bh / s;
+            // Rescale Size: keep the short side, recompute the long one
+            // from the new ratio. If intent isn't set yet, fall through to
+            // canvas dims via compute_size_wh so the user's first ratio
+            // click on a fresh doc still does the right thing.
+            double cur_w = 0.0, cur_h = 0.0;
+            compute_size_wh(cur_w, cur_h);
+            if (cur_w > 0.0 && cur_h > 0.0) {
+              double short_side = std::min(cur_w, cur_h);
+              cm->intended_w = short_side * cm->ratio_w;
+              cm->intended_h = short_side * cm->ratio_h;
+              // Inherit current Units string from cm->intended_unit if set,
+              // else default to "px" (compute_size_wh fallback uses doc-px).
+              if (cm->intended_unit.empty())
+                cm->intended_unit = "px";
+            }
+            m_sig_canvas_changed.emit(*cm);
+            Glib::signal_idle().connect_once(
+                [this]() { refresh(m_canvas, m_current); });
+          });
       rp_row->append(*btn);
     }
     body->append(*rp_row);
@@ -1621,14 +1626,15 @@ void PropertiesPanel::build_canvas_colours_section(CurvzDocument *doc,
             return;
           auto [r, g, b] = get();
           color::Color initial(r, g, b, 1.0);
-          ColorPickerPopover::shared().open(*swatch, initial, /*with_alpha=*/false,
-                               [this, set, swatch, gen](const color::Color &c) {
-                                 if (m_build_gen != gen)
-                                   return;
-                                 set(c.r, c.g, c.b);
-                                 swatch->queue_draw();
-                                 emit_prop_changed();
-                               });
+          ColorPickerPopover::shared().open(
+              *swatch, initial, /*with_alpha=*/false,
+              [this, set, swatch, gen](const color::Color &c) {
+                if (m_build_gen != gen)
+                  return;
+                set(c.r, c.g, c.b);
+                swatch->queue_draw();
+                emit_prop_changed();
+              });
         });
     swatch->add_controller(click);
     row->append(*swatch);
@@ -1647,8 +1653,7 @@ void PropertiesPanel::build_canvas_colours_section(CurvzDocument *doc,
       "Artboard",
       [this, doc]() {
         const Motif mo = m_project ? m_project->motif : Motif::Dark;
-        return std::make_tuple(doc->artboard_bg_r(mo),
-                               doc->artboard_bg_g(mo),
+        return std::make_tuple(doc->artboard_bg_r(mo), doc->artboard_bg_g(mo),
                                doc->artboard_bg_b(mo));
       },
       [this, doc](double r, double g, double b) {
@@ -1660,8 +1665,7 @@ void PropertiesPanel::build_canvas_colours_section(CurvzDocument *doc,
       "Workspace",
       [this, doc]() {
         const Motif mo = m_project ? m_project->motif : Motif::Dark;
-        return std::make_tuple(doc->workspace_bg_r(mo),
-                               doc->workspace_bg_g(mo),
+        return std::make_tuple(doc->workspace_bg_r(mo), doc->workspace_bg_g(mo),
                                doc->workspace_bg_b(mo));
       },
       [this, doc](double r, double g, double b) {
@@ -1702,7 +1706,8 @@ void PropertiesPanel::build_canvas_colours_section(CurvzDocument *doc,
     row->set_spacing(6);
     row->set_halign(Gtk::Align::END);
 
-    auto *btn = Gtk::make_managed<curvz::widgets::Button>("ins_motif_rst", "Reset");
+    auto *btn =
+        Gtk::make_managed<curvz::widgets::Button>("ins_motif_rst", "Reset");
     curvz::utils::set_name(btn, "ins_motif_rst", "inspector_motif_reset_btn");
     btn->add_css_class("flat");
     btn->set_tooltip_text("Restore this document's artboard, workspace, and "
@@ -1725,7 +1730,7 @@ void PropertiesPanel::build_canvas_colours_section(CurvzDocument *doc,
           // MotifSettings factory pair.
           const Motif mo = m_project ? m_project->motif : Motif::Dark;
           if (mo == Motif::Light) {
-            doc->set_artboard_bg(mo, 1.0, 1.0, 1.0);    // #FFFFFF
+            doc->set_artboard_bg(mo, 1.0, 1.0, 1.0);     // #FFFFFF
             doc->set_workspace_bg(mo, 0.91, 0.91, 0.91); // #E8E8E8
             doc->set_creation_color(mo, 0.10, 0.35, 0.85);
           } else {
@@ -1937,7 +1942,7 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
     }
 
     // ── Recent projects max count (s144 m3) ────────────────────────────────
-    // Plain Gtk::SpinButton (not CurvzSpinButton) — that one is unit-aware
+    // Plain CurvzSpinButton (not CurvzSpinButton) — that one is unit-aware
     // and tied to the doc DPI plumbing; this is a unitless integer count
     // and SpinButton is the simpler, correct choice.
     {
@@ -2026,7 +2031,7 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
   // ── Editing subsection (s145 m1) ───────────────────────────────────────────
   // Editor-tier behaviour prefs: undo depth, tooltip delay. Sibling of
   // Startup. Both inhabitants are unitless integers with simple bounded
-  // ranges, so plain Gtk::SpinButton rows (not CurvzSpinButton — that's
+  // ranges, so plain CurvzSpinButton rows (not CurvzSpinButton — that's
   // unit-aware and tied to doc DPI; not appropriate for app-tier counts).
   {
     auto *body = add_collapsible("Editing", false, parent);
@@ -2266,8 +2271,7 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
   auto adj = Gtk::Adjustment::create(
       double(AppPreferences::instance().boolean_cleanup_quality()), 0.0, 10.0,
       1.0, 1.0, 0.0);
-  auto *scale =
-      Gtk::make_managed<curvz::widgets::Scale>("ins_app_bcq", adj);
+  auto *scale = Gtk::make_managed<curvz::widgets::Scale>("ins_app_bcq", adj);
   curvz::utils::set_name(scale, "ins_app_bcq",
                          "inspector_app_boolean_cleanup_quality_scale");
   scale->set_digits(0); // integer values only
@@ -2396,7 +2400,8 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
 
   // No project / no doc — nothing to do. Section is still drawn (for
   // visual consistency in the Object group); body is empty.
-  if (!doc) return;
+  if (!doc)
+    return;
 
   const SceneNode *gl = doc->guide_layer();
   bool layer_locked = gl && gl->locked;
@@ -2498,14 +2503,14 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
       // one-shot action that flips state and rebuilds the section,
       // not a stateful toggle (state lives on the SceneNode, not on
       // the button).
-      auto *lock_btn = Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_lock");
+      auto *lock_btn =
+          Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_lock");
       curvz::utils::set_name(lock_btn, "ins_obj_gd_lock",
                              "inspector_object_guide_lock_btn");
       lock_btn->set_has_frame(false);
       lock_btn->set_icon_name(g->locked ? "curvz-locked-symbolic"
                                         : "curvz-unlocked-symbolic");
-      lock_btn->set_tooltip_text(g->locked ? "Unlock guide"
-                                           : "Lock guide");
+      lock_btn->set_tooltip_text(g->locked ? "Unlock guide" : "Lock guide");
       lock_btn->set_sensitive(!layer_locked);
       lock_btn->signal_clicked().connect([this, g, gen]() mutable {
         if (m_build_gen != gen)
@@ -2525,7 +2530,8 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
       });
       row->append(*lock_btn);
 
-      auto *del_btn = Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_del", "×");
+      auto *del_btn =
+          Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_del", "×");
       curvz::utils::set_name(del_btn, "ins_obj_gd_del",
                              "inspector_object_guide_delete_btn");
       del_btn->set_has_frame(false);
@@ -2603,8 +2609,8 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
                              "inspector_object_guide_x_spn");
       m_guide_sp_x = sp_x;
       sp_x->with_value(g->guide_x)
-            ->with_css("prop-width-entry")
-            ->with_css("node-spin");
+          ->with_css("prop-width-entry")
+          ->with_css("node-spin");
       sp_x->with_width_chars(10);
       sp_x->set_hexpand(true);
       sp_x->set_sensitive(edit_on);
@@ -2622,8 +2628,8 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
                              "inspector_object_guide_y_spn");
       m_guide_sp_y = sp_y;
       sp_y->with_value(g->guide_y)
-            ->with_css("prop-width-entry")
-            ->with_css("node-spin");
+          ->with_css("prop-width-entry")
+          ->with_css("node-spin");
       sp_y->with_width_chars(10);
       sp_y->set_hexpand(true);
       sp_y->set_sensitive(edit_on);
@@ -2646,13 +2652,14 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
       // Row 3: ANG label + angle spinner. Col-2 left empty — angle is a
       // single value, not a pair. Same CSS / width / scroll-block as the
       // pos spinners above so all three look uniform.
-      auto *sp_a = Gtk::make_managed<CurvzSpinButton>(SpinType::Angle, m_canvas);
+      auto *sp_a =
+          Gtk::make_managed<CurvzSpinButton>(SpinType::Angle, m_canvas);
       curvz::utils::set_name(sp_a, "ins_obj_gd_a",
                              "inspector_object_guide_angle_spn");
       m_guide_sp_a = sp_a;
       sp_a->with_value(g->guide_angle)
-            ->with_css("prop-width-entry")
-            ->with_css("node-spin");
+          ->with_css("prop-width-entry")
+          ->with_css("node-spin");
       sp_a->with_width_chars(10);
       sp_a->set_hexpand(true);
       sp_a->set_sensitive(edit_on);
@@ -2685,7 +2692,8 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
     count_lbl->add_css_class("prop-val-lbl");
     row->append(*count_lbl);
 
-    auto *del_btn = Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_mdel", "×");
+    auto *del_btn =
+        Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_mdel", "×");
     curvz::utils::set_name(del_btn, "ins_obj_gd_mdel",
                            "inspector_object_guides_multi_delete_btn");
     del_btn->set_has_frame(false);
@@ -2730,7 +2738,8 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
     tools_row->set_spacing(4);
     tools_row->set_margin_top(4);
 
-    auto *from_nodes_btn = Gtk::make_managed<curvz::widgets::Button>("ins_obj_gd_f2p", "From 2 points…");
+    auto *from_nodes_btn = Gtk::make_managed<curvz::widgets::Button>(
+        "ins_obj_gd_f2p", "From 2 points…");
     curvz::utils::set_name(from_nodes_btn, "ins_obj_gd_f2p",
                            "inspector_object_guides_from_2_points_btn");
     from_nodes_btn->set_has_frame(false);
@@ -2804,8 +2813,8 @@ void PropertiesPanel::build_grid_section(CurvzDocument *doc, Gtk::Box *parent) {
     lbl->add_css_class("prop-lbl");
     lbl->set_width_chars(8);
     lbl->set_xalign(0.0f);
-    auto *drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_grd_st", 
-        Gtk::StringList::create({"Lines", "Dots"}));
+    auto *drop = Gtk::make_managed<curvz::widgets::DropDown>(
+        "ins_grd_st", Gtk::StringList::create({"Lines", "Dots"}));
     curvz::utils::set_name(drop, "ins_grd_st", "inspector_grid_style_dd");
     drop->set_selected(gl->grid_dots ? 1 : 0);
     drop->set_hexpand(true);
@@ -2971,20 +2980,21 @@ void PropertiesPanel::build_grid_section(CurvzDocument *doc, Gtk::Box *parent) {
             return;
           color::Color initial(g->grid_color_r, g->grid_color_g,
                                g->grid_color_b, g->grid_color_a);
-          ColorPickerPopover::shared().open(*swatch, initial, /*with_alpha=*/true,
-                               [this, doc, swatch, gen](const color::Color &c) {
-                                 if (m_build_gen != gen)
-                                   return;
-                                 auto *g = doc->grid_layer();
-                                 if (!g)
-                                   return;
-                                 g->grid_color_r = c.r;
-                                 g->grid_color_g = c.g;
-                                 g->grid_color_b = c.b;
-                                 g->grid_color_a = c.a;
-                                 swatch->queue_draw();
-                                 emit_prop_changed();
-                               });
+          ColorPickerPopover::shared().open(
+              *swatch, initial, /*with_alpha=*/true,
+              [this, doc, swatch, gen](const color::Color &c) {
+                if (m_build_gen != gen)
+                  return;
+                auto *g = doc->grid_layer();
+                if (!g)
+                  return;
+                g->grid_color_r = c.r;
+                g->grid_color_g = c.g;
+                g->grid_color_b = c.b;
+                g->grid_color_a = c.a;
+                swatch->queue_draw();
+                emit_prop_changed();
+              });
         });
     swatch->add_controller(click);
     crow->append(*clbl);
@@ -3290,20 +3300,21 @@ void PropertiesPanel::build_margin_section(CurvzDocument *doc,
             return;
           color::Color initial(m->margin_color_r, m->margin_color_g,
                                m->margin_color_b, m->margin_color_a);
-          ColorPickerPopover::shared().open(*swatch, initial, /*with_alpha=*/true,
-                               [this, doc, swatch, gen](const color::Color &c) {
-                                 if (m_build_gen != gen)
-                                   return;
-                                 auto *m = doc->margin_layer();
-                                 if (!m)
-                                   return;
-                                 m->margin_color_r = c.r;
-                                 m->margin_color_g = c.g;
-                                 m->margin_color_b = c.b;
-                                 m->margin_color_a = c.a;
-                                 swatch->queue_draw();
-                                 emit_prop_changed();
-                               });
+          ColorPickerPopover::shared().open(
+              *swatch, initial, /*with_alpha=*/true,
+              [this, doc, swatch, gen](const color::Color &c) {
+                if (m_build_gen != gen)
+                  return;
+                auto *m = doc->margin_layer();
+                if (!m)
+                  return;
+                m->margin_color_r = c.r;
+                m->margin_color_g = c.g;
+                m->margin_color_b = c.b;
+                m->margin_color_a = c.a;
+                swatch->queue_draw();
+                emit_prop_changed();
+              });
         });
     swatch->add_controller(click);
     crow->append(*clbl);
@@ -3547,12 +3558,11 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       // s168 m1 DIAG — STRIP after triage
       LOG_INFO("[IIDDIAG] RefMove::push X  capturing iid='{}' "
                "obj_name='{}' obj_type={}  old_x={} new_x={} ref_y={}",
-               obj->internal_id, obj->name, (int)obj->type,
-               old_x, v, obj->ref_y);
+               obj->internal_id, obj->name, (int)obj->type, old_x, v,
+               obj->ref_y);
       if (m_history)
         m_history->push(std::make_unique<RefMoveCommand>(
-            m_project, obj->internal_id,
-            old_x, obj->ref_y, v, obj->ref_y));
+            m_project, obj->internal_id, old_x, obj->ref_y, v, obj->ref_y));
       emit_prop_changed();
     });
 
@@ -3565,12 +3575,11 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       // s168 m1 DIAG — STRIP after triage
       LOG_INFO("[IIDDIAG] RefMove::push Y  capturing iid='{}' "
                "obj_name='{}' obj_type={}  ref_x={} old_y={} new_y={}",
-               obj->internal_id, obj->name, (int)obj->type,
-               obj->ref_x, old_y, v);
+               obj->internal_id, obj->name, (int)obj->type, obj->ref_x, old_y,
+               v);
       if (m_history)
         m_history->push(std::make_unique<RefMoveCommand>(
-            m_project, obj->internal_id,
-            obj->ref_x, old_y, obj->ref_x, v));
+            m_project, obj->internal_id, obj->ref_x, old_y, obj->ref_x, v));
       emit_prop_changed();
     });
 
@@ -3583,7 +3592,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       flip_row->set_margin_end(6);
       flip_row->set_margin_top(4);
       flip_row->set_margin_bottom(6);
-      auto *btn_fh = Gtk::make_managed<curvz::widgets::Button>("ins_sel_ref_fh", "⇔ Flip H");
+      auto *btn_fh = Gtk::make_managed<curvz::widgets::Button>("ins_sel_ref_fh",
+                                                               "⇔ Flip H");
       curvz::utils::set_name(btn_fh, "ins_sel_ref_fh",
                              "inspector_selection_ref_flip_h_btn");
       btn_fh->add_css_class("prop-toggle");
@@ -3593,7 +3603,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
           m_sig_request_flip.emit(true);
       });
       flip_row->append(*btn_fh);
-      auto *btn_fv = Gtk::make_managed<curvz::widgets::Button>("ins_sel_ref_fv", "⇕ Flip V");
+      auto *btn_fv = Gtk::make_managed<curvz::widgets::Button>("ins_sel_ref_fv",
+                                                               "⇕ Flip V");
       curvz::utils::set_name(btn_fv, "ins_sel_ref_fv",
                              "inspector_selection_ref_flip_v_btn");
       btn_fv->add_css_class("prop-toggle");
@@ -3641,7 +3652,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     content_row->set_margin_top(4);
     content_row->set_margin_bottom(2);
     content_row->append(*make_lbl("Text"));
-    auto *content_entry = Gtk::make_managed<curvz::widgets::Entry>("ins_txt_ct");
+    auto *content_entry =
+        Gtk::make_managed<curvz::widgets::Entry>("ins_txt_ct");
     curvz::utils::set_name(content_entry, "ins_txt_ct",
                            "inspector_text_content_entry");
     content_entry->set_text(obj->text_content);
@@ -3737,7 +3749,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
           sel_idx = fi;
       }
 
-      auto *font_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_txt_fam", slist);
+      auto *font_drop =
+          Gtk::make_managed<curvz::widgets::DropDown>("ins_txt_fam", slist);
       curvz::utils::set_name(font_drop, "ins_txt_fam",
                              "inspector_text_font_family_dd");
       font_drop->set_enable_search(true);
@@ -3790,8 +3803,10 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       style_row->set_margin_end(6);
       style_row->set_margin_top(4);
       style_row->set_margin_bottom(2);
-      auto *bold_btn = Gtk::make_managed<curvz::widgets::CheckButton>("ins_txt_b", "Bold");
-      auto *italic_btn = Gtk::make_managed<curvz::widgets::CheckButton>("ins_txt_i", "Italic");
+      auto *bold_btn =
+          Gtk::make_managed<curvz::widgets::CheckButton>("ins_txt_b", "Bold");
+      auto *italic_btn =
+          Gtk::make_managed<curvz::widgets::CheckButton>("ins_txt_i", "Italic");
       curvz::utils::set_name(bold_btn, "ins_txt_b",
                              "inspector_text_bold_check");
       curvz::utils::set_name(italic_btn, "ins_txt_i",
@@ -3897,10 +3912,14 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       align_row->set_margin_bottom(6);
       align_row->append(*make_lbl("Align"));
 
-      auto *btn_l = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_txt_al", "⇤"); // ⇤
-      auto *btn_c = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_txt_ac", "≡"); // ≡
-      auto *btn_r = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_txt_ar", "⇥"); // ⇥
-      auto *btn_j = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_txt_aj", "≣"); // ≣
+      auto *btn_l = Gtk::make_managed<curvz::widgets::ToggleButton>(
+          "ins_txt_al", "⇤"); // ⇤
+      auto *btn_c = Gtk::make_managed<curvz::widgets::ToggleButton>(
+          "ins_txt_ac", "≡"); // ≡
+      auto *btn_r = Gtk::make_managed<curvz::widgets::ToggleButton>(
+          "ins_txt_ar", "⇥"); // ⇥
+      auto *btn_j = Gtk::make_managed<curvz::widgets::ToggleButton>(
+          "ins_txt_aj", "≣"); // ≣
       curvz::utils::set_name(btn_l, "ins_txt_al",
                              "inspector_text_align_left_btn");
       curvz::utils::set_name(btn_c, "ins_txt_ac",
@@ -3984,9 +4003,10 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       // rather than the raw UUID. The breadcrumb helper handles empty
       // iid (returns em-dash) and unresolved iid (e.g. linked path was
       // deleted) without us re-checking the empty case here.
-      std::string path_label = m_project
-          ? curvz::utils::iid_breadcrumb(*m_project, obj->text_path_id)
-          : (obj->text_path_id.empty() ? "\xE2\x80\x94" : "(unresolved)");
+      std::string path_label =
+          m_project
+              ? curvz::utils::iid_breadcrumb(*m_project, obj->text_path_id)
+              : (obj->text_path_id.empty() ? "\xE2\x80\x94" : "(unresolved)");
       auto *path_val = Gtk::make_managed<Gtk::Label>(path_label);
       path_val->set_hexpand(true);
       path_val->set_xalign(0.0f);
@@ -3994,7 +4014,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       path_row->append(*path_val);
 
       if (!obj->text_path_id.empty()) {
-        auto *detach_btn = Gtk::make_managed<curvz::widgets::Button>("ins_txt_dt", "Detach");
+        auto *detach_btn =
+            Gtk::make_managed<curvz::widgets::Button>("ins_txt_dt", "Detach");
         curvz::utils::set_name(detach_btn, "ins_txt_dt",
                                "inspector_text_path_detach_btn");
         detach_btn->add_css_class("prop-toggle");
@@ -4055,7 +4076,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
         flip_key->set_xalign(0.0f);
         flip_row2->append(*flip_key);
 
-        auto *flip_chk = Gtk::make_managed<curvz::widgets::CheckButton>("ins_txt_pfp", "Below path");
+        auto *flip_chk = Gtk::make_managed<curvz::widgets::CheckButton>(
+            "ins_txt_pfp", "Below path");
         curvz::utils::set_name(flip_chk, "ins_txt_pfp",
                                "inspector_text_path_flip_check");
         flip_chk->set_active(obj->text_path_flip);
@@ -4175,7 +4197,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       obj->image_x = v;
       if (m_history)
         m_history->push(std::make_unique<ScaleImageCommand>(
-            m_project, std::vector<ScaleImageCommand::Snap>{snap}, "Move image"));
+            m_project, std::vector<ScaleImageCommand::Snap>{snap},
+            "Move image"));
       emit_prop_changed();
     });
 
@@ -4185,45 +4208,48 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       // v is doc Y of image top (CurvzSpinButton PositionY stores doc-y
       // directly)
       double new_top_y = v - obj->image_h;
-      ScaleImageCommand::Snap snap{obj->internal_id, obj->image_x,  obj->image_y,
-                                   obj->image_w, obj->image_h,  obj->transform,
-                                   obj->image_x, new_top_y,     obj->image_w,
-                                   obj->image_h, obj->transform};
+      ScaleImageCommand::Snap snap{
+          obj->internal_id, obj->image_x,   obj->image_y,  obj->image_w,
+          obj->image_h,     obj->transform, obj->image_x,  new_top_y,
+          obj->image_w,     obj->image_h,   obj->transform};
       obj->image_y = new_top_y;
       if (m_history)
         m_history->push(std::make_unique<ScaleImageCommand>(
-            m_project, std::vector<ScaleImageCommand::Snap>{snap}, "Move image"));
+            m_project, std::vector<ScaleImageCommand::Snap>{snap},
+            "Move image"));
       emit_prop_changed();
     });
 
     sp_iw->on_changed([this, obj](double v) {
       if (m_loading || v < 0.001)
         return;
-      ScaleImageCommand::Snap snap{obj->internal_id, obj->image_x,  obj->image_y,
-                                   obj->image_w, obj->image_h,  obj->transform,
-                                   obj->image_x, obj->image_y,  v,
-                                   obj->image_h, obj->transform};
+      ScaleImageCommand::Snap snap{
+          obj->internal_id, obj->image_x,  obj->image_y,
+          obj->image_w,     obj->image_h,  obj->transform,
+          obj->image_x,     obj->image_y,  v,
+          obj->image_h,     obj->transform};
       obj->image_w = v;
       if (m_history)
         m_history->push(std::make_unique<ScaleImageCommand>(
-            m_project, std::vector<ScaleImageCommand::Snap>{snap}, "Resize image"));
+            m_project, std::vector<ScaleImageCommand::Snap>{snap},
+            "Resize image"));
       emit_prop_changed();
     });
 
     sp_ih->on_changed([this, obj](double v) {
       if (m_loading || v < 0.001)
         return;
-      ScaleImageCommand::Snap snap{obj->internal_id,
-                                   obj->image_x,
-                                   obj->image_y,  obj->image_w,
-                                   obj->image_h,  obj->transform,
-                                   obj->image_x,  obj->image_y,
-                                   obj->image_w,  v,
+      ScaleImageCommand::Snap snap{obj->internal_id, obj->image_x,
+                                   obj->image_y,     obj->image_w,
+                                   obj->image_h,     obj->transform,
+                                   obj->image_x,     obj->image_y,
+                                   obj->image_w,     v,
                                    obj->transform};
       obj->image_h = v;
       if (m_history)
         m_history->push(std::make_unique<ScaleImageCommand>(
-            m_project, std::vector<ScaleImageCommand::Snap>{snap}, "Resize image"));
+            m_project, std::vector<ScaleImageCommand::Snap>{snap},
+            "Resize image"));
       emit_prop_changed();
     });
 
@@ -4265,7 +4291,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     flip_row->set_margin_end(6);
     flip_row->set_margin_bottom(6);
 
-    auto *btn_fh = Gtk::make_managed<curvz::widgets::Button>("ins_sel_img_fh", "⇔ Flip H");
+    auto *btn_fh =
+        Gtk::make_managed<curvz::widgets::Button>("ins_sel_img_fh", "⇔ Flip H");
     curvz::utils::set_name(btn_fh, "ins_sel_img_fh",
                            "inspector_selection_image_flip_h_btn");
     btn_fh->add_css_class("prop-toggle");
@@ -4277,7 +4304,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     });
     flip_row->append(*btn_fh);
 
-    auto *btn_fv = Gtk::make_managed<curvz::widgets::Button>("ins_sel_img_fv", "⇕ Flip V");
+    auto *btn_fv =
+        Gtk::make_managed<curvz::widgets::Button>("ins_sel_img_fv", "⇕ Flip V");
     curvz::utils::set_name(btn_fv, "ins_sel_img_fv",
                            "inspector_selection_image_flip_v_btn");
     btn_fv->add_css_class("prop-toggle");
@@ -4496,9 +4524,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       std::vector<ScaleObjectsCommand::LeafSnap> snaps;
       for (size_t i = 0; i < lvs.size(); ++i)
         snaps.push_back({lvs[i]->internal_id, before_snaps[i], *lvs[i]->path});
-      m_history->push(
-          std::make_unique<ScaleObjectsCommand>(
-              m_project, std::move(snaps), desc));
+      m_history->push(std::make_unique<ScaleObjectsCommand>(
+          m_project, std::move(snaps), desc));
     }
   };
 
@@ -4724,7 +4751,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     });
 
     // Link toggle — monochrome, bright = linked, dim = independent
-    auto *link_btn = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_sel_sln");
+    auto *link_btn =
+        Gtk::make_managed<curvz::widgets::ToggleButton>("ins_sel_sln");
     curvz::utils::set_name(link_btn, "ins_sel_sln",
                            "inspector_selection_scale_link_toggle");
     link_btn->set_active(m_scale_linked);
@@ -4790,47 +4818,51 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     // Point" dialog), so widening pivot to those transforms would be a
     // separate design call. Scott can lift this pattern to Scale/Skew
     // if he wants it.
-    auto apply_rotate =
-        [this, leaves, push_leaves](double angle_deg) {
-          if (std::abs(angle_deg) < 1e-9) return;
+    auto apply_rotate = [this, leaves, push_leaves](double angle_deg) {
+      if (std::abs(angle_deg) < 1e-9)
+        return;
 
-          // Pivot: custom if set, else fresh bbox centre.
-          double px = 0.0, py = 0.0;
-          if (m_canvas_widget && m_canvas_widget->has_custom_pivot()) {
-            px = m_canvas_widget->custom_pivot_x();
-            py = m_canvas_widget->custom_pivot_y();
-          } else {
-            double bx1 = 1e18, bx2 = -1e18, by1 = 1e18, by2 = -1e18;
-            for (auto *l : leaves) {
-              if (l->path)
-                expand_bbox_for_path(*l->path, bx1, bx2, by1, by2);
-            }
-            if (bx1 > 1e17) return; // no geometry
-            px = (bx1 + bx2) * 0.5;
-            py = (by1 + by2) * 0.5;
-          }
+      // Pivot: custom if set, else fresh bbox centre.
+      double px = 0.0, py = 0.0;
+      if (m_canvas_widget && m_canvas_widget->has_custom_pivot()) {
+        px = m_canvas_widget->custom_pivot_x();
+        py = m_canvas_widget->custom_pivot_y();
+      } else {
+        double bx1 = 1e18, bx2 = -1e18, by1 = 1e18, by2 = -1e18;
+        for (auto *l : leaves) {
+          if (l->path)
+            expand_bbox_for_path(*l->path, bx1, bx2, by1, by2);
+        }
+        if (bx1 > 1e17)
+          return; // no geometry
+        px = (bx1 + bx2) * 0.5;
+        py = (by1 + by2) * 0.5;
+      }
 
-          double rad = -angle_deg * M_PI / 180.0;
-          double c = std::cos(rad), s = std::sin(rad);
-          std::vector<PathData> before;
-          for (auto *l : leaves)
-            before.push_back(*l->path);
-          for (auto *l : leaves)
-            for (auto &n : l->path->nodes) {
-              double dx, dy;
-              dx = n.x - px;   dy = n.y - py;
-              n.x   = px + dx * c - dy * s;
-              n.y   = py + dx * s + dy * c;
-              dx = n.cx1 - px; dy = n.cy1 - py;
-              n.cx1 = px + dx * c - dy * s;
-              n.cy1 = py + dx * s + dy * c;
-              dx = n.cx2 - px; dy = n.cy2 - py;
-              n.cx2 = px + dx * c - dy * s;
-              n.cy2 = py + dx * s + dy * c;
-            }
-          push_leaves(leaves, before, "Rotate object");
-          emit_prop_changed();
-        };
+      double rad = -angle_deg * M_PI / 180.0;
+      double c = std::cos(rad), s = std::sin(rad);
+      std::vector<PathData> before;
+      for (auto *l : leaves)
+        before.push_back(*l->path);
+      for (auto *l : leaves)
+        for (auto &n : l->path->nodes) {
+          double dx, dy;
+          dx = n.x - px;
+          dy = n.y - py;
+          n.x = px + dx * c - dy * s;
+          n.y = py + dx * s + dy * c;
+          dx = n.cx1 - px;
+          dy = n.cy1 - py;
+          n.cx1 = px + dx * c - dy * s;
+          n.cy1 = py + dx * s + dy * c;
+          dx = n.cx2 - px;
+          dy = n.cy2 - py;
+          n.cx2 = px + dx * c - dy * s;
+          n.cy2 = py + dx * s + dy * c;
+        }
+      push_leaves(leaves, before, "Rotate object");
+      emit_prop_changed();
+    };
 
     auto do_rotate = [this, adj_r, apply_rotate]() mutable {
       LOG_INFO("rotate: do_rotate fired, adj_r->get_value()={}",
@@ -4873,13 +4905,12 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     rl->set_width_chars(6);
     apply_lbl->set_child(*rl);
     apply_lbl->set_tooltip_text("Click to apply rotation");
-    apply_lbl->signal_clicked().connect(
-        [this, adj_r, apply_rotate]() mutable {
-          apply_rotate(adj_r->get_value());
-          m_loading = true;
-          adj_r->set_value(0.0);
-          Glib::signal_idle().connect_once([this] { m_loading = false; });
-        });
+    apply_lbl->signal_clicked().connect([this, adj_r, apply_rotate]() mutable {
+      apply_rotate(adj_r->get_value());
+      m_loading = true;
+      adj_r->set_value(0.0);
+      Glib::signal_idle().connect_once([this] { m_loading = false; });
+    });
 
     row->append(*apply_lbl);
     row->append(*spin_r);
@@ -4912,8 +4943,7 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
   // No undo. Pivot is session state per s204 design (popover, R+drag,
   // and R-toggle clear are all undo-less).
   if (m_canvas_widget && bw_doc > 0 && bh_doc > 0) {
-    auto *pivot_row = Gtk::make_managed<Gtk::Box>(
-        Gtk::Orientation::HORIZONTAL);
+    auto *pivot_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     pivot_row->set_margin_start(8);
     pivot_row->set_margin_end(6);
     pivot_row->set_margin_top(2);
@@ -4943,12 +4973,13 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     // for the sync direction (sync_selected_pivot writes the picker
     // under m_loading=true; that write triggers an internal picker
     // emit, but this listener bails and the cycle ends).
-    picker->signal_point_changed().connect(
-        [this](double px, double py) {
-          if (m_loading) return;
-          if (!m_canvas_widget) return;
-          m_canvas_widget->set_custom_pivot(px, py);
-        });
+    picker->signal_point_changed().connect([this](double px, double py) {
+      if (m_loading)
+        return;
+      if (!m_canvas_widget)
+        return;
+      m_canvas_widget->set_custom_pivot(px, py);
+    });
 
     pivot_row->append(*picker);
     picker->set_hexpand(true);
@@ -5042,7 +5073,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     flip_row->set_margin_end(6);
     flip_row->set_margin_top(4);
     flip_row->set_margin_bottom(6);
-    auto *btn_fh = Gtk::make_managed<curvz::widgets::Button>("ins_sel_fh", "⇔ Flip H");
+    auto *btn_fh =
+        Gtk::make_managed<curvz::widgets::Button>("ins_sel_fh", "⇔ Flip H");
     curvz::utils::set_name(btn_fh, "ins_sel_fh",
                            "inspector_selection_flip_h_btn");
     btn_fh->add_css_class("prop-toggle");
@@ -5053,7 +5085,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
         m_sig_request_flip.emit(true);
     });
     flip_row->append(*btn_fh);
-    auto *btn_fv = Gtk::make_managed<curvz::widgets::Button>("ins_sel_fv", "⇕ Flip V");
+    auto *btn_fv =
+        Gtk::make_managed<curvz::widgets::Button>("ins_sel_fv", "⇕ Flip V");
     curvz::utils::set_name(btn_fv, "ins_sel_fv",
                            "inspector_selection_flip_v_btn");
     btn_fv->add_css_class("prop-toggle");
@@ -5260,7 +5293,8 @@ void PropertiesPanel::build_metadata_section(Gtk::Box *parent) {
       if (k_categories[ci] == doc->export_category)
         cat_sel = ci;
     }
-    auto *cat_drop = Gtk::make_managed<curvz::widgets::DropDown>("ins_meta_xc", cat_list);
+    auto *cat_drop =
+        Gtk::make_managed<curvz::widgets::DropDown>("ins_meta_xc", cat_list);
     curvz::utils::set_name(cat_drop, "ins_meta_xc",
                            "inspector_metadata_export_category_dd");
     cat_drop->set_selected(cat_sel);
@@ -5446,8 +5480,8 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
     // distinct from the per-selection branches below it. The doc may
     // be null if no project is open; build_object_guides_section
     // guards on that.
-    build_object_guides_section(
-        m_project ? m_project->active_doc() : nullptr, obj_grp);
+    build_object_guides_section(m_project ? m_project->active_doc() : nullptr,
+                                obj_grp);
     build_selection_section(obj, obj_grp);
     if (obj && obj->is_blend())
       build_blend_section(obj, obj_grp);
@@ -5903,7 +5937,8 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
     split_row->set_margin_top(4);
 
     if (can_open) {
-      auto *open_btn = Gtk::make_managed<curvz::widgets::Button>("ins_nod_op", "Open here");
+      auto *open_btn =
+          Gtk::make_managed<curvz::widgets::Button>("ins_nod_op", "Open here");
       curvz::utils::set_name(open_btn, "ins_nod_op",
                              "inspector_node_open_here_btn");
       open_btn->add_css_class("prop-toggle");
@@ -5918,7 +5953,8 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
     }
 
     if (can_split) {
-      auto *split_btn = Gtk::make_managed<curvz::widgets::Button>("ins_nod_sp", "Split here");
+      auto *split_btn =
+          Gtk::make_managed<curvz::widgets::Button>("ins_nod_sp", "Split here");
       curvz::utils::set_name(split_btn, "ins_nod_sp",
                              "inspector_node_split_here_btn");
       split_btn->add_css_class("prop-toggle");
@@ -5959,9 +5995,8 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
     path_row->append(*path_lbl);
 
     bool closed = obj->path->closed;
-    auto *close_btn =
-        Gtk::make_managed<curvz::widgets::ToggleButton>(
-            "ins_nod_cl", closed ? "Closed" : "Open");
+    auto *close_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
+        "ins_nod_cl", closed ? "Closed" : "Open");
     curvz::utils::set_name(close_btn, "ins_nod_cl",
                            "inspector_node_path_closed_toggle");
     close_btn->set_active(closed);
@@ -6001,7 +6036,8 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
     dir_lbl->set_tooltip_text(dir_tip);
     path_row->append(*dir_lbl);
 
-    auto *rev_btn = Gtk::make_managed<curvz::widgets::Button>("ins_nod_rv", "Reverse");
+    auto *rev_btn =
+        Gtk::make_managed<curvz::widgets::Button>("ins_nod_rv", "Reverse");
     curvz::utils::set_name(rev_btn, "ins_nod_rv", "inspector_node_reverse_btn");
     rev_btn->add_css_class("prop-toggle");
     rev_btn->set_tooltip_text("Reverse path direction  (R in Node tool)");
@@ -6104,9 +6140,8 @@ void PropertiesPanel::build_blend_section(SceneNode *obj, Gtk::Box *parent) {
   // blend_cache is regenerated from scratch each dirty rebuild, no cache
   // surgery is needed.
   {
-    auto *chk =
-        Gtk::make_managed<curvz::widgets::CheckButton>(
-            "ins_blnd_rv", "Reverse direction (swap A↔B)");
+    auto *chk = Gtk::make_managed<curvz::widgets::CheckButton>(
+        "ins_blnd_rv", "Reverse direction (swap A↔B)");
     curvz::utils::set_name(chk, "ins_blnd_rv", "inspector_blend_reverse_check");
     chk->set_active(false);
     grid->attach(*chk, 0, row, 3, 1);
@@ -6126,9 +6161,8 @@ void PropertiesPanel::build_blend_section(SceneNode *obj, Gtk::Box *parent) {
   }
 
   // ── Stroke-width override ─────────────────────────────────────────────
-  auto *chk_over =
-      Gtk::make_managed<curvz::widgets::CheckButton>(
-          "ins_blnd_so", "Override stroke width range");
+  auto *chk_over = Gtk::make_managed<curvz::widgets::CheckButton>(
+      "ins_blnd_so", "Override stroke width range");
   curvz::utils::set_name(chk_over, "ins_blnd_so",
                          "inspector_blend_stroke_override_check");
   chk_over->set_active(obj->blend_stroke_w_user_set);
@@ -6221,7 +6255,8 @@ void PropertiesPanel::build_blend_section(SceneNode *obj, Gtk::Box *parent) {
     row_box->set_margin_top(4);
     row_box->set_margin_bottom(6);
     row_box->set_halign(Gtk::Align::END);
-    auto *btn = Gtk::make_managed<curvz::widgets::Button>("ins_blnd_rl", "Release");
+    auto *btn =
+        Gtk::make_managed<curvz::widgets::Button>("ins_blnd_rl", "Release");
     curvz::utils::set_name(btn, "ins_blnd_rl", "inspector_blend_release_btn");
     btn->set_tooltip_text("Dissolve this Blend into A, a Group of baked "
                           "step paths, and B as siblings.");
@@ -6311,16 +6346,18 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
   // s155: in defaults_mode the values come from AppPreferences instead.
   int top_n, bot_n;
   if (defaults_mode) {
-    top_n = std::clamp(AppPreferences::instance().warp_default_top_count(), 2, 4);
-    bot_n = std::clamp(AppPreferences::instance().warp_default_bot_count(), 2, 4);
+    top_n =
+        std::clamp(AppPreferences::instance().warp_default_top_count(), 2, 4);
+    bot_n =
+        std::clamp(AppPreferences::instance().warp_default_bot_count(), 2, 4);
   } else {
     top_n = std::clamp(obj->warp_top_count, 2, 4);
     bot_n = std::clamp(obj->warp_bot_count, 2, 4);
   }
 
   auto adj_top = Gtk::Adjustment::create(top_n, 2, 4, 1, 1);
-  auto *sp_top = Gtk::make_managed<curvz::widgets::SpinButton>(
-      "ins_wrp_tn", adj_top, 1.0, 0);
+  auto *sp_top = Gtk::make_managed<curvz::widgets::SpinButton>("ins_wrp_tn",
+                                                               adj_top, 1.0, 0);
   curvz::utils::set_name(sp_top, "ins_wrp_tn", "inspector_warp_top_count_spn");
   sp_top->set_hexpand(true);
   sp_top->add_css_class("prop-width-entry");
@@ -6330,8 +6367,8 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
   ++row;
 
   auto adj_bot = Gtk::Adjustment::create(bot_n, 2, 4, 1, 1);
-  auto *sp_bot = Gtk::make_managed<curvz::widgets::SpinButton>(
-      "ins_wrp_bn", adj_bot, 1.0, 0);
+  auto *sp_bot = Gtk::make_managed<curvz::widgets::SpinButton>("ins_wrp_bn",
+                                                               adj_bot, 1.0, 0);
   curvz::utils::set_name(sp_bot, "ins_wrp_bn", "inspector_warp_bot_count_spn");
   sp_bot->set_hexpand(true);
   sp_bot->add_css_class("prop-width-entry");
@@ -6365,7 +6402,8 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
     preset_strs.push_back(names[i]);
   }
   auto preset_model = Gtk::StringList::create(preset_strs);
-  auto *dd_preset = Gtk::make_managed<curvz::widgets::DropDown>("ins_wrp_pr", preset_model);
+  auto *dd_preset =
+      Gtk::make_managed<curvz::widgets::DropDown>("ins_wrp_pr", preset_model);
   curvz::utils::set_name(dd_preset, "ins_wrp_pr", "inspector_warp_preset_dd");
   dd_preset->set_hexpand(true);
   // Initial selection:
@@ -6373,9 +6411,8 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
   //   - defaults mode: preset_idx directly (no Custom row offset)
   int initial_dd;
   if (defaults_mode) {
-    initial_dd = std::clamp(
-        AppPreferences::instance().warp_default_preset(), 0,
-        curvz::utils::warp_presets::PRESET_COUNT - 1);
+    initial_dd = std::clamp(AppPreferences::instance().warp_default_preset(), 0,
+                            curvz::utils::warp_presets::PRESET_COUNT - 1);
   } else {
     initial_dd =
         (obj->warp_preset_idx >= 0 &&
@@ -6392,13 +6429,12 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
   // value change.
   //
   // s155: defaults_mode reads from AppPreferences.
-  int initial_q = defaults_mode
-                      ? std::clamp(AppPreferences::instance().warp_default_quality(),
-                                   1, 16)
-                      : std::clamp(obj->warp_quality, 1, 16);
+  int initial_q =
+      defaults_mode
+          ? std::clamp(AppPreferences::instance().warp_default_quality(), 1, 16)
+          : std::clamp(obj->warp_quality, 1, 16);
   auto adj_q = Gtk::Adjustment::create(initial_q, 1, 16, 1, 1);
-  auto *sc_q =
-      Gtk::make_managed<curvz::widgets::Scale>("ins_wrp_q", adj_q);
+  auto *sc_q = Gtk::make_managed<curvz::widgets::Scale>("ins_wrp_q", adj_q);
   curvz::utils::set_name(sc_q, "ins_wrp_q", "inspector_warp_quality_scale");
   sc_q->set_hexpand(true);
   sc_q->set_draw_value(true);
@@ -6444,15 +6480,21 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
     // ── Defaults mode: write to AppPreferences and return ─────────────
     if (defaults_mode) {
       // dd_idx maps directly to preset_idx (no (Custom) row offset).
-      int preset_idx = std::clamp(
-          dd_idx, 0, curvz::utils::warp_presets::PRESET_COUNT - 1);
+      int preset_idx =
+          std::clamp(dd_idx, 0, curvz::utils::warp_presets::PRESET_COUNT - 1);
       // Wave / arc presets need count >= 3. Auto-bump same way instance
       // mode does, and reflect into the spinners so the user sees what
       // happened.
       if (curvz::utils::warp_presets::requires_three_anchors(preset_idx)) {
         bool changed = false;
-        if (t_n < 3) { t_n = 3; changed = true; }
-        if (b_n < 3) { b_n = 3; changed = true; }
+        if (t_n < 3) {
+          t_n = 3;
+          changed = true;
+        }
+        if (b_n < 3) {
+          b_n = 3;
+          changed = true;
+        }
         if (changed) {
           m_loading = true;
           sp_top->set_value((double)t_n);
@@ -6460,7 +6502,7 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
           m_loading = false;
         }
       }
-      auto& prefs = AppPreferences::instance();
+      auto &prefs = AppPreferences::instance();
       prefs.set_warp_default_top_count(t_n);
       prefs.set_warp_default_bot_count(b_n);
       prefs.set_warp_default_preset(preset_idx);
@@ -6568,20 +6610,21 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
   // it gets its own minimal handler that only syncs the int + redraws.
   //
   // s155: defaults_mode writes to AppPreferences instead of obj.
-  adj_q->signal_value_changed().connect([this, obj, sc_q, gen, defaults_mode]() {
-    if (m_build_gen != gen || m_loading)
-      return;
-    int q = std::clamp((int)sc_q->get_value(), 1, 16);
-    if (defaults_mode) {
-      AppPreferences::instance().set_warp_default_quality(q);
-      return;
-    }
-    obj->warp_quality = q;
-    obj->warp_cache_dirty = true;
-    if (m_canvas_widget)
-      m_canvas_widget->queue_draw();
-    emit_prop_changed();
-  });
+  adj_q->signal_value_changed().connect(
+      [this, obj, sc_q, gen, defaults_mode]() {
+        if (m_build_gen != gen || m_loading)
+          return;
+        int q = std::clamp((int)sc_q->get_value(), 1, 16);
+        if (defaults_mode) {
+          AppPreferences::instance().set_warp_default_quality(q);
+          return;
+        }
+        obj->warp_quality = q;
+        obj->warp_cache_dirty = true;
+        if (m_canvas_widget)
+          m_canvas_widget->queue_draw();
+        emit_prop_changed();
+      });
 
   // ── Release / Flatten buttons ─────────────────────────────────────────
   // Two-button row, end-aligned to match the Blend section's idiom.
@@ -6600,7 +6643,8 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
     row_box->set_spacing(6);
     row_box->set_halign(Gtk::Align::END);
 
-    auto *btn_release = Gtk::make_managed<curvz::widgets::Button>("ins_wrp_rl", "Release");
+    auto *btn_release =
+        Gtk::make_managed<curvz::widgets::Button>("ins_wrp_rl", "Release");
     curvz::utils::set_name(btn_release, "ins_wrp_rl",
                            "inspector_warp_release_btn");
     btn_release->set_tooltip_text(
@@ -6611,7 +6655,8 @@ void PropertiesPanel::build_warp_section(SceneNode *obj, Gtk::Box *parent) {
       m_sig_request_release_warp.emit();
     });
 
-    auto *btn_flatten = Gtk::make_managed<curvz::widgets::Button>("ins_wrp_fl", "Flatten");
+    auto *btn_flatten =
+        Gtk::make_managed<curvz::widgets::Button>("ins_wrp_fl", "Flatten");
     curvz::utils::set_name(btn_flatten, "ins_wrp_fl",
                            "inspector_warp_flatten_btn");
     btn_flatten->set_tooltip_text(
@@ -6680,7 +6725,8 @@ void PropertiesPanel::build_shadow_section(SceneNode *obj, Gtk::Box *parent) {
   // ── Enable toggle ──────────────────────────────────────────────────
   // Spans all three columns. Drives the sensitive() state of every other
   // row in the section.
-  auto *chk_enable = Gtk::make_managed<curvz::widgets::CheckButton>("ins_shdw_en", "Enable shadow");
+  auto *chk_enable = Gtk::make_managed<curvz::widgets::CheckButton>(
+      "ins_shdw_en", "Enable shadow");
   curvz::utils::set_name(chk_enable, "ins_shdw_en",
                          "inspector_shadow_enable_check");
   chk_enable->set_active(obj->shadow_enabled);
@@ -6804,24 +6850,24 @@ void PropertiesPanel::build_shadow_section(SceneNode *obj, Gtk::Box *parent) {
           return;
         color::Color initial(obj->shadow_color_r, obj->shadow_color_g,
                              obj->shadow_color_b, 1.0);
-        ColorPickerPopover::shared().open(*swatch, initial, /*with_alpha=*/false,
-                             [this, obj, swatch, gen](const color::Color &c) {
-                               if (m_build_gen != gen)
-                                 return;
-                               // S98: route through mutate_appearance so a
-                               // bound style is unbound on direct shadow-colour
-                               // edit. Symmetric with the fill/stroke editors
-                               // above.
-                               Curvz::style::mutate_appearance(
-                                   *obj, [&](SceneNode & /*n*/) {
-                                     obj->shadow_color_r = c.r;
-                                     obj->shadow_color_g = c.g;
-                                     obj->shadow_color_b = c.b;
-                                   });
-                               swatch->queue_draw();
-                               push_inspector_command(obj);
-                               emit_prop_changed();
-                             });
+        ColorPickerPopover::shared().open(
+            *swatch, initial, /*with_alpha=*/false,
+            [this, obj, swatch, gen](const color::Color &c) {
+              if (m_build_gen != gen)
+                return;
+              // S98: route through mutate_appearance so a
+              // bound style is unbound on direct shadow-colour
+              // edit. Symmetric with the fill/stroke editors
+              // above.
+              Curvz::style::mutate_appearance(*obj, [&](SceneNode & /*n*/) {
+                obj->shadow_color_r = c.r;
+                obj->shadow_color_g = c.g;
+                obj->shadow_color_b = c.b;
+              });
+              swatch->queue_draw();
+              push_inspector_command(obj);
+              emit_prop_changed();
+            });
       });
   swatch->add_controller(swatch_click);
   colour_row->append(*swatch);
@@ -7647,10 +7693,10 @@ void PropertiesPanel::broadcast_appearance_to_siblings(SceneNode *primary,
              "obj_name='{}' obj_type={}",
              s->internal_id, s->name, (int)s->type);
     composite->add(std::make_unique<EditAppearanceCommand>(
-        m_project, s->internal_id,
-        std::move(fb), std::move(sb), std::move(fa), std::move(sa),
-        std::move(fsib), std::move(ssib), std::move(fsia), std::move(ssia),
-        std::move(bsb), std::move(bsa), "Sibling appearance sync"));
+        m_project, s->internal_id, std::move(fb), std::move(sb), std::move(fa),
+        std::move(sa), std::move(fsib), std::move(ssib), std::move(fsia),
+        std::move(ssia), std::move(bsb), std::move(bsa),
+        "Sibling appearance sync"));
   }
 
   m_history->push(std::move(composite));
@@ -8340,11 +8386,10 @@ void PropertiesPanel::add_fill_stroke_section(SceneNode *obj,
                      "iid='{}' obj_name='{}' obj_type={}",
                      s->internal_id, s->name, (int)s->type);
             composite->add(std::make_unique<EditAppearanceCommand>(
-                m_project, s->internal_id,
-                std::move(fb), std::move(sb), std::move(fa), std::move(sa),
-                std::move(fsib), std::move(ssib), std::move(fsia),
-                std::move(ssia), std::move(bsb), std::move(bsa),
-                "Sibling stroke width sync"));
+                m_project, s->internal_id, std::move(fb), std::move(sb),
+                std::move(fa), std::move(sa), std::move(fsib), std::move(ssib),
+                std::move(fsia), std::move(ssia), std::move(bsb),
+                std::move(bsa), "Sibling stroke width sync"));
           }
           if (m_history)
             m_history->push(std::move(composite));
@@ -8367,9 +8412,12 @@ void PropertiesPanel::add_fill_stroke_section(SceneNode *obj,
       cap_row->set_homogeneous(false);
       cap_row->set_halign(Gtk::Align::START);
 
-      auto *cap_butt = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_cb");
-      auto *cap_round = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_cr");
-      auto *cap_square = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_cs");
+      auto *cap_butt =
+          Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_cb");
+      auto *cap_round =
+          Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_cr");
+      auto *cap_square =
+          Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_cs");
       curvz::utils::set_name(cap_butt, "ins_fs_strk_cb",
                              "inspector_fill_stroke_cap_butt_btn");
       curvz::utils::set_name(cap_round, "ins_fs_strk_cr",
@@ -8439,10 +8487,9 @@ void PropertiesPanel::add_fill_stroke_section(SceneNode *obj,
                    "iid='{}' obj_name='{}' obj_type={}",
                    s->internal_id, s->name, (int)s->type);
           composite->add(std::make_unique<EditAppearanceCommand>(
-              m_project, s->internal_id,
-              std::move(fb), std::move(sb), std::move(fa), std::move(sa),
-              std::move(fsib), std::move(ssib), std::move(fsia),
-              std::move(ssia), std::move(bsb), std::move(bsa),
+              m_project, s->internal_id, std::move(fb), std::move(sb),
+              std::move(fa), std::move(sa), std::move(fsib), std::move(ssib),
+              std::move(fsia), std::move(ssia), std::move(bsb), std::move(bsa),
               "Sibling cap sync"));
         }
         m_history->push(std::move(composite));
@@ -8492,9 +8539,12 @@ void PropertiesPanel::add_fill_stroke_section(SceneNode *obj,
       join_row->set_homogeneous(false);
       join_row->set_halign(Gtk::Align::START);
 
-      auto *join_miter = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_jm");
-      auto *join_round = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_jr");
-      auto *join_bevel = Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_jb");
+      auto *join_miter =
+          Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_jm");
+      auto *join_round =
+          Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_jr");
+      auto *join_bevel =
+          Gtk::make_managed<curvz::widgets::ToggleButton>("ins_fs_strk_jb");
       curvz::utils::set_name(join_miter, "ins_fs_strk_jm",
                              "inspector_fill_stroke_join_miter_btn");
       curvz::utils::set_name(join_round, "ins_fs_strk_jr",
@@ -8559,10 +8609,9 @@ void PropertiesPanel::add_fill_stroke_section(SceneNode *obj,
                    "iid='{}' obj_name='{}' obj_type={}",
                    s->internal_id, s->name, (int)s->type);
           composite->add(std::make_unique<EditAppearanceCommand>(
-              m_project, s->internal_id,
-              std::move(fb), std::move(sb), std::move(fa), std::move(sa),
-              std::move(fsib), std::move(ssib), std::move(fsia),
-              std::move(ssia), std::move(bsb), std::move(bsa),
+              m_project, s->internal_id, std::move(fb), std::move(sb),
+              std::move(fa), std::move(sa), std::move(fsib), std::move(ssib),
+              std::move(fsia), std::move(ssia), std::move(bsb), std::move(bsa),
               "Sibling join sync"));
         }
         m_history->push(std::move(composite));
@@ -8948,19 +8997,22 @@ void PropertiesPanel::sync_selected_pivot() {
   // collection: anything with a path geometry contributes to the union.
   std::vector<SceneNode *> leaves;
   std::function<void(SceneNode *)> collect = [&](SceneNode *n) {
-    if (!n) return;
+    if (!n)
+      return;
     if (n->type == SceneNode::Type::Path && n->path &&
         !n->path->nodes.empty()) {
       leaves.push_back(n);
       return;
     }
-    for (auto &c : n->children) collect(c.get());
+    for (auto &c : n->children)
+      collect(c.get());
     if (n->type == SceneNode::Type::ClipGroup && n->clip_shape)
       collect(n->clip_shape.get());
     if (n->type == SceneNode::Type::Blend) {
       collect(n->blend_source_a.get());
       collect(n->blend_source_b.get());
-      for (auto &step : n->blend_cache) collect(step.get());
+      for (auto &step : n->blend_cache)
+        collect(step.get());
     }
     if (n->type == SceneNode::Type::Warp) {
       collect(n->warp_source.get());
@@ -8977,7 +9029,8 @@ void PropertiesPanel::sync_selected_pivot() {
     if (leaf->path)
       expand_bbox_for_path(*leaf->path, minx, maxx, miny, maxy);
   }
-  if (minx > 1e8) return; // safety — no geometry contributed
+  if (minx > 1e8)
+    return; // safety — no geometry contributed
 
   m_loading = true;
   m_sel_pivot_picker->set_bbox(minx, miny, maxx - minx, maxy - miny);
@@ -8990,18 +9043,15 @@ void PropertiesPanel::sync_selected_pivot() {
     // does NOT emit signal_point_changed, breaking the m1 feedback
     // loop without relying on m_loading alone.
     m_sel_pivot_picker->update_arbitrary_xy_silent(
-        m_canvas_widget->custom_pivot_x(),
-        m_canvas_widget->custom_pivot_y());
+        m_canvas_widget->custom_pivot_x(), m_canvas_widget->custom_pivot_y());
   } else {
     // Canvas cleared the pivot (R-toggled off, or selection-change
     // side-effect). Reset picker to its default neutral state:
     // preset C against the (refreshed) bbox. This IS a mode change —
     // safe because there's nothing the user could be doing with the
     // picker while canvas reports "no pivot active".
-    m_sel_pivot_picker->set_mode(
-        curvz::widgets::RefPointPicker::Mode::Preset);
-    m_sel_pivot_picker->set_preset(
-        curvz::widgets::RefPointPicker::Preset::C);
+    m_sel_pivot_picker->set_mode(curvz::widgets::RefPointPicker::Mode::Preset);
+    m_sel_pivot_picker->set_preset(curvz::widgets::RefPointPicker::Preset::C);
   }
   m_loading = false;
 }

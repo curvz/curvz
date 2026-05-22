@@ -124,7 +124,7 @@ SpinButton::SpinButton(std::string_view name, double min, double max,
 }
 
 // s189 m2 — pre-built Adjustment overload. The Adjustment-taking
-// Gtk::SpinButton ctor is `(adj, climb_rate, digits)`; we route those
+// CurvzSpinButton ctor is `(adj, climb_rate, digits)`; we route those
 // three args through the template base's perfect-forwarding. Inspector
 // call sites that connect adj->signal_value_changed() or share the
 // Adjustment across widgets keep that external handle alive — same
@@ -140,7 +140,7 @@ SpinButton::SpinButton(std::string_view name, Glib::RefPtr<Gtk::Adjustment> adj,
 //
 // Forwards the tag to the template's parallel ctor (which routes it
 // to Scriptable's unregistered ctor — empty name, m_registered=false);
-// the trailing (adj, climb_rate, digits) goes to Gtk::SpinButton's
+// the trailing (adj, climb_rate, digits) goes to CurvzSpinButton's
 // adjustment-taking ctor via perfect-forwarding. Still calls
 // init_scriptable(); bind_canonical() still wires
 // signal_value_changed() to emit(); emit() short-circuits at the
@@ -229,7 +229,7 @@ std::vector<std::string> SpinButton::leaf_properties() const {
 // outcome.
 //
 // Open design fork (s187, banked): CurvzSpinButton currently inherits
-// from Gtk::SpinButton directly, NOT from this substrate widget — so
+// from CurvzSpinButton directly, NOT from this substrate widget — so
 // CurvzSpinButton instances aren't script-addressable today, and the
 // rich Domain-aware parser from s263 m4-m5 is reachable only through
 // the user's text-entry path. When the s187 fork resolves, this hook

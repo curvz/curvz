@@ -16,7 +16,7 @@
 # unit sets, structural cross-domain refusal. The Domain-aware path
 # is reachable through CurvzSpinButton instances (rotation fields,
 # inspector geometry fields with units), but the s187 design fork is
-# still open — CurvzSpinButton inherits from Gtk::SpinButton
+# still open — CurvzSpinButton inherits from CurvzSpinButton
 # directly, NOT from the substrate widget, so the Domain-aware
 # parser isn't script-addressable today.
 #

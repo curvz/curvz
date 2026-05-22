@@ -42,9 +42,9 @@
 #pragma once
 #include "CurvzSpinButton.hpp"
 #include "scripting/ScriptableWidget.hpp"
+#include "widgets/RefPointGrid.hpp"
 
 #include <gtkmm/box.h>
-#include <gtkmm/drawingarea.h>
 #include <gtkmm/label.h>
 
 #include <sigc++/signal.h>
@@ -55,7 +55,10 @@ namespace curvz::widgets {
 class RefPointPicker : public curvz::scripting::ScriptableWidget<Gtk::Box> {
 public:
   enum class Mode { Preset, Arbitrary };
-  enum class Preset { NW, N, NE, W, C, E, SW, S, SE };
+  // s290: Preset enum aliased to RefPointGrid::Preset so the two stay
+  // in lockstep. Existing callers using RefPointPicker::Preset::C / NW /
+  // etc keep working unchanged.
+  using Preset = RefPointGrid::Preset;
 
   // The CanvasModel pointer is forwarded to the internal CurvzSpinButtons
   // so they display in the document's current unit and handle the Y-flip
@@ -129,10 +132,10 @@ protected:
 
 private:
   // ── Internal layout ──────────────────────────────────────────────────
-  // Composite children — owned via gtkmm parent-child lifetime under
-  // *this (the Gtk::Box). None of these are scriptable in their own
-  // right. The composite IS the script object.
-  Gtk::DrawingArea m_grid_area;
+  // s290: the 9-point visual grid is the extracted RefPointGrid widget.
+  // RefPointPicker is now grid + spinners + bbox logic — RefPointGrid
+  // alone is the reusable atom for creator popovers etc.
+  RefPointGrid m_grid;
   // s286: Arbitrary checkbox removed from the UI. Mode is now inferred
   // implicitly: clicking a preset → Preset; typing into X/Y → Arbitrary.
   // The Mode enum, set_mode(), signal_mode_changed, and the
@@ -165,12 +168,7 @@ private:
   // ── Internal helpers ─────────────────────────────────────────────────
   double preset_doc_x(Preset p) const;
   double preset_doc_y(Preset p) const;
-  bool pixel_to_preset(double px, double py, Preset *out_p) const;
   void refresh_xy_display();
-  void on_grid_draw(const Cairo::RefPtr<Cairo::Context> &cr, int width,
-                    int height);
-  static const char *preset_name(Preset p);
-  static bool preset_from_name(std::string_view name, Preset *out);
 };
 
 } // namespace curvz::widgets

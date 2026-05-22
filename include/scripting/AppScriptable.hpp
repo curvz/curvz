@@ -120,6 +120,53 @@
 //                             Contract — one happy path, no refusals.
 //                             Same shape as `version`.
 //
+//   animating_parser_smoke "<svg-path>"
+//                          — s290 m1a. Diagnostic verb. Parses the
+//                            given SVG via both the base parser and
+//                            the new AnimatingSvgParser, walks both
+//                            resulting CurvzDocuments, and logs a
+//                            one-line "shape signature" (counts of
+//                            major node types) for each. Equal
+//                            signatures on real SVGs = m1a passes
+//                            (AnimatingSvgParser is producing
+//                            identical output to the base parser).
+//
+//                            Self-contained — no MainWindow / Canvas
+//                            plumbing required. Result is observed
+//                            via curvz.log, not via return value;
+//                            the verb returns ScriptValue::null().
+//
+//                            Trust profile: Scripter | TestRunner.
+//                            Macro OUT (log-channel diagnostic).
+//
+//   animating_emitter_smoke "<svg-path>"
+//                          — s290 m1b.1 / m1b.2 / m1b.3. Diagnostic
+//                            verb. Parses the given SVG via
+//                            AnimatingSvgParser wired to a
+//                            LoggingEmitter consumer, then cross-
+//                            checks the emit stream against the
+//                            doc-shape walk's counts.
+//
+//                            m1b.1 gate: on_path count == paths.
+//                            m1b.2 gates: compound depth returns to
+//                            zero; compound_begin count == compounds;
+//                            group depth returns to zero;
+//                            group_begin count == groups; begin/end
+//                            pairs balanced.
+//                            m1b.3 gates: layer depth returns to
+//                            zero; layer_begin count == layers
+//                            (Type::Layer only — technical layer
+//                            kinds skip events); layer begin/end
+//                            balanced; doc_metadata fires exactly
+//                            once.
+//
+//                            MATCH = every gate passed. DIFFER lists
+//                            which gate failed so the bug is bisected
+//                            to one event family.
+//
+//                            Self-contained; result via curvz.log;
+//                            same trust profile as the m1a verb.
+//
 // ── Why no `quit` verb yet ────────────────────────────────────────────────
 //
 // `app.quit` is the natural sibling to `proj.close` (both end an

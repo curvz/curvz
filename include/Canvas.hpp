@@ -793,6 +793,13 @@ public:
   // Clipboard operations
   void select_all();
   void clear_selection();  // s136 m5: counterpart to select_all (Ctrl+Shift+A)
+  // s290 — Node-tool counterparts. Ctrl+A in Node mode selects every node
+  // on every visible non-special-layer path; Ctrl+Shift+A clears node
+  // selection. These operate on m_node_selection (and m_selected /
+  // m_selected_node for primary), independent of the object-world
+  // m_selection that select_all/clear_selection above mutate.
+  void node_select_all();
+  void node_clear_selection();
   void copy_selected();
   void cut_selected();
   void paste_clipboard();

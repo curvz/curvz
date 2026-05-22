@@ -53,7 +53,7 @@ semantic.
 
 The half that is easier to forget. A GTK4 app of any size has
 an anonymity problem: a hundred widgets in the tree, every one
-of them a `Gtk::Button*` or `Gtk::SpinButton*`, and when
+of them a `Gtk::Button*` or `CurvzSpinButton*`, and when
 something misbehaves you have no straightforward way to say
 *which* button. Logs print pointer addresses. Widget-tree dumps
 print class names. Crash traces print stack frames against type

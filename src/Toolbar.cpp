@@ -1,14 +1,16 @@
 #include "Toolbar.hpp"
 #include "CurvzLog.hpp"
-#include "color/SwatchLibrary.hpp"  // S87 m1 — picker section in popovers
-#include "color/Swatch.hpp"         // S87 m1 — SolidSwatch resolve
-#include "curvz_utils.hpp"          // s118 — curvz::utils::set_name
+#include "CurvzSpinButton.hpp"   // s290: rect popover uses CurvzSpinButton
+#include "color/Swatch.hpp"        // S87 m1 — SolidSwatch resolve
+#include "color/SwatchLibrary.hpp" // S87 m1 — picker section in popovers
+#include "curvz_utils.hpp"         // s118 — curvz::utils::set_name
 // s188 m1: every tool button now a curvz::widgets::ToggleButton —
 // the funnel constructs them. Unconditional include (was diagnostic-
 // only in s186/s187 when only the Node tool used the wrapper).
 #include "widgets/Button.hpp"
 #include "widgets/CheckButton.hpp"
 #include "widgets/DropDown.hpp"
+#include "widgets/RefPointGrid.hpp" // s290 — anchor picker in rect/ellipse popovers
 #include "widgets/SpinButton.hpp"
 #include "widgets/ToggleButton.hpp"
 #include <algorithm>
@@ -34,19 +36,21 @@
 
 namespace Curvz {
 
-// ── Helper: canvas width/height in display units ──────────────────────────────
-// Returns {w, h} in the document's display unit, correctly handling physical
-// mode (where the canvas is defined in physical dimensions, not px).
-static std::pair<double,double> canvas_display_size(const CurvzDocument* doc) {
-    if (!doc) return {1000.0, 1000.0};
-    const CanvasModel& cm = doc->canvas;
-    if (cm.display_mode == DisplayMode::Physical) {
-        // Return physical dimensions directly — popover values are in phys_unit
-        return { cm.phys_width, cm.phys_height };
-    }
-    // Pixel / RatioQuality
-    return { UnitSystem::from_px(doc->canvas_width(),  cm.display_unit),
-             UnitSystem::from_px(doc->canvas_height(), cm.display_unit) };
+// ── Helper: canvas width/height in display units
+// ────────────────────────────── Returns {w, h} in the document's display unit,
+// correctly handling physical mode (where the canvas is defined in physical
+// dimensions, not px).
+static std::pair<double, double> canvas_display_size(const CurvzDocument *doc) {
+  if (!doc)
+    return {1000.0, 1000.0};
+  const CanvasModel &cm = doc->canvas;
+  if (cm.display_mode == DisplayMode::Physical) {
+    // Return physical dimensions directly — popover values are in phys_unit
+    return {cm.phys_width, cm.phys_height};
+  }
+  // Pixel / RatioQuality
+  return {UnitSystem::from_px(doc->canvas_width(), cm.display_unit),
+          UnitSystem::from_px(doc->canvas_height(), cm.display_unit)};
 }
 
 // ── Hex helpers
@@ -97,459 +101,485 @@ static bool hex_to_color(const std::string &hex, double &r, double &g,
 // Impl one feature at a time without breaking callers.
 
 struct Toolbar::Impl {
-    Toolbar* self = nullptr;
+  Toolbar *self = nullptr;
 
-    // ── Tool-button state ─────────────────────────────────────────────────
-    ActiveTool active = ActiveTool::Selection;
-    std::vector<Gtk::ToggleButton*> buttons;
-    std::vector<ActiveTool>         button_tools;
-    Gtk::ToggleButton*              corner_tool_btn = nullptr;
+  // ── Tool-button state ─────────────────────────────────────────────────
+  ActiveTool active = ActiveTool::Selection;
+  std::vector<Gtk::ToggleButton *> buttons;
+  std::vector<ActiveTool> button_tools;
+  Gtk::ToggleButton *corner_tool_btn = nullptr;
 
-    // ── Density state ─────────────────────────────────────────────────────
-    Toolbar::Density density = Toolbar::Density::Standard;
-    Gtk::Popover     density_pop;
-    bool             density_pop_built = false;
+  // ── Density state ─────────────────────────────────────────────────────
+  Toolbar::Density density = Toolbar::Density::Standard;
+  Gtk::Popover density_pop;
+  bool density_pop_built = false;
 
-    // ── Snap toggle button ────────────────────────────────────────────────
-    // Replaces the prior CurvzSwitch (Cairo-drawn pill). .tool-btn-styled
-    // ToggleButton swapping between curvz-switch-on-symbolic and
-    // curvz-switch-off-symbolic. .tb-snap-btn class opts out of the
-    // .tool-btn:checked active blue (icon carries the state, not bg).
-    Gtk::ToggleButton snap_btn;
+  // ── Snap toggle button ────────────────────────────────────────────────
+  // Replaces the prior CurvzSwitch (Cairo-drawn pill). .tool-btn-styled
+  // ToggleButton swapping between curvz-switch-on-symbolic and
+  // curvz-switch-off-symbolic. .tb-snap-btn class opts out of the
+  // .tool-btn:checked active blue (icon carries the state, not bg).
+  Gtk::ToggleButton snap_btn;
 
-    // ── s152 sub-ship 2a: zoom popover ───────────────────────────────────
-    // Built lazily by build_zoom_popover() during Impl::build(). Public
-    // Toolbar::set_zoom() forwards in to update zoom_level + the
-    // Adjustment.
-    //
-    // s198 m1: zoom_spin flipped from value-held Gtk::SpinButton to
-    // pointer-held substrate curvz::widgets::SpinButton — same
-    // architectural pattern as s196 m3's Bold/Italic CheckButton flip.
-    // The substrate ctor takes the abbrev as its first argument, which
-    // has to happen at build_zoom_popover() time (when zoom_adj exists),
-    // not at Impl default-construction.
-    Gtk::Popover                  zoom_pop;
-    Glib::RefPtr<Gtk::Adjustment> zoom_adj;
-    curvz::widgets::SpinButton*   zoom_spin = nullptr;
-    double                        zoom_level = 1.0;
+  // ── s152 sub-ship 2a: zoom popover ───────────────────────────────────
+  // Built lazily by build_zoom_popover() during Impl::build(). Public
+  // Toolbar::set_zoom() forwards in to update zoom_level + the
+  // Adjustment.
+  //
+  // s198 m1: zoom_spin flipped from value-held CurvzSpinButton to
+  // pointer-held substrate curvz::widgets::SpinButton — same
+  // architectural pattern as s196 m3's Bold/Italic CheckButton flip.
+  // The substrate ctor takes the abbrev as its first argument, which
+  // has to happen at build_zoom_popover() time (when zoom_adj exists),
+  // not at Impl default-construction.
+  Gtk::Popover zoom_pop;
+  Glib::RefPtr<Gtk::Adjustment> zoom_adj;
+  curvz::widgets::SpinButton *zoom_spin = nullptr;
+  double zoom_level = 1.0;
 
-    // ── s153 sub-ship 2b: rect / ellipse / line popovers ─────────────────
-    // Three placement popovers that share the setup_rclick_popover helper
-    // and the make_pop_row spin-row helper. Open-time logic seeds the
-    // adjustments from canvas size and refreshes the unit label. Public
-    // Toolbar::set_popup_unit() still drives all popover unit labels and
-    // forwards through to these three (plus the four still in the public
-    // class until 2c-2e land).
-    Gtk::Popover                  rect_pop;
-    Glib::RefPtr<Gtk::Adjustment> rect_adj_x, rect_adj_y, rect_adj_w, rect_adj_h;
-    Gtk::Label*                   rect_unit_lbl = nullptr;
+  // ── s153 sub-ship 2b: rect / ellipse / line popovers ─────────────────
+  // Three placement popovers that share the setup_rclick_popover helper
+  // and the make_pop_row spin-row helper. Open-time logic seeds the
+  // adjustments from canvas size and refreshes the unit label. Public
+  // Toolbar::set_popup_unit() still drives all popover unit labels and
+  // forwards through to these three (plus the four still in the public
+  // class until 2c-2e land).
+  Gtk::Popover rect_pop;
+  // s290 prototype: rect popover spinners hold doc-px internally and convert
+  // through CurvzSpinButton's intent-aware pump. Receiver is intent-clean —
+  // no pop_to_px in the rect path. Note: this drops the four rect spinners
+  // off the script registry (CurvzSpinButton isn't ScriptableWidget yet —
+  // tracked in ARC.md as the unification fork). Other popovers retain the
+  // scripter-wrapper substrate until the fork is resolved.
+  CurvzSpinButton *rect_spin_x = nullptr, *rect_spin_y = nullptr,
+                  *rect_spin_w = nullptr, *rect_spin_h = nullptr;
+  // s290 — 9-point anchor grid. The grid's selected preset names which
+  // point on the as-yet-uncreated bbox the X/Y coords refer to. Default
+  // C = center, matching the centered-20% prefill. Anchor frac is cached
+  // alongside so submit math doesn't have to query the widget.
+  curvz::widgets::RefPointGrid *rect_grid = nullptr;
+  double rect_frac_x = 0.5, rect_frac_y = 0.5; // C
+  Gtk::Label *rect_unit_lbl = nullptr;
 
-    Gtk::Popover                  ellipse_pop;
-    Glib::RefPtr<Gtk::Adjustment> ellipse_adj_x, ellipse_adj_y,
-                                  ellipse_adj_w, ellipse_adj_h;
-    Gtk::Label*                   ellipse_unit_lbl = nullptr;
+  Gtk::Popover ellipse_pop;
+  // s290: spinners hold doc-px internally; receiver intent-clean (no pop_to_px).
+  CurvzSpinButton *ellipse_spin_x = nullptr, *ellipse_spin_y = nullptr,
+                  *ellipse_spin_w = nullptr, *ellipse_spin_h = nullptr;
+  curvz::widgets::RefPointGrid *ellipse_grid = nullptr;
+  double ellipse_frac_x = 0.5, ellipse_frac_y = 0.5; // C
+  Gtk::Label *ellipse_unit_lbl = nullptr;
 
-    Gtk::Popover                  line_pop;
-    Glib::RefPtr<Gtk::Adjustment> line_adj_x1, line_adj_y1,
-                                  line_adj_x2, line_adj_y2;
-    Gtk::Label*                   line_unit_lbl = nullptr;
+  Gtk::Popover line_pop;
+  // s290: spinners hold doc-px internally; receiver intent-clean.
+  CurvzSpinButton *line_spin_x1 = nullptr, *line_spin_y1 = nullptr,
+                  *line_spin_x2 = nullptr, *line_spin_y2 = nullptr;
+  Gtk::Label *line_unit_lbl = nullptr;
 
-    // ── s153 sub-ship 2c: ref + measure popovers ─────────────────────────
-    // Ref: simple X/Y placement popover, mirrors rect/ellipse shape but
-    // built directly (no make_pop_row helper) because it predates that
-    // helper and uses its own row layout (set_width_chars(3)).
-    // Measure: behaviour-at-the-tool surface (s150) — two checkboxes
-    // bound to m_doc->measure_*. Open syncs from doc, toggles write
-    // back through and emit signal_measure_settings_changed.
-    Gtk::Popover                  ref_pop;
-    Glib::RefPtr<Gtk::Adjustment> ref_adj_x, ref_adj_y;
-    Gtk::Label*                   ref_unit_lbl = nullptr;
+  // ── s153 sub-ship 2c: ref + measure popovers ─────────────────────────
+  // Ref: simple X/Y placement popover, mirrors rect/ellipse shape but
+  // built directly (no make_pop_row helper) because it predates that
+  // helper and uses its own row layout (set_width_chars(3)).
+  // Measure: behaviour-at-the-tool surface (s150) — two checkboxes
+  // bound to m_doc->measure_*. Open syncs from doc, toggles write
+  // back through and emit signal_measure_settings_changed.
+  Gtk::Popover ref_pop;
+  Glib::RefPtr<Gtk::Adjustment> ref_adj_x, ref_adj_y;
+  Gtk::Label *ref_unit_lbl = nullptr;
 
-    Gtk::Popover                  measure_pop;
-    Gtk::CheckButton*             measure_save_chk = nullptr;
-    Gtk::CheckButton*             measure_del_chk  = nullptr;
-    Gtk::Label*                   measure_del_lbl  = nullptr;
+  Gtk::Popover measure_pop;
+  Gtk::CheckButton *measure_save_chk = nullptr;
+  Gtk::CheckButton *measure_del_chk = nullptr;
+  Gtk::Label *measure_del_lbl = nullptr;
 
-    // ── s153 sub-ship 2d: text popover ────────────────────────────────────
-    // Text placement popover. More state than the other 2b/2c popovers:
-    // x/y/size adjustments + font family DropDown + bold/italic
-    // s196 m3: text_bold_btn / text_italic_btn flipped from
-    // value-held Gtk::CheckButton to pointer-held substrate
-    // curvz::widgets::CheckButton — the substrate's constructor takes
-    // the abbrev, which has to happen at build_text_popover() time, not
-    // at Impl default-construction. Family / anchor dropdowns
-    // similarly upgraded to substrate.
-    Gtk::Popover                  text_pop;
-    Glib::RefPtr<Gtk::Adjustment> text_adj_x, text_adj_y, text_adj_size;
-    Gtk::Label*                   text_unit_lbl     = nullptr;
-    curvz::widgets::DropDown*     text_family_drop  = nullptr;
-    curvz::widgets::CheckButton*  text_bold_btn     = nullptr;
-    curvz::widgets::CheckButton*  text_italic_btn   = nullptr;
-    curvz::widgets::DropDown*     text_anchor_drop  = nullptr;
+  // ── s153 sub-ship 2d: text popover ────────────────────────────────────
+  // Text placement popover. More state than the other 2b/2c popovers:
+  // x/y/size adjustments + font family DropDown + bold/italic
+  // s196 m3: text_bold_btn / text_italic_btn flipped from
+  // value-held Gtk::CheckButton to pointer-held substrate
+  // curvz::widgets::CheckButton — the substrate's constructor takes
+  // the abbrev, which has to happen at build_text_popover() time, not
+  // at Impl default-construction. Family / anchor dropdowns
+  // similarly upgraded to substrate.
+  Gtk::Popover text_pop;
+  // s290: x/y hold doc-px internally; size_pt stays a raw adjustment because
+  // points are a typography unit, not a doc-space measurement.
+  CurvzSpinButton *text_spin_x = nullptr, *text_spin_y = nullptr;
+  Glib::RefPtr<Gtk::Adjustment> text_adj_size;
+  Gtk::Label *text_unit_lbl = nullptr;
+  curvz::widgets::DropDown *text_family_drop = nullptr;
+  curvz::widgets::CheckButton *text_bold_btn = nullptr;
+  curvz::widgets::CheckButton *text_italic_btn = nullptr;
+  curvz::widgets::DropDown *text_anchor_drop = nullptr;
 
-    // ── s153 sub-ship 2e: polygon + spiral popovers ──────────────────────
-    // The two heaviest placement popovers — each owns a 160×160 Cairo
-    // preview DrawingArea, motion gestures (polygon's inflection handle
-    // drag), and scratch state for the live numeric values that
-    // Canvas reads via the public polygon_sides() / polygon_inflection() /
-    // spiral_turns() / spiral_inner_pct() forwarders.
-    //
-    // Polygon: 5 adjustments (sides, inflect, cx, cy, r) + drag-state
-    // booleans for the inflection handle.
-    // Spiral: 5 adjustments (turns, inner, cx, cy, r). S98 defaults
-    // tuned for nautilus look — 3 turns, 4% inner radius.
-    Gtk::Popover                  poly_pop;
-    Glib::RefPtr<Gtk::Adjustment> poly_adj_cx, poly_adj_cy, poly_adj_r;
-    Glib::RefPtr<Gtk::Adjustment> poly_adj_sides, poly_adj_inflect;
-    Gtk::DrawingArea              poly_preview;
-    int                           poly_sides             = 6;
-    double                        poly_inflection        = 1.0;
-    bool                          poly_hdl_drag          = false;
-    double                        poly_hdl_start_inflect = 1.0;
-    Gtk::Label*                   poly_unit_lbl          = nullptr;
+  // ── s153 sub-ship 2e: polygon + spiral popovers ──────────────────────
+  // The two heaviest placement popovers — each owns a 160×160 Cairo
+  // preview DrawingArea, motion gestures (polygon's inflection handle
+  // drag), and scratch state for the live numeric values that
+  // Canvas reads via the public polygon_sides() / polygon_inflection() /
+  // spiral_turns() / spiral_inner_pct() forwarders.
+  //
+  // Polygon: 5 adjustments (sides, inflect, cx, cy, r) + drag-state
+  // booleans for the inflection handle.
+  // Spiral: 5 adjustments (turns, inner, cx, cy, r). S98 defaults
+  // tuned for nautilus look — 3 turns, 4% inner radius.
+  Gtk::Popover poly_pop;
+  // s290: cx/cy/r hold doc-px internally; sides/inflect stay as dimensionless
+  // adjustments (no doc-space conversion).
+  CurvzSpinButton *poly_spin_cx = nullptr, *poly_spin_cy = nullptr,
+                  *poly_spin_r = nullptr;
+  Glib::RefPtr<Gtk::Adjustment> poly_adj_sides, poly_adj_inflect;
+  Gtk::DrawingArea poly_preview;
+  int poly_sides = 6;
+  double poly_inflection = 1.0;
+  bool poly_hdl_drag = false;
+  double poly_hdl_start_inflect = 1.0;
+  Gtk::Label *poly_unit_lbl = nullptr;
 
-    Gtk::Popover                  spiral_pop;
-    Glib::RefPtr<Gtk::Adjustment> spiral_adj_cx, spiral_adj_cy, spiral_adj_r;
-    Glib::RefPtr<Gtk::Adjustment> spiral_adj_turns, spiral_adj_inner;
-    Gtk::DrawingArea              spiral_preview;
-    double                        spiral_turns           = 3.0;
-    double                        spiral_inner           = 4.0;
-    Gtk::Label*                   spiral_unit_lbl        = nullptr;
+  Gtk::Popover spiral_pop;
+  // s290: cx/cy/r hold doc-px internally; turns/inner stay dimensionless.
+  CurvzSpinButton *spiral_spin_cx = nullptr, *spiral_spin_cy = nullptr,
+                  *spiral_spin_r = nullptr;
+  Glib::RefPtr<Gtk::Adjustment> spiral_adj_turns, spiral_adj_inner;
+  Gtk::DrawingArea spiral_preview;
+  double spiral_turns = 3.0;
+  double spiral_inner = 4.0;
+  Gtk::Label *spiral_unit_lbl = nullptr;
 
-    explicit Impl(Toolbar* owner) : self(owner) {}
+  explicit Impl(Toolbar *owner) : self(owner) {}
 
-    // ── Construction ──────────────────────────────────────────────────────
-    void build();
+  // ── Construction ──────────────────────────────────────────────────────
+  void build();
 
-    // ── Tool-button building blocks ──────────────────────────────────────
-    // s188 m1: funnels take abbrev + long_name up front. They construct
-    // curvz::widgets::ToggleButton (not plain Gtk::ToggleButton) and call
-    // curvz::utils::set_name internally, so every tool button is
-    // scriptable by its abbrev and discoverable by its long_name through
-    // the resolver. The s186/s187 Picture overload had no callers and was
-    // removed in this ship — git -L any past version if needed.
-    //
-    // build_tool_btn is the shared helper: constructs the wrapper,
-    // applies icon/tooltip/CSS, wires the radio-invariant lambda, calls
-    // set_name, and registers in buttons/button_tools. Returns the
-    // pointer so the caller decides whether to append. add_tool_button
-    // appends; make_tool_button doesn't.
-    Gtk::ToggleButton* build_tool_btn(const char* abbrev, const char* long_name,
-                                      const char* icon, const char* tooltip,
+  // ── Tool-button building blocks ──────────────────────────────────────
+  // s188 m1: funnels take abbrev + long_name up front. They construct
+  // curvz::widgets::ToggleButton (not plain Gtk::ToggleButton) and call
+  // curvz::utils::set_name internally, so every tool button is
+  // scriptable by its abbrev and discoverable by its long_name through
+  // the resolver. The s186/s187 Picture overload had no callers and was
+  // removed in this ship — git -L any past version if needed.
+  //
+  // build_tool_btn is the shared helper: constructs the wrapper,
+  // applies icon/tooltip/CSS, wires the radio-invariant lambda, calls
+  // set_name, and registers in buttons/button_tools. Returns the
+  // pointer so the caller decides whether to append. add_tool_button
+  // appends; make_tool_button doesn't.
+  Gtk::ToggleButton *build_tool_btn(const char *abbrev, const char *long_name,
+                                    const char *icon, const char *tooltip,
+                                    ActiveTool tool);
+  void add_tool_button(const char *abbrev, const char *long_name,
+                       const char *icon, const char *tooltip, ActiveTool tool);
+  // s175 m4: build-but-don't-append overload. Returns the button so the
+  // caller can place it manually (e.g. inside build_transforms_section
+  // where alphabetical ordering of mixed widget types — toggle buttons
+  // and plain buttons — needs the caller to control append order).
+  // s188 m1: same naming-first signature shape as add_tool_button.
+  // Returns Gtk::ToggleButton* (not curvz::widgets::ToggleButton*) so
+  // the corner_tool_btn member and get_corner_btn() public API don't
+  // have to change. The actual object is a curvz::widgets::ToggleButton
+  // upcast — script registry sees it as "tb_cor".
+  Gtk::ToggleButton *make_tool_button(const char *abbrev, const char *long_name,
+                                      const char *icon, const char *tooltip,
                                       ActiveTool tool);
-    void add_tool_button(const char* abbrev, const char* long_name,
-                         const char* icon, const char* tooltip,
-                         ActiveTool tool);
-    // s175 m4: build-but-don't-append overload. Returns the button so the
-    // caller can place it manually (e.g. inside build_transforms_section
-    // where alphabetical ordering of mixed widget types — toggle buttons
-    // and plain buttons — needs the caller to control append order).
-    // s188 m1: same naming-first signature shape as add_tool_button.
-    // Returns Gtk::ToggleButton* (not curvz::widgets::ToggleButton*) so
-    // the corner_tool_btn member and get_corner_btn() public API don't
-    // have to change. The actual object is a curvz::widgets::ToggleButton
-    // upcast — script registry sees it as "tb_cor".
-    Gtk::ToggleButton* make_tool_button(const char* abbrev,
-                                        const char* long_name,
-                                        const char* icon, const char* tooltip,
-                                        ActiveTool tool);
 
-    // ── Tool selection (the radio invariant) ─────────────────────────────
-    void select_tool(ActiveTool tool);
-    void cycle_tool(int dir);
-    void set_active_tool_icon(ActiveTool tool, const char* icon_name);
+  // ── Tool selection (the radio invariant) ─────────────────────────────
+  void select_tool(ActiveTool tool);
+  void cycle_tool(int dir);
+  void set_active_tool_icon(ActiveTool tool, const char *icon_name);
 
-    // ── Density ──────────────────────────────────────────────────────────
-    void set_density(Toolbar::Density d);
-    void build_density_popover();
+  // ── Density ──────────────────────────────────────────────────────────
+  void set_density(Toolbar::Density d);
+  void build_density_popover();
 
-    // ── Popovers (sub-ship 2 in progress; one at a time) ────────────────
-    void build_zoom_popover(Gtk::ToggleButton* zoom_btn);
-    void set_zoom(double zoom_rel);
-    void build_rect_popover(Gtk::ToggleButton* btn);
-    void build_ellipse_popover(Gtk::ToggleButton* btn);
-    void build_line_popover(Gtk::ToggleButton* btn);
-    void build_ref_popover(Gtk::ToggleButton* btn);
-    void build_measure_popover(Gtk::ToggleButton* btn);
-    void build_text_popover(Gtk::ToggleButton* btn);
-    void build_polygon_popover(Gtk::ToggleButton* btn);
-    void build_spiral_popover(Gtk::ToggleButton* btn);
-    // ── s153 sub-ship 3: paint editor ─────────────────────────────────────
-    // The defaults well + fill/stroke popovers + swatch picker section +
-    // shared colour picker. State previously on the public Toolbar; the
-    // public API (default_fill, default_stroke, sync_from_object,
-    // sync_from_selection, set_swatch_library) is now forwarded into
-    // these members.
-    //
-    // Naming convention follows sub-ship 2: m_* → unprefixed inside Impl,
-    // signals (m_sig_defaults, m_sig_gradient_edit) stay public for
-    // accessor stability and Impl reaches them via self-> .
+  // ── Popovers (sub-ship 2 in progress; one at a time) ────────────────
+  void build_zoom_popover(Gtk::ToggleButton *zoom_btn);
+  void set_zoom(double zoom_rel);
+  void build_rect_popover(Gtk::ToggleButton *btn);
+  void build_ellipse_popover(Gtk::ToggleButton *btn);
+  void build_line_popover(Gtk::ToggleButton *btn);
+  void build_ref_popover(Gtk::ToggleButton *btn);
+  void build_measure_popover(Gtk::ToggleButton *btn);
+  void build_text_popover(Gtk::ToggleButton *btn);
+  void build_polygon_popover(Gtk::ToggleButton *btn);
+  void build_spiral_popover(Gtk::ToggleButton *btn);
+  // ── s153 sub-ship 3: paint editor ─────────────────────────────────────
+  // The defaults well + fill/stroke popovers + swatch picker section +
+  // shared colour picker. State previously on the public Toolbar; the
+  // public API (default_fill, default_stroke, sync_from_object,
+  // sync_from_selection, set_swatch_library) is now forwarded into
+  // these members.
+  //
+  // Naming convention follows sub-ship 2: m_* → unprefixed inside Impl,
+  // signals (m_sig_defaults, m_sig_gradient_edit) stay public for
+  // accessor stability and Impl reaches them via self-> .
 
-    // Defaults well
-    Gtk::DrawingArea              well;
+  // Defaults well
+  Gtk::DrawingArea well;
 
-    // Fill popover
-    Gtk::Popover                  fill_pop;
-    Gtk::ToggleButton             fill_type_solid_btn;
-    Gtk::ToggleButton             fill_type_none_btn;
-    Gtk::ToggleButton             fill_type_cc_btn;
-    Gtk::ToggleButton             fill_type_swatch_btn;     // S87 m1 v2
-    Gtk::ToggleButton             fill_type_gradient_btn;   // S91
-    CurvzEntry                    fill_hex_entry;
-    Gtk::DrawingArea              fill_swatch;
-    // S91 fill gradient row: [ramp ─────][Edit…]. Visible only when
-    // def_fill.is_gradient(). Member-pointer Box so refresh_fill_popover
-    // can drive visibility.
-    Gtk::Box*                     fill_gradient_row  = nullptr;
-    Gtk::DrawingArea              fill_gradient_ramp;
-    Gtk::Button                   fill_gradient_edit_btn;
+  // Fill popover
+  Gtk::Popover fill_pop;
+  Gtk::ToggleButton fill_type_solid_btn;
+  Gtk::ToggleButton fill_type_none_btn;
+  Gtk::ToggleButton fill_type_cc_btn;
+  Gtk::ToggleButton fill_type_swatch_btn;   // S87 m1 v2
+  Gtk::ToggleButton fill_type_gradient_btn; // S91
+  CurvzEntry fill_hex_entry;
+  Gtk::DrawingArea fill_swatch;
+  // S91 fill gradient row: [ramp ─────][Edit…]. Visible only when
+  // def_fill.is_gradient(). Member-pointer Box so refresh_fill_popover
+  // can drive visibility.
+  Gtk::Box *fill_gradient_row = nullptr;
+  Gtk::DrawingArea fill_gradient_ramp;
+  Gtk::Button fill_gradient_edit_btn;
 
-    // Stroke popover
-    Gtk::Popover                  stroke_pop;
-    Gtk::ToggleButton             stroke_type_solid_btn;
-    Gtk::ToggleButton             stroke_type_none_btn;
-    Gtk::ToggleButton             stroke_type_cc_btn;
-    Gtk::ToggleButton             stroke_type_swatch_btn;   // S87 m1 v2
-    CurvzEntry                    stroke_hex_entry;
-    Gtk::DrawingArea              stroke_swatch;
-    // S91: stroke does NOT get a gradient toggle (rare in SVG, not
-    // worth a separate stroke-side gradient surface). Fill-only.
-    //
-    // s198 m1: width_spin flipped from value-held Gtk::SpinButton to
-    // pointer-held substrate curvz::widgets::SpinButton (same pattern
-    // as zoom_spin above; mirrors s196 m3's Bold/Italic flip). The
-    // substrate ctor needs the abbrev at construction time, which has
-    // to happen at build_stroke_popover() time (when width_adj exists).
-    curvz::widgets::SpinButton*   width_spin = nullptr;
-    Glib::RefPtr<Gtk::Adjustment> width_adj;
-    Gtk::Label                    width_unit_lbl;
-    Gtk::Label                    width_label;  // "Width (in):" — unit-aware
+  // Stroke popover
+  Gtk::Popover stroke_pop;
+  Gtk::ToggleButton stroke_type_solid_btn;
+  Gtk::ToggleButton stroke_type_none_btn;
+  Gtk::ToggleButton stroke_type_cc_btn;
+  Gtk::ToggleButton stroke_type_swatch_btn; // S87 m1 v2
+  CurvzEntry stroke_hex_entry;
+  Gtk::DrawingArea stroke_swatch;
+  // S91: stroke does NOT get a gradient toggle (rare in SVG, not
+  // worth a separate stroke-side gradient surface). Fill-only.
+  //
+  // s198 m1: width_spin flipped from value-held CurvzSpinButton to
+  // pointer-held substrate curvz::widgets::SpinButton (same pattern
+  // as zoom_spin above; mirrors s196 m3's Bold/Italic flip). The
+  // substrate ctor needs the abbrev at construction time, which has
+  // to happen at build_stroke_popover() time (when width_adj exists).
+  curvz::widgets::SpinButton *width_spin = nullptr;
+  Glib::RefPtr<Gtk::Adjustment> width_adj;
+  Gtk::Label width_unit_lbl;
+  Gtk::Label width_label; // "Width (in):" — unit-aware
 
-    // Cap/Join buttons — icon buttons, active state via CSS
-    curvz::widgets::Button*       cap_butt_btn   = nullptr;
-    curvz::widgets::Button*       cap_round_btn  = nullptr;
-    curvz::widgets::Button*       cap_square_btn = nullptr;
-    curvz::widgets::Button*       join_miter_btn = nullptr;
-    curvz::widgets::Button*       join_round_btn = nullptr;
-    curvz::widgets::Button*       join_bevel_btn = nullptr;
+  // Cap/Join buttons — icon buttons, active state via CSS
+  curvz::widgets::Button *cap_butt_btn = nullptr;
+  curvz::widgets::Button *cap_round_btn = nullptr;
+  curvz::widgets::Button *cap_square_btn = nullptr;
+  curvz::widgets::Button *join_miter_btn = nullptr;
+  curvz::widgets::Button *join_round_btn = nullptr;
+  curvz::widgets::Button *join_bevel_btn = nullptr;
 
-    // Defaults state — what the next placed object inherits. m_def_*
-    // ↔ def_* under the s153 sub-ship 3 rename.
-    FillStyle                     def_fill;
-    StrokeStyle                   def_stroke;
-    // S58n: true when the current multi-selection has heterogeneous
-    // fill / stroke paint. Drives diagonal-stripe rendering and
-    // deactivates type toggles in the popovers.
-    bool                          fill_mixed   = false;
-    bool                          stroke_mixed = false;
-    bool                          syncing      = false;
+  // Defaults state — what the next placed object inherits. m_def_*
+  // ↔ def_* under the s153 sub-ship 3 rename.
+  FillStyle def_fill;
+  StrokeStyle def_stroke;
+  // S58n: true when the current multi-selection has heterogeneous
+  // fill / stroke paint. Drives diagonal-stripe rendering and
+  // deactivates type toggles in the popovers.
+  bool fill_mixed = false;
+  bool stroke_mixed = false;
+  bool syncing = false;
 
-    // ── S87 m1: swatch picker section (copy-only, fill + stroke) ──────
-    // Chip-grid picker tucked inside each existing popover. Visible
-    // only when swatch_library != nullptr. Click on a chip = "write
-    // this swatch's RGB into def_* as Solid" — no binding state.
-    // swatch_library is non-owning; MainWindow plumbs it post-load.
-    const color::SwatchLibrary*   swatch_library = nullptr;
+  // ── S87 m1: swatch picker section (copy-only, fill + stroke) ──────
+  // Chip-grid picker tucked inside each existing popover. Visible
+  // only when swatch_library != nullptr. Click on a chip = "write
+  // this swatch's RGB into def_* as Solid" — no binding state.
+  // swatch_library is non-owning; MainWindow plumbs it post-load.
+  const color::SwatchLibrary *swatch_library = nullptr;
 
-    // Per-popover picker widgets (managed by host Box; we keep refs
-    // for refresh_*_popover and the rebuild path).
-    Gtk::Box*                     fill_picker_section   = nullptr;
-    curvz::widgets::DropDown*     fill_palette_dd       = nullptr;
-    Gtk::FlowBox*                 fill_chip_flow        = nullptr;
-    Gtk::Box*                     stroke_picker_section = nullptr;
-    curvz::widgets::DropDown*     stroke_palette_dd     = nullptr;
-    Gtk::FlowBox*                 stroke_chip_flow      = nullptr;
+  // Per-popover picker widgets (managed by host Box; we keep refs
+  // for refresh_*_popover and the rebuild path).
+  Gtk::Box *fill_picker_section = nullptr;
+  curvz::widgets::DropDown *fill_palette_dd = nullptr;
+  Gtk::FlowBox *fill_chip_flow = nullptr;
+  Gtk::Box *stroke_picker_section = nullptr;
+  curvz::widgets::DropDown *stroke_palette_dd = nullptr;
+  Gtk::FlowBox *stroke_chip_flow = nullptr;
 
-    // S87 m1 v2: pointers to the colour rows so refresh_*_popover can
-    // drive visibility based on active type.
-    Gtk::Box*                     fill_color_row        = nullptr;
-    Gtk::Box*                     stroke_color_row      = nullptr;
+  // S87 m1 v2: pointers to the colour rows so refresh_*_popover can
+  // drive visibility based on active type.
+  Gtk::Box *fill_color_row = nullptr;
+  Gtk::Box *stroke_color_row = nullptr;
 
-    // S87 m1 v2: per-popover "Swatch tab is showing" flag. Distinct
-    // from def_*.type — the type stays Solid/None/CC, but the user
-    // chose to see the picker. Reset on Solid/None/currentColor click.
-    bool                          fill_picker_open   = false;
-    bool                          stroke_picker_open = false;
+  // S87 m1 v2: per-popover "Swatch tab is showing" flag. Distinct
+  // from def_*.type — the type stays Solid/None/CC, but the user
+  // chose to see the picker. Reset on Solid/None/currentColor click.
+  bool fill_picker_open = false;
+  bool stroke_picker_open = false;
 
-    // Shadow vectors — dropdown row order so selection-changed maps
-    // index → palette id. Includes "__all__" sentinel at row 0.
-    std::vector<std::string>      fill_palette_ids;
-    std::vector<std::string>      stroke_palette_ids;
+  // Shadow vectors — dropdown row order so selection-changed maps
+  // index → palette id. Includes "__all__" sentinel at row 0.
+  std::vector<std::string> fill_palette_ids;
+  std::vector<std::string> stroke_palette_ids;
 
-    // Connections for dropdown property_selected. Disconnected before
-    // programmatic re-selection inside rebuild_palette_dropdown to
-    // avoid firing user-flow handlers (PaintEditor idiom).
-    sigc::connection              fill_palette_dd_conn;
-    sigc::connection              stroke_palette_dd_conn;
+  // Connections for dropdown property_selected. Disconnected before
+  // programmatic re-selection inside rebuild_palette_dropdown to
+  // avoid firing user-flow handlers (PaintEditor idiom).
+  sigc::connection fill_palette_dd_conn;
+  sigc::connection stroke_palette_dd_conn;
 
-    // S87 m1 fix2: tracks the palette id the chip grid currently
-    // shows. Guards rebuild against dropdown spurious-fire (handoff
-    // gotcha). Skip rebuild_chip_grid when requested id matches
-    // what's already drawn.
-    std::string                   fill_chips_palette_id;
-    std::string                   stroke_chips_palette_id;
+  // S87 m1 fix2: tracks the palette id the chip grid currently
+  // shows. Guards rebuild against dropdown spurious-fire (handoff
+  // gotcha). Skip rebuild_chip_grid when requested id matches
+  // what's already drawn.
+  std::string fill_chips_palette_id;
+  std::string stroke_chips_palette_id;
 
-    // s207 m1: ColorPickerPopover collapsed to an app-wide singleton.
-    // Hosts access it via ColorPickerPopover::shared(). No instance
-    // member here; the previous `ColorPickerPopover color_popover;`
-    // (one of 13 instances across the app) is gone.
+  // s207 m1: ColorPickerPopover collapsed to an app-wide singleton.
+  // Hosts access it via ColorPickerPopover::shared(). No instance
+  // member here; the previous `ColorPickerPopover color_popover;`
+  // (one of 13 instances across the app) is gone.
 
-    // ── Paint editor methods ─────────────────────────────────────────
-    void build_defaults_well();
-    void build_fill_popover();
-    void build_stroke_popover();
-    void redraw_well();
-    void update_cap_buttons();
-    void update_join_buttons();
-    void apply_hex_to_fill(const std::string& hex);
-    void apply_hex_to_stroke(const std::string& hex);
-    void refresh_fill_popover();
-    void refresh_stroke_popover();
-    void reset_to_defaults();
-    void emit_defaults();
-    void sync_from_object(const FillStyle& fill, const StrokeStyle& stroke);
-    void sync_from_selection(const std::vector<SceneNode*>& sel,
-                             SceneNode* primary);
+  // ── Paint editor methods ─────────────────────────────────────────
+  void build_defaults_well();
+  void build_fill_popover();
+  void build_stroke_popover();
+  void redraw_well();
+  void update_cap_buttons();
+  void update_join_buttons();
+  void apply_hex_to_fill(const std::string &hex);
+  void apply_hex_to_stroke(const std::string &hex);
+  void refresh_fill_popover();
+  void refresh_stroke_popover();
+  void reset_to_defaults();
+  void emit_defaults();
+  void sync_from_object(const FillStyle &fill, const StrokeStyle &stroke);
+  void sync_from_selection(const std::vector<SceneNode *> &sel,
+                           SceneNode *primary);
 
-    // S87 m1 helpers — per-slot. is_stroke selects which set of
-    // members to operate on.
-    void build_swatch_picker_section(Gtk::Box& outer, bool is_stroke);
-    void rebuild_swatch_pickers();
-    void rebuild_palette_dropdown(bool is_stroke);
-    void rebuild_chip_grid(bool is_stroke);
-    void apply_swatch_pick_to_fill(const std::string& swatch_id);
-    void apply_swatch_pick_to_stroke(const std::string& swatch_id);
-    void set_swatch_library(const color::SwatchLibrary* lib);
+  // S87 m1 helpers — per-slot. is_stroke selects which set of
+  // members to operate on.
+  void build_swatch_picker_section(Gtk::Box &outer, bool is_stroke);
+  void rebuild_swatch_pickers();
+  void rebuild_palette_dropdown(bool is_stroke);
+  void rebuild_chip_grid(bool is_stroke);
+  void apply_swatch_pick_to_fill(const std::string &swatch_id);
+  void apply_swatch_pick_to_stroke(const std::string &swatch_id);
+  void set_swatch_library(const color::SwatchLibrary *lib);
 
-    // ── s153 sub-ship 4: align + snap + remaining state ───────────────────
-    // Naming follows the established convention: paint-editor-side fields
-    // are unprefixed inside Impl (def_fill, fill_pop, ...), so align/snap
-    // members do the same. Signals lose the m_ prefix too.
+  // ── s153 sub-ship 4: align + snap + remaining state ───────────────────
+  // Naming follows the established convention: paint-editor-side fields
+  // are unprefixed inside Impl (def_fill, fill_pop, ...), so align/snap
+  // members do the same. Signals lose the m_ prefix too.
 
-    // Current popup display unit (read by tool popovers for label
-    // rendering; written via set_popup_unit forwarder).
-    Unit popup_unit = Unit::Px;
+  // Current popup display unit (read by tool popovers for label
+  // rendering; written via set_popup_unit forwarder).
+  Unit popup_unit = Unit::Px;
 
-    // Live document pointer for popover defaults (read by some tool
-    // popovers' signal_show handlers; written via set_document
-    // forwarder). Non-owning.
-    CurvzDocument* doc = nullptr;
+  // Live document pointer for popover defaults (read by some tool
+  // popovers' signal_show handlers; written via set_document
+  // forwarder). Non-owning.
+  CurvzDocument *doc = nullptr;
 
-    // s117 m5: motif state for Cairo-painted align icons. set_motif
-    // (forwarded from MainWindow) writes here and queues redraws.
-    Motif motif = Motif::Dark;
+  // s117 m5: motif state for Cairo-painted align icons. set_motif
+  // (forwarded from MainWindow) writes here and queues redraws.
+  Motif motif = Motif::Dark;
 
-    // Align & Distribute
-    Gtk::Button       align_btn;
-    Gtk::Popover      align_pop;
-    bool              align_enabled = false;
+  // Align & Distribute
+  Gtk::Button align_btn;
+  Gtk::Popover align_pop;
+  bool align_enabled = false;
 
-    void build_align_button();
-    void build_align_popover();
-    void set_align_enabled(bool enabled);
+  void build_align_button();
+  void build_align_popover();
+  void set_align_enabled(bool enabled);
 
-    // ── Transforms section (s154 m1) ─────────────────────────────────────
-    // Cluster of four transform-verb buttons inserted between the top
-    // creation tools (Pen..TextOnPath) and the lower tools (Eyedropper
-    // onward). Order top-to-bottom: SnR, Blend, Bool, Warp.
-    //
-    // Faked-disabled pattern (mirrors align): each *_enabled bool gates
-    // left-click; the .tool-btn-disabled CSS class drives the visuals;
-    // widgets stay sensitive so right-click events keep flowing to the
-    // configuration popovers even when the operation itself is gated
-    // off by selection state.
-    Gtk::Button   snr_btn;
-    Gtk::Button   blend_btn;
-    Gtk::Button   bool_btn;
-    Gtk::Button   warp_btn;
-    Gtk::Popover  bool_pop;     // left-click popover on bool_btn
-    // s154 m2: snr_cfg_pop retired — SnR right-click now emits
-    // sig_step_repeat_configure for MainWindow's StepRepeatPopover.
-    // s154 m3: blend_cfg_pop retired — Blend right-click now emits
-    // sig_blend_configure for MainWindow's BlendPopover.
-    // s154 m4a: warp_cfg_pop retired — Warp right-click now emits
-    // sig_warp_configure for MainWindow's WarpPopover. The
-    // build_placeholder_cfg_popover helper is gone with its last user.
-    bool          snr_enabled   = false;
-    bool          blend_enabled = false;
-    bool          bool_enabled  = false;
-    bool          warp_enabled  = false;
-    // s154 m3 follow-up: when true, the next bool-op picker click only
-    // updates the toolbar icon — does NOT emit sig_bool_op. Set by the
-    // bool_btn right-click gesture (which lets the user pre-select an
-    // op before any selection exists, bypassing the bool_enabled gate).
-    // Reset to false before every left-click pop so subsequent normal
-    // left-click picks fire the op as usual.
-    bool          bool_picker_pre_set = false;
+  // ── Transforms section (s154 m1) ─────────────────────────────────────
+  // Cluster of four transform-verb buttons inserted between the top
+  // creation tools (Pen..TextOnPath) and the lower tools (Eyedropper
+  // onward). Order top-to-bottom: SnR, Blend, Bool, Warp.
+  //
+  // Faked-disabled pattern (mirrors align): each *_enabled bool gates
+  // left-click; the .tool-btn-disabled CSS class drives the visuals;
+  // widgets stay sensitive so right-click events keep flowing to the
+  // configuration popovers even when the operation itself is gated
+  // off by selection state.
+  Gtk::Button snr_btn;
+  Gtk::Button blend_btn;
+  Gtk::Button bool_btn;
+  Gtk::Button warp_btn;
+  Gtk::Popover bool_pop; // left-click popover on bool_btn
+  // s154 m2: snr_cfg_pop retired — SnR right-click now emits
+  // sig_step_repeat_configure for MainWindow's StepRepeatPopover.
+  // s154 m3: blend_cfg_pop retired — Blend right-click now emits
+  // sig_blend_configure for MainWindow's BlendPopover.
+  // s154 m4a: warp_cfg_pop retired — Warp right-click now emits
+  // sig_warp_configure for MainWindow's WarpPopover. The
+  // build_placeholder_cfg_popover helper is gone with its last user.
+  bool snr_enabled = false;
+  bool blend_enabled = false;
+  bool bool_enabled = false;
+  bool warp_enabled = false;
+  // s154 m3 follow-up: when true, the next bool-op picker click only
+  // updates the toolbar icon — does NOT emit sig_bool_op. Set by the
+  // bool_btn right-click gesture (which lets the user pre-select an
+  // op before any selection exists, bypassing the bool_enabled gate).
+  // Reset to false before every left-click pop so subsequent normal
+  // left-click picks fire the op as usual.
+  bool bool_picker_pre_set = false;
 
-    void build_transforms_section();
-    void build_bool_popover();
-    void set_transforms_enabled(bool snr, bool blend,
-                                bool boolop, bool warp);
+  void build_transforms_section();
+  void build_bool_popover();
+  void set_transforms_enabled(bool snr, bool blend, bool boolop, bool warp);
 
-    // Snap settings popover (separate from the snap-toggle button —
-    // that button lives in Impl already since sub-ship 1).
-    Gtk::Popover       snap_pop;
-    Gtk::CheckButton*  snap_cb_guides  = nullptr;
-    Gtk::CheckButton*  snap_cb_grid    = nullptr;
-    Gtk::CheckButton*  snap_cb_margins = nullptr;
-    Gtk::CheckButton*  snap_cb_nodes   = nullptr;
-    Gtk::CheckButton*  snap_cb_edges   = nullptr;
-    Gtk::CheckButton*  snap_cb_centers = nullptr;
-    bool               snap_loading    = false;
+  // Snap settings popover (separate from the snap-toggle button —
+  // that button lives in Impl already since sub-ship 1).
+  Gtk::Popover snap_pop;
+  Gtk::CheckButton *snap_cb_guides = nullptr;
+  Gtk::CheckButton *snap_cb_grid = nullptr;
+  Gtk::CheckButton *snap_cb_margins = nullptr;
+  Gtk::CheckButton *snap_cb_nodes = nullptr;
+  Gtk::CheckButton *snap_cb_edges = nullptr;
+  Gtk::CheckButton *snap_cb_centers = nullptr;
+  bool snap_loading = false;
 
-    void build_snap_popover(Gtk::Widget* widget);
-    void set_snap_settings(const SnapSettings& s);
+  void build_snap_popover(Gtk::Widget *widget);
+  void set_snap_settings(const SnapSettings &s);
 
-    // ── Signals (all moved from public Toolbar in sub-ship 4) ────────────
-    // Public Toolbar's signal_*() accessors are now forwarders that
-    // return references to these. End-state: header carries no
-    // signal storage, only declarations.
-    ToolChangedSignal      signal_tool_changed_;
-    DensitySignal          sig_density_changed;
-    DefaultsSignal         sig_defaults;
-    GradientEditSignal     sig_gradient_edit;
-    FitSignal              sig_fit;
-    ZoomSignal             sig_zoom_step;
-    ZoomToSignal           sig_zoom_to;
-    PlaceRefSignal         sig_place_ref;
-    PlaceRectSignal        sig_place_rect;
-    PlaceEllipseSignal     sig_place_ellipse;
-    PlaceLineSignal        sig_place_line;
-    PlaceTextSignal        sig_place_text;
-    PlacePolygonSignal     sig_place_polygon;
-    PlaceSpiralSignal      sig_place_spiral;
-    CanvasFocusSignal      sig_canvas_focus;
-    SnapToggleSignal       sig_snap;
-    SnapSettingsSignal     sig_snap_settings;
-    SnapPopOpenSignal      sig_snap_pop_open;
-    MeasureSettingsSignal  sig_measure_settings;
-    AlignSignal            sig_align;
-    MacroSignal            sig_macro;
-    MacroSignal            sig_macro_run;
-    // s154 m1 — transforms section
-    StepRepeatSignal       sig_step_repeat;
-    BlendSignal            sig_blend;
-    WarpSignal             sig_warp;
-    BoolOpSignal           sig_bool_op;
-    // s154 m2 — SnR right-click → MainWindow opens StepRepeatPopover
-    StepRepeatConfigureSignal sig_step_repeat_configure;
-    // s154 m3 — Blend right-click → MainWindow opens BlendPopover
-    BlendConfigureSignal      sig_blend_configure;
-    // s154 m4a — Warp right-click → MainWindow opens WarpPopover
-    WarpConfigureSignal       sig_warp_configure;
+  // ── Signals (all moved from public Toolbar in sub-ship 4) ────────────
+  // Public Toolbar's signal_*() accessors are now forwarders that
+  // return references to these. End-state: header carries no
+  // signal storage, only declarations.
+  ToolChangedSignal signal_tool_changed_;
+  DensitySignal sig_density_changed;
+  DefaultsSignal sig_defaults;
+  GradientEditSignal sig_gradient_edit;
+  FitSignal sig_fit;
+  ZoomSignal sig_zoom_step;
+  ZoomToSignal sig_zoom_to;
+  PlaceRefSignal sig_place_ref;
+  PlaceRectSignal sig_place_rect;
+  PlaceEllipseSignal sig_place_ellipse;
+  PlaceLineSignal sig_place_line;
+  PlaceTextSignal sig_place_text;
+  PlacePolygonSignal sig_place_polygon;
+  PlaceSpiralSignal sig_place_spiral;
+  CanvasFocusSignal sig_canvas_focus;
+  SnapToggleSignal sig_snap;
+  SnapSettingsSignal sig_snap_settings;
+  SnapPopOpenSignal sig_snap_pop_open;
+  MeasureSettingsSignal sig_measure_settings;
+  AlignSignal sig_align;
+  MacroSignal sig_macro;
+  MacroSignal sig_macro_run;
+  // s154 m1 — transforms section
+  StepRepeatSignal sig_step_repeat;
+  BlendSignal sig_blend;
+  WarpSignal sig_warp;
+  BoolOpSignal sig_bool_op;
+  // s154 m2 — SnR right-click → MainWindow opens StepRepeatPopover
+  StepRepeatConfigureSignal sig_step_repeat_configure;
+  // s154 m3 — Blend right-click → MainWindow opens BlendPopover
+  BlendConfigureSignal sig_blend_configure;
+  // s154 m4a — Warp right-click → MainWindow opens WarpPopover
+  WarpConfigureSignal sig_warp_configure;
 };
 
 // ── Density class-name helper (used by Impl::set_density) ────────────────
 namespace {
-const char* density_class_name(Toolbar::Density d) {
-    switch (d) {
-        case Toolbar::Density::Comfortable: return "";          // base rules
-        case Toolbar::Density::Standard:    return "standard";
-        case Toolbar::Density::Compact:     return "compact";
-        case Toolbar::Density::Tight:       return "tight";
-    }
-    return "";
+const char *density_class_name(Toolbar::Density d) {
+  switch (d) {
+  case Toolbar::Density::Comfortable:
+    return ""; // base rules
+  case Toolbar::Density::Standard:
+    return "standard";
+  case Toolbar::Density::Compact:
+    return "compact";
+  case Toolbar::Density::Tight:
+    return "tight";
+  }
+  return "";
 }
 
 // ── Right-click claim helper ─────────────────────────────────────────────
@@ -571,49 +601,47 @@ const char* density_class_name(Toolbar::Density d) {
 // add_rclick_swallow(widget) — drop-in for any widget where a
 // background-click semantics would be wrong. The gesture is owned
 // by the widget and lives as long as the widget does.
-void add_rclick_swallow(Gtk::Widget& w) {
-    auto g = Gtk::GestureClick::create();
-    g->set_button(3);
-    // Capture so we claim before any inner controller runs.
-    g->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
-    auto* g_raw = g.get();
-    g->signal_pressed().connect(
-        [g_raw](int /*n_press*/, double /*x*/, double /*y*/) {
-            g_raw->set_state(Gtk::EventSequenceState::CLAIMED);
-        });
-    w.add_controller(g);
+void add_rclick_swallow(Gtk::Widget &w) {
+  auto g = Gtk::GestureClick::create();
+  g->set_button(3);
+  // Capture so we claim before any inner controller runs.
+  g->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+  auto *g_raw = g.get();
+  g->signal_pressed().connect(
+      [g_raw](int /*n_press*/, double /*x*/, double /*y*/) {
+        g_raw->set_state(Gtk::EventSequenceState::CLAIMED);
+      });
+  w.add_controller(g);
 }
-}  // namespace
+} // namespace
 
 // ── Public Toolbar — constructor & destructor ────────────────────────────
 Toolbar::Toolbar()
     : Gtk::Box(Gtk::Orientation::VERTICAL),
-      m_impl(std::make_unique<Impl>(this))
-{
-    curvz::utils::set_name(*this, "tb", "main_toolbar_root");
-    // s152: margins/spacing are governed by CSS now. The root
-    // .toolbar-panel rule sets padding; per-density rules override it.
-    // We don't set_size_request the column either — CSS min-width owns
-    // the column width, and set_density() flips a class to change it
-    // without rebuilding the toolbar.
-    add_css_class("toolbar-panel");
+      m_impl(std::make_unique<Impl>(this)) {
+  curvz::utils::set_name(*this, "tb", "main_toolbar_root");
+  // s152: margins/spacing are governed by CSS now. The root
+  // .toolbar-panel rule sets padding; per-density rules override it.
+  // We don't set_size_request the column either — CSS min-width owns
+  // the column width, and set_density() flips a class to change it
+  // without rebuilding the toolbar.
+  add_css_class("toolbar-panel");
 
-    // s207 m1: ensure the shared ColorPickerPopover is attached to the
-    // toplevel window. Idempotent — if another host got here first, this
-    // is a no-op. Deferred to signal_realize because get_root() isn't
-    // valid during construction. Attaches to the window, not to *this:
-    // the Toolbar is a 48px-wide vertical strip and a popover parented
-    // to it would be geometrically squashed; the window gives the
-    // popover the whole frame to position within, while individual
-    // wells remain the visual anchor via the rect passed to open().
-    //
-    // The earlier per-instance member (`ColorPickerPopover
-    // color_popover;` in Impl) is gone — collapsed to the singleton.
-    signal_realize().connect([this]() {
-        ColorPickerPopover::shared().ensure_attached(*this);
-    });
+  // s207 m1: ensure the shared ColorPickerPopover is attached to the
+  // toplevel window. Idempotent — if another host got here first, this
+  // is a no-op. Deferred to signal_realize because get_root() isn't
+  // valid during construction. Attaches to the window, not to *this:
+  // the Toolbar is a 48px-wide vertical strip and a popover parented
+  // to it would be geometrically squashed; the window gives the
+  // popover the whole frame to position within, while individual
+  // wells remain the visual anchor via the rect passed to open().
+  //
+  // The earlier per-instance member (`ColorPickerPopover
+  // color_popover;` in Impl) is gone — collapsed to the singleton.
+  signal_realize().connect(
+      [this]() { ColorPickerPopover::shared().ensure_attached(*this); });
 
-    m_impl->build();
+  m_impl->build();
 }
 
 Toolbar::~Toolbar() = default;
@@ -625,8 +653,8 @@ void Toolbar::select_tool(ActiveTool tool) { m_impl->select_tool(tool); }
 
 void Toolbar::cycle_tool(int dir) { m_impl->cycle_tool(dir); }
 
-void Toolbar::set_active_tool_icon(ActiveTool tool, const char* icon_name) {
-    m_impl->set_active_tool_icon(tool, icon_name);
+void Toolbar::set_active_tool_icon(ActiveTool tool, const char *icon_name) {
+  m_impl->set_active_tool_icon(tool, icon_name);
 }
 
 Toolbar::Density Toolbar::density() const { return m_impl->density; }
@@ -634,140 +662,163 @@ Toolbar::Density Toolbar::density() const { return m_impl->density; }
 void Toolbar::set_density(Density d) { m_impl->set_density(d); }
 
 void Toolbar::set_snap_enabled(bool enabled) {
-    // Host-driven sync. set_active() fires signal_toggled, which already
-    // swaps the icon and emits m_sig_snap — so a no-op guard keeps us
-    // from echoing back to the host. Setting the icon defensively here
-    // covers the edge case where the toggle's active state was already
-    // correct but the icon wasn't.
-    if (m_impl->snap_btn.get_active() != enabled)
-        m_impl->snap_btn.set_active(enabled);
-    m_impl->snap_btn.set_icon_name(enabled ? "curvz-switch-on-symbolic"
-                                           : "curvz-switch-off-symbolic");
+  // Host-driven sync. set_active() fires signal_toggled, which already
+  // swaps the icon and emits m_sig_snap — so a no-op guard keeps us
+  // from echoing back to the host. Setting the icon defensively here
+  // covers the edge case where the toggle's active state was already
+  // correct but the icon wasn't.
+  if (m_impl->snap_btn.get_active() != enabled)
+    m_impl->snap_btn.set_active(enabled);
+  m_impl->snap_btn.set_icon_name(enabled ? "curvz-switch-on-symbolic"
+                                         : "curvz-switch-off-symbolic");
 }
 
-Gtk::ToggleButton* Toolbar::get_corner_btn() { return m_impl->corner_tool_btn; }
+Gtk::ToggleButton *Toolbar::get_corner_btn() { return m_impl->corner_tool_btn; }
 
 // ── s153 sub-ship 3: paint editor forwarders ────────────────────────────
 // State (def_fill, def_stroke, swatch_library) and method bodies live
 // in Impl. Public surface stays as documented in Toolbar.hpp.
-const FillStyle&   Toolbar::default_fill()   const { return m_impl->def_fill; }
-const StrokeStyle& Toolbar::default_stroke() const { return m_impl->def_stroke; }
-
-void Toolbar::sync_from_object(const FillStyle& fill, const StrokeStyle& stroke) {
-    m_impl->sync_from_object(fill, stroke);
+const FillStyle &Toolbar::default_fill() const { return m_impl->def_fill; }
+const StrokeStyle &Toolbar::default_stroke() const {
+  return m_impl->def_stroke;
 }
 
-void Toolbar::sync_from_selection(const std::vector<SceneNode*>& sel,
-                                   SceneNode* primary) {
-    m_impl->sync_from_selection(sel, primary);
+void Toolbar::sync_from_object(const FillStyle &fill,
+                               const StrokeStyle &stroke) {
+  m_impl->sync_from_object(fill, stroke);
 }
 
-void Toolbar::set_swatch_library(const color::SwatchLibrary* lib) {
-    m_impl->set_swatch_library(lib);
+void Toolbar::sync_from_selection(const std::vector<SceneNode *> &sel,
+                                  SceneNode *primary) {
+  m_impl->sync_from_selection(sel, primary);
+}
+
+void Toolbar::set_swatch_library(const color::SwatchLibrary *lib) {
+  m_impl->set_swatch_library(lib);
 }
 
 // ── s153 sub-ship 2e: polygon / spiral state accessors ──────────────────
 // Canvas reads these during drag to honour the popover's current
 // settings. Storage moved into Impl alongside the popovers.
-int    Toolbar::polygon_sides()      const { return m_impl->poly_sides; }
+int Toolbar::polygon_sides() const { return m_impl->poly_sides; }
 double Toolbar::polygon_inflection() const { return m_impl->poly_inflection; }
-double Toolbar::spiral_turns()       const { return m_impl->spiral_turns; }
-double Toolbar::spiral_inner_pct()   const { return m_impl->spiral_inner; }
+double Toolbar::spiral_turns() const { return m_impl->spiral_turns; }
+double Toolbar::spiral_inner_pct() const { return m_impl->spiral_inner; }
 
 // ── s153 sub-ship 4: signal accessor forwarders ─────────────────────────
 // All 22 signals now live in Impl. Accessors return references to those
 // members; same call signature as before, only the storage location
 // changed. Header dependents pay only for declarations.
-Toolbar::ToolChangedSignal&
-  Toolbar::signal_tool_changed()              { return m_impl->signal_tool_changed_; }
-Toolbar::DensitySignal&
-  Toolbar::signal_density_changed()           { return m_impl->sig_density_changed; }
-Toolbar::DefaultsSignal&
-  Toolbar::signal_defaults_changed()          { return m_impl->sig_defaults; }
-Toolbar::GradientEditSignal&
-  Toolbar::signal_gradient_edit_requested()   { return m_impl->sig_gradient_edit; }
-Toolbar::SnapToggleSignal&
-  Toolbar::signal_snap_toggled()              { return m_impl->sig_snap; }
-Toolbar::SnapSettingsSignal&
-  Toolbar::signal_snap_settings_changed()     { return m_impl->sig_snap_settings; }
-Toolbar::SnapPopOpenSignal&
-  Toolbar::signal_snap_pop_open()             { return m_impl->sig_snap_pop_open; }
-Toolbar::MeasureSettingsSignal&
-  Toolbar::signal_measure_settings_changed()  { return m_impl->sig_measure_settings; }
-Toolbar::AlignSignal&
-  Toolbar::signal_align_requested()           { return m_impl->sig_align; }
-Toolbar::MacroSignal&
-  Toolbar::signal_macro_manager()             { return m_impl->sig_macro; }
-Toolbar::MacroSignal&
-  Toolbar::signal_macro_run()                 { return m_impl->sig_macro_run; }
+Toolbar::ToolChangedSignal &Toolbar::signal_tool_changed() {
+  return m_impl->signal_tool_changed_;
+}
+Toolbar::DensitySignal &Toolbar::signal_density_changed() {
+  return m_impl->sig_density_changed;
+}
+Toolbar::DefaultsSignal &Toolbar::signal_defaults_changed() {
+  return m_impl->sig_defaults;
+}
+Toolbar::GradientEditSignal &Toolbar::signal_gradient_edit_requested() {
+  return m_impl->sig_gradient_edit;
+}
+Toolbar::SnapToggleSignal &Toolbar::signal_snap_toggled() {
+  return m_impl->sig_snap;
+}
+Toolbar::SnapSettingsSignal &Toolbar::signal_snap_settings_changed() {
+  return m_impl->sig_snap_settings;
+}
+Toolbar::SnapPopOpenSignal &Toolbar::signal_snap_pop_open() {
+  return m_impl->sig_snap_pop_open;
+}
+Toolbar::MeasureSettingsSignal &Toolbar::signal_measure_settings_changed() {
+  return m_impl->sig_measure_settings;
+}
+Toolbar::AlignSignal &Toolbar::signal_align_requested() {
+  return m_impl->sig_align;
+}
+Toolbar::MacroSignal &Toolbar::signal_macro_manager() {
+  return m_impl->sig_macro;
+}
+Toolbar::MacroSignal &Toolbar::signal_macro_run() {
+  return m_impl->sig_macro_run;
+}
 // s154 m1 — transforms section
-Toolbar::StepRepeatSignal&
-  Toolbar::signal_step_repeat()               { return m_impl->sig_step_repeat; }
-Toolbar::BlendSignal&
-  Toolbar::signal_blend()                     { return m_impl->sig_blend; }
-Toolbar::WarpSignal&
-  Toolbar::signal_warp()                      { return m_impl->sig_warp; }
-Toolbar::BoolOpSignal&
-  Toolbar::signal_bool_op()                   { return m_impl->sig_bool_op; }
+Toolbar::StepRepeatSignal &Toolbar::signal_step_repeat() {
+  return m_impl->sig_step_repeat;
+}
+Toolbar::BlendSignal &Toolbar::signal_blend() { return m_impl->sig_blend; }
+Toolbar::WarpSignal &Toolbar::signal_warp() { return m_impl->sig_warp; }
+Toolbar::BoolOpSignal &Toolbar::signal_bool_op() { return m_impl->sig_bool_op; }
 // s154 m2 — SnR right-click configure
-Toolbar::StepRepeatConfigureSignal&
-  Toolbar::signal_step_repeat_configure()     { return m_impl->sig_step_repeat_configure; }
-Gtk::Widget& Toolbar::step_repeat_button()    { return m_impl->snr_btn; }
+Toolbar::StepRepeatConfigureSignal &Toolbar::signal_step_repeat_configure() {
+  return m_impl->sig_step_repeat_configure;
+}
+Gtk::Widget &Toolbar::step_repeat_button() { return m_impl->snr_btn; }
 // s154 m3 — Blend right-click configure
-Toolbar::BlendConfigureSignal&
-  Toolbar::signal_blend_configure()           { return m_impl->sig_blend_configure; }
-Gtk::Widget& Toolbar::blend_button()          { return m_impl->blend_btn; }
+Toolbar::BlendConfigureSignal &Toolbar::signal_blend_configure() {
+  return m_impl->sig_blend_configure;
+}
+Gtk::Widget &Toolbar::blend_button() { return m_impl->blend_btn; }
 // s154 m4a — Warp right-click configure
-Toolbar::WarpConfigureSignal&
-  Toolbar::signal_warp_configure()            { return m_impl->sig_warp_configure; }
-Gtk::Widget& Toolbar::warp_button()           { return m_impl->warp_btn; }
-Toolbar::FitSignal&
-  Toolbar::signal_fit_requested()             { return m_impl->sig_fit; }
-Toolbar::ZoomSignal&
-  Toolbar::signal_zoom_step()                 { return m_impl->sig_zoom_step; }
-Toolbar::ZoomToSignal&
-  Toolbar::signal_zoom_to()                   { return m_impl->sig_zoom_to; }
-Toolbar::PlaceRefSignal&
-  Toolbar::signal_place_ref()                 { return m_impl->sig_place_ref; }
-Toolbar::PlaceRectSignal&
-  Toolbar::signal_place_rect()                { return m_impl->sig_place_rect; }
-Toolbar::PlaceEllipseSignal&
-  Toolbar::signal_place_ellipse()             { return m_impl->sig_place_ellipse; }
-Toolbar::PlaceLineSignal&
-  Toolbar::signal_place_line()                { return m_impl->sig_place_line; }
-Toolbar::PlaceTextSignal&
-  Toolbar::signal_place_text()                { return m_impl->sig_place_text; }
-Toolbar::PlacePolygonSignal&
-  Toolbar::signal_place_polygon()             { return m_impl->sig_place_polygon; }
-Toolbar::PlaceSpiralSignal&
-  Toolbar::signal_place_spiral()              { return m_impl->sig_place_spiral; }
-Toolbar::CanvasFocusSignal&
-  Toolbar::signal_request_canvas_focus()      { return m_impl->sig_canvas_focus; }
+Toolbar::WarpConfigureSignal &Toolbar::signal_warp_configure() {
+  return m_impl->sig_warp_configure;
+}
+Gtk::Widget &Toolbar::warp_button() { return m_impl->warp_btn; }
+Toolbar::FitSignal &Toolbar::signal_fit_requested() { return m_impl->sig_fit; }
+Toolbar::ZoomSignal &Toolbar::signal_zoom_step() {
+  return m_impl->sig_zoom_step;
+}
+Toolbar::ZoomToSignal &Toolbar::signal_zoom_to() { return m_impl->sig_zoom_to; }
+Toolbar::PlaceRefSignal &Toolbar::signal_place_ref() {
+  return m_impl->sig_place_ref;
+}
+Toolbar::PlaceRectSignal &Toolbar::signal_place_rect() {
+  return m_impl->sig_place_rect;
+}
+Toolbar::PlaceEllipseSignal &Toolbar::signal_place_ellipse() {
+  return m_impl->sig_place_ellipse;
+}
+Toolbar::PlaceLineSignal &Toolbar::signal_place_line() {
+  return m_impl->sig_place_line;
+}
+Toolbar::PlaceTextSignal &Toolbar::signal_place_text() {
+  return m_impl->sig_place_text;
+}
+Toolbar::PlacePolygonSignal &Toolbar::signal_place_polygon() {
+  return m_impl->sig_place_polygon;
+}
+Toolbar::PlaceSpiralSignal &Toolbar::signal_place_spiral() {
+  return m_impl->sig_place_spiral;
+}
+Toolbar::CanvasFocusSignal &Toolbar::signal_request_canvas_focus() {
+  return m_impl->sig_canvas_focus;
+}
 
 // ── s153 sub-ship 4: state-setter forwarders ─────────────────────────────
 void Toolbar::set_motif(Motif m) {
-    if (m_impl->motif == m) return;
-    m_impl->motif = m;
-    // s184 m2: popover align icons are now symbolic SVG via Gtk::Image —
-    // currentColor recoloration is automatic via CSS. No queue_draw needed.
-    // (The trigger button was already Gtk::Image since s183 m1.)
+  if (m_impl->motif == m)
+    return;
+  m_impl->motif = m;
+  // s184 m2: popover align icons are now symbolic SVG via Gtk::Image —
+  // currentColor recoloration is automatic via CSS. No queue_draw needed.
+  // (The trigger button was already Gtk::Image since s183 m1.)
 }
 
 void Toolbar::set_align_enabled(bool enabled) {
-    m_impl->set_align_enabled(enabled);
+  m_impl->set_align_enabled(enabled);
 }
 
 // s154 m1 — transforms section enable forwarder. Mirrors set_align_enabled's
 // faked-disabled pattern: the widgets stay sensitive (so right-click to
 // configure stays reachable even when the action itself is gated off),
 // flags drive the .tool-btn-disabled visual class and gate left-click.
-void Toolbar::set_transforms_enabled(bool snr, bool blend,
-                                     bool boolop, bool warp) {
-    m_impl->set_transforms_enabled(snr, blend, boolop, warp);
+void Toolbar::set_transforms_enabled(bool snr, bool blend, bool boolop,
+                                     bool warp) {
+  m_impl->set_transforms_enabled(snr, blend, boolop, warp);
 }
 
-void Toolbar::set_snap_settings(const SnapSettings& s) {
-    m_impl->set_snap_settings(s);
+void Toolbar::set_snap_settings(const SnapSettings &s) {
+  m_impl->set_snap_settings(s);
 }
 
 // =============================================================================
@@ -787,266 +838,256 @@ void Toolbar::set_snap_settings(const SnapSettings& s) {
 // `self->` is reserved for genuinely Gtk::Widget-side calls
 // (`self->append(...)`, `self->get_root()`, `self->get_width()`).
 void Toolbar::Impl::build() {
-    // s188 m1: every tool button now flows through the funnel as a
-    // curvz::widgets::ToggleButton. The abbrev/long_name args ride in
-    // up front; the funnel calls curvz::utils::set_name internally so
-    // the GTK widget-name and scriptable name stay in sync. The s186 m2
-    // CURVZ_DIAGNOSTIC hand-rolled Node block is gone — funnel handles
-    // it like every other tool button.
-    add_tool_button("tb_sel", "main_toolbar_select_tool_btn",
-                    "curvz-select-symbolic", "Select (S)",
-                    ActiveTool::Selection);
-    add_tool_button("tb_nod", "main_toolbar_node_tool_btn",
-                    "curvz-node-symbolic", "Nodes (N)", ActiveTool::Node);
-    // Density picker only opens on Selection or empty space — see comment
-    // above the right-click controller at the end of build(). Swallow
-    // right-click here so density doesn't leak through.
-    add_rclick_swallow(*buttons.back());
+  // s188 m1: every tool button now flows through the funnel as a
+  // curvz::widgets::ToggleButton. The abbrev/long_name args ride in
+  // up front; the funnel calls curvz::utils::set_name internally so
+  // the GTK widget-name and scriptable name stay in sync. The s186 m2
+  // CURVZ_DIAGNOSTIC hand-rolled Node block is gone — funnel handles
+  // it like every other tool button.
+  add_tool_button("tb_sel", "main_toolbar_select_tool_btn",
+                  "curvz-select-symbolic", "Select (S)", ActiveTool::Selection);
+  add_tool_button("tb_nod", "main_toolbar_node_tool_btn", "curvz-node-symbolic",
+                  "Nodes (N)", ActiveTool::Node);
+  // Density picker only opens on Selection or empty space — see comment
+  // above the right-click controller at the end of build(). Swallow
+  // right-click here so density doesn't leak through.
+  add_rclick_swallow(*buttons.back());
 
-    {
-        auto* sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
-        sep->set_margin_top(4);
-        sep->set_margin_bottom(4);
-        self->append(*sep);
-    }
+  {
+    auto *sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+    sep->set_margin_top(4);
+    sep->set_margin_bottom(4);
+    self->append(*sep);
+  }
 
-    add_tool_button("tb_pen", "main_toolbar_pen_tool_btn",
-                    "curvz-pen-symbolic", "Pen (P)", ActiveTool::Pen);
-    add_rclick_swallow(*buttons.back());
-    add_tool_button("tb_rec", "main_toolbar_rect_tool_btn",
-                    "curvz-rect-symbolic",
-                    "Rectangle (R)  —  Right-click to place precisely",
-                    ActiveTool::Rect);
-    Gtk::ToggleButton* rect_tool_btn = buttons.back();
-    add_tool_button("tb_ova", "main_toolbar_ellipse_tool_btn",
-                    "curvz-oval-symbolic",
-                    "Ellipse (E)  —  Right-click to place precisely",
-                    ActiveTool::Ellipse);
-    Gtk::ToggleButton* ellipse_tool_btn = buttons.back();
-    add_tool_button("tb_lin", "main_toolbar_line_tool_btn",
-                    "curvz-line-symbolic",
-                    "Line (L)  —  Right-click to place precisely",
-                    ActiveTool::Line);
-    Gtk::ToggleButton* line_tool_btn = buttons.back();
-    add_tool_button("tb_ref", "main_toolbar_ref_tool_btn",
-                    "curvz-ref-symbolic",
-                    "Reference Point (F)  —  Right-click to place precisely",
-                    ActiveTool::Ref);
-    Gtk::ToggleButton* ref_tool_btn = buttons.back();
-    add_tool_button("tb_txt", "main_toolbar_text_tool_btn",
-                    "curvz-text-symbolic",
-                    "Text (T)  —  Right-click for options",
-                    ActiveTool::Text);
-    Gtk::ToggleButton* text_tool_btn = buttons.back();
-    add_tool_button("tb_top", "main_toolbar_text_on_path_tool_btn",
-                    "curvz-text-on-path-symbolic",
-                    "Text on Path (U)  —  Click text then path to link",
-                    ActiveTool::TextOnPath);
-    add_rclick_swallow(*buttons.back());
-    // s175 m4: Polygon and Spiral moved here from below — they're
-    // shape-creation tools, they belong in the Creation section. Both
-    // pop a configuration popover on right-click; popover wiring happens
-    // alongside the rest of the placement popovers further down.
-    add_tool_button("tb_pol", "main_toolbar_polygon_tool_btn",
-                    "curvz-polygon-symbolic",
-                    "Polygon / Star (G)  —  Right-click to configure",
-                    ActiveTool::Polygon);
-    Gtk::ToggleButton* polygon_tool_btn = buttons.back();
-    add_tool_button("tb_spi", "main_toolbar_spiral_tool_btn",
-                    "curvz-spiral-symbolic",
-                    "Spiral (W)  —  Right-click to configure",
-                    ActiveTool::Spiral);
-    Gtk::ToggleButton* spiral_tool_btn = buttons.back();
+  add_tool_button("tb_pen", "main_toolbar_pen_tool_btn", "curvz-pen-symbolic",
+                  "Pen (P)", ActiveTool::Pen);
+  add_rclick_swallow(*buttons.back());
+  add_tool_button("tb_rec", "main_toolbar_rect_tool_btn", "curvz-rect-symbolic",
+                  "Rectangle (R)  —  Right-click to place precisely",
+                  ActiveTool::Rect);
+  Gtk::ToggleButton *rect_tool_btn = buttons.back();
+  add_tool_button(
+      "tb_ova", "main_toolbar_ellipse_tool_btn", "curvz-oval-symbolic",
+      "Ellipse (E)  —  Right-click to place precisely", ActiveTool::Ellipse);
+  Gtk::ToggleButton *ellipse_tool_btn = buttons.back();
+  add_tool_button("tb_lin", "main_toolbar_line_tool_btn", "curvz-line-symbolic",
+                  "Line (L)  —  Right-click to place precisely",
+                  ActiveTool::Line);
+  Gtk::ToggleButton *line_tool_btn = buttons.back();
+  add_tool_button("tb_ref", "main_toolbar_ref_tool_btn", "curvz-ref-symbolic",
+                  "Reference Point (F)  —  Right-click to place precisely",
+                  ActiveTool::Ref);
+  Gtk::ToggleButton *ref_tool_btn = buttons.back();
+  add_tool_button("tb_txt", "main_toolbar_text_tool_btn", "curvz-text-symbolic",
+                  "Text (T)  —  Right-click for options", ActiveTool::Text);
+  Gtk::ToggleButton *text_tool_btn = buttons.back();
+  add_tool_button("tb_top", "main_toolbar_text_on_path_tool_btn",
+                  "curvz-text-on-path-symbolic",
+                  "Text on Path (U)  —  Click text then path to link",
+                  ActiveTool::TextOnPath);
+  add_rclick_swallow(*buttons.back());
+  // s175 m4: Polygon and Spiral moved here from below — they're
+  // shape-creation tools, they belong in the Creation section. Both
+  // pop a configuration popover on right-click; popover wiring happens
+  // alongside the rest of the placement popovers further down.
+  add_tool_button(
+      "tb_pol", "main_toolbar_polygon_tool_btn", "curvz-polygon-symbolic",
+      "Polygon / Star (G)  —  Right-click to configure", ActiveTool::Polygon);
+  Gtk::ToggleButton *polygon_tool_btn = buttons.back();
+  add_tool_button(
+      "tb_spi", "main_toolbar_spiral_tool_btn", "curvz-spiral-symbolic",
+      "Spiral (W)  —  Right-click to configure", ActiveTool::Spiral);
+  Gtk::ToggleButton *spiral_tool_btn = buttons.back();
 
-    {
-        auto* sep2 = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
-        sep2->set_margin_top(4);
-        sep2->set_margin_bottom(4);
-        self->append(*sep2);
-    }
+  {
+    auto *sep2 =
+        Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+    sep2->set_margin_top(4);
+    sep2->set_margin_bottom(4);
+    self->append(*sep2);
+  }
 
-    // s154 m1 / s175 m4: transforms section — Align, Blend, Bool,
-    // Corner, SnR, Warp (alphabetical). Emits its own closing separator,
-    // so the utility cluster (Eyedropper/Measure/Zoom) begins cleanly
-    // under it. Original s154 m1 build had only SnR, Blend, Bool, Warp;
-    // s175 m4 folded in Corner and Align and sorted alphabetically.
-    build_transforms_section();
+  // s154 m1 / s175 m4: transforms section — Align, Blend, Bool,
+  // Corner, SnR, Warp (alphabetical). Emits its own closing separator,
+  // so the utility cluster (Eyedropper/Measure/Zoom) begins cleanly
+  // under it. Original s154 m1 build had only SnR, Blend, Bool, Warp;
+  // s175 m4 folded in Corner and Align and sorted alphabetically.
+  build_transforms_section();
 
-    // s175 m4: Utility section — Eyedropper, Measure, Zoom. Selection-
-    // and navigation-only tools; no geometry effect. Polygon, Spiral,
-    // and Corner used to live here mixed in; they moved to Creation
-    // and Transforms respectively, leaving the section vocabulary clean.
-    add_tool_button("tb_eyd", "main_toolbar_eyedropper_tool_btn",
-                    "curvz-eyedropper-symbolic", "Eyedropper (I)",
-                    ActiveTool::Eyedropper);
-    add_rclick_swallow(*buttons.back());
-    add_tool_button("tb_meas", "main_toolbar_measure_tool_btn",
-                    "curvz-ruler-symbolic",
-                    "Measure (M)  —  Measure between two nodes; "
-                    "right-click to configure",
-                    ActiveTool::Measure);
-    Gtk::ToggleButton* measure_tool_btn = buttons.back();
-    add_tool_button("tb_zom", "main_toolbar_zoom_tool_btn",
-                    "curvz-zoom-symbolic",
-                    "Zoom (Z)  —  Right-click to set level",
-                    ActiveTool::Zoom);
-    Gtk::ToggleButton* zoom_tool_btn = buttons.back();
+  // s175 m4: Utility section — Eyedropper, Measure, Zoom. Selection-
+  // and navigation-only tools; no geometry effect. Polygon, Spiral,
+  // and Corner used to live here mixed in; they moved to Creation
+  // and Transforms respectively, leaving the section vocabulary clean.
+  add_tool_button("tb_eyd", "main_toolbar_eyedropper_tool_btn",
+                  "curvz-eyedropper-symbolic", "Eyedropper (I)",
+                  ActiveTool::Eyedropper);
+  add_rclick_swallow(*buttons.back());
+  add_tool_button("tb_meas", "main_toolbar_measure_tool_btn",
+                  "curvz-ruler-symbolic",
+                  "Measure (M)  —  Measure between two nodes; "
+                  "right-click to configure",
+                  ActiveTool::Measure);
+  Gtk::ToggleButton *measure_tool_btn = buttons.back();
+  add_tool_button("tb_zom", "main_toolbar_zoom_tool_btn", "curvz-zoom-symbolic",
+                  "Zoom (Z)  —  Right-click to set level", ActiveTool::Zoom);
+  Gtk::ToggleButton *zoom_tool_btn = buttons.back();
 
-    // Spacer — everything below floats to the bottom
-    {
-        auto* spacer = Gtk::make_managed<Gtk::Box>();
-        spacer->set_vexpand(true);
-        self->append(*spacer);
-    }
+  // Spacer — everything below floats to the bottom
+  {
+    auto *spacer = Gtk::make_managed<Gtk::Box>();
+    spacer->set_vexpand(true);
+    self->append(*spacer);
+  }
 
-    // ── Bottom section: well + supporting widgets ─────────────────────────
-    {
-        auto* sep3 = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
-        sep3->set_margin_top(4);
-        sep3->set_margin_bottom(4);
-        self->append(*sep3);
-    }
+  // ── Bottom section: well + supporting widgets ─────────────────────────
+  {
+    auto *sep3 =
+        Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+    sep3->set_margin_top(4);
+    sep3->set_margin_bottom(4);
+    self->append(*sep3);
+  }
 
-    // Placement popovers — all 9 internalised into Impl across sub-ship 2
-    // (s152 m2a → s153 m2e). Calls are unqualified now; the bodies live
-    // as Toolbar::Impl::build_<name>_popover further down this file.
-    build_zoom_popover(zoom_tool_btn);              // sub-ship 2a — done
-    build_ref_popover(ref_tool_btn);                // sub-ship 2c — done
-    build_rect_popover(rect_tool_btn);              // sub-ship 2b — done
-    build_ellipse_popover(ellipse_tool_btn);        // sub-ship 2b — done
-    build_line_popover(line_tool_btn);              // sub-ship 2b — done
-    build_text_popover(text_tool_btn);              // sub-ship 2d — done
-    build_polygon_popover(polygon_tool_btn);        // sub-ship 2e — done
-    build_spiral_popover(spiral_tool_btn);          // sub-ship 2e — done
-    build_measure_popover(measure_tool_btn);        // sub-ship 2c — done
+  // Placement popovers — all 9 internalised into Impl across sub-ship 2
+  // (s152 m2a → s153 m2e). Calls are unqualified now; the bodies live
+  // as Toolbar::Impl::build_<name>_popover further down this file.
+  build_zoom_popover(zoom_tool_btn);       // sub-ship 2a — done
+  build_ref_popover(ref_tool_btn);         // sub-ship 2c — done
+  build_rect_popover(rect_tool_btn);       // sub-ship 2b — done
+  build_ellipse_popover(ellipse_tool_btn); // sub-ship 2b — done
+  build_line_popover(line_tool_btn);       // sub-ship 2b — done
+  build_text_popover(text_tool_btn);       // sub-ship 2d — done
+  build_polygon_popover(polygon_tool_btn); // sub-ship 2e — done
+  build_spiral_popover(spiral_tool_btn);   // sub-ship 2e — done
+  build_measure_popover(measure_tool_btn); // sub-ship 2c — done
 
-    if (!buttons.empty())
-        buttons[0]->set_active(true);
+  if (!buttons.empty())
+    buttons[0]->set_active(true);
 
-    // ── Snap toggle button ────────────────────────────────────────────────
-    {
-        curvz::utils::set_name(snap_btn, "tb_ss", "main_toolbar_snap_btn");
-        snap_btn.set_icon_name("curvz-switch-on-symbolic");
-        snap_btn.set_tooltip_text(
-            "Toggle Snap (Q)  —  right-click for snap targets");
-        snap_btn.set_has_frame(false);
-        snap_btn.add_css_class("tool-btn");
-        // .tb-snap-btn opts out of .tool-btn:checked active blue (the
-        // icon swap conveys state, no bg colour change wanted).
-        snap_btn.add_css_class("tb-snap-btn");
-        snap_btn.set_active(true);     // snap on by default
-        snap_btn.set_hexpand(false);
-        snap_btn.set_vexpand(false);
-        snap_btn.signal_toggled().connect([this]() {
-            const bool on = snap_btn.get_active();
-            snap_btn.set_icon_name(on ? "curvz-switch-on-symbolic"
-                                      : "curvz-switch-off-symbolic");
-            sig_snap.emit(on);
+  // ── Snap toggle button ────────────────────────────────────────────────
+  {
+    curvz::utils::set_name(snap_btn, "tb_ss", "main_toolbar_snap_btn");
+    snap_btn.set_icon_name("curvz-switch-on-symbolic");
+    snap_btn.set_tooltip_text(
+        "Toggle Snap (Q)  —  right-click for snap targets");
+    snap_btn.set_has_frame(false);
+    snap_btn.add_css_class("tool-btn");
+    // .tb-snap-btn opts out of .tool-btn:checked active blue (the
+    // icon swap conveys state, no bg colour change wanted).
+    snap_btn.add_css_class("tb-snap-btn");
+    snap_btn.set_active(true); // snap on by default
+    snap_btn.set_hexpand(false);
+    snap_btn.set_vexpand(false);
+    snap_btn.signal_toggled().connect([this]() {
+      const bool on = snap_btn.get_active();
+      snap_btn.set_icon_name(on ? "curvz-switch-on-symbolic"
+                                : "curvz-switch-off-symbolic");
+      sig_snap.emit(on);
+    });
+    self->append(snap_btn);
+    // s153 sub-ship 4: build_snap_popover is now an Impl method —
+    // call directly. The snap settings popover state (6 checkboxes,
+    // m_snap_pop, m_snap_loading) all live in Impl too.
+    build_snap_popover(&snap_btn);
+  }
+
+  // s175 m4: build_align_button() call removed. Align & Distribute
+  // moved up into build_transforms_section() (alphabetical position 1)
+  // since align is conceptually a transform, not a bottom-of-toolbar
+  // utility. The widget construction itself still lives in
+  // build_align_button(); transforms section calls it.
+
+  // ── Macro manager button ──────────────────────────────────────────────
+  {
+    auto *macro_sep =
+        Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+    macro_sep->set_margin_top(4);
+    macro_sep->set_margin_bottom(4);
+    self->append(*macro_sep);
+
+    auto *macro_btn = Gtk::make_managed<curvz::widgets::Button>("tb_mb");
+    curvz::utils::set_name(macro_btn, "tb_mb", "main_toolbar_macro_btn");
+    macro_btn->set_icon_name("media-record-symbolic");
+    macro_btn->set_tooltip_text("Run current macro  (Ctrl+M)\n"
+                                "Right-click: Macro Manager  (Ctrl+Shift+M)");
+    macro_btn->set_has_frame(false);
+    macro_btn->set_halign(Gtk::Align::CENTER);
+    macro_btn->add_css_class("tool-btn");
+    macro_btn->signal_clicked().connect([this]() { sig_macro_run.emit(); });
+
+    auto macro_rclick = Gtk::GestureClick::create();
+    macro_rclick->set_button(3);
+    // s152 sub-ship 1 fix: claim on press so the right-click doesn't
+    // bubble up to the toolbar root's density picker. Without the
+    // claim, both Macro Manager AND density would open on a single
+    // right-click.
+    auto *macro_rclick_raw = macro_rclick.get();
+    macro_rclick->signal_pressed().connect(
+        [this, macro_rclick_raw](int, double, double) {
+          macro_rclick_raw->set_state(Gtk::EventSequenceState::CLAIMED);
+          sig_macro.emit();
         });
-        self->append(snap_btn);
-        // s153 sub-ship 4: build_snap_popover is now an Impl method —
-        // call directly. The snap settings popover state (6 checkboxes,
-        // m_snap_pop, m_snap_loading) all live in Impl too.
-        build_snap_popover(&snap_btn);
-    }
+    macro_btn->add_controller(macro_rclick);
 
-    // s175 m4: build_align_button() call removed. Align & Distribute
-    // moved up into build_transforms_section() (alphabetical position 1)
-    // since align is conceptually a transform, not a bottom-of-toolbar
-    // utility. The widget construction itself still lives in
-    // build_align_button(); transforms section calls it.
+    self->append(*macro_btn);
+  }
 
-    // ── Macro manager button ──────────────────────────────────────────────
-    {
-        auto* macro_sep = Gtk::make_managed<Gtk::Separator>(
-            Gtk::Orientation::HORIZONTAL);
-        macro_sep->set_margin_top(4);
-        macro_sep->set_margin_bottom(4);
-        self->append(*macro_sep);
+  {
+    auto *sep4 =
+        Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+    sep4->set_margin_top(4);
+    sep4->set_margin_bottom(4);
+    self->append(*sep4);
+  }
 
-        auto* macro_btn = Gtk::make_managed<curvz::widgets::Button>("tb_mb");
-        curvz::utils::set_name(macro_btn, "tb_mb", "main_toolbar_macro_btn");
-        macro_btn->set_icon_name("media-record-symbolic");
-        macro_btn->set_tooltip_text(
-            "Run current macro  (Ctrl+M)\n"
-            "Right-click: Macro Manager  (Ctrl+Shift+M)");
-        macro_btn->set_has_frame(false);
-        macro_btn->set_halign(Gtk::Align::CENTER);
-        macro_btn->add_css_class("tool-btn");
-        macro_btn->signal_clicked().connect(
-            [this]() { sig_macro_run.emit(); });
+  build_defaults_well(); // fill/stroke well — sub-ship 3 — done
 
-        auto macro_rclick = Gtk::GestureClick::create();
-        macro_rclick->set_button(3);
-        // s152 sub-ship 1 fix: claim on press so the right-click doesn't
-        // bubble up to the toolbar root's density picker. Without the
-        // claim, both Macro Manager AND density would open on a single
-        // right-click.
-        auto* macro_rclick_raw = macro_rclick.get();
-        macro_rclick->signal_pressed().connect(
-            [this, macro_rclick_raw](int, double, double) {
-                macro_rclick_raw->set_state(Gtk::EventSequenceState::CLAIMED);
-                sig_macro.emit();
-            });
-        macro_btn->add_controller(macro_rclick);
+  // ── Right-click on toolbar background or Selection → density picker ──
+  //
+  // The rule (s152 sub-ship 2 design call): density picker opens on
+  //   - empty toolbar surface (separator gaps, spacer)
+  //   - the Selection tool button (the "default tool" — same status
+  //     as background for right-click purposes)
+  //
+  // Every other toolbar widget either claims the right-click for its
+  // own affordance (macro → manager; rect/ellipse/line/ref/text/
+  // polygon/spiral/zoom/measure → placement popover; snap → settings)
+  // or installs add_rclick_swallow to absorb the press silently
+  // (align, well, plus the affordance-less tool buttons Node, Pen,
+  // Eyedropper, Corner, TextOnPath).
+  //
+  // Why Selection: it's the toolbar's home tool. Right-click on it
+  // carries the same "configure the toolbar" semantics as background.
+  // Other tools may grow per-tool right-click affordances (ARC #6+),
+  // and locking density to background+Selection now means new
+  // affordances can land without displacing density.
+  {
+    auto density_rclick = Gtk::GestureClick::create();
+    density_rclick->set_button(3);
+    density_rclick->signal_pressed().connect(
+        [this](int /*n_press*/, double x, double y) {
+          if (!density_pop_built)
+            build_density_popover();
+          Gdk::Rectangle rect(static_cast<int>(x), static_cast<int>(y), 1, 1);
+          density_pop.set_pointing_to(rect);
+          density_pop.popup();
+        });
+    self->add_controller(density_rclick);
+  }
 
-        self->append(*macro_btn);
-    }
+  LOG_DEBUG("Toolbar created with {} tools", buttons.size());
+  select_tool(ActiveTool::Selection); // apply :checked CSS on startup
 
-    {
-        auto* sep4 = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
-        sep4->set_margin_top(4);
-        sep4->set_margin_bottom(4);
-        self->append(*sep4);
-    }
-
-    build_defaults_well();   // fill/stroke well — sub-ship 3 — done
-
-    // ── Right-click on toolbar background or Selection → density picker ──
-    //
-    // The rule (s152 sub-ship 2 design call): density picker opens on
-    //   - empty toolbar surface (separator gaps, spacer)
-    //   - the Selection tool button (the "default tool" — same status
-    //     as background for right-click purposes)
-    //
-    // Every other toolbar widget either claims the right-click for its
-    // own affordance (macro → manager; rect/ellipse/line/ref/text/
-    // polygon/spiral/zoom/measure → placement popover; snap → settings)
-    // or installs add_rclick_swallow to absorb the press silently
-    // (align, well, plus the affordance-less tool buttons Node, Pen,
-    // Eyedropper, Corner, TextOnPath).
-    //
-    // Why Selection: it's the toolbar's home tool. Right-click on it
-    // carries the same "configure the toolbar" semantics as background.
-    // Other tools may grow per-tool right-click affordances (ARC #6+),
-    // and locking density to background+Selection now means new
-    // affordances can land without displacing density.
-    {
-        auto density_rclick = Gtk::GestureClick::create();
-        density_rclick->set_button(3);
-        density_rclick->signal_pressed().connect(
-            [this](int /*n_press*/, double x, double y) {
-                if (!density_pop_built) build_density_popover();
-                Gdk::Rectangle rect(static_cast<int>(x), static_cast<int>(y),
-                                    1, 1);
-                density_pop.set_pointing_to(rect);
-                density_pop.popup();
-            });
-        self->add_controller(density_rclick);
-    }
-
-    LOG_DEBUG("Toolbar created with {} tools", buttons.size());
-    select_tool(ActiveTool::Selection);  // apply :checked CSS on startup
-
-    // s195 m6 — force eager density popover construction so the
-    // pop_tb_dn_* substrate abbrevs resolve at launch instead of
-    // only after the user has right-clicked the toolbar background.
-    // Lazy widget construction breaks the substrate contract — the
-    // registry can't resolve an abbrev for a widget that hasn't been
-    // built yet. The build_density_popover() body has its own
-    // density_pop_built idempotency guard, so the original lazy
-    // trigger path still no-ops correctly on subsequent clicks.
-    build_density_popover();
+  // s195 m6 — force eager density popover construction so the
+  // pop_tb_dn_* substrate abbrevs resolve at launch instead of
+  // only after the user has right-clicked the toolbar background.
+  // Lazy widget construction breaks the substrate contract — the
+  // registry can't resolve an abbrev for a widget that hasn't been
+  // built yet. The build_density_popover() body has its own
+  // density_pop_built idempotency guard, so the original lazy
+  // trigger path still no-ops correctly on subsequent clicks.
+  build_density_popover();
 }
 
 // ── Impl::add_tool_button / make_tool_button (s188 m1) ───────────────────
@@ -1061,51 +1102,51 @@ void Toolbar::Impl::build() {
 // appends to self; make_tool_button does not (its caller appends
 // explicitly to control alphabetical section order — used by
 // build_transforms_section for the Corner button).
-Gtk::ToggleButton* Toolbar::Impl::build_tool_btn(const char* abbrev,
-                                                  const char* long_name,
-                                                  const char* icon,
-                                                  const char* tooltip,
-                                                  ActiveTool tool) {
-    auto* btn = Gtk::make_managed<curvz::widgets::ToggleButton>(abbrev);
-    btn->set_icon_name(icon);
-    btn->set_tooltip_text(tooltip);
-    btn->set_has_frame(false);
-    btn->add_css_class("tool-btn");
-    btn->set_halign(Gtk::Align::FILL);
-    btn->set_hexpand(false);
-    // s152: size is governed by CSS .tool-btn min-width/min-height,
-    // which scales with the density class on the toolbar root.
-    //
-    // Radio-invariant lambda: if the click flipped this to active, the
-    // tool becomes the active tool. If the user clicked the already-
-    // active button (which GTK would have flipped OFF), we re-flip it
-    // ON and re-apply select_tool so the active-tool CSS class stays
-    // attached. This guarantees one and only one tool button reads as
-    // checked at any given time, matching every other vector editor's
-    // toolbar idiom.
-    btn->signal_clicked().connect([this, btn, tool]() {
-        if (btn->get_active()) {
-            select_tool(tool);
-        } else if (active == tool) {
-            btn->set_active(true);
-            select_tool(tool);  // re-apply tool-active class
-        }
-    });
-    // s188 m1: GTK widget name + scriptable registry name in lock-step.
-    // The wrapper constructor took abbrev as the scriptable name above;
-    // set_name applies the same string as the GTK widget name. Both
-    // addressing systems now agree by construction.
-    curvz::utils::set_name(*btn, abbrev, long_name);
-    buttons.push_back(btn);
-    button_tools.push_back(tool);
-    return btn;
+Gtk::ToggleButton *Toolbar::Impl::build_tool_btn(const char *abbrev,
+                                                 const char *long_name,
+                                                 const char *icon,
+                                                 const char *tooltip,
+                                                 ActiveTool tool) {
+  auto *btn = Gtk::make_managed<curvz::widgets::ToggleButton>(abbrev);
+  btn->set_icon_name(icon);
+  btn->set_tooltip_text(tooltip);
+  btn->set_has_frame(false);
+  btn->add_css_class("tool-btn");
+  btn->set_halign(Gtk::Align::FILL);
+  btn->set_hexpand(false);
+  // s152: size is governed by CSS .tool-btn min-width/min-height,
+  // which scales with the density class on the toolbar root.
+  //
+  // Radio-invariant lambda: if the click flipped this to active, the
+  // tool becomes the active tool. If the user clicked the already-
+  // active button (which GTK would have flipped OFF), we re-flip it
+  // ON and re-apply select_tool so the active-tool CSS class stays
+  // attached. This guarantees one and only one tool button reads as
+  // checked at any given time, matching every other vector editor's
+  // toolbar idiom.
+  btn->signal_clicked().connect([this, btn, tool]() {
+    if (btn->get_active()) {
+      select_tool(tool);
+    } else if (active == tool) {
+      btn->set_active(true);
+      select_tool(tool); // re-apply tool-active class
+    }
+  });
+  // s188 m1: GTK widget name + scriptable registry name in lock-step.
+  // The wrapper constructor took abbrev as the scriptable name above;
+  // set_name applies the same string as the GTK widget name. Both
+  // addressing systems now agree by construction.
+  curvz::utils::set_name(*btn, abbrev, long_name);
+  buttons.push_back(btn);
+  button_tools.push_back(tool);
+  return btn;
 }
 
-void Toolbar::Impl::add_tool_button(const char* abbrev, const char* long_name,
-                                     const char* icon, const char* tooltip,
-                                     ActiveTool tool) {
-    auto* btn = build_tool_btn(abbrev, long_name, icon, tooltip, tool);
-    self->append(*btn);
+void Toolbar::Impl::add_tool_button(const char *abbrev, const char *long_name,
+                                    const char *icon, const char *tooltip,
+                                    ActiveTool tool) {
+  auto *btn = build_tool_btn(abbrev, long_name, icon, tooltip, tool);
+  self->append(*btn);
 }
 
 // ── Impl::make_tool_button (s175 m4 / s188 m1) ───────────────────────────
@@ -1119,22 +1160,23 @@ void Toolbar::Impl::add_tool_button(const char* abbrev, const char* long_name,
 // Returns Gtk::ToggleButton* (not curvz::widgets::ToggleButton*) so
 // the corner_tool_btn member and the public get_corner_btn() API stay
 // type-stable — the upcast is silent and lossless.
-Gtk::ToggleButton* Toolbar::Impl::make_tool_button(const char* abbrev,
-                                                   const char* long_name,
-                                                   const char* icon,
-                                                   const char* tooltip,
+Gtk::ToggleButton *Toolbar::Impl::make_tool_button(const char *abbrev,
+                                                   const char *long_name,
+                                                   const char *icon,
+                                                   const char *tooltip,
                                                    ActiveTool tool) {
-    return build_tool_btn(abbrev, long_name, icon, tooltip, tool);
+  return build_tool_btn(abbrev, long_name, icon, tooltip, tool);
 }
 
 // ── Impl::set_active_tool_icon ───────────────────────────────────────────
-void Toolbar::Impl::set_active_tool_icon(ActiveTool tool, const char* icon_name) {
-    for (size_t i = 0; i < button_tools.size(); ++i) {
-        if (button_tools[i] == tool) {
-            buttons[i]->set_icon_name(icon_name);
-            return;
-        }
+void Toolbar::Impl::set_active_tool_icon(ActiveTool tool,
+                                         const char *icon_name) {
+  for (size_t i = 0; i < button_tools.size(); ++i) {
+    if (button_tools[i] == tool) {
+      buttons[i]->set_icon_name(icon_name);
+      return;
     }
+  }
 }
 
 // ── Impl::select_tool ────────────────────────────────────────────────────
@@ -1148,29 +1190,33 @@ void Toolbar::Impl::set_active_tool_icon(ActiveTool tool, const char* icon_name)
 // `togglebutton.tool-active` rule is now a no-op (see css.hpp). External
 // code that still adds/removes the class keeps working.
 void Toolbar::Impl::select_tool(ActiveTool tool) {
-    active = tool;
-    for (size_t i = 0; i < buttons.size(); ++i) {
-        bool is_active = button_tools[i] == tool;
-        buttons[i]->set_active(is_active);
-        if (is_active)
-            buttons[i]->add_css_class("tool-active");
-        else
-            buttons[i]->remove_css_class("tool-active");
-    }
-    signal_tool_changed_.emit(tool);
-    LOG_DEBUG("Tool selected: {}", static_cast<int>(tool));
+  active = tool;
+  for (size_t i = 0; i < buttons.size(); ++i) {
+    bool is_active = button_tools[i] == tool;
+    buttons[i]->set_active(is_active);
+    if (is_active)
+      buttons[i]->add_css_class("tool-active");
+    else
+      buttons[i]->remove_css_class("tool-active");
+  }
+  signal_tool_changed_.emit(tool);
+  LOG_DEBUG("Tool selected: {}", static_cast<int>(tool));
 }
 
 // ── Impl::cycle_tool ─────────────────────────────────────────────────────
 void Toolbar::Impl::cycle_tool(int dir) {
-    if (button_tools.empty()) return;
-    int n = static_cast<int>(button_tools.size());
-    int cur = 0;
-    for (int i = 0; i < n; ++i) {
-        if (button_tools[i] == active) { cur = i; break; }
+  if (button_tools.empty())
+    return;
+  int n = static_cast<int>(button_tools.size());
+  int cur = 0;
+  for (int i = 0; i < n; ++i) {
+    if (button_tools[i] == active) {
+      cur = i;
+      break;
     }
-    int next = (cur + dir + n) % n;
-    select_tool(button_tools[next]);
+  }
+  int next = (cur + dir + n) % n;
+  select_tool(button_tools[next]);
 }
 
 // ── Impl::set_density ────────────────────────────────────────────────────
@@ -1180,16 +1226,18 @@ void Toolbar::Impl::cycle_tool(int dir) {
 // modifier class. set_density() removes any previously-applied modifier
 // and adds the new one — GTK4 re-resolves the CSS rules and relayouts.
 void Toolbar::Impl::set_density(Toolbar::Density d) {
-    if (density == d && self->has_css_class(density_class_name(d))) {
-        return;   // no-op (already applied)
-    }
-    for (const char* cls : {"standard", "compact", "tight"}) {
-        if (self->has_css_class(cls)) self->remove_css_class(cls);
-    }
-    const char* cls = density_class_name(d);
-    if (cls && *cls) self->add_css_class(cls);
-    density = d;
-    LOG_DEBUG("Toolbar density set to {}", static_cast<int>(d));
+  if (density == d && self->has_css_class(density_class_name(d))) {
+    return; // no-op (already applied)
+  }
+  for (const char *cls : {"standard", "compact", "tight"}) {
+    if (self->has_css_class(cls))
+      self->remove_css_class(cls);
+  }
+  const char *cls = density_class_name(d);
+  if (cls && *cls)
+    self->add_css_class(cls);
+  density = d;
+  LOG_DEBUG("Toolbar density set to {}", static_cast<int>(d));
 }
 
 // ── Impl::build_density_popover ──────────────────────────────────────────
@@ -1208,66 +1256,80 @@ void Toolbar::Impl::set_density(Toolbar::Density d) {
 // Programmatic set_density() (the startup path) does NOT emit
 // signal_density_changed — only user-driven changes from this popover do.
 void Toolbar::Impl::build_density_popover() {
-    if (density_pop_built) return;
-    curvz::utils::set_name(density_pop, "pop_tb_density",
-                           "popover_toolbar_density_root");
-    auto* outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
-    outer->set_spacing(4);
-    outer->set_margin_top(8);
-    outer->set_margin_bottom(8);
-    outer->set_margin_start(12);
-    outer->set_margin_end(12);
+  if (density_pop_built)
+    return;
+  curvz::utils::set_name(density_pop, "pop_tb_density",
+                         "popover_toolbar_density_root");
+  auto *outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
+  outer->set_spacing(4);
+  outer->set_margin_top(8);
+  outer->set_margin_bottom(8);
+  outer->set_margin_start(12);
+  outer->set_margin_end(12);
 
-    auto* lbl = Gtk::make_managed<Gtk::Label>("Toolbar density");
-    lbl->set_halign(Gtk::Align::START);
-    lbl->add_css_class("dim-label");
-    lbl->set_margin_bottom(4);
-    outer->append(*lbl);
+  auto *lbl = Gtk::make_managed<Gtk::Label>("Toolbar density");
+  lbl->set_halign(Gtk::Align::START);
+  lbl->add_css_class("dim-label");
+  lbl->set_margin_bottom(4);
+  outer->append(*lbl);
 
-    auto* group_master = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_dn_com", "Comfortable");
-    curvz::utils::set_name(group_master, "pop_tb_dn_com",
-                           "popover_toolbar_density_comfortable_radio");
-    auto* opt_std      = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_dn_std", "Standard");
-    curvz::utils::set_name(opt_std, "pop_tb_dn_std",
-                           "popover_toolbar_density_standard_radio");
-    auto* opt_compact  = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_dn_cpt", "Compact");
-    curvz::utils::set_name(opt_compact, "pop_tb_dn_cpt",
-                           "popover_toolbar_density_compact_radio");
-    auto* opt_tight    = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_dn_tgt", "Tight");
-    curvz::utils::set_name(opt_tight, "pop_tb_dn_tgt",
-                           "popover_toolbar_density_tight_radio");
+  auto *group_master = Gtk::make_managed<curvz::widgets::CheckButton>(
+      "pop_tb_dn_com", "Comfortable");
+  curvz::utils::set_name(group_master, "pop_tb_dn_com",
+                         "popover_toolbar_density_comfortable_radio");
+  auto *opt_std = Gtk::make_managed<curvz::widgets::CheckButton>(
+      "pop_tb_dn_std", "Standard");
+  curvz::utils::set_name(opt_std, "pop_tb_dn_std",
+                         "popover_toolbar_density_standard_radio");
+  auto *opt_compact = Gtk::make_managed<curvz::widgets::CheckButton>(
+      "pop_tb_dn_cpt", "Compact");
+  curvz::utils::set_name(opt_compact, "pop_tb_dn_cpt",
+                         "popover_toolbar_density_compact_radio");
+  auto *opt_tight =
+      Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_dn_tgt", "Tight");
+  curvz::utils::set_name(opt_tight, "pop_tb_dn_tgt",
+                         "popover_toolbar_density_tight_radio");
 
-    opt_std->set_group(*group_master);
-    opt_compact->set_group(*group_master);
-    opt_tight->set_group(*group_master);
+  opt_std->set_group(*group_master);
+  opt_compact->set_group(*group_master);
+  opt_tight->set_group(*group_master);
 
-    switch (density) {
-        case Toolbar::Density::Comfortable: group_master->set_active(true); break;
-        case Toolbar::Density::Standard:    opt_std->set_active(true);      break;
-        case Toolbar::Density::Compact:     opt_compact->set_active(true);  break;
-        case Toolbar::Density::Tight:       opt_tight->set_active(true);    break;
-    }
+  switch (density) {
+  case Toolbar::Density::Comfortable:
+    group_master->set_active(true);
+    break;
+  case Toolbar::Density::Standard:
+    opt_std->set_active(true);
+    break;
+  case Toolbar::Density::Compact:
+    opt_compact->set_active(true);
+    break;
+  case Toolbar::Density::Tight:
+    opt_tight->set_active(true);
+    break;
+  }
 
-    auto wire_radio = [this](Gtk::CheckButton* btn, Toolbar::Density d) {
-        btn->signal_toggled().connect([this, btn, d]() {
-            if (!btn->get_active()) return;
-            set_density(d);
-            sig_density_changed.emit(d);
-        });
-    };
-    wire_radio(group_master, Toolbar::Density::Comfortable);
-    wire_radio(opt_std,      Toolbar::Density::Standard);
-    wire_radio(opt_compact,  Toolbar::Density::Compact);
-    wire_radio(opt_tight,    Toolbar::Density::Tight);
+  auto wire_radio = [this](Gtk::CheckButton *btn, Toolbar::Density d) {
+    btn->signal_toggled().connect([this, btn, d]() {
+      if (!btn->get_active())
+        return;
+      set_density(d);
+      sig_density_changed.emit(d);
+    });
+  };
+  wire_radio(group_master, Toolbar::Density::Comfortable);
+  wire_radio(opt_std, Toolbar::Density::Standard);
+  wire_radio(opt_compact, Toolbar::Density::Compact);
+  wire_radio(opt_tight, Toolbar::Density::Tight);
 
-    outer->append(*group_master);
-    outer->append(*opt_std);
-    outer->append(*opt_compact);
-    outer->append(*opt_tight);
+  outer->append(*group_master);
+  outer->append(*opt_std);
+  outer->append(*opt_compact);
+  outer->append(*opt_tight);
 
-    density_pop.set_child(*outer);
-    density_pop.set_parent(*self);
-    density_pop_built = true;
+  density_pop.set_child(*outer);
+  density_pop.set_parent(*self);
+  density_pop_built = true;
 }
 
 // ── Defaults well — only widget in toolbar column
@@ -1324,9 +1386,7 @@ void Toolbar::Impl::build_defaults_well() {
   // colour row went from hidden→visible during a type-button click.
   // signal_show fires once per popup cycle, before the popover is
   // interactive — refresh lands cleanly with no event in flight.
-  fill_pop.signal_show().connect([this]() {
-    refresh_fill_popover();
-  });
+  fill_pop.signal_show().connect([this]() { refresh_fill_popover(); });
   stroke_pop.signal_show().connect([this]() {
     refresh_stroke_popover();
     update_cap_buttons();
@@ -1358,19 +1418,24 @@ void Toolbar::Impl::build_fill_popover() {
   auto *type_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   type_row->set_spacing(4);
 
-  curvz::utils::set_name(fill_type_solid_btn, "pop_tb_fill_sol", "popover_toolbar_fill_type_solid_toggle");
+  curvz::utils::set_name(fill_type_solid_btn, "pop_tb_fill_sol",
+                         "popover_toolbar_fill_type_solid_toggle");
   fill_type_solid_btn.set_label("Solid");
   fill_type_solid_btn.add_css_class("tb-type-btn");
-  curvz::utils::set_name(fill_type_none_btn, "pop_tb_fill_non", "popover_toolbar_fill_type_none_toggle");
+  curvz::utils::set_name(fill_type_none_btn, "pop_tb_fill_non",
+                         "popover_toolbar_fill_type_none_toggle");
   fill_type_none_btn.set_label("None");
   fill_type_none_btn.add_css_class("tb-type-btn");
-  curvz::utils::set_name(fill_type_cc_btn, "pop_tb_fill_cc", "popover_toolbar_fill_type_currentcolor_toggle");
+  curvz::utils::set_name(fill_type_cc_btn, "pop_tb_fill_cc",
+                         "popover_toolbar_fill_type_currentcolor_toggle");
   fill_type_cc_btn.set_label("currentColor");
   fill_type_cc_btn.add_css_class("tb-type-btn");
-  curvz::utils::set_name(fill_type_swatch_btn, "pop_tb_fill_sw", "popover_toolbar_fill_type_swatch_toggle");
+  curvz::utils::set_name(fill_type_swatch_btn, "pop_tb_fill_sw",
+                         "popover_toolbar_fill_type_swatch_toggle");
   fill_type_swatch_btn.set_label("Swatch");
   fill_type_swatch_btn.add_css_class("tb-type-btn");
-  curvz::utils::set_name(fill_type_gradient_btn, "pop_tb_fill_grd", "popover_toolbar_fill_type_gradient_toggle");
+  curvz::utils::set_name(fill_type_gradient_btn, "pop_tb_fill_grd",
+                         "popover_toolbar_fill_type_gradient_toggle");
   fill_type_gradient_btn.set_label("Gradient");
   fill_type_gradient_btn.add_css_class("tb-type-btn");
 
@@ -1412,7 +1477,8 @@ void Toolbar::Impl::build_fill_popover() {
   //   type=Solid + colour and broadcasts. Cancel refreshes the popover
   //   so the radio snaps back to whatever def_fill.type still holds.
   fill_type_solid_btn.signal_toggled().connect([this]() {
-    if (syncing || !fill_type_solid_btn.get_active()) return;
+    if (syncing || !fill_type_solid_btn.get_active())
+      return;
     // Initial colour for the picker. If the prior committed type was
     // already Solid, use its RGB. For any non-Solid prior type the
     // RGB fields hold whatever stale value was last there (often
@@ -1423,10 +1489,11 @@ void Toolbar::Impl::build_fill_popover() {
 
     // Anchor the picker over the canvas, same idiom as the well-
     // swatch click.
-    auto* root = dynamic_cast<Gtk::Window*>(self->get_root());
-    if (!root) return;
+    auto *root = dynamic_cast<Gtk::Window *>(self->get_root());
+    if (!root)
+      return;
     const int win_h = root->get_height();
-    const int tb_w  = self->get_width();
+    const int tb_w = self->get_width();
     Gdk::Rectangle anchor(tb_w, std::max(0, win_h - 8), 1, 1);
 
     ColorPickerPopover::shared().open(
@@ -1435,7 +1502,7 @@ void Toolbar::Impl::build_fill_popover() {
         // Per the design rule we DON'T broadcast here — broadcast is
         // on commit only. But we update def_fill so the well preview
         // tracks the live colour.
-        [this](const color::Color& c) {
+        [this](const color::Color &c) {
           def_fill.type = FillStyle::Type::Solid;
           def_fill.r = c.r;
           def_fill.g = c.g;
@@ -1459,7 +1526,8 @@ void Toolbar::Impl::build_fill_popover() {
         });
   });
   fill_type_none_btn.signal_toggled().connect([this]() {
-    if (syncing || !fill_type_none_btn.get_active()) return;
+    if (syncing || !fill_type_none_btn.get_active())
+      return;
     def_fill.type = FillStyle::Type::None;
     fill_picker_open = false;
     refresh_fill_popover();
@@ -1467,7 +1535,8 @@ void Toolbar::Impl::build_fill_popover() {
     emit_defaults();
   });
   fill_type_cc_btn.signal_toggled().connect([this]() {
-    if (syncing || !fill_type_cc_btn.get_active()) return;
+    if (syncing || !fill_type_cc_btn.get_active())
+      return;
     def_fill.type = FillStyle::Type::CurrentColor;
     fill_picker_open = false;
     refresh_fill_popover();
@@ -1481,7 +1550,8 @@ void Toolbar::Impl::build_fill_popover() {
   // apply_swatch_pick_to_fill snaps the type back to Solid + the
   // chip's RGB, equivalent to a hex paste.
   fill_type_swatch_btn.signal_toggled().connect([this]() {
-    if (syncing || !fill_type_swatch_btn.get_active()) return;
+    if (syncing || !fill_type_swatch_btn.get_active())
+      return;
     fill_picker_open = true;
     refresh_fill_popover();
   });
@@ -1498,20 +1568,31 @@ void Toolbar::Impl::build_fill_popover() {
   // covers it. Symmetric with the inspector's signal_type_changed
   // handler that seeds defaults on a fresh promotion.
   fill_type_gradient_btn.signal_toggled().connect([this]() {
-    if (syncing || !fill_type_gradient_btn.get_active()) return;
+    if (syncing || !fill_type_gradient_btn.get_active())
+      return;
     fill_picker_open = false;
     if (!def_fill.is_gradient()) {
       def_fill.type = FillStyle::Type::LinearGradient;
       if (def_fill.stops.empty()) {
-        GradientStop s0; s0.offset = 0.0;
-        s0.r = 0; s0.g = 0; s0.b = 0; s0.a = 1;
-        GradientStop s1; s1.offset = 1.0;
-        s1.r = 1; s1.g = 1; s1.b = 1; s1.a = 1;
-        def_fill.stops = { s0, s1 };
+        GradientStop s0;
+        s0.offset = 0.0;
+        s0.r = 0;
+        s0.g = 0;
+        s0.b = 0;
+        s0.a = 1;
+        GradientStop s1;
+        s1.offset = 1.0;
+        s1.r = 1;
+        s1.g = 1;
+        s1.b = 1;
+        s1.a = 1;
+        def_fill.stops = {s0, s1};
       }
-      def_fill.g_x1 = 0.0; def_fill.g_y1 = 0.5;
-      def_fill.g_x2 = 1.0; def_fill.g_y2 = 0.5;
-      def_fill.g_r  = 0.5;
+      def_fill.g_x1 = 0.0;
+      def_fill.g_y1 = 0.5;
+      def_fill.g_x2 = 1.0;
+      def_fill.g_y2 = 0.5;
+      def_fill.g_r = 0.5;
     }
     refresh_fill_popover();
     redraw_well();
@@ -1527,7 +1608,8 @@ void Toolbar::Impl::build_fill_popover() {
   // popovers and modal windows interact poorly otherwise (the popover's
   // grab can fight the dialog's transient parent).
   fill_gradient_edit_btn.signal_clicked().connect([this]() {
-    if (syncing) return;
+    if (syncing)
+      return;
     FillStyle current = def_fill;
     fill_pop.popdown();
     auto apply_cb = [this](FillStyle edited) {
@@ -1551,13 +1633,15 @@ void Toolbar::Impl::build_fill_popover() {
   fill_color_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   fill_color_row->set_spacing(6);
 
-  curvz::utils::set_name(fill_swatch, "pop_tb_fill_ch", "popover_toolbar_fill_color_swatch_da");
+  curvz::utils::set_name(fill_swatch, "pop_tb_fill_ch",
+                         "popover_toolbar_fill_color_swatch_da");
   fill_swatch.set_size_request(24, 24);
   fill_swatch.set_can_target(true);
   fill_swatch.add_css_class("tb-swatch");
   fill_color_row->append(fill_swatch);
 
-  curvz::utils::set_name(fill_hex_entry, "pop_tb_fill_hex", "popover_toolbar_fill_hex_entry");
+  curvz::utils::set_name(fill_hex_entry, "pop_tb_fill_hex",
+                         "popover_toolbar_fill_hex_entry");
   fill_hex_entry.set_max_length(7);
   fill_hex_entry.set_width_chars(8);
   fill_hex_entry.set_placeholder_text("#RRGGBB");
@@ -1573,19 +1657,21 @@ void Toolbar::Impl::build_fill_popover() {
   // editor.
   fill_gradient_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   fill_gradient_row->set_spacing(6);
-  curvz::utils::set_name(fill_gradient_ramp, "pop_tb_fill_grm", "popover_toolbar_fill_gradient_ramp_da");
+  curvz::utils::set_name(fill_gradient_ramp, "pop_tb_fill_grm",
+                         "popover_toolbar_fill_gradient_ramp_da");
   fill_gradient_ramp.set_size_request(120, 22);
   fill_gradient_ramp.set_hexpand(true);
   fill_gradient_ramp.add_css_class("tb-swatch");
   fill_gradient_ramp.set_valign(Gtk::Align::CENTER);
-  curvz::utils::set_name(fill_gradient_edit_btn, "pop_tb_fill_ged", "popover_toolbar_fill_gradient_edit_btn");
+  curvz::utils::set_name(fill_gradient_edit_btn, "pop_tb_fill_ged",
+                         "popover_toolbar_fill_gradient_edit_btn");
   fill_gradient_edit_btn.set_label("Edit…");
   fill_gradient_edit_btn.set_tooltip_text(
       "Edit gradient stops, type, and angle…");
   fill_gradient_row->append(fill_gradient_ramp);
   fill_gradient_row->append(fill_gradient_edit_btn);
   outer->append(*fill_gradient_row);
-  fill_gradient_row->set_visible(false);  // refresh_fill_popover gates
+  fill_gradient_row->set_visible(false); // refresh_fill_popover gates
 
   // Click swatch → open colour picker popover (Solid mode only).
   //
@@ -1609,15 +1695,16 @@ void Toolbar::Impl::build_fill_popover() {
     // body up-and-right from there. This reliably places the picker
     // in the canvas's lower-left area without the arrow ambiguity
     // that was making it drift to x=0.
-    auto* root = dynamic_cast<Gtk::Window*>(self->get_root());
-    if (!root) return;
+    auto *root = dynamic_cast<Gtk::Window *>(self->get_root());
+    if (!root)
+      return;
     const int win_h = root->get_height();
-    const int tb_w  = self->get_width();
+    const int tb_w = self->get_width();
     Gdk::Rectangle anchor(tb_w, std::max(0, win_h - 8), 1, 1);
 
     ColorPickerPopover::shared().open(
         anchor, initial, /*with_alpha=*/false,
-        [this](const color::Color& c) {
+        [this](const color::Color &c) {
           def_fill.type = FillStyle::Type::Solid;
           def_fill.r = c.r;
           def_fill.g = c.g;
@@ -1676,7 +1763,7 @@ void Toolbar::Impl::build_fill_popover() {
           // currentColor — checkerboard (white + mid-gray), no frame.
           // Fill swatch has no border for currentColor — stroke swatch
           // is the one that gets a visible border.
-          const int cs = 2;  // 2px squares
+          const int cs = 2; // 2px squares
           for (int row = 0; row < h; row += cs)
             for (int col = 0; col < w; col += cs) {
               bool light = ((row / cs + col / cs) % 2 == 0);
@@ -1733,35 +1820,33 @@ void Toolbar::Impl::refresh_fill_popover() {
 
   // Type-button active states.
   if (fill_mixed) {
-    set_active(fill_type_solid_btn,    false);
-    set_active(fill_type_none_btn,     false);
-    set_active(fill_type_cc_btn,       false);
-    set_active(fill_type_swatch_btn,   false);
+    set_active(fill_type_solid_btn, false);
+    set_active(fill_type_none_btn, false);
+    set_active(fill_type_cc_btn, false);
+    set_active(fill_type_swatch_btn, false);
     set_active(fill_type_gradient_btn, false);
   } else if (fill_picker_open) {
-    set_active(fill_type_solid_btn,    false);
-    set_active(fill_type_none_btn,     false);
-    set_active(fill_type_cc_btn,       false);
-    set_active(fill_type_swatch_btn,   true);
+    set_active(fill_type_solid_btn, false);
+    set_active(fill_type_none_btn, false);
+    set_active(fill_type_cc_btn, false);
+    set_active(fill_type_swatch_btn, true);
     set_active(fill_type_gradient_btn, false);
   } else {
-    set_active(fill_type_solid_btn,
-               def_fill.type == FillStyle::Type::Solid);
-    set_active(fill_type_none_btn,
-               def_fill.type == FillStyle::Type::None);
+    set_active(fill_type_solid_btn, def_fill.type == FillStyle::Type::Solid);
+    set_active(fill_type_none_btn, def_fill.type == FillStyle::Type::None);
     set_active(fill_type_cc_btn,
                def_fill.type == FillStyle::Type::CurrentColor);
-    set_active(fill_type_swatch_btn,   false);
+    set_active(fill_type_swatch_btn, false);
     set_active(fill_type_gradient_btn, def_fill.is_gradient());
   }
 
   // Colour row visibility — hidden for gradients (gradient row owns
   // the chip-area real estate, same as PaintEditor).
   const bool show_color_row =
-      fill_mixed
-      || (!fill_picker_open
-          && def_fill.type == FillStyle::Type::Solid);
-  if (fill_color_row) fill_color_row->set_visible(show_color_row);
+      fill_mixed ||
+      (!fill_picker_open && def_fill.type == FillStyle::Type::Solid);
+  if (fill_color_row)
+    fill_color_row->set_visible(show_color_row);
 
   // S91 Gradient row visibility — visible iff paint is a gradient and
   // the popover isn't displaying the swatch picker. Mixed-selection
@@ -1769,9 +1854,7 @@ void Toolbar::Impl::refresh_fill_popover() {
   // everyone to a default gradient first).
   if (fill_gradient_row) {
     const bool show_gradient_row =
-        !fill_mixed
-        && !fill_picker_open
-        && def_fill.is_gradient();
+        !fill_mixed && !fill_picker_open && def_fill.is_gradient();
     fill_gradient_row->set_visible(show_gradient_row);
     if (show_gradient_row) {
       // Repaint the ramp from current stops. Capture-by-value matches
@@ -1779,11 +1862,10 @@ void Toolbar::Impl::refresh_fill_popover() {
       std::vector<GradientStop> stops = def_fill.stops;
       std::sort(stops.begin(), stops.end(),
                 [](const GradientStop &a, const GradientStop &b) {
-                    return a.offset < b.offset;
+                  return a.offset < b.offset;
                 });
       fill_gradient_ramp.set_draw_func(
-          [stops](const Cairo::RefPtr<Cairo::Context> &cr,
-                  int w, int h) {
+          [stops](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
             if (stops.empty()) {
               cr->set_source_rgb(0.5, 0.5, 0.5);
               cr->rectangle(0, 0, w, h);
@@ -1796,9 +1878,8 @@ void Toolbar::Impl::refresh_fill_popover() {
             } else {
               auto pat = Cairo::LinearGradient::create(0, 0, w, 0);
               for (const auto &st : stops) {
-                pat->add_color_stop_rgba(
-                    std::clamp(st.offset, 0.0, 1.0),
-                    st.r, st.g, st.b, st.a);
+                pat->add_color_stop_rgba(std::clamp(st.offset, 0.0, 1.0), st.r,
+                                         st.g, st.b, st.a);
               }
               cr->set_source(pat);
               cr->rectangle(0, 0, w, h);
@@ -1821,8 +1902,7 @@ void Toolbar::Impl::refresh_fill_popover() {
   } else {
     fill_hex_entry.set_placeholder_text("#RRGGBB");
     if (def_fill.type == FillStyle::Type::Solid)
-      fill_hex_entry.set_text(
-          color_to_hex(def_fill.r, def_fill.g, def_fill.b));
+      fill_hex_entry.set_text(color_to_hex(def_fill.r, def_fill.g, def_fill.b));
     else
       fill_hex_entry.set_text("");
     fill_hex_entry.set_sensitive(def_fill.type == FillStyle::Type::Solid);
@@ -1830,18 +1910,15 @@ void Toolbar::Impl::refresh_fill_popover() {
 
   // Picker section visibility.
   if (fill_picker_section) {
-    const bool show_picker =
-        fill_picker_open
-        && (swatch_library != nullptr)
-        && (swatch_library->swatch_count() > 0)
-        && !fill_mixed;
+    const bool show_picker = fill_picker_open && (swatch_library != nullptr) &&
+                             (swatch_library->swatch_count() > 0) &&
+                             !fill_mixed;
     fill_picker_section->set_visible(show_picker);
   }
 
   // Swatch button sensitivity.
   const bool swatch_enabled =
-      (swatch_library != nullptr)
-      && (swatch_library->swatch_count() > 0);
+      (swatch_library != nullptr) && (swatch_library->swatch_count() > 0);
   fill_type_swatch_btn.set_sensitive(swatch_enabled);
 
   if (fill_swatch.get_realized())
@@ -1857,7 +1934,8 @@ void Toolbar::Impl::apply_hex_to_fill(const std::string &hex) {
   // a stray commit during refresh would have leaked an emit_defaults
   // call. Belt-and-suspenders since the L1074 fix already plugs the
   // observed width-spin leak.
-  if (syncing) return;
+  if (syncing)
+    return;
   double r, g, b;
   if (hex_to_color(hex, r, g, b)) {
     def_fill.type = FillStyle::Type::Solid;
@@ -1873,7 +1951,8 @@ void Toolbar::Impl::apply_hex_to_fill(const std::string &hex) {
 // ── Stroke popover
 // ────────────────────────────────────────────────────────────
 void Toolbar::Impl::build_stroke_popover() {
-  curvz::utils::set_name(stroke_pop, "pop_tb_strk", "popover_toolbar_stroke_root");
+  curvz::utils::set_name(stroke_pop, "pop_tb_strk",
+                         "popover_toolbar_stroke_root");
   auto *outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
   outer->set_spacing(8);
   outer->set_margin_top(10);
@@ -1891,16 +1970,20 @@ void Toolbar::Impl::build_stroke_popover() {
   auto *type_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   type_row->set_spacing(4);
 
-  curvz::utils::set_name(stroke_type_solid_btn, "pop_tb_strk_sol", "popover_toolbar_stroke_type_solid_toggle");
+  curvz::utils::set_name(stroke_type_solid_btn, "pop_tb_strk_sol",
+                         "popover_toolbar_stroke_type_solid_toggle");
   stroke_type_solid_btn.set_label("Solid");
   stroke_type_solid_btn.add_css_class("tb-type-btn");
-  curvz::utils::set_name(stroke_type_none_btn, "pop_tb_strk_non", "popover_toolbar_stroke_type_none_toggle");
+  curvz::utils::set_name(stroke_type_none_btn, "pop_tb_strk_non",
+                         "popover_toolbar_stroke_type_none_toggle");
   stroke_type_none_btn.set_label("None");
   stroke_type_none_btn.add_css_class("tb-type-btn");
-  curvz::utils::set_name(stroke_type_cc_btn, "pop_tb_strk_cc", "popover_toolbar_stroke_type_currentcolor_toggle");
+  curvz::utils::set_name(stroke_type_cc_btn, "pop_tb_strk_cc",
+                         "popover_toolbar_stroke_type_currentcolor_toggle");
   stroke_type_cc_btn.set_label("currentColor");
   stroke_type_cc_btn.add_css_class("tb-type-btn");
-  curvz::utils::set_name(stroke_type_swatch_btn, "pop_tb_strk_sw", "popover_toolbar_stroke_type_swatch_toggle");
+  curvz::utils::set_name(stroke_type_swatch_btn, "pop_tb_strk_sw",
+                         "popover_toolbar_stroke_type_swatch_toggle");
   stroke_type_swatch_btn.set_label("Swatch");
   stroke_type_swatch_btn.add_css_class("tb-type-btn");
 
@@ -1916,20 +1999,22 @@ void Toolbar::Impl::build_stroke_popover() {
   // None / currentColor commit immediately; Solid opens the colour
   // picker and broadcasts only on confirm.
   stroke_type_solid_btn.signal_toggled().connect([this]() {
-    if (syncing || !stroke_type_solid_btn.get_active()) return;
+    if (syncing || !stroke_type_solid_btn.get_active())
+      return;
     color::Color initial(def_stroke.paint.r, def_stroke.paint.g,
                          def_stroke.paint.b, 1.0);
     stroke_pop.popdown();
 
-    auto* root = dynamic_cast<Gtk::Window*>(self->get_root());
-    if (!root) return;
+    auto *root = dynamic_cast<Gtk::Window *>(self->get_root());
+    if (!root)
+      return;
     const int win_h = root->get_height();
-    const int tb_w  = self->get_width();
+    const int tb_w = self->get_width();
     Gdk::Rectangle anchor(tb_w, std::max(0, win_h - 8), 1, 1);
 
     ColorPickerPopover::shared().open(
         anchor, initial, /*with_alpha=*/false,
-        [this](const color::Color& c) {
+        [this](const color::Color &c) {
           def_stroke.paint.type = FillStyle::Type::Solid;
           def_stroke.paint.r = c.r;
           def_stroke.paint.g = c.g;
@@ -1945,7 +2030,8 @@ void Toolbar::Impl::build_stroke_popover() {
         });
   });
   stroke_type_none_btn.signal_toggled().connect([this]() {
-    if (syncing || !stroke_type_none_btn.get_active()) return;
+    if (syncing || !stroke_type_none_btn.get_active())
+      return;
     def_stroke.paint.type = FillStyle::Type::None;
     stroke_picker_open = false;
     refresh_stroke_popover();
@@ -1953,7 +2039,8 @@ void Toolbar::Impl::build_stroke_popover() {
     emit_defaults();
   });
   stroke_type_cc_btn.signal_toggled().connect([this]() {
-    if (syncing || !stroke_type_cc_btn.get_active()) return;
+    if (syncing || !stroke_type_cc_btn.get_active())
+      return;
     def_stroke.paint.type = FillStyle::Type::CurrentColor;
     stroke_picker_open = false;
     refresh_stroke_popover();
@@ -1961,7 +2048,8 @@ void Toolbar::Impl::build_stroke_popover() {
     emit_defaults();
   });
   stroke_type_swatch_btn.signal_toggled().connect([this]() {
-    if (syncing || !stroke_type_swatch_btn.get_active()) return;
+    if (syncing || !stroke_type_swatch_btn.get_active())
+      return;
     stroke_picker_open = true;
     refresh_stroke_popover();
   });
@@ -1974,17 +2062,18 @@ void Toolbar::Impl::build_stroke_popover() {
 
   // Swatch + hex — promoted to a member pointer so refresh_stroke_
   // popover can drive its visibility.
-  stroke_color_row =
-      Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  stroke_color_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   stroke_color_row->set_spacing(6);
 
-  curvz::utils::set_name(stroke_swatch, "pop_tb_strk_ch", "popover_toolbar_stroke_color_swatch_da");
+  curvz::utils::set_name(stroke_swatch, "pop_tb_strk_ch",
+                         "popover_toolbar_stroke_color_swatch_da");
   stroke_swatch.set_size_request(24, 24);
   stroke_swatch.set_can_target(true);
   stroke_swatch.add_css_class("tb-swatch");
   stroke_color_row->append(stroke_swatch);
 
-  curvz::utils::set_name(stroke_hex_entry, "pop_tb_strk_hex", "popover_toolbar_stroke_hex_entry");
+  curvz::utils::set_name(stroke_hex_entry, "pop_tb_strk_hex",
+                         "popover_toolbar_stroke_hex_entry");
   stroke_hex_entry.set_max_length(7);
   stroke_hex_entry.set_width_chars(8);
   stroke_hex_entry.set_placeholder_text("#RRGGBB");
@@ -2008,15 +2097,16 @@ void Toolbar::Impl::build_stroke_popover() {
                          def_stroke.paint.b, 1.0);
     stroke_pop.popdown();
 
-    auto* root = dynamic_cast<Gtk::Window*>(self->get_root());
-    if (!root) return;
+    auto *root = dynamic_cast<Gtk::Window *>(self->get_root());
+    if (!root)
+      return;
     const int win_h = root->get_height();
-    const int tb_w  = self->get_width();
+    const int tb_w = self->get_width();
     Gdk::Rectangle anchor(tb_w, std::max(0, win_h - 8), 1, 1);
 
     ColorPickerPopover::shared().open(
         anchor, initial, /*with_alpha=*/false,
-        [this](const color::Color& c) {
+        [this](const color::Color &c) {
           def_stroke.paint.type = FillStyle::Type::Solid;
           def_stroke.paint.r = c.r;
           def_stroke.paint.g = c.g;
@@ -2076,7 +2166,7 @@ void Toolbar::Impl::build_stroke_popover() {
           // currentColor — checkerboard interior + visible near-black
           // border (2px, inset).  The border is the "stroke" signal;
           // the checkerboard is the "currentColor" signal.
-          const int cs = 2;  // 2px squares
+          const int cs = 2; // 2px squares
           for (int row = 0; row < h; row += cs)
             for (int col = 0; col < w; col += cs) {
               bool light = ((row / cs + col / cs) % 2 == 0);
@@ -2117,15 +2207,15 @@ void Toolbar::Impl::build_stroke_popover() {
   width_label.set_hexpand(true);
   width_row->append(width_label);
 
-  width_adj =
-      Gtk::Adjustment::create(def_stroke.width, 0.0, 9999.0, 0.5, 5.0);
+  width_adj = Gtk::Adjustment::create(def_stroke.width, 0.0, 9999.0, 0.5, 5.0);
   // s198 m1: substrate construction. Climb rate matches the previous
   // step (0.5) per the s189 m2 Adjustment-taking ctor contract; digits
   // start at 1 and shift in refresh_stroke_popover() as the display
   // mode changes (Physical=3, RatioQuality=2, otherwise=1).
-  width_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
-      "pop_tb_strk_w", width_adj, 0.5, 1);
-  curvz::utils::set_name(width_spin, "pop_tb_strk_w", "popover_toolbar_stroke_width_spn");
+  width_spin = Gtk::make_managed<curvz::widgets::SpinButton>("pop_tb_strk_w",
+                                                             width_adj, 0.5, 1);
+  curvz::utils::set_name(width_spin, "pop_tb_strk_w",
+                         "popover_toolbar_stroke_width_spn");
   width_spin->set_width_chars(5);
   width_spin->add_css_class("tb-well-spin");
   width_adj->signal_value_changed().connect([this]() {
@@ -2139,8 +2229,9 @@ void Toolbar::Impl::build_stroke_popover() {
     // onto siblings via MainWindow's defaults_changed handler. The
     // refresh function was also fixed to keep syncing true through
     // its width-update section; this guard is defence-in-depth.
-    if (syncing) return;
-    const CanvasModel* cm = doc ? &doc->canvas : nullptr;
+    if (syncing)
+      return;
+    const CanvasModel *cm = doc ? &doc->canvas : nullptr;
     double display = width_adj->get_value();
     if (cm && cm->display_mode == DisplayMode::Physical) {
       double short_phys = std::min(cm->phys_width, cm->phys_height);
@@ -2178,7 +2269,7 @@ void Toolbar::Impl::build_stroke_popover() {
   }
   width_row->append(*width_spin);
   width_unit_lbl.set_text("px");
-    width_label.set_text("Thickness (px):");
+  width_label.set_text("Thickness (px):");
   width_unit_lbl.add_css_class("prop-width-unit");
   width_row->append(width_unit_lbl);
   outer->append(*width_row);
@@ -2205,8 +2296,8 @@ void Toolbar::Impl::build_stroke_popover() {
   // strings to populate widget_names.db. Same shape as s196 m1's
   // make_pop_row migration: substrate ctor invisible to harvester, so
   // threading abbrev through doesn't break the harvest.
-  auto make_icon_btn = [](std::string_view abbrev, const char* icon,
-                          const char* tip) -> curvz::widgets::Button* {
+  auto make_icon_btn = [](std::string_view abbrev, const char *icon,
+                          const char *tip) -> curvz::widgets::Button * {
     auto *btn = Gtk::make_managed<curvz::widgets::Button>(abbrev);
     btn->set_icon_name(icon);
     btn->set_has_frame(false);
@@ -2216,12 +2307,18 @@ void Toolbar::Impl::build_stroke_popover() {
   };
 
   auto *cap_row = make_section("Cap");
-  cap_butt_btn   = make_icon_btn("pop_tb_strk_cb", "curvz-cap-butt-symbolic",   "Butt");
-  curvz::utils::set_name(cap_butt_btn, "pop_tb_strk_cb", "popover_toolbar_stroke_cap_butt_btn");
-  cap_round_btn  = make_icon_btn("pop_tb_strk_cr", "curvz-cap-round-symbolic",  "Round");
-  curvz::utils::set_name(cap_round_btn, "pop_tb_strk_cr", "popover_toolbar_stroke_cap_round_btn");
-  cap_square_btn = make_icon_btn("pop_tb_strk_cs", "curvz-cap-square-symbolic", "Square");
-  curvz::utils::set_name(cap_square_btn, "pop_tb_strk_cs", "popover_toolbar_stroke_cap_square_btn");
+  cap_butt_btn =
+      make_icon_btn("pop_tb_strk_cb", "curvz-cap-butt-symbolic", "Butt");
+  curvz::utils::set_name(cap_butt_btn, "pop_tb_strk_cb",
+                         "popover_toolbar_stroke_cap_butt_btn");
+  cap_round_btn =
+      make_icon_btn("pop_tb_strk_cr", "curvz-cap-round-symbolic", "Round");
+  curvz::utils::set_name(cap_round_btn, "pop_tb_strk_cr",
+                         "popover_toolbar_stroke_cap_round_btn");
+  cap_square_btn =
+      make_icon_btn("pop_tb_strk_cs", "curvz-cap-square-symbolic", "Square");
+  curvz::utils::set_name(cap_square_btn, "pop_tb_strk_cs",
+                         "popover_toolbar_stroke_cap_square_btn");
   cap_butt_btn->signal_clicked().connect([this]() {
     def_stroke.cap = LineCap::Butt;
     update_cap_buttons();
@@ -2242,12 +2339,18 @@ void Toolbar::Impl::build_stroke_popover() {
   cap_row->append(*cap_square_btn);
 
   auto *join_row = make_section("Join");
-  join_miter_btn = make_icon_btn("pop_tb_strk_jm", "curvz-join-miter-symbolic", "Miter");
-  curvz::utils::set_name(join_miter_btn, "pop_tb_strk_jm", "popover_toolbar_stroke_join_miter_btn");
-  join_round_btn = make_icon_btn("pop_tb_strk_jr", "curvz-join-round-symbolic", "Round");
-  curvz::utils::set_name(join_round_btn, "pop_tb_strk_jr", "popover_toolbar_stroke_join_round_btn");
-  join_bevel_btn = make_icon_btn("pop_tb_strk_jb", "curvz-join-bevel-symbolic", "Bevel");
-  curvz::utils::set_name(join_bevel_btn, "pop_tb_strk_jb", "popover_toolbar_stroke_join_bevel_btn");
+  join_miter_btn =
+      make_icon_btn("pop_tb_strk_jm", "curvz-join-miter-symbolic", "Miter");
+  curvz::utils::set_name(join_miter_btn, "pop_tb_strk_jm",
+                         "popover_toolbar_stroke_join_miter_btn");
+  join_round_btn =
+      make_icon_btn("pop_tb_strk_jr", "curvz-join-round-symbolic", "Round");
+  curvz::utils::set_name(join_round_btn, "pop_tb_strk_jr",
+                         "popover_toolbar_stroke_join_round_btn");
+  join_bevel_btn =
+      make_icon_btn("pop_tb_strk_jb", "curvz-join-bevel-symbolic", "Bevel");
+  curvz::utils::set_name(join_bevel_btn, "pop_tb_strk_jb",
+                         "popover_toolbar_stroke_join_bevel_btn");
   join_miter_btn->signal_clicked().connect([this]() {
     def_stroke.join = LineJoin::Miter;
     update_join_buttons();
@@ -2297,27 +2400,27 @@ void Toolbar::Impl::refresh_stroke_popover() {
   // always visible (those properties belong to the stroke regardless
   // of whether the picker tab is open).
   if (stroke_mixed) {
-    set_active(stroke_type_solid_btn,  false);
-    set_active(stroke_type_none_btn,   false);
-    set_active(stroke_type_cc_btn,     false);
+    set_active(stroke_type_solid_btn, false);
+    set_active(stroke_type_none_btn, false);
+    set_active(stroke_type_cc_btn, false);
     set_active(stroke_type_swatch_btn, false);
   } else if (stroke_picker_open) {
-    set_active(stroke_type_solid_btn,  false);
-    set_active(stroke_type_none_btn,   false);
-    set_active(stroke_type_cc_btn,     false);
+    set_active(stroke_type_solid_btn, false);
+    set_active(stroke_type_none_btn, false);
+    set_active(stroke_type_cc_btn, false);
     set_active(stroke_type_swatch_btn, true);
   } else {
-    set_active(stroke_type_solid_btn,  p.type == FillStyle::Type::Solid);
-    set_active(stroke_type_none_btn,   p.type == FillStyle::Type::None);
-    set_active(stroke_type_cc_btn,     p.type == FillStyle::Type::CurrentColor);
+    set_active(stroke_type_solid_btn, p.type == FillStyle::Type::Solid);
+    set_active(stroke_type_none_btn, p.type == FillStyle::Type::None);
+    set_active(stroke_type_cc_btn, p.type == FillStyle::Type::CurrentColor);
     set_active(stroke_type_swatch_btn, false);
   }
 
   // Colour row visibility.
   const bool show_color_row =
-      stroke_mixed
-      || (!stroke_picker_open && p.type == FillStyle::Type::Solid);
-  if (stroke_color_row) stroke_color_row->set_visible(show_color_row);
+      stroke_mixed || (!stroke_picker_open && p.type == FillStyle::Type::Solid);
+  if (stroke_color_row)
+    stroke_color_row->set_visible(show_color_row);
 
   // S91: no stroke gradient row to manage (fill-only gradient surface).
 
@@ -2338,17 +2441,14 @@ void Toolbar::Impl::refresh_stroke_popover() {
   // Picker section visibility.
   if (stroke_picker_section) {
     const bool show_picker =
-        stroke_picker_open
-        && (swatch_library != nullptr)
-        && (swatch_library->swatch_count() > 0)
-        && !stroke_mixed;
+        stroke_picker_open && (swatch_library != nullptr) &&
+        (swatch_library->swatch_count() > 0) && !stroke_mixed;
     stroke_picker_section->set_visible(show_picker);
   }
 
   // Greyed-out Swatch button when no library wired or empty.
   const bool swatch_enabled =
-      (swatch_library != nullptr)
-      && (swatch_library->swatch_count() > 0);
+      (swatch_library != nullptr) && (swatch_library->swatch_count() > 0);
   stroke_type_swatch_btn.set_sensitive(swatch_enabled);
 
   if (stroke_swatch.get_realized())
@@ -2373,16 +2473,18 @@ void Toolbar::Impl::refresh_stroke_popover() {
   // syncing guard (see comment at the connect site below).
 
   // Thickness — convert from doc units to display units
-  const CanvasModel* cm = doc ? &doc->canvas : nullptr;
+  const CanvasModel *cm = doc ? &doc->canvas : nullptr;
   if (cm && cm->display_mode == DisplayMode::Physical) {
     double short_phys = std::min(cm->phys_width, cm->phys_height);
     int q = std::max(1, cm->quality);
-    double display = short_phys > 0 ? (def_stroke.width / q) * short_phys : def_stroke.width;
+    double display =
+        short_phys > 0 ? (def_stroke.width / q) * short_phys : def_stroke.width;
     double step = (cm->phys_unit == "in") ? 0.001 : 0.01;
     width_adj->set_step_increment(step);
     width_adj->set_page_increment(step * 10.0);
     width_adj->set_value(display);
-    if (width_spin) width_spin->set_digits(3);
+    if (width_spin)
+      width_spin->set_digits(3);
     width_unit_lbl.set_text(cm->phys_unit);
     width_label.set_text("Thickness (" + cm->phys_unit + "):");
   } else if (cm && cm->display_mode == DisplayMode::RatioQuality) {
@@ -2390,14 +2492,16 @@ void Toolbar::Impl::refresh_stroke_popover() {
     width_adj->set_step_increment(0.05);
     width_adj->set_page_increment(0.5);
     width_adj->set_value((def_stroke.width / q) * 100.0);
-    if (width_spin) width_spin->set_digits(2);
+    if (width_spin)
+      width_spin->set_digits(2);
     width_unit_lbl.set_text("%");
     width_label.set_text("Thickness (%):");
   } else {
     width_adj->set_step_increment(0.5);
     width_adj->set_page_increment(5.0);
     width_adj->set_value(def_stroke.width);
-    if (width_spin) width_spin->set_digits(1);
+    if (width_spin)
+      width_spin->set_digits(1);
     width_unit_lbl.set_text("px");
     width_label.set_text("Thickness (px):");
   }
@@ -2409,7 +2513,8 @@ void Toolbar::Impl::refresh_stroke_popover() {
 
 void Toolbar::Impl::apply_hex_to_stroke(const std::string &hex) {
   // S93 m4: defensive syncing guard. See apply_hex_to_fill.
-  if (syncing) return;
+  if (syncing)
+    return;
   double r, g, b;
   if (hex_to_color(hex, r, g, b)) {
     def_stroke.paint.type = FillStyle::Type::Solid;
@@ -2426,21 +2531,27 @@ void Toolbar::Impl::apply_hex_to_stroke(const std::string &hex) {
 // ─────────────────────────────────────────────────
 
 void Toolbar::Impl::update_cap_buttons() {
-  auto set_active = [](Gtk::Button* btn, bool active) {
-    if (!btn) return;
-    if (active) btn->add_css_class("tb-icon-btn-active");
-    else        btn->remove_css_class("tb-icon-btn-active");
+  auto set_active = [](Gtk::Button *btn, bool active) {
+    if (!btn)
+      return;
+    if (active)
+      btn->add_css_class("tb-icon-btn-active");
+    else
+      btn->remove_css_class("tb-icon-btn-active");
   };
-  set_active(cap_butt_btn,   def_stroke.cap == LineCap::Butt);
-  set_active(cap_round_btn,  def_stroke.cap == LineCap::Round);
+  set_active(cap_butt_btn, def_stroke.cap == LineCap::Butt);
+  set_active(cap_round_btn, def_stroke.cap == LineCap::Round);
   set_active(cap_square_btn, def_stroke.cap == LineCap::Square);
 }
 
 void Toolbar::Impl::update_join_buttons() {
-  auto set_active = [](Gtk::Button* btn, bool active) {
-    if (!btn) return;
-    if (active) btn->add_css_class("tb-icon-btn-active");
-    else        btn->remove_css_class("tb-icon-btn-active");
+  auto set_active = [](Gtk::Button *btn, bool active) {
+    if (!btn)
+      return;
+    if (active)
+      btn->add_css_class("tb-icon-btn-active");
+    else
+      btn->remove_css_class("tb-icon-btn-active");
   };
   set_active(join_miter_btn, def_stroke.join == LineJoin::Miter);
   set_active(join_round_btn, def_stroke.join == LineJoin::Round);
@@ -2455,170 +2566,169 @@ void Toolbar::Impl::redraw_well() {
   bool fmixed = fill_mixed;
   bool smixed = stroke_mixed;
 
-  well.set_draw_func([fill, stroke, fmixed, smixed]
-                       (const Cairo::RefPtr<Cairo::Context> &cr,
-                        int /*w*/, int /*h*/) {
-    const double sq = 14.0, off = 8.0;
+  well.set_draw_func(
+      [fill, stroke, fmixed, smixed](const Cairo::RefPtr<Cairo::Context> &cr,
+                                     int /*w*/, int /*h*/) {
+        const double sq = 14.0, off = 8.0;
 
-    // Draw a checkerboard (white + mid-gray) inside [x, y] of size sz.
-    auto draw_checker = [&](double x, double y, double sz) {
-      const int cs = 2;  // 2px squares
-      for (int r = 0; r < (int)sz; r += cs)
-        for (int c = 0; c < (int)sz; c += cs) {
-          bool light = ((r / cs + c / cs) % 2 == 0);
-          if (light)
-            cr->set_source_rgb(1.0, 1.0, 1.0);
-          else
-            cr->set_source_rgb(0.55, 0.55, 0.55);
-          cr->rectangle(x + c, y + r, cs, cs);
+        // Draw a checkerboard (white + mid-gray) inside [x, y] of size sz.
+        auto draw_checker = [&](double x, double y, double sz) {
+          const int cs = 2; // 2px squares
+          for (int r = 0; r < (int)sz; r += cs)
+            for (int c = 0; c < (int)sz; c += cs) {
+              bool light = ((r / cs + c / cs) % 2 == 0);
+              if (light)
+                cr->set_source_rgb(1.0, 1.0, 1.0);
+              else
+                cr->set_source_rgb(0.55, 0.55, 0.55);
+              cr->rectangle(x + c, y + r, cs, cs);
+              cr->fill();
+            }
+        };
+
+        // S58n: Diagonal-stripe swatch to indicate mixed paint across a
+        // multi-selection. Matches the Inspector Appearance mixed renderer.
+        auto draw_mixed = [&](double x, double y, double sz) {
+          cr->set_source_rgb(1.0, 1.0, 1.0);
+          cr->rectangle(x, y, sz, sz);
           cr->fill();
+          cr->save();
+          cr->rectangle(x, y, sz, sz);
+          cr->clip();
+          cr->set_source_rgb(0.55, 0.55, 0.55);
+          cr->set_line_width(1.5);
+          const double span = sz * 2.0;
+          const double step = 3.0;
+          cr->translate(x + sz * 0.5, y + sz * 0.5);
+          cr->rotate(M_PI / 4.0);
+          cr->translate(-span * 0.5, -span * 0.5);
+          for (double yy = 0; yy < span; yy += step) {
+            cr->move_to(0, yy);
+            cr->line_to(span, yy);
+          }
+          cr->stroke();
+          cr->restore();
+        };
+
+        // S91 helper: render a small horizontal gradient ramp inside [x,y,sz].
+        // Used by both fill and stroke when the corresponding paint is a
+        // linear or radial gradient. We always paint a 1D ramp here even
+        // for radial — the well preview is too small to show 2D structure
+        // meaningfully; stop ordering is the useful signal.
+        auto draw_gradient = [&](double x, double y, double sz,
+                                 const FillStyle &fs) {
+          // Sort defensively so reversed lists still render in canonical
+          // order (mirrors PaintEditor::apply_gradient_row).
+          std::vector<GradientStop> sorted = fs.stops;
+          std::sort(sorted.begin(), sorted.end(),
+                    [](const GradientStop &a, const GradientStop &b) {
+                      return a.offset < b.offset;
+                    });
+          if (sorted.empty()) {
+            cr->set_source_rgb(0.5, 0.5, 0.5);
+            cr->rectangle(x, y, sz, sz);
+            cr->fill();
+          } else if (sorted.size() == 1) {
+            const auto &s0 = sorted.front();
+            cr->set_source_rgba(s0.r, s0.g, s0.b, s0.a);
+            cr->rectangle(x, y, sz, sz);
+            cr->fill();
+          } else {
+            auto pat = Cairo::LinearGradient::create(x, 0, x + sz, 0);
+            for (const auto &st : sorted) {
+              pat->add_color_stop_rgba(std::clamp(st.offset, 0.0, 1.0), st.r,
+                                       st.g, st.b, st.a);
+            }
+            cr->set_source(pat);
+            cr->rectangle(x, y, sz, sz);
+            cr->fill();
+          }
+        };
+
+        // Fill-style square at (x,y) size sz.
+        auto draw_fill_square = [&](double x, double y, double sz,
+                                    const FillStyle &fs, bool mixed) {
+          if (mixed) {
+            draw_mixed(x, y, sz);
+          } else if (fs.type == FillStyle::Type::CurrentColor) {
+            draw_checker(x, y, sz);
+          } else if (fs.type == FillStyle::Type::None) {
+            cr->set_source_rgb(0.92, 0.92, 0.92);
+            cr->rectangle(x, y, sz, sz);
+            cr->fill();
+          } else if (fs.is_gradient()) {
+            draw_gradient(x, y, sz, fs);
+          } else {
+            cr->set_source_rgb(fs.r, fs.g, fs.b);
+            cr->rectangle(x, y, sz, sz);
+            cr->fill();
+          }
+        };
+
+        auto draw_none_slash = [&](double x, double y, double sz) {
+          cr->set_source_rgb(0.85, 0.18, 0.18);
+          cr->set_line_width(1.5);
+          cr->move_to(x + 2, y + 2);
+          cr->line_to(x + sz - 2, y + sz - 2);
+          cr->stroke();
+        };
+
+        // Stroke square — drawn first (behind fill).
+        if (smixed) {
+          // Mixed stroke: diagonal stripes with the dark interior flavour.
+          draw_mixed(off, off, sq);
+          cr->set_source_rgb(0.18, 0.18, 0.18);
+          cr->set_line_width(2.0);
+          cr->rectangle(off + 0.5, off + 0.5, sq - 1, sq - 1);
+          cr->stroke();
+        } else if (stroke.paint.type == FillStyle::Type::Solid) {
+          cr->set_source_rgb(0.18, 0.18, 0.18);
+          cr->rectangle(off, off, sq, sq);
+          cr->fill();
+          cr->set_source_rgb(stroke.paint.r, stroke.paint.g, stroke.paint.b);
+          cr->set_line_width(2.0);
+          cr->rectangle(off + 0.5, off + 0.5, sq - 1, sq - 1);
+          cr->stroke();
+        } else if (stroke.paint.type == FillStyle::Type::None) {
+          cr->set_source_rgb(0.92, 0.92, 0.92);
+          cr->rectangle(off, off, sq, sq);
+          cr->fill();
+          draw_none_slash(off, off, sq);
+        } else if (stroke.paint.is_gradient()) {
+          // S91 gradient stroke preview. Fill the square with a ramp the
+          // same way fill does, then draw the dark inner background to
+          // emulate the "stroke around fill" frame visual. The stroke
+          // version of the well overlay is just a colour signal — using
+          // the gradient as the colour is the right read.
+          cr->set_source_rgb(0.18, 0.18, 0.18);
+          cr->rectangle(off, off, sq, sq);
+          cr->fill();
+          // Draw the gradient as a 2px-thick frame: render the gradient
+          // into a slightly-inset square, then punch out the inner. We
+          // approximate this with a fill + an inset cover-up so the visual
+          // matches the Solid case's stroke-frame idiom.
+          draw_gradient(off, off, sq, stroke.paint);
+          cr->set_source_rgb(0.18, 0.18, 0.18);
+          cr->rectangle(off + 2, off + 2, sq - 4, sq - 4);
+          cr->fill();
+        } else {
+          // currentColor: checkerboard + near-black stroke-signal frame.
+          draw_checker(off, off, sq);
+          cr->set_source_rgb(0.102, 0.102, 0.102);
+          cr->set_line_width(1.5);
+          cr->rectangle(off + 0.75, off + 0.75, sq - 1.5, sq - 1.5);
+          cr->stroke();
         }
-    };
 
-    // S58n: Diagonal-stripe swatch to indicate mixed paint across a
-    // multi-selection. Matches the Inspector Appearance mixed renderer.
-    auto draw_mixed = [&](double x, double y, double sz) {
-      cr->set_source_rgb(1.0, 1.0, 1.0);
-      cr->rectangle(x, y, sz, sz);
-      cr->fill();
-      cr->save();
-      cr->rectangle(x, y, sz, sz);
-      cr->clip();
-      cr->set_source_rgb(0.55, 0.55, 0.55);
-      cr->set_line_width(1.5);
-      const double span = sz * 2.0;
-      const double step = 3.0;
-      cr->translate(x + sz * 0.5, y + sz * 0.5);
-      cr->rotate(M_PI / 4.0);
-      cr->translate(-span * 0.5, -span * 0.5);
-      for (double yy = 0; yy < span; yy += step) {
-        cr->move_to(0, yy);
-        cr->line_to(span, yy);
-      }
-      cr->stroke();
-      cr->restore();
-    };
-
-    // S91 helper: render a small horizontal gradient ramp inside [x,y,sz].
-    // Used by both fill and stroke when the corresponding paint is a
-    // linear or radial gradient. We always paint a 1D ramp here even
-    // for radial — the well preview is too small to show 2D structure
-    // meaningfully; stop ordering is the useful signal.
-    auto draw_gradient = [&](double x, double y, double sz,
-                             const FillStyle &fs) {
-      // Sort defensively so reversed lists still render in canonical
-      // order (mirrors PaintEditor::apply_gradient_row).
-      std::vector<GradientStop> sorted = fs.stops;
-      std::sort(sorted.begin(), sorted.end(),
-                [](const GradientStop &a, const GradientStop &b) {
-                    return a.offset < b.offset;
-                });
-      if (sorted.empty()) {
-        cr->set_source_rgb(0.5, 0.5, 0.5);
-        cr->rectangle(x, y, sz, sz);
-        cr->fill();
-      } else if (sorted.size() == 1) {
-        const auto &s0 = sorted.front();
-        cr->set_source_rgba(s0.r, s0.g, s0.b, s0.a);
-        cr->rectangle(x, y, sz, sz);
-        cr->fill();
-      } else {
-        auto pat = Cairo::LinearGradient::create(x, 0, x + sz, 0);
-        for (const auto &st : sorted) {
-          pat->add_color_stop_rgba(
-              std::clamp(st.offset, 0.0, 1.0),
-              st.r, st.g, st.b, st.a);
-        }
-        cr->set_source(pat);
-        cr->rectangle(x, y, sz, sz);
-        cr->fill();
-      }
-    };
-
-    // Fill-style square at (x,y) size sz.
-    auto draw_fill_square = [&](double x, double y, double sz,
-                                const FillStyle &fs, bool mixed) {
-      if (mixed) {
-        draw_mixed(x, y, sz);
-      } else if (fs.type == FillStyle::Type::CurrentColor) {
-        draw_checker(x, y, sz);
-      } else if (fs.type == FillStyle::Type::None) {
-        cr->set_source_rgb(0.92, 0.92, 0.92);
-        cr->rectangle(x, y, sz, sz);
-        cr->fill();
-      } else if (fs.is_gradient()) {
-        draw_gradient(x, y, sz, fs);
-      } else {
-        cr->set_source_rgb(fs.r, fs.g, fs.b);
-        cr->rectangle(x, y, sz, sz);
-        cr->fill();
-      }
-    };
-
-    auto draw_none_slash = [&](double x, double y, double sz) {
-      cr->set_source_rgb(0.85, 0.18, 0.18);
-      cr->set_line_width(1.5);
-      cr->move_to(x + 2, y + 2);
-      cr->line_to(x + sz - 2, y + sz - 2);
-      cr->stroke();
-    };
-
-    // Stroke square — drawn first (behind fill).
-    if (smixed) {
-      // Mixed stroke: diagonal stripes with the dark interior flavour.
-      draw_mixed(off, off, sq);
-      cr->set_source_rgb(0.18, 0.18, 0.18);
-      cr->set_line_width(2.0);
-      cr->rectangle(off + 0.5, off + 0.5, sq - 1, sq - 1);
-      cr->stroke();
-    } else if (stroke.paint.type == FillStyle::Type::Solid) {
-      cr->set_source_rgb(0.18, 0.18, 0.18);
-      cr->rectangle(off, off, sq, sq);
-      cr->fill();
-      cr->set_source_rgb(stroke.paint.r, stroke.paint.g, stroke.paint.b);
-      cr->set_line_width(2.0);
-      cr->rectangle(off + 0.5, off + 0.5, sq - 1, sq - 1);
-      cr->stroke();
-    } else if (stroke.paint.type == FillStyle::Type::None) {
-      cr->set_source_rgb(0.92, 0.92, 0.92);
-      cr->rectangle(off, off, sq, sq);
-      cr->fill();
-      draw_none_slash(off, off, sq);
-    } else if (stroke.paint.is_gradient()) {
-      // S91 gradient stroke preview. Fill the square with a ramp the
-      // same way fill does, then draw the dark inner background to
-      // emulate the "stroke around fill" frame visual. The stroke
-      // version of the well overlay is just a colour signal — using
-      // the gradient as the colour is the right read.
-      cr->set_source_rgb(0.18, 0.18, 0.18);
-      cr->rectangle(off, off, sq, sq);
-      cr->fill();
-      // Draw the gradient as a 2px-thick frame: render the gradient
-      // into a slightly-inset square, then punch out the inner. We
-      // approximate this with a fill + an inset cover-up so the visual
-      // matches the Solid case's stroke-frame idiom.
-      draw_gradient(off, off, sq, stroke.paint);
-      cr->set_source_rgb(0.18, 0.18, 0.18);
-      cr->rectangle(off + 2, off + 2, sq - 4, sq - 4);
-      cr->fill();
-    } else {
-      // currentColor: checkerboard + near-black stroke-signal frame.
-      draw_checker(off, off, sq);
-      cr->set_source_rgb(0.102, 0.102, 0.102);
-      cr->set_line_width(1.5);
-      cr->rectangle(off + 0.75, off + 0.75, sq - 1.5, sq - 1.5);
-      cr->stroke();
-    }
-
-    // Fill square — drawn on top.
-    draw_fill_square(0, 0, sq, fill, fmixed);
-    if (!fmixed && fill.type == FillStyle::Type::None)
-      draw_none_slash(0, 0, sq);
-    cr->set_source_rgba(0, 0, 0, 0.55);
-    cr->set_line_width(1.0);
-    cr->rectangle(0.5, 0.5, sq - 1, sq - 1);
-    cr->stroke();
-  });
+        // Fill square — drawn on top.
+        draw_fill_square(0, 0, sq, fill, fmixed);
+        if (!fmixed && fill.type == FillStyle::Type::None)
+          draw_none_slash(0, 0, sq);
+        cr->set_source_rgba(0, 0, 0, 0.55);
+        cr->set_line_width(1.0);
+        cr->rectangle(0.5, 0.5, sq - 1, sq - 1);
+        cr->stroke();
+      });
   if (well.get_realized())
     well.queue_draw();
 }
@@ -2633,16 +2743,23 @@ void Toolbar::set_popup_unit(Unit u) {
   m_impl->popup_unit = u;
   std::string txt = std::string("Units: ") + UnitSystem::label(u);
   // s153 sub-ship 2: all eight placement popovers live in Impl now.
-  if (m_impl->rect_unit_lbl)    m_impl->rect_unit_lbl->set_text(txt);
-  if (m_impl->ellipse_unit_lbl) m_impl->ellipse_unit_lbl->set_text(txt);
-  if (m_impl->line_unit_lbl)    m_impl->line_unit_lbl->set_text(txt);
-  if (m_impl->ref_unit_lbl)     m_impl->ref_unit_lbl->set_text(txt);
-  if (m_impl->text_unit_lbl)    m_impl->text_unit_lbl->set_text(txt);
-  if (m_impl->poly_unit_lbl)    m_impl->poly_unit_lbl->set_text(txt);
-  if (m_impl->spiral_unit_lbl)  m_impl->spiral_unit_lbl->set_text(txt);
+  if (m_impl->rect_unit_lbl)
+    m_impl->rect_unit_lbl->set_text(txt);
+  if (m_impl->ellipse_unit_lbl)
+    m_impl->ellipse_unit_lbl->set_text(txt);
+  if (m_impl->line_unit_lbl)
+    m_impl->line_unit_lbl->set_text(txt);
+  if (m_impl->ref_unit_lbl)
+    m_impl->ref_unit_lbl->set_text(txt);
+  if (m_impl->text_unit_lbl)
+    m_impl->text_unit_lbl->set_text(txt);
+  if (m_impl->poly_unit_lbl)
+    m_impl->poly_unit_lbl->set_text(txt);
+  if (m_impl->spiral_unit_lbl)
+    m_impl->spiral_unit_lbl->set_text(txt);
 }
 
-void Toolbar::set_document(CurvzDocument* doc) {
+void Toolbar::set_document(CurvzDocument *doc) {
   m_impl->doc = doc;
   if (doc) {
     // In physical mode the effective unit for popovers is phys_unit
@@ -2699,62 +2816,74 @@ void Toolbar::Impl::sync_from_object(const FillStyle &fill,
 // ══════════════════════════════════════════════════════════════════════════════
 namespace {
 
-bool tb_fills_equal(const FillStyle& a, const FillStyle& b) {
-    if (a.type != b.type) return false;
-    if (a.type == FillStyle::Type::Solid) {
-        auto q = [](double v) {
-            return (int)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
-        };
-        return q(a.r) == q(b.r) && q(a.g) == q(b.g) && q(a.b) == q(b.b);
+bool tb_fills_equal(const FillStyle &a, const FillStyle &b) {
+  if (a.type != b.type)
+    return false;
+  if (a.type == FillStyle::Type::Solid) {
+    auto q = [](double v) {
+      return (int)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
+    };
+    return q(a.r) == q(b.r) && q(a.g) == q(b.g) && q(a.b) == q(b.b);
+  }
+  // S91: gradient comparison — same-typed gradients are equal iff they
+  // have matching stops (offset + RGBA at 8-bit granularity) and
+  // matching geometry. This isn't ideal for mixed-but-similar
+  // gradients (e.g. same colours, slightly different angles —
+  // "mixed" still feels right) but matches the spirit of the Solid
+  // 8-bit-hex bucketing.
+  if (a.is_gradient()) {
+    if (a.stops.size() != b.stops.size())
+      return false;
+    auto q = [](double v) {
+      return (int)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
+    };
+    for (std::size_t i = 0; i < a.stops.size(); ++i) {
+      const auto &sa = a.stops[i];
+      const auto &sb = b.stops[i];
+      if (q(sa.offset) != q(sb.offset))
+        return false;
+      if (q(sa.r) != q(sb.r))
+        return false;
+      if (q(sa.g) != q(sb.g))
+        return false;
+      if (q(sa.b) != q(sb.b))
+        return false;
+      if (q(sa.a) != q(sb.a))
+        return false;
     }
-    // S91: gradient comparison — same-typed gradients are equal iff they
-    // have matching stops (offset + RGBA at 8-bit granularity) and
-    // matching geometry. This isn't ideal for mixed-but-similar
-    // gradients (e.g. same colours, slightly different angles —
-    // "mixed" still feels right) but matches the spirit of the Solid
-    // 8-bit-hex bucketing.
-    if (a.is_gradient()) {
-        if (a.stops.size() != b.stops.size()) return false;
-        auto q = [](double v) {
-            return (int)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
-        };
-        for (std::size_t i = 0; i < a.stops.size(); ++i) {
-            const auto& sa = a.stops[i];
-            const auto& sb = b.stops[i];
-            if (q(sa.offset) != q(sb.offset)) return false;
-            if (q(sa.r) != q(sb.r)) return false;
-            if (q(sa.g) != q(sb.g)) return false;
-            if (q(sa.b) != q(sb.b)) return false;
-            if (q(sa.a) != q(sb.a)) return false;
-        }
-        // Geometry compared at the same 8-bit granularity as colours
-        // (objectBoundingBox space is 0..1, so the bucket count is the
-        // same). Equality on all five fields, which covers both linear
-        // (uses x1/y1/x2/y2) and radial (uses x1/y1 fx,fy / x2/y2 cx,cy
-        // / r).
-        if (q(a.g_x1) != q(b.g_x1)) return false;
-        if (q(a.g_y1) != q(b.g_y1)) return false;
-        if (q(a.g_x2) != q(b.g_x2)) return false;
-        if (q(a.g_y2) != q(b.g_y2)) return false;
-        if (q(a.g_r)  != q(b.g_r))  return false;
-    }
-    return true;
+    // Geometry compared at the same 8-bit granularity as colours
+    // (objectBoundingBox space is 0..1, so the bucket count is the
+    // same). Equality on all five fields, which covers both linear
+    // (uses x1/y1/x2/y2) and radial (uses x1/y1 fx,fy / x2/y2 cx,cy
+    // / r).
+    if (q(a.g_x1) != q(b.g_x1))
+      return false;
+    if (q(a.g_y1) != q(b.g_y1))
+      return false;
+    if (q(a.g_x2) != q(b.g_x2))
+      return false;
+    if (q(a.g_y2) != q(b.g_y2))
+      return false;
+    if (q(a.g_r) != q(b.g_r))
+      return false;
+  }
+  return true;
 }
 
 // Walk a selection and gather its paint targets (Path / Compound / Text).
 // Groups are recursed into. Mirrors the collect() lambda in MainWindow's
 // signal_defaults_changed handler (S58h) so the display and the broadcast
 // see the same object set.
-void tb_collect_paint_targets(SceneNode* node,
-                              std::vector<SceneNode*>& out) {
-    if (!node) return;
-    if (node->is_path() || node->is_compound() ||
-        node->type == SceneNode::Type::Text) {
-        out.push_back(node);
-    } else if (node->is_group()) {
-        for (auto &child : node->children)
-            tb_collect_paint_targets(child.get(), out);
-    }
+void tb_collect_paint_targets(SceneNode *node, std::vector<SceneNode *> &out) {
+  if (!node)
+    return;
+  if (node->is_path() || node->is_compound() ||
+      node->type == SceneNode::Type::Text) {
+    out.push_back(node);
+  } else if (node->is_group()) {
+    for (auto &child : node->children)
+      tb_collect_paint_targets(child.get(), out);
+  }
 }
 
 // ── S87 m1 chip helpers ──────────────────────────────────────────────────────
@@ -2770,127 +2899,128 @@ void tb_collect_paint_targets(SceneNode* node,
 // If a future milestone extracts a shared SwatchChipGrid widget, both
 // PaintEditor and Toolbar can switch to it and these can go.
 
-constexpr const char* kAllPaletteId = "__all__";
+constexpr const char *kAllPaletteId = "__all__";
 
-constexpr int    TB_CHIP_SIZE                  = 24;
-constexpr double TB_CHIP_CORNER_RADIUS         = 3.0;
-constexpr double TB_CHIP_BORDER_GREY           = 0.55;
-constexpr double TB_CHIP_BORDER_WIDTH          = 1.0;
+constexpr int TB_CHIP_SIZE = 24;
+constexpr double TB_CHIP_CORNER_RADIUS = 3.0;
+constexpr double TB_CHIP_BORDER_GREY = 0.55;
+constexpr double TB_CHIP_BORDER_WIDTH = 1.0;
 constexpr double TB_CHIP_BORDER_LUMA_THRESHOLD = 0.85;
 
-void tb_paint_chip(const Cairo::RefPtr<Cairo::Context>& cr,
-                   int w, int h,
-                   const color::Color& c) {
-    const double r = TB_CHIP_CORNER_RADIUS;
-    const double x = 0.5;
-    const double y = 0.5;
-    const double ww = static_cast<double>(w) - 1.0;
-    const double hh = static_cast<double>(h) - 1.0;
+void tb_paint_chip(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h,
+                   const color::Color &c) {
+  const double r = TB_CHIP_CORNER_RADIUS;
+  const double x = 0.5;
+  const double y = 0.5;
+  const double ww = static_cast<double>(w) - 1.0;
+  const double hh = static_cast<double>(h) - 1.0;
 
-    auto rounded_rect = [&](double x0, double y0,
-                            double x1, double y1, double rad) {
-        cr->move_to(x0 + rad, y0);
-        cr->line_to(x1 - rad, y0);
-        cr->arc(x1 - rad, y0 + rad, rad, -M_PI / 2, 0);
-        cr->line_to(x1, y1 - rad);
-        cr->arc(x1 - rad, y1 - rad, rad, 0, M_PI / 2);
-        cr->line_to(x0 + rad, y1);
-        cr->arc(x0 + rad, y1 - rad, rad, M_PI / 2, M_PI);
-        cr->line_to(x0, y0 + rad);
-        cr->arc(x0 + rad, y0 + rad, rad, M_PI, 3 * M_PI / 2);
-        cr->close_path();
-    };
+  auto rounded_rect = [&](double x0, double y0, double x1, double y1,
+                          double rad) {
+    cr->move_to(x0 + rad, y0);
+    cr->line_to(x1 - rad, y0);
+    cr->arc(x1 - rad, y0 + rad, rad, -M_PI / 2, 0);
+    cr->line_to(x1, y1 - rad);
+    cr->arc(x1 - rad, y1 - rad, rad, 0, M_PI / 2);
+    cr->line_to(x0 + rad, y1);
+    cr->arc(x0 + rad, y1 - rad, rad, M_PI / 2, M_PI);
+    cr->line_to(x0, y0 + rad);
+    cr->arc(x0 + rad, y0 + rad, rad, M_PI, 3 * M_PI / 2);
+    cr->close_path();
+  };
 
-    rounded_rect(x, y, x + ww, y + hh, r);
-    cr->set_source_rgba(c.r, c.g, c.b, c.a);
-    cr->fill_preserve();
+  rounded_rect(x, y, x + ww, y + hh, r);
+  cr->set_source_rgba(c.r, c.g, c.b, c.a);
+  cr->fill_preserve();
 
-    double luma = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
-    if (luma > TB_CHIP_BORDER_LUMA_THRESHOLD || c.a < 0.95) {
-        cr->set_source_rgba(TB_CHIP_BORDER_GREY, TB_CHIP_BORDER_GREY,
-                            TB_CHIP_BORDER_GREY, 1.0);
-        cr->set_line_width(TB_CHIP_BORDER_WIDTH);
-        cr->stroke();
-    } else {
-        cr->begin_new_path();
-    }
-    // No active-binding ring on copy-only chips — toolbar has no
-    // notion of "the bound swatch". Click is a copy, full stop.
+  double luma = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+  if (luma > TB_CHIP_BORDER_LUMA_THRESHOLD || c.a < 0.95) {
+    cr->set_source_rgba(TB_CHIP_BORDER_GREY, TB_CHIP_BORDER_GREY,
+                        TB_CHIP_BORDER_GREY, 1.0);
+    cr->set_line_width(TB_CHIP_BORDER_WIDTH);
+    cr->stroke();
+  } else {
+    cr->begin_new_path();
+  }
+  // No active-binding ring on copy-only chips — toolbar has no
+  // notion of "the bound swatch". Click is a copy, full stop.
 }
 
 // Resolve a swatch id to its display name + colour. Returns false
 // (no fields written) if missing or non-solid. Future gradient
 // swatches need their own visit case.
-bool tb_resolve_solid(const color::SwatchLibrary& lib,
-                      const std::string& id,
-                      std::string& name_out,
-                      color::Color& color_out) {
-    const color::Swatch* sw = lib.find_swatch(id);
-    if (!sw) return false;
-    const auto* solid = std::get_if<color::SolidSwatch>(sw);
-    if (!solid) return false;
-    name_out  = solid->header.name;
-    color_out = solid->color;
-    return true;
+bool tb_resolve_solid(const color::SwatchLibrary &lib, const std::string &id,
+                      std::string &name_out, color::Color &color_out) {
+  const color::Swatch *sw = lib.find_swatch(id);
+  if (!sw)
+    return false;
+  const auto *solid = std::get_if<color::SolidSwatch>(sw);
+  if (!solid)
+    return false;
+  name_out = solid->header.name;
+  color_out = solid->color;
+  return true;
 }
 
 } // anonymous namespace
 
-void Toolbar::Impl::sync_from_selection(const std::vector<SceneNode*>& sel,
-                                        SceneNode* primary) {
-    if (!primary) {
-        // Nothing selected — don't change well state (keep whatever the
-        // defaults currently are) but clear the mixed flags so a stale
-        // stripe render doesn't persist.
-        fill_mixed = false;
-        stroke_mixed = false;
-        redraw_well();
-        refresh_fill_popover();
-        refresh_stroke_popover();
-        return;
-    }
-
-    // Expand the selection to paint targets (Groups flatten; Paths /
-    // Compounds / Text stay terminal).
-    std::vector<SceneNode*> targets;
-    for (SceneNode* n : sel) tb_collect_paint_targets(n, targets);
-
-    // Display reads from primary (Path → itself; Compound → itself per
-    // S58d rule; a Group primary → first leaf in its tree).
-    SceneNode* disp = primary;
-    if (primary->is_group()) {
-        std::vector<SceneNode*> flat;
-        tb_collect_paint_targets(primary, flat);
-        if (!flat.empty()) disp = flat.front();
-    }
-
-    syncing = true;
-    def_fill   = disp->fill;
-    def_stroke = disp->stroke;
-
-    // Uniformity check. One target or none → not mixed.
+void Toolbar::Impl::sync_from_selection(const std::vector<SceneNode *> &sel,
+                                        SceneNode *primary) {
+  if (!primary) {
+    // Nothing selected — don't change well state (keep whatever the
+    // defaults currently are) but clear the mixed flags so a stale
+    // stripe render doesn't persist.
     fill_mixed = false;
     stroke_mixed = false;
-    if (targets.size() >= 2) {
-        const FillStyle& first_fill   = targets[0]->fill;
-        const FillStyle& first_stroke = targets[0]->stroke.paint;
-        for (size_t i = 1; i < targets.size(); ++i) {
-            if (!fill_mixed &&
-                !tb_fills_equal(first_fill, targets[i]->fill))
-                fill_mixed = true;
-            if (!stroke_mixed &&
-                !tb_fills_equal(first_stroke, targets[i]->stroke.paint))
-                stroke_mixed = true;
-            if (fill_mixed && stroke_mixed) break; // both decided
-        }
-    }
-
     redraw_well();
     refresh_fill_popover();
     refresh_stroke_popover();
-    update_cap_buttons();
-    update_join_buttons();
-    syncing = false;
+    return;
+  }
+
+  // Expand the selection to paint targets (Groups flatten; Paths /
+  // Compounds / Text stay terminal).
+  std::vector<SceneNode *> targets;
+  for (SceneNode *n : sel)
+    tb_collect_paint_targets(n, targets);
+
+  // Display reads from primary (Path → itself; Compound → itself per
+  // S58d rule; a Group primary → first leaf in its tree).
+  SceneNode *disp = primary;
+  if (primary->is_group()) {
+    std::vector<SceneNode *> flat;
+    tb_collect_paint_targets(primary, flat);
+    if (!flat.empty())
+      disp = flat.front();
+  }
+
+  syncing = true;
+  def_fill = disp->fill;
+  def_stroke = disp->stroke;
+
+  // Uniformity check. One target or none → not mixed.
+  fill_mixed = false;
+  stroke_mixed = false;
+  if (targets.size() >= 2) {
+    const FillStyle &first_fill = targets[0]->fill;
+    const FillStyle &first_stroke = targets[0]->stroke.paint;
+    for (size_t i = 1; i < targets.size(); ++i) {
+      if (!fill_mixed && !tb_fills_equal(first_fill, targets[i]->fill))
+        fill_mixed = true;
+      if (!stroke_mixed &&
+          !tb_fills_equal(first_stroke, targets[i]->stroke.paint))
+        stroke_mixed = true;
+      if (fill_mixed && stroke_mixed)
+        break; // both decided
+    }
+  }
+
+  redraw_well();
+  refresh_fill_popover();
+  refresh_stroke_popover();
+  update_cap_buttons();
+  update_join_buttons();
+  syncing = false;
 }
 
 // ── Align & Distribute
@@ -2960,7 +3090,8 @@ void Toolbar::Impl::build_align_button() {
     // widget stays sensitive (so right-click events reach the swallow)
     // but left-click does nothing until MainWindow has flipped the
     // bool via set_align_enabled().
-    if (!align_enabled) return;
+    if (!align_enabled)
+      return;
     align_pop.popup();
   });
   // s152 sub-ship 1 fix: swallow right-clicks. Align has no per-tool
@@ -2970,7 +3101,8 @@ void Toolbar::Impl::build_align_button() {
 }
 
 void Toolbar::Impl::build_align_popover() {
-  curvz::utils::set_name(align_pop, "pop_tb_align", "popover_toolbar_align_root");
+  curvz::utils::set_name(align_pop, "pop_tb_align",
+                         "popover_toolbar_align_root");
   auto *outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
   outer->set_spacing(8);
   outer->set_margin_top(10);
@@ -3010,8 +3142,9 @@ void Toolbar::Impl::build_align_popover() {
   // as the stroke-popover make_icon_btn and s196 m1's make_pop_row.
   // Long-name annotation stays at each call site as a curvz::utils::set_name()
   // line for harvester compatibility.
-  auto make_btn = [&](std::string_view abbrev, const char* icon_name,
-                      AlignOp op, const std::string &tip) -> curvz::widgets::Button* {
+  auto make_btn = [&](std::string_view abbrev, const char *icon_name,
+                      AlignOp op,
+                      const std::string &tip) -> curvz::widgets::Button * {
     auto *img = Gtk::make_managed<Gtk::Image>();
     img->set_from_icon_name(icon_name);
     img->set_pixel_size(22);
@@ -3031,32 +3164,49 @@ void Toolbar::Impl::build_align_popover() {
   // We lay them out as two sub-rows for clarity
   auto *align_h_row = make_section("Align");
   curvz::widgets::Button *al_btn;
-  al_btn = make_btn("pop_tb_align_l",  "curvz-align-left-symbolic",     AlignOp::AlignLeft,    "Align left edges");
-  curvz::utils::set_name(al_btn, "pop_tb_align_l", "popover_toolbar_align_left_btn");
+  al_btn = make_btn("pop_tb_align_l", "curvz-align-left-symbolic",
+                    AlignOp::AlignLeft, "Align left edges");
+  curvz::utils::set_name(al_btn, "pop_tb_align_l",
+                         "popover_toolbar_align_left_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn("pop_tb_align_ch", "curvz-align-center-h-symbolic", AlignOp::AlignCenterH, "Center on vertical axis");
-  curvz::utils::set_name(al_btn, "pop_tb_align_ch", "popover_toolbar_align_center_h_btn");
+  al_btn = make_btn("pop_tb_align_ch", "curvz-align-center-h-symbolic",
+                    AlignOp::AlignCenterH, "Center on vertical axis");
+  curvz::utils::set_name(al_btn, "pop_tb_align_ch",
+                         "popover_toolbar_align_center_h_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn("pop_tb_align_r",  "curvz-align-right-symbolic",    AlignOp::AlignRight,   "Align right edges");
-  curvz::utils::set_name(al_btn, "pop_tb_align_r", "popover_toolbar_align_right_btn");
+  al_btn = make_btn("pop_tb_align_r", "curvz-align-right-symbolic",
+                    AlignOp::AlignRight, "Align right edges");
+  curvz::utils::set_name(al_btn, "pop_tb_align_r",
+                         "popover_toolbar_align_right_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn("pop_tb_align_t",  "curvz-align-top-symbolic",      AlignOp::AlignTop,     "Align top edges");
-  curvz::utils::set_name(al_btn, "pop_tb_align_t", "popover_toolbar_align_top_btn");
+  al_btn = make_btn("pop_tb_align_t", "curvz-align-top-symbolic",
+                    AlignOp::AlignTop, "Align top edges");
+  curvz::utils::set_name(al_btn, "pop_tb_align_t",
+                         "popover_toolbar_align_top_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn("pop_tb_align_cv", "curvz-align-center-v-symbolic", AlignOp::AlignCenterV, "Center on horizontal axis");
-  curvz::utils::set_name(al_btn, "pop_tb_align_cv", "popover_toolbar_align_center_v_btn");
+  al_btn = make_btn("pop_tb_align_cv", "curvz-align-center-v-symbolic",
+                    AlignOp::AlignCenterV, "Center on horizontal axis");
+  curvz::utils::set_name(al_btn, "pop_tb_align_cv",
+                         "popover_toolbar_align_center_v_btn");
   align_h_row->append(*al_btn);
-  al_btn = make_btn("pop_tb_align_b",  "curvz-align-bottom-symbolic",   AlignOp::AlignBottom,  "Align bottom edges");
-  curvz::utils::set_name(al_btn, "pop_tb_align_b", "popover_toolbar_align_bottom_btn");
+  al_btn = make_btn("pop_tb_align_b", "curvz-align-bottom-symbolic",
+                    AlignOp::AlignBottom, "Align bottom edges");
+  curvz::utils::set_name(al_btn, "pop_tb_align_b",
+                         "popover_toolbar_align_bottom_btn");
   align_h_row->append(*al_btn);
 
   // ── Distribute row ─────────────────────────────────────────────────────
   auto *dist_row = make_section("Distribute");
-  al_btn = make_btn("pop_tb_align_dh", "curvz-distribute-h-symbolic", AlignOp::DistributeH, "Distribute horizontally (equal gaps)");
-  curvz::utils::set_name(al_btn, "pop_tb_align_dh", "popover_toolbar_distribute_h_btn");
+  al_btn =
+      make_btn("pop_tb_align_dh", "curvz-distribute-h-symbolic",
+               AlignOp::DistributeH, "Distribute horizontally (equal gaps)");
+  curvz::utils::set_name(al_btn, "pop_tb_align_dh",
+                         "popover_toolbar_distribute_h_btn");
   dist_row->append(*al_btn);
-  al_btn = make_btn("pop_tb_align_dv", "curvz-distribute-v-symbolic", AlignOp::DistributeV, "Distribute vertically (equal gaps)");
-  curvz::utils::set_name(al_btn, "pop_tb_align_dv", "popover_toolbar_distribute_v_btn");
+  al_btn = make_btn("pop_tb_align_dv", "curvz-distribute-v-symbolic",
+                    AlignOp::DistributeV, "Distribute vertically (equal gaps)");
+  curvz::utils::set_name(al_btn, "pop_tb_align_dv",
+                         "popover_toolbar_distribute_v_btn");
   dist_row->append(*al_btn);
 
   align_pop.set_child(*outer);
@@ -3106,10 +3256,9 @@ void Toolbar::Impl::set_align_enabled(bool enabled) {
 // gated off; the *_enabled bool gates the actual left-click action.
 void Toolbar::Impl::build_transforms_section() {
   // Helper: construct one transform-verb button with shared chrome.
-  auto make_xform_btn = [&](Gtk::Button& btn, const char* icon_name,
-                            const char* tooltip,
-                            const char* name_short,
-                            const char* name_long) {
+  auto make_xform_btn = [&](Gtk::Button &btn, const char *icon_name,
+                            const char *tooltip, const char *name_short,
+                            const char *name_long) {
     btn.set_icon_name(icon_name);
     btn.set_has_frame(false);
     btn.set_halign(Gtk::Align::CENTER);
@@ -3122,17 +3271,17 @@ void Toolbar::Impl::build_transforms_section() {
   };
 
   make_xform_btn(snr_btn, "curvz-step-repeat-symbolic",
-                 "Step and Repeat — Right-click to configure",
-                 "tb_snr", "main_toolbar_step_repeat_btn");
+                 "Step and Repeat — Right-click to configure", "tb_snr",
+                 "main_toolbar_step_repeat_btn");
   make_xform_btn(blend_btn, "curvz-blend-symbolic",
-                 "Blend — Right-click to configure",
-                 "tb_bln", "main_toolbar_blend_btn");
+                 "Blend — Right-click to configure", "tb_bln",
+                 "main_toolbar_blend_btn");
   make_xform_btn(bool_btn, "curvz-union-symbolic",
                  "Boolean operators: Union, Subtraction, and Intersection",
                  "tb_bop", "main_toolbar_bool_btn");
   make_xform_btn(warp_btn, "curvz-warp-symbolic",
-                 "Warp — Right-click to configure",
-                 "tb_wrp", "main_toolbar_warp_btn");
+                 "Warp — Right-click to configure", "tb_wrp",
+                 "main_toolbar_warp_btn");
 
   // s154 m4a: all four transform-verb buttons now route their
   // configuration popovers through MainWindow signals (no Toolbar-owned
@@ -3146,15 +3295,18 @@ void Toolbar::Impl::build_transforms_section() {
   // ── Click wiring ─────────────────────────────────────────────────────
   // Left-click: gate on per-button enabled flag, then fire the signal.
   snr_btn.signal_clicked().connect([this]() {
-    if (!snr_enabled) return;
+    if (!snr_enabled)
+      return;
     sig_step_repeat.emit();
   });
   blend_btn.signal_clicked().connect([this]() {
-    if (!blend_enabled) return;
+    if (!blend_enabled)
+      return;
     sig_blend.emit();
   });
   warp_btn.signal_clicked().connect([this]() {
-    if (!warp_enabled) return;
+    if (!warp_enabled)
+      return;
     sig_warp.emit();
   });
   // Bool: left-click always pops the popover when enabled. The popover
@@ -3164,7 +3316,8 @@ void Toolbar::Impl::build_transforms_section() {
   // right-click left the flag set without consuming it (e.g. user
   // dismissed the popover via outside-click).
   bool_btn.signal_clicked().connect([this]() {
-    if (!bool_enabled) return;
+    if (!bool_enabled)
+      return;
     bool_picker_pre_set = false;
     bool_pop.popup();
   });
@@ -3185,23 +3338,21 @@ void Toolbar::Impl::build_transforms_section() {
   {
     auto rc = Gtk::GestureClick::create();
     rc->set_button(3);
-    auto* rc_raw = rc.get();
-    rc->signal_pressed().connect(
-        [this, rc_raw](int, double, double) {
-          rc_raw->set_state(Gtk::EventSequenceState::CLAIMED);
-          sig_step_repeat_configure.emit();
-        });
+    auto *rc_raw = rc.get();
+    rc->signal_pressed().connect([this, rc_raw](int, double, double) {
+      rc_raw->set_state(Gtk::EventSequenceState::CLAIMED);
+      sig_step_repeat_configure.emit();
+    });
     snr_btn.add_controller(rc);
   }
   {
     auto rc = Gtk::GestureClick::create();
     rc->set_button(3);
-    auto* rc_raw = rc.get();
-    rc->signal_pressed().connect(
-        [this, rc_raw](int, double, double) {
-          rc_raw->set_state(Gtk::EventSequenceState::CLAIMED);
-          sig_blend_configure.emit();
-        });
+    auto *rc_raw = rc.get();
+    rc->signal_pressed().connect([this, rc_raw](int, double, double) {
+      rc_raw->set_state(Gtk::EventSequenceState::CLAIMED);
+      sig_blend_configure.emit();
+    });
     blend_btn.add_controller(rc);
   }
   // s154 m4a: warp right-click — emits sig_warp_configure so MainWindow
@@ -3210,12 +3361,11 @@ void Toolbar::Impl::build_transforms_section() {
   {
     auto rc = Gtk::GestureClick::create();
     rc->set_button(3);
-    auto* rc_raw = rc.get();
-    rc->signal_pressed().connect(
-        [this, rc_raw](int, double, double) {
-          rc_raw->set_state(Gtk::EventSequenceState::CLAIMED);
-          sig_warp_configure.emit();
-        });
+    auto *rc_raw = rc.get();
+    rc->signal_pressed().connect([this, rc_raw](int, double, double) {
+      rc_raw->set_state(Gtk::EventSequenceState::CLAIMED);
+      sig_warp_configure.emit();
+    });
     warp_btn.add_controller(rc);
   }
   // s154 m3 follow-up: bool_btn right-click pops the SAME picker the
@@ -3227,13 +3377,12 @@ void Toolbar::Impl::build_transforms_section() {
   {
     auto rc = Gtk::GestureClick::create();
     rc->set_button(3);
-    auto* rc_raw = rc.get();
-    rc->signal_pressed().connect(
-        [this, rc_raw](int, double, double) {
-          rc_raw->set_state(Gtk::EventSequenceState::CLAIMED);
-          bool_picker_pre_set = true;
-          bool_pop.popup();
-        });
+    auto *rc_raw = rc.get();
+    rc->signal_pressed().connect([this, rc_raw](int, double, double) {
+      rc_raw->set_state(Gtk::EventSequenceState::CLAIMED);
+      bool_picker_pre_set = true;
+      bool_pop.popup();
+    });
     bool_btn.add_controller(rc);
   }
 
@@ -3250,11 +3399,9 @@ void Toolbar::Impl::build_transforms_section() {
   // (so cycle_tool and select_tool work) but does NOT append — this
   // function controls the section's append order alphabetically.
   // s188 m1: abbrev/long_name ride in up front; funnel sets the name.
-  corner_tool_btn = make_tool_button("tb_cor",
-                                     "main_toolbar_corner_tool_btn",
-                                     "curvz-corner-symbolic",
-                                     "Corner Treatment (K)",
-                                     ActiveTool::Corner);
+  corner_tool_btn = make_tool_button(
+      "tb_cor", "main_toolbar_corner_tool_btn", "curvz-corner-symbolic",
+      "Corner Treatment (K)", ActiveTool::Corner);
   add_rclick_swallow(*corner_tool_btn);
 
   // ── Align (s175 m4) — folded into the Transforms section ───────────
@@ -3278,26 +3425,25 @@ void Toolbar::Impl::build_transforms_section() {
 
   // Closing separator — visually closes the section before the
   // utility cluster (Eyedropper, Measure, Zoom) begins.
-  auto* sep_close = Gtk::make_managed<Gtk::Separator>(
-      Gtk::Orientation::HORIZONTAL);
+  auto *sep_close =
+      Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
   sep_close->set_margin_top(4);
   sep_close->set_margin_bottom(4);
   self->append(*sep_close);
 }
 
 void Toolbar::Impl::build_bool_popover() {
-  curvz::utils::set_name(bool_pop, "pop_tb_bop",
-                         "popover_toolbar_bool_root");
+  curvz::utils::set_name(bool_pop, "pop_tb_bop", "popover_toolbar_bool_root");
   bool_pop.set_position(Gtk::PositionType::RIGHT);
 
-  auto* outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
+  auto *outer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
   outer->set_spacing(6);
   outer->set_margin_top(8);
   outer->set_margin_bottom(8);
   outer->set_margin_start(8);
   outer->set_margin_end(8);
 
-  auto* title = Gtk::make_managed<Gtk::Label>("Boolean Operations");
+  auto *title = Gtk::make_managed<Gtk::Label>("Boolean Operations");
   title->add_css_class("tb-pop-title");
   title->set_xalign(0.0f);
   outer->append(*title);
@@ -3309,7 +3455,7 @@ void Toolbar::Impl::build_bool_popover() {
   // bool_btn icon thus reflects "last picked op" — pure visual cue,
   // does NOT change left-click behaviour (left-click still pops the
   // picker; users can change op by re-picking).
-  auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   row->set_spacing(4);
 
   // s197 m1: abbrev threaded through to the substrate ctor; the old
@@ -3317,9 +3463,9 @@ void Toolbar::Impl::build_bool_popover() {
   // invisible to the harvester anyway (no literal strings), so the
   // long-name annotations are lifted to the call sites where they ARE
   // literal — same shape as stroke and align popovers in this session.
-  auto add_op = [&](std::string_view abbrev, const char* icon_name,
-                    const char* tip, BoolOp op) -> curvz::widgets::Button* {
-    auto* b = Gtk::make_managed<curvz::widgets::Button>(abbrev);
+  auto add_op = [&](std::string_view abbrev, const char *icon_name,
+                    const char *tip, BoolOp op) -> curvz::widgets::Button * {
+    auto *b = Gtk::make_managed<curvz::widgets::Button>(abbrev);
     b->set_icon_name(icon_name);
     b->set_has_frame(false);
     b->add_css_class("tool-btn");
@@ -3332,38 +3478,44 @@ void Toolbar::Impl::build_bool_popover() {
       // flag is consumed here and reset for the next interaction.
       const bool pre_set = bool_picker_pre_set;
       bool_picker_pre_set = false;
-      if (!pre_set) sig_bool_op.emit(op);
+      if (!pre_set)
+        sig_bool_op.emit(op);
     });
     row->append(*b);
     return b;
   };
 
-  auto* op_un = add_op("tb_bop_un", "curvz-union-symbolic",     "Union",     BoolOp::Union);
+  auto *op_un =
+      add_op("tb_bop_un", "curvz-union-symbolic", "Union", BoolOp::Union);
   curvz::utils::set_name(op_un, "tb_bop_un", "popover_bool_union_btn");
-  auto* op_sb = add_op("tb_bop_sb", "curvz-subtract-symbolic",  "Subtract",  BoolOp::Subtract);
+  auto *op_sb = add_op("tb_bop_sb", "curvz-subtract-symbolic", "Subtract",
+                       BoolOp::Subtract);
   curvz::utils::set_name(op_sb, "tb_bop_sb", "popover_bool_subtract_btn");
-  auto* op_in = add_op("tb_bop_in", "curvz-intersect-symbolic", "Intersect", BoolOp::Intersect);
+  auto *op_in = add_op("tb_bop_in", "curvz-intersect-symbolic", "Intersect",
+                       BoolOp::Intersect);
   curvz::utils::set_name(op_in, "tb_bop_in", "popover_bool_intersect_btn");
 
   outer->append(*row);
   bool_pop.set_child(*outer);
 }
 
-void Toolbar::Impl::set_transforms_enabled(bool snr, bool blend,
-                                           bool boolop, bool warp) {
+void Toolbar::Impl::set_transforms_enabled(bool snr, bool blend, bool boolop,
+                                           bool warp) {
   // Faked-disabled mirrors set_align_enabled. Widgets stay sensitive
   // so right-click events keep reaching the configuration popovers
   // even when the operation is gated off; the per-button bool gates
   // left-click, and the .tool-btn-disabled class drives the visuals.
-  auto apply = [](Gtk::Button& btn, bool& flag, bool en) {
+  auto apply = [](Gtk::Button &btn, bool &flag, bool en) {
     flag = en;
-    if (en) btn.remove_css_class("tool-btn-disabled");
-    else    btn.add_css_class("tool-btn-disabled");
+    if (en)
+      btn.remove_css_class("tool-btn-disabled");
+    else
+      btn.add_css_class("tool-btn-disabled");
   };
-  apply(snr_btn,   snr_enabled,   snr);
+  apply(snr_btn, snr_enabled, snr);
   apply(blend_btn, blend_enabled, blend);
-  apply(bool_btn,  bool_enabled,  boolop);
-  apply(warp_btn,  warp_enabled,  warp);
+  apply(bool_btn, bool_enabled, boolop);
+  apply(warp_btn, warp_enabled, warp);
 }
 
 void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
@@ -3373,7 +3525,7 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
   // the toolbar root's density picker.
   auto rclick = Gtk::GestureClick::create();
   rclick->set_button(3);
-  auto* rclick_raw = rclick.get();
+  auto *rclick_raw = rclick.get();
   rclick->signal_pressed().connect([this, rclick_raw](int, double, double) {
     rclick_raw->set_state(Gtk::EventSequenceState::CLAIMED);
     if (zoom_adj)
@@ -3410,9 +3562,10 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
   zoom_adj = Gtk::Adjustment::create(100.0, 1.0, 9500.0, 1.0, 10.0);
   // s198 m1: substrate construction. Climb rate matches step (1.0);
   // digits is 0 (integer-percent zoom levels).
-  zoom_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
-      "pop_tb_zom_spn", zoom_adj, 1.0, 0);
-  curvz::utils::set_name(zoom_spin, "pop_tb_zom_spn", "popover_toolbar_zoom_pct_spn");
+  zoom_spin = Gtk::make_managed<curvz::widgets::SpinButton>("pop_tb_zom_spn",
+                                                            zoom_adj, 1.0, 0);
+  curvz::utils::set_name(zoom_spin, "pop_tb_zom_spn",
+                         "popover_toolbar_zoom_pct_spn");
   // s219: substrate default is set_numeric(false) for math input.
   zoom_spin->set_hexpand(true);
   zoom_spin->set_width_chars(6);
@@ -3436,7 +3589,7 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
   // string literals, not constructed std::string c_str pointers). One
   // local helper keeps the body compact without re-introducing the
   // dynamic-string problem.
-  auto add_zoom_preset = [&](int pct, Gtk::Button* btn) {
+  auto add_zoom_preset = [&](int pct, Gtk::Button *btn) {
     btn->add_css_class("tb-type-btn");
     btn->signal_clicked().connect([this, pct]() {
       if (zoom_adj)
@@ -3445,28 +3598,38 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
     preset_row->append(*btn);
   };
   {
-    auto *btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p25", "25%");
-    curvz::utils::set_name(btn, "pop_tb_zom_p25", "popover_toolbar_zoom_preset_25pct_btn");
+    auto *btn =
+        Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p25", "25%");
+    curvz::utils::set_name(btn, "pop_tb_zom_p25",
+                           "popover_toolbar_zoom_preset_25pct_btn");
     add_zoom_preset(25, btn);
   }
   {
-    auto *btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p50", "50%");
-    curvz::utils::set_name(btn, "pop_tb_zom_p50", "popover_toolbar_zoom_preset_50pct_btn");
+    auto *btn =
+        Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p50", "50%");
+    curvz::utils::set_name(btn, "pop_tb_zom_p50",
+                           "popover_toolbar_zoom_preset_50pct_btn");
     add_zoom_preset(50, btn);
   }
   {
-    auto *btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p100", "100%");
-    curvz::utils::set_name(btn, "pop_tb_zom_p100", "popover_toolbar_zoom_preset_100pct_btn");
+    auto *btn =
+        Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p100", "100%");
+    curvz::utils::set_name(btn, "pop_tb_zom_p100",
+                           "popover_toolbar_zoom_preset_100pct_btn");
     add_zoom_preset(100, btn);
   }
   {
-    auto *btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p200", "200%");
-    curvz::utils::set_name(btn, "pop_tb_zom_p200", "popover_toolbar_zoom_preset_200pct_btn");
+    auto *btn =
+        Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p200", "200%");
+    curvz::utils::set_name(btn, "pop_tb_zom_p200",
+                           "popover_toolbar_zoom_preset_200pct_btn");
     add_zoom_preset(200, btn);
   }
   {
-    auto *btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p400", "400%");
-    curvz::utils::set_name(btn, "pop_tb_zom_p400", "popover_toolbar_zoom_preset_400pct_btn");
+    auto *btn =
+        Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_p400", "400%");
+    curvz::utils::set_name(btn, "pop_tb_zom_p400",
+                           "popover_toolbar_zoom_preset_400pct_btn");
     add_zoom_preset(400, btn);
   }
   outer->append(*preset_row);
@@ -3481,16 +3644,20 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
   btn_row->set_spacing(8);
   btn_row->set_halign(Gtk::Align::END);
 
-  auto *fit_btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_fit", "Fit");
-  curvz::utils::set_name(fit_btn, "pop_tb_zom_fit", "popover_toolbar_zoom_fit_btn");
+  auto *fit_btn =
+      Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_fit", "Fit");
+  curvz::utils::set_name(fit_btn, "pop_tb_zom_fit",
+                         "popover_toolbar_zoom_fit_btn");
   fit_btn->signal_clicked().connect([this]() {
     zoom_pop.popdown();
     sig_fit.emit();
     sig_canvas_focus.emit();
   });
 
-  auto *apply_btn = Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_apl", "Apply");
-  curvz::utils::set_name(apply_btn, "pop_tb_zom_apl", "popover_toolbar_zoom_apply_btn");
+  auto *apply_btn =
+      Gtk::make_managed<curvz::widgets::Button>("pop_tb_zom_apl", "Apply");
+  curvz::utils::set_name(apply_btn, "pop_tb_zom_apl",
+                         "popover_toolbar_zoom_apply_btn");
   apply_btn->add_css_class("suggested-action");
   apply_btn->signal_clicked().connect([this]() {
     double pct = zoom_adj ? zoom_adj->get_value() : 100.0;
@@ -3541,7 +3708,7 @@ void Toolbar::Impl::build_measure_popover(Gtk::ToggleButton *measure_btn) {
   // to the toolbar root's density picker.
   auto rclick = Gtk::GestureClick::create();
   rclick->set_button(3);
-  auto* rclick_raw = rclick.get();
+  auto *rclick_raw = rclick.get();
   rclick->signal_pressed().connect([this, rclick_raw](int, double, double) {
     rclick_raw->set_state(Gtk::EventSequenceState::CLAIMED);
     // Sync checkboxes from current doc state on every open. Same pattern
@@ -3560,7 +3727,8 @@ void Toolbar::Impl::build_measure_popover(Gtk::ToggleButton *measure_btn) {
   measure_btn->add_controller(rclick);
 
   // ── Popover content ───────────────────────────────────────────────────
-  curvz::utils::set_name(measure_pop, "pop_tb_meas", "popover_toolbar_measure_root");
+  curvz::utils::set_name(measure_pop, "pop_tb_meas",
+                         "popover_toolbar_measure_root");
   measure_pop.set_parent(*measure_btn);
   measure_pop.set_position(Gtk::PositionType::RIGHT);
 
@@ -3590,7 +3758,8 @@ void Toolbar::Impl::build_measure_popover(Gtk::ToggleButton *measure_btn) {
   };
 
   // ── "Save measurements" checkbox row ────────────────────────────────────
-  measure_save_chk = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_meas_sv");
+  measure_save_chk =
+      Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_meas_sv");
   curvz::utils::set_name(measure_save_chk, "pop_tb_meas_sv",
                          "popover_toolbar_measure_save_check");
   measure_save_chk->set_tooltip_text(
@@ -3603,7 +3772,8 @@ void Toolbar::Impl::build_measure_popover(Gtk::ToggleButton *measure_btn) {
   outer->append(*make_chk_row(measure_save_chk, save_lbl));
 
   // ── "Delete on copy" checkbox row ───────────────────────────────────────
-  measure_del_chk = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_meas_dc");
+  measure_del_chk =
+      Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_meas_dc");
   curvz::utils::set_name(measure_del_chk, "pop_tb_meas_dc",
                          "popover_toolbar_measure_destruct_check");
   measure_del_chk->set_tooltip_text(
@@ -3620,19 +3790,24 @@ void Toolbar::Impl::build_measure_popover(Gtk::ToggleButton *measure_btn) {
   // Writes through to doc, updates Delete-on-copy sensitivity inline,
   // emits signal_measure_settings_changed for MainWindow to schedule_save.
   measure_save_chk->signal_toggled().connect([this]() {
-    if (!doc) return;
+    if (!doc)
+      return;
     bool on = measure_save_chk->get_active();
     doc->measure_save_to_layer = on;
-    if (measure_del_chk) measure_del_chk->set_sensitive(!on);
+    if (measure_del_chk)
+      measure_del_chk->set_sensitive(!on);
     if (measure_del_lbl) {
-      if (on) measure_del_lbl->add_css_class("dim-label");
-      else    measure_del_lbl->remove_css_class("dim-label");
+      if (on)
+        measure_del_lbl->add_css_class("dim-label");
+      else
+        measure_del_lbl->remove_css_class("dim-label");
     }
     sig_measure_settings.emit();
   });
 
   measure_del_chk->signal_toggled().connect([this]() {
-    if (!doc) return;
+    if (!doc)
+      return;
     doc->measure_destruct_after_copy = measure_del_chk->get_active();
     sig_measure_settings.emit();
   });
@@ -3649,20 +3824,22 @@ void Toolbar::Impl::build_ref_popover(Gtk::ToggleButton *ref_btn) {
   // to the toolbar root's density picker.
   auto rclick = Gtk::GestureClick::create();
   rclick->set_button(3);
-  auto* rclick_raw = rclick.get();
-  rclick->signal_pressed().connect(
-      [this, rclick_raw](int, double, double) {
-        rclick_raw->set_state(Gtk::EventSequenceState::CLAIMED);
-        Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical ? UnitSystem::parse_unit(doc->canvas.phys_unit) : doc->canvas.display_unit) : popup_unit;
-        auto [cw, ch] = canvas_display_size(doc);
-        if (ref_unit_lbl)
-          ref_unit_lbl->set_text(std::string("Units: ") + UnitSystem::label(u));
-        if (ref_adj_x)
-          ref_adj_x->set_value(cw * 0.5);
-        if (ref_adj_y)
-          ref_adj_y->set_value(ch * 0.5);
-        ref_pop.popup();
-      });
+  auto *rclick_raw = rclick.get();
+  rclick->signal_pressed().connect([this, rclick_raw](int, double, double) {
+    rclick_raw->set_state(Gtk::EventSequenceState::CLAIMED);
+    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical
+                        ? UnitSystem::parse_unit(doc->canvas.phys_unit)
+                        : doc->canvas.display_unit)
+                 : popup_unit;
+    auto [cw, ch] = canvas_display_size(doc);
+    if (ref_unit_lbl)
+      ref_unit_lbl->set_text(std::string("Units: ") + UnitSystem::label(u));
+    if (ref_adj_x)
+      ref_adj_x->set_value(cw * 0.5);
+    if (ref_adj_y)
+      ref_adj_y->set_value(ch * 0.5);
+    ref_pop.popup();
+  });
   ref_btn->add_controller(rclick);
 
   curvz::utils::set_name(ref_pop, "pop_tb_ref", "popover_toolbar_ref_root");
@@ -3732,9 +3909,10 @@ void Toolbar::Impl::build_ref_popover(Gtk::ToggleButton *ref_btn) {
   btn_row->set_spacing(6);
   btn_row->set_halign(Gtk::Align::END);
 
-  auto *place_btn = Gtk::make_managed<curvz::widgets::Button>(
-      "pop_tb_ref_pl", "Place");
-  curvz::utils::set_name(place_btn, "pop_tb_ref_pl", "popover_toolbar_ref_place_btn");
+  auto *place_btn =
+      Gtk::make_managed<curvz::widgets::Button>("pop_tb_ref_pl", "Place");
+  curvz::utils::set_name(place_btn, "pop_tb_ref_pl",
+                         "popover_toolbar_ref_place_btn");
   place_btn->add_css_class("suggested-action");
   place_btn->signal_clicked().connect([this]() {
     if (ref_adj_x && ref_adj_y)
@@ -3764,7 +3942,7 @@ static void setup_rclick_popover(Gtk::ToggleButton *btn, Gtk::Popover &pop,
                                  std::function<void()> on_open) {
   auto rclick = Gtk::GestureClick::create();
   rclick->set_button(3); // right mouse button
-  auto* rclick_raw = rclick.get();
+  auto *rclick_raw = rclick.get();
   rclick->signal_pressed().connect(
       [&pop, on_open, rclick_raw](int, double, double) {
         rclick_raw->set_state(Gtk::EventSequenceState::CLAIMED);
@@ -3805,17 +3983,16 @@ static Gtk::Box *make_pop_outer(const char *title) {
 // caller's strings.
 //
 // s196 m1: helper now constructs a curvz::widgets::SpinButton (not raw
-// Gtk::SpinButton) so the spin registers itself in the script registry.
+// CurvzSpinButton) so the spin registers itself in the script registry.
 // The abbrev is threaded through the helper as a substrate-ctor arg —
 // that's safe for the harvester because widget_names_sync only ever
 // looks at literal strings inside curvz::utils::set_name(...) and the
 // named-funnel calls, not at substrate constructors. Callers still pass
 // abbrev to set_name(...) at the call site for the long_name harvest;
 // the two abbrevs are required to match.
-static Glib::RefPtr<Gtk::Adjustment> make_pop_row(Gtk::Box *outer,
-                                                  const char *label,
-                                                  std::string_view abbrev,
-                                                  Gtk::SpinButton **out_spin = nullptr) {
+static Glib::RefPtr<Gtk::Adjustment>
+make_pop_row(Gtk::Box *outer, const char *label, std::string_view abbrev,
+             Gtk::SpinButton **out_spin = nullptr) {
   auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   row->set_spacing(8);
   auto *lbl = Gtk::make_managed<Gtk::Label>(label);
@@ -3824,15 +4001,42 @@ static Glib::RefPtr<Gtk::Adjustment> make_pop_row(Gtk::Box *outer,
   lbl->set_width_chars(4);
   row->append(*lbl);
   auto adj = Gtk::Adjustment::create(0.0, -1e6, 1e6, 0.000001, 10.0);
-  auto *spin = Gtk::make_managed<curvz::widgets::SpinButton>(
-      abbrev, adj, 0.000001, 6);
+  auto *spin =
+      Gtk::make_managed<curvz::widgets::SpinButton>(abbrev, adj, 0.000001, 6);
   spin->set_hexpand(true);
   spin->set_width_chars(10);
   // s219: substrate default is set_numeric(false) for math input.
   row->append(*spin);
   outer->append(*row);
-  if (out_spin) *out_spin = spin;
+  if (out_spin)
+    *out_spin = spin;
   return adj;
+}
+
+// s290 prototype factory: builds a popover row whose spinner is a
+// CurvzSpinButton (intent-aware, doc-px internally). No adjustment is
+// returned because CurvzSpinButton owns its own internal adjustment.
+// Prefill uses set_internal_value(doc_px); submit uses get_internal_value().
+// Receiver does no conversion — the value is already in doc-px.
+//
+// Drops scripter registration (CurvzSpinButton isn't ScriptableWidget yet);
+// the unification fork is tracked in ARC.md.
+static CurvzSpinButton *
+make_pop_row_curvz(Gtk::Box *outer, const char *label, SpinType type,
+                   const CanvasModel *cm) {
+  auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  row->set_spacing(8);
+  auto *lbl = Gtk::make_managed<Gtk::Label>(label);
+  lbl->add_css_class("tb-pop-label");
+  lbl->set_xalign(0.0f);
+  lbl->set_width_chars(4);
+  row->append(*lbl);
+  auto *spin = Gtk::make_managed<CurvzSpinButton>(type, cm);
+  spin->set_hexpand(true);
+  spin->set_width_chars(10);
+  row->append(*spin);
+  outer->append(*row);
+  return spin;
 }
 
 // ── Rect popover
@@ -3842,124 +4046,335 @@ static Glib::RefPtr<Gtk::Adjustment> make_pop_row(Gtk::Box *outer,
 // m_doc / m_popup_unit reach back via self-> until 2e cleanup.
 void Toolbar::Impl::build_rect_popover(Gtk::ToggleButton *btn) {
   curvz::utils::set_name(rect_pop, "pop_tb_rec", "popover_toolbar_rect_root");
+
+  // Helper — when grid preset or W/H changes, re-derive the corner from the
+  // *previous* anchor frac, then update X/Y display to the *new* anchor's
+  // coords for the same bbox. Visually: the user changes the grid pick, the
+  // rect stays put, the X/Y numbers update to reflect the new anchor.
+  // Same idea as RefPointPicker's Preset mode.
+  //
+  // No closure capture issue — these are member values, accessed via `this`.
+
   setup_rclick_popover(btn, rect_pop, [this]() {
-    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical ? UnitSystem::parse_unit(doc->canvas.phys_unit) : doc->canvas.display_unit) : popup_unit;
-    auto [cw, ch] = canvas_display_size(doc);
+    // s290: doc-px prefill, intent-clean, centered 20% of canvas short side.
+    // Default anchor: C (center). X/Y show the center coords.
+    const CanvasModel *cm = doc ? &doc->canvas : nullptr;
+    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical
+                        ? UnitSystem::parse_unit(doc->canvas.phys_unit)
+                        : doc->canvas.display_unit)
+                 : popup_unit;
     if (rect_unit_lbl)
       rect_unit_lbl->set_text(std::string("Units: ") + UnitSystem::label(u));
-    if (rect_adj_x) {
-      double sz_w = cw * 0.2;
-      double sz_h = ch * 0.2;
-      rect_adj_x->set_value(cw * 0.5 - sz_w * 0.5);
-      rect_adj_y->set_value(ch * 0.5 - sz_h * 0.5);
-      rect_adj_w->set_value(sz_w);
-      rect_adj_h->set_value(sz_h);
+    if (rect_spin_x) {
+      rect_spin_x->set_model(cm);
+      rect_spin_y->set_model(cm);
+      rect_spin_w->set_model(cm);
+      rect_spin_h->set_model(cm);
+
+      // Reset anchor to C on every open. The grid's set_preset is a no-op
+      // when already C, so this is cheap.
+      if (rect_grid)
+        rect_grid->set_preset(curvz::widgets::RefPointGrid::Preset::C);
+      rect_frac_x = 0.5;
+      rect_frac_y = 0.5;
+
+      double cw_px = cm ? double(cm->canvas_width())  : 0.0;
+      double ch_px = cm ? double(cm->canvas_height()) : 0.0;
+      double sz = std::min(cw_px, ch_px) * 0.20;
+      rect_spin_w->set_internal_value(sz);
+      rect_spin_h->set_internal_value(sz);
+      // C anchor: X/Y is the rect's center.
+      rect_spin_x->set_internal_value(cw_px * 0.5);
+      rect_spin_y->set_internal_value(ch_px * 0.5);
     }
   });
-  auto *outer = make_pop_outer("Place Rectangle");
-  Gtk::SpinButton *rec_x_spin = nullptr, *rec_y_spin = nullptr,
-                  *rec_w_spin = nullptr, *rec_h_spin = nullptr;
-  rect_adj_x = make_pop_row(outer, "X:", "pop_tb_rec_x", &rec_x_spin);
-  curvz::utils::set_name(rec_x_spin, "pop_tb_rec_x", "popover_toolbar_rect_x_spn");
-  rect_adj_y = make_pop_row(outer, "Y:", "pop_tb_rec_y", &rec_y_spin);
-  curvz::utils::set_name(rec_y_spin, "pop_tb_rec_y", "popover_toolbar_rect_y_spn");
-  rect_adj_w = make_pop_row(outer, "W:", "pop_tb_rec_w", &rec_w_spin);
-  curvz::utils::set_name(rec_w_spin, "pop_tb_rec_w", "popover_toolbar_rect_w_spn");
-  rect_adj_h = make_pop_row(outer, "H:", "pop_tb_rec_h", &rec_h_spin);
-  curvz::utils::set_name(rec_h_spin, "pop_tb_rec_h", "popover_toolbar_rect_h_spn");
-  rect_adj_w->set_lower(0.000001);
-  rect_adj_h->set_lower(0.000001);
-  rect_adj_w->set_value(100);
-  rect_adj_h->set_value(100);
 
+  auto *outer = make_pop_outer("Place Rectangle");
+
+  // ── Main row: [grid] [fields column] ────────────────────────────────
+  auto *main_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  main_row->set_spacing(12);
+
+  // Anchor grid — vertically centered against the fields column.
+  rect_grid = Gtk::make_managed<curvz::widgets::RefPointGrid>();
+  rect_grid->set_content_width(48);
+  rect_grid->set_content_height(48);
+  rect_grid->set_valign(Gtk::Align::CENTER);
+  rect_grid->add_css_class("refpoint-picker"); // pick up the picker color theme
+  main_row->append(*rect_grid);
+
+  auto *fields = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
+  fields->set_spacing(6);
+  fields->set_hexpand(true);
+
+  const CanvasModel *cm0 = doc ? &doc->canvas : nullptr;
+
+  // X/Y row — two spinners side by side.
+  auto *xy_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  xy_row->set_spacing(8);
+  {
+    auto *l = Gtk::make_managed<Gtk::Label>("X:");
+    l->add_css_class("tb-pop-label");
+    l->set_xalign(0.0f);
+    l->set_width_chars(2);
+    xy_row->append(*l);
+    rect_spin_x = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX, cm0);
+    rect_spin_x->set_hexpand(true);
+    rect_spin_x->set_width_chars(8);
+    xy_row->append(*rect_spin_x);
+
+    auto *ly = Gtk::make_managed<Gtk::Label>("Y:");
+    ly->add_css_class("tb-pop-label");
+    ly->set_xalign(0.0f);
+    ly->set_width_chars(2);
+    xy_row->append(*ly);
+    rect_spin_y = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY, cm0);
+    rect_spin_y->set_hexpand(true);
+    rect_spin_y->set_width_chars(8);
+    xy_row->append(*rect_spin_y);
+  }
+  fields->append(*xy_row);
+
+  // W/H row — same shape.
+  auto *wh_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  wh_row->set_spacing(8);
+  {
+    auto *l = Gtk::make_managed<Gtk::Label>("W:");
+    l->add_css_class("tb-pop-label");
+    l->set_xalign(0.0f);
+    l->set_width_chars(2);
+    wh_row->append(*l);
+    rect_spin_w = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, cm0);
+    rect_spin_w->set_hexpand(true);
+    rect_spin_w->set_width_chars(8);
+    wh_row->append(*rect_spin_w);
+
+    auto *lh = Gtk::make_managed<Gtk::Label>("H:");
+    lh->add_css_class("tb-pop-label");
+    lh->set_xalign(0.0f);
+    lh->set_width_chars(2);
+    wh_row->append(*lh);
+    rect_spin_h = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, cm0);
+    rect_spin_h->set_hexpand(true);
+    rect_spin_h->set_width_chars(8);
+    wh_row->append(*rect_spin_h);
+  }
+  fields->append(*wh_row);
+
+  // Units + Place row — label left, button right.
+  auto *foot = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  foot->set_spacing(8);
   rect_unit_lbl = Gtk::make_managed<Gtk::Label>("Units: px");
   rect_unit_lbl->set_xalign(0.0f);
+  rect_unit_lbl->set_hexpand(true);
   rect_unit_lbl->add_css_class("pop-unit-label");
-  outer->append(*rect_unit_lbl);
+  foot->append(*rect_unit_lbl);
 
-  auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-  btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<curvz::widgets::Button>(
-      "pop_tb_rec_pl", "Place");
-  curvz::utils::set_name(place, "pop_tb_rec_pl", "popover_toolbar_rect_place_btn");
+  auto *place =
+      Gtk::make_managed<curvz::widgets::Button>("pop_tb_rec_pl", "Place");
+  curvz::utils::set_name(place, "pop_tb_rec_pl",
+                         "popover_toolbar_rect_place_btn");
   place->add_css_class("suggested-action");
+  foot->append(*place);
+  fields->append(*foot);
+
+  main_row->append(*fields);
+  outer->append(*main_row);
+  rect_pop.set_child(*outer);
+
+  // ── Wiring ──────────────────────────────────────────────────────────
+  // Grid click → re-express bbox at new anchor without moving the rect.
+  rect_grid->signal_preset_changed().connect(
+      [this](curvz::widgets::RefPointGrid::Preset p) {
+        if (!rect_spin_x) return;
+        double ax = rect_spin_x->get_internal_value();
+        double ay = rect_spin_y->get_internal_value();
+        double w  = rect_spin_w->get_internal_value();
+        double h  = rect_spin_h->get_internal_value();
+        double corner_x = ax - w * rect_frac_x;
+        double corner_y = ay - h * rect_frac_y;
+        double fx = 0.5, fy = 0.5;
+        curvz::widgets::RefPointGrid::preset_to_fractions(p, &fx, &fy);
+        rect_frac_x = fx;
+        rect_frac_y = fy;
+        rect_spin_x->set_internal_value(corner_x + w * fx);
+        rect_spin_y->set_internal_value(corner_y + h * fy);
+      });
+
+  // Place — convert anchor coords → corner, emit doc-px (x, y, w, h).
   place->signal_clicked().connect([this]() {
-    if (rect_adj_x)
-      sig_place_rect.emit(
-          rect_adj_x->get_value(), rect_adj_y->get_value(),
-          rect_adj_w->get_value(), rect_adj_h->get_value());
+    if (!rect_spin_x) return;
+    double ax = rect_spin_x->get_internal_value();
+    double ay = rect_spin_y->get_internal_value();
+    double w  = rect_spin_w->get_internal_value();
+    double h  = rect_spin_h->get_internal_value();
+    double corner_x = ax - w * rect_frac_x;
+    double corner_y = ay - h * rect_frac_y;
+    sig_place_rect.emit(corner_x, corner_y, w, h);
     rect_pop.popdown();
     sig_canvas_focus.emit();
   });
-  btn_row->append(*place);
-  outer->append(*btn_row);
-  rect_pop.set_child(*outer);
 }
 
 // ── Ellipse popover
 // ───────────────────────────────────────────────────────────
 // s153 sub-ship 2b: moved into Impl alongside rect.
 void Toolbar::Impl::build_ellipse_popover(Gtk::ToggleButton *btn) {
-  curvz::utils::set_name(ellipse_pop, "pop_tb_ova", "popover_toolbar_ellipse_root");
+  curvz::utils::set_name(ellipse_pop, "pop_tb_ova",
+                         "popover_toolbar_ellipse_root");
+
   setup_rclick_popover(btn, ellipse_pop, [this]() {
-    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical ? UnitSystem::parse_unit(doc->canvas.phys_unit) : doc->canvas.display_unit) : popup_unit;
-    auto [cw, ch] = canvas_display_size(doc);
+    // s290: doc-px prefill, intent-clean, centered 20% of canvas short side.
+    // Default anchor: C (center). X/Y show the center coords. Same shape as rect.
+    const CanvasModel *cm = doc ? &doc->canvas : nullptr;
+    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical
+                        ? UnitSystem::parse_unit(doc->canvas.phys_unit)
+                        : doc->canvas.display_unit)
+                 : popup_unit;
     if (ellipse_unit_lbl)
       ellipse_unit_lbl->set_text(std::string("Units: ") + UnitSystem::label(u));
-    if (ellipse_adj_x) {
-      double sz_w = cw * 0.2;
-      double sz_h = ch * 0.2;
-      ellipse_adj_x->set_value(cw * 0.5 - sz_w * 0.5);
-      ellipse_adj_y->set_value(ch * 0.5 - sz_h * 0.5);
-      ellipse_adj_w->set_value(sz_w);
-      ellipse_adj_h->set_value(sz_h);
+    if (ellipse_spin_x) {
+      ellipse_spin_x->set_model(cm);
+      ellipse_spin_y->set_model(cm);
+      ellipse_spin_w->set_model(cm);
+      ellipse_spin_h->set_model(cm);
+
+      if (ellipse_grid)
+        ellipse_grid->set_preset(curvz::widgets::RefPointGrid::Preset::C);
+      ellipse_frac_x = 0.5;
+      ellipse_frac_y = 0.5;
+
+      double cw_px = cm ? double(cm->canvas_width())  : 0.0;
+      double ch_px = cm ? double(cm->canvas_height()) : 0.0;
+      double sz = std::min(cw_px, ch_px) * 0.20;
+      ellipse_spin_w->set_internal_value(sz);
+      ellipse_spin_h->set_internal_value(sz);
+      ellipse_spin_x->set_internal_value(cw_px * 0.5);
+      ellipse_spin_y->set_internal_value(ch_px * 0.5);
     }
   });
-  auto *outer = make_pop_outer("Place Ellipse");
-  Gtk::SpinButton *ova_x_spin = nullptr, *ova_y_spin = nullptr,
-                  *ova_w_spin = nullptr, *ova_h_spin = nullptr;
-  ellipse_adj_x = make_pop_row(outer, "X:", "pop_tb_ova_x", &ova_x_spin);
-  curvz::utils::set_name(ova_x_spin, "pop_tb_ova_x", "popover_toolbar_ellipse_x_spn");
-  ellipse_adj_y = make_pop_row(outer, "Y:", "pop_tb_ova_y", &ova_y_spin);
-  curvz::utils::set_name(ova_y_spin, "pop_tb_ova_y", "popover_toolbar_ellipse_y_spn");
-  ellipse_adj_w = make_pop_row(outer, "W:", "pop_tb_ova_w", &ova_w_spin);
-  curvz::utils::set_name(ova_w_spin, "pop_tb_ova_w", "popover_toolbar_ellipse_w_spn");
-  ellipse_adj_h = make_pop_row(outer, "H:", "pop_tb_ova_h", &ova_h_spin);
-  curvz::utils::set_name(ova_h_spin, "pop_tb_ova_h", "popover_toolbar_ellipse_h_spn");
-  ellipse_adj_w->set_lower(0.000001);
-  ellipse_adj_h->set_lower(0.000001);
-  ellipse_adj_w->set_value(100);
-  ellipse_adj_h->set_value(100);
 
+  auto *outer = make_pop_outer("Place Ellipse");
+
+  // ── Main row: [grid] [fields column] ────────────────────────────────
+  auto *main_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  main_row->set_spacing(12);
+
+  ellipse_grid = Gtk::make_managed<curvz::widgets::RefPointGrid>();
+  ellipse_grid->set_content_width(48);
+  ellipse_grid->set_content_height(48);
+  ellipse_grid->set_valign(Gtk::Align::CENTER);
+  ellipse_grid->add_css_class("refpoint-picker");
+  main_row->append(*ellipse_grid);
+
+  auto *fields = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
+  fields->set_spacing(6);
+  fields->set_hexpand(true);
+
+  const CanvasModel *cm0 = doc ? &doc->canvas : nullptr;
+
+  auto *xy_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  xy_row->set_spacing(8);
+  {
+    auto *l = Gtk::make_managed<Gtk::Label>("X:");
+    l->add_css_class("tb-pop-label");
+    l->set_xalign(0.0f);
+    l->set_width_chars(2);
+    xy_row->append(*l);
+    ellipse_spin_x =
+        Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX, cm0);
+    ellipse_spin_x->set_hexpand(true);
+    ellipse_spin_x->set_width_chars(8);
+    xy_row->append(*ellipse_spin_x);
+
+    auto *ly = Gtk::make_managed<Gtk::Label>("Y:");
+    ly->add_css_class("tb-pop-label");
+    ly->set_xalign(0.0f);
+    ly->set_width_chars(2);
+    xy_row->append(*ly);
+    ellipse_spin_y =
+        Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY, cm0);
+    ellipse_spin_y->set_hexpand(true);
+    ellipse_spin_y->set_width_chars(8);
+    xy_row->append(*ellipse_spin_y);
+  }
+  fields->append(*xy_row);
+
+  auto *wh_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  wh_row->set_spacing(8);
+  {
+    auto *l = Gtk::make_managed<Gtk::Label>("W:");
+    l->add_css_class("tb-pop-label");
+    l->set_xalign(0.0f);
+    l->set_width_chars(2);
+    wh_row->append(*l);
+    ellipse_spin_w = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, cm0);
+    ellipse_spin_w->set_hexpand(true);
+    ellipse_spin_w->set_width_chars(8);
+    wh_row->append(*ellipse_spin_w);
+
+    auto *lh = Gtk::make_managed<Gtk::Label>("H:");
+    lh->add_css_class("tb-pop-label");
+    lh->set_xalign(0.0f);
+    lh->set_width_chars(2);
+    wh_row->append(*lh);
+    ellipse_spin_h = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, cm0);
+    ellipse_spin_h->set_hexpand(true);
+    ellipse_spin_h->set_width_chars(8);
+    wh_row->append(*ellipse_spin_h);
+  }
+  fields->append(*wh_row);
+
+  auto *foot = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  foot->set_spacing(8);
   ellipse_unit_lbl = Gtk::make_managed<Gtk::Label>("Units: px");
   ellipse_unit_lbl->set_xalign(0.0f);
+  ellipse_unit_lbl->set_hexpand(true);
   ellipse_unit_lbl->add_css_class("pop-unit-label");
-  outer->append(*ellipse_unit_lbl);
+  foot->append(*ellipse_unit_lbl);
 
-  auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-  btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<curvz::widgets::Button>(
-      "pop_tb_ova_pl", "Place");
-  curvz::utils::set_name(place, "pop_tb_ova_pl", "popover_toolbar_ellipse_place_btn");
+  auto *place =
+      Gtk::make_managed<curvz::widgets::Button>("pop_tb_ova_pl", "Place");
+  curvz::utils::set_name(place, "pop_tb_ova_pl",
+                         "popover_toolbar_ellipse_place_btn");
   place->add_css_class("suggested-action");
+  foot->append(*place);
+  fields->append(*foot);
+
+  main_row->append(*fields);
+  outer->append(*main_row);
+  ellipse_pop.set_child(*outer);
+
+  // ── Wiring ──────────────────────────────────────────────────────────
+  ellipse_grid->signal_preset_changed().connect(
+      [this](curvz::widgets::RefPointGrid::Preset p) {
+        if (!ellipse_spin_x) return;
+        double ax = ellipse_spin_x->get_internal_value();
+        double ay = ellipse_spin_y->get_internal_value();
+        double w  = ellipse_spin_w->get_internal_value();
+        double h  = ellipse_spin_h->get_internal_value();
+        double corner_x = ax - w * ellipse_frac_x;
+        double corner_y = ay - h * ellipse_frac_y;
+        double fx = 0.5, fy = 0.5;
+        curvz::widgets::RefPointGrid::preset_to_fractions(p, &fx, &fy);
+        ellipse_frac_x = fx;
+        ellipse_frac_y = fy;
+        ellipse_spin_x->set_internal_value(corner_x + w * fx);
+        ellipse_spin_y->set_internal_value(corner_y + h * fy);
+      });
+
   place->signal_clicked().connect([this]() {
-    if (ellipse_adj_x) {
-      double x = ellipse_adj_x->get_value();
-      double y = ellipse_adj_y->get_value();
-      double w = ellipse_adj_w->get_value();
-      double h = ellipse_adj_h->get_value();
-      double cx = x + w * 0.5;
-      double cy = y + h * 0.5;
-      double rx = w * 0.5;
-      double ry = h * 0.5;
-      sig_place_ellipse.emit(cx, cy, rx, ry);
-    }
+    if (!ellipse_spin_x) return;
+    double ax = ellipse_spin_x->get_internal_value();
+    double ay = ellipse_spin_y->get_internal_value();
+    double w  = ellipse_spin_w->get_internal_value();
+    double h  = ellipse_spin_h->get_internal_value();
+    double corner_x = ax - w * ellipse_frac_x;
+    double corner_y = ay - h * ellipse_frac_y;
+    sig_place_ellipse.emit(corner_x, corner_y, w, h);
     ellipse_pop.popdown();
     sig_canvas_focus.emit();
   });
-  btn_row->append(*place);
-  outer->append(*btn_row);
-  ellipse_pop.set_child(*outer);
 }
 
 // ── Line popover
@@ -3968,32 +4383,37 @@ void Toolbar::Impl::build_ellipse_popover(Gtk::ToggleButton *btn) {
 void Toolbar::Impl::build_line_popover(Gtk::ToggleButton *btn) {
   curvz::utils::set_name(line_pop, "pop_tb_lin", "popover_toolbar_line_root");
   setup_rclick_popover(btn, line_pop, [this]() {
-    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical ? UnitSystem::parse_unit(doc->canvas.phys_unit) : doc->canvas.display_unit) : popup_unit;
-    auto [cw, ch] = canvas_display_size(doc);
+    // s290: doc-px prefill, intent-clean.
+    // Default: horizontal line across the centered 20% box width, at canvas mid-Y.
+    const CanvasModel *cm = doc ? &doc->canvas : nullptr;
+    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical
+                        ? UnitSystem::parse_unit(doc->canvas.phys_unit)
+                        : doc->canvas.display_unit)
+                 : popup_unit;
     if (line_unit_lbl)
       line_unit_lbl->set_text(std::string("Units: ") + UnitSystem::label(u));
-    if (line_adj_x1) {
-      line_adj_x1->set_value(cw * 0.25);
-      line_adj_y1->set_value(ch * 0.5);
-      line_adj_x2->set_value(cw * 0.75);
-      line_adj_y2->set_value(ch * 0.5);
+    if (line_spin_x1) {
+      line_spin_x1->set_model(cm);
+      line_spin_y1->set_model(cm);
+      line_spin_x2->set_model(cm);
+      line_spin_y2->set_model(cm);
+      double cw_px = cm ? double(cm->canvas_width())  : 0.0;
+      double ch_px = cm ? double(cm->canvas_height()) : 0.0;
+      double sz = std::min(cw_px, ch_px) * 0.20;
+      double mid_x = cw_px * 0.5;
+      double mid_y = ch_px * 0.5;
+      line_spin_x1->set_internal_value(mid_x - sz * 0.5);
+      line_spin_y1->set_internal_value(mid_y);
+      line_spin_x2->set_internal_value(mid_x + sz * 0.5);
+      line_spin_y2->set_internal_value(mid_y);
     }
   });
   auto *outer = make_pop_outer("Place Line");
-  Gtk::SpinButton *lin_x1_spin = nullptr, *lin_y1_spin = nullptr,
-                  *lin_x2_spin = nullptr, *lin_y2_spin = nullptr;
-  line_adj_x1 = make_pop_row(outer, "X1:", "pop_tb_lin_x1", &lin_x1_spin);
-  curvz::utils::set_name(lin_x1_spin, "pop_tb_lin_x1", "popover_toolbar_line_x1_spn");
-  line_adj_y1 = make_pop_row(outer, "Y1:", "pop_tb_lin_y1", &lin_y1_spin);
-  curvz::utils::set_name(lin_y1_spin, "pop_tb_lin_y1", "popover_toolbar_line_y1_spn");
-  line_adj_x2 = make_pop_row(outer, "X2:", "pop_tb_lin_x2", &lin_x2_spin);
-  curvz::utils::set_name(lin_x2_spin, "pop_tb_lin_x2", "popover_toolbar_line_x2_spn");
-  line_adj_y2 = make_pop_row(outer, "Y2:", "pop_tb_lin_y2", &lin_y2_spin);
-  curvz::utils::set_name(lin_y2_spin, "pop_tb_lin_y2", "popover_toolbar_line_y2_spn");
-  line_adj_x1->set_value(100);
-  line_adj_y1->set_value(500);
-  line_adj_x2->set_value(900);
-  line_adj_y2->set_value(500);
+  const CanvasModel *cm0 = doc ? &doc->canvas : nullptr;
+  line_spin_x1 = make_pop_row_curvz(outer, "X1:", SpinType::PositionX, cm0);
+  line_spin_y1 = make_pop_row_curvz(outer, "Y1:", SpinType::PositionY, cm0);
+  line_spin_x2 = make_pop_row_curvz(outer, "X2:", SpinType::PositionX, cm0);
+  line_spin_y2 = make_pop_row_curvz(outer, "Y2:", SpinType::PositionY, cm0);
 
   line_unit_lbl = Gtk::make_managed<Gtk::Label>("Units: px");
   line_unit_lbl->set_xalign(0.0f);
@@ -4002,15 +4422,17 @@ void Toolbar::Impl::build_line_popover(Gtk::ToggleButton *btn) {
 
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<curvz::widgets::Button>(
-      "pop_tb_lin_pl", "Place");
-  curvz::utils::set_name(place, "pop_tb_lin_pl", "popover_toolbar_line_place_btn");
+  auto *place =
+      Gtk::make_managed<curvz::widgets::Button>("pop_tb_lin_pl", "Place");
+  curvz::utils::set_name(place, "pop_tb_lin_pl",
+                         "popover_toolbar_line_place_btn");
   place->add_css_class("suggested-action");
   place->signal_clicked().connect([this]() {
-    if (line_adj_x1)
-      sig_place_line.emit(
-          line_adj_x1->get_value(), line_adj_y1->get_value(),
-          line_adj_x2->get_value(), line_adj_y2->get_value());
+    if (line_spin_x1)
+      sig_place_line.emit(line_spin_x1->get_internal_value(),
+                          line_spin_y1->get_internal_value(),
+                          line_spin_x2->get_internal_value(),
+                          line_spin_y2->get_internal_value());
     line_pop.popdown();
     sig_canvas_focus.emit();
   });
@@ -4026,16 +4448,25 @@ void Toolbar::Impl::build_line_popover(Gtk::ToggleButton *btn) {
 void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
   curvz::utils::set_name(text_pop, "pop_tb_txt", "popover_toolbar_text_root");
   setup_rclick_popover(btn, text_pop, [this]() {
-    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical ? UnitSystem::parse_unit(doc->canvas.phys_unit) : doc->canvas.display_unit) : popup_unit;
-    auto [cw, ch] = canvas_display_size(doc);
+    // s290: x/y are doc-px; size_pt is typography (points) and stays untouched.
+    const CanvasModel *cm = doc ? &doc->canvas : nullptr;
+    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical
+                        ? UnitSystem::parse_unit(doc->canvas.phys_unit)
+                        : doc->canvas.display_unit)
+                 : popup_unit;
     if (text_unit_lbl)
       text_unit_lbl->set_text(std::string("Units: ") + UnitSystem::label(u));
-    if (text_adj_x)
-      text_adj_x->set_value(cw * 0.1);
-    if (text_adj_y)
-      text_adj_y->set_value(ch * 0.75);
+    if (text_spin_x) {
+      text_spin_x->set_model(cm);
+      text_spin_y->set_model(cm);
+      // Default: text origin at canvas centre.
+      double cw_px = cm ? double(cm->canvas_width())  : 0.0;
+      double ch_px = cm ? double(cm->canvas_height()) : 0.0;
+      text_spin_x->set_internal_value(cw_px * 0.5);
+      text_spin_y->set_internal_value(ch_px * 0.5);
+    }
     if (text_adj_size)
-      text_adj_size->set_value(72.0);  // always points
+      text_adj_size->set_value(72.0); // always points
     if (text_bold_btn)
       text_bold_btn->set_active(false);
     if (text_italic_btn)
@@ -4046,19 +4477,18 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
 
   auto *outer = make_pop_outer("Place Text");
 
-  // X / Y position
-  Gtk::SpinButton *txt_x_spin = nullptr, *txt_y_spin = nullptr,
-                  *txt_sz_spin = nullptr;
-  text_adj_x = make_pop_row(outer, "X:", "pop_tb_txt_x", &txt_x_spin);
-  curvz::utils::set_name(txt_x_spin, "pop_tb_txt_x", "popover_toolbar_text_x_spn");
-  text_adj_y = make_pop_row(outer, "Y:", "pop_tb_txt_y", &txt_y_spin);
-  curvz::utils::set_name(txt_y_spin, "pop_tb_txt_y", "popover_toolbar_text_y_spn");
-  text_adj_x->set_value(100);
-  text_adj_y->set_value(500);
+  // X / Y position — doc-px via CurvzSpinButton.
+  const CanvasModel *cm0 = doc ? &doc->canvas : nullptr;
+  text_spin_x = make_pop_row_curvz(outer, "X:", SpinType::PositionX, cm0);
+  text_spin_y = make_pop_row_curvz(outer, "Y:", SpinType::PositionY, cm0);
 
-  // Font size — always in points
-  text_adj_size = make_pop_row(outer, "Size (pt):", "pop_tb_txt_sz", &txt_sz_spin);
-  curvz::utils::set_name(txt_sz_spin, "pop_tb_txt_sz", "popover_toolbar_text_size_spn");
+  // Font size — stays as a raw scriptable spinner; points are typography units,
+  // not doc-space measurements.
+  Gtk::SpinButton *txt_sz_spin = nullptr;
+  text_adj_size =
+      make_pop_row(outer, "Size (pt):", "pop_tb_txt_sz", &txt_sz_spin);
+  curvz::utils::set_name(txt_sz_spin, "pop_tb_txt_sz",
+                         "popover_toolbar_text_size_spn");
   text_adj_size->set_lower(1.0);
   text_adj_size->set_upper(2000.0);
   text_adj_size->set_step_increment(1.0);
@@ -4095,9 +4525,10 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
         sans_idx = i;
     }
 
-    text_family_drop = Gtk::make_managed<curvz::widgets::DropDown>(
-        "pop_tb_txt_fam", slist);
-    curvz::utils::set_name(text_family_drop, "pop_tb_txt_fam", "popover_toolbar_text_font_family_dd");
+    text_family_drop =
+        Gtk::make_managed<curvz::widgets::DropDown>("pop_tb_txt_fam", slist);
+    curvz::utils::set_name(text_family_drop, "pop_tb_txt_fam",
+                           "popover_toolbar_text_font_family_dd");
     text_family_drop->set_enable_search(true);
     text_family_drop->set_selected(sans_idx);
     text_family_drop->set_hexpand(true);
@@ -4109,12 +4540,14 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
   {
     auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     row->set_spacing(12);
-    text_bold_btn = Gtk::make_managed<curvz::widgets::CheckButton>(
-        "pop_tb_txt_b", "Bold");
-    curvz::utils::set_name(text_bold_btn, "pop_tb_txt_b", "popover_toolbar_text_bold_check");
+    text_bold_btn =
+        Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_txt_b", "Bold");
+    curvz::utils::set_name(text_bold_btn, "pop_tb_txt_b",
+                           "popover_toolbar_text_bold_check");
     text_italic_btn = Gtk::make_managed<curvz::widgets::CheckButton>(
         "pop_tb_txt_i", "Italic");
-    curvz::utils::set_name(text_italic_btn, "pop_tb_txt_i", "popover_toolbar_text_italic_check");
+    curvz::utils::set_name(text_italic_btn, "pop_tb_txt_i",
+                           "popover_toolbar_text_italic_check");
     row->append(*text_bold_btn);
     row->append(*text_italic_btn);
     outer->append(*row);
@@ -4133,7 +4566,8 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
         Gtk::StringList::create({"Left", "Centre", "Right", "Justify"});
     text_anchor_drop = Gtk::make_managed<curvz::widgets::DropDown>(
         "pop_tb_txt_an", anchor_items);
-    curvz::utils::set_name(text_anchor_drop, "pop_tb_txt_an", "popover_toolbar_text_anchor_dd");
+    curvz::utils::set_name(text_anchor_drop, "pop_tb_txt_an",
+                           "popover_toolbar_text_anchor_dd");
     text_anchor_drop->set_selected(0);
     text_anchor_drop->set_hexpand(true);
     row->append(*text_anchor_drop);
@@ -4143,21 +4577,23 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
   // Place button
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<curvz::widgets::Button>(
-      "pop_tb_txt_pl", "Place");
-  curvz::utils::set_name(place, "pop_tb_txt_pl", "popover_toolbar_text_place_btn");
+  auto *place =
+      Gtk::make_managed<curvz::widgets::Button>("pop_tb_txt_pl", "Place");
+  curvz::utils::set_name(place, "pop_tb_txt_pl",
+                         "popover_toolbar_text_place_btn");
   place->add_css_class("suggested-action");
   place->signal_clicked().connect([this]() {
-    if (!text_adj_x)
+    if (!text_spin_x)
       return;
-    double x = text_adj_x->get_value();
-    double y = text_adj_y->get_value();
+    // s290: x/y are doc-px from CurvzSpinButton; size_pt unchanged.
+    double x = text_spin_x->get_internal_value();
+    double y = text_spin_y->get_internal_value();
     double size = text_adj_size->get_value();
     // Read selected font family from the dropdown
     std::string family = "Sans";
     if (text_family_drop) {
-      auto *sl = dynamic_cast<Gtk::StringList *>(
-          text_family_drop->get_model().get());
+      auto *sl =
+          dynamic_cast<Gtk::StringList *>(text_family_drop->get_model().get());
       auto sel = text_family_drop->get_selected();
       if (sl && sel != GTK_INVALID_LIST_POSITION)
         family = sl->get_string(sel);
@@ -4200,18 +4636,32 @@ void Toolbar::Impl::build_text_popover(Gtk::ToggleButton *btn) {
 // m_sig_place_polygon / m_sig_canvas_focus still live on public
 // Toolbar; reach via self->.
 void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
-  curvz::utils::set_name(poly_pop, "pop_tb_pol", "popover_toolbar_polygon_root");
+  curvz::utils::set_name(poly_pop, "pop_tb_pol",
+                         "popover_toolbar_polygon_root");
   setup_rclick_popover(btn, poly_pop, [this]() {
-    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical ? UnitSystem::parse_unit(doc->canvas.phys_unit) : doc->canvas.display_unit) : popup_unit;
-    auto [cw, ch] = canvas_display_size(doc);
+    // s290: cx/cy/r are doc-px; sides/inflect are dimensionless.
+    const CanvasModel *cm = doc ? &doc->canvas : nullptr;
+    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical
+                        ? UnitSystem::parse_unit(doc->canvas.phys_unit)
+                        : doc->canvas.display_unit)
+                 : popup_unit;
     if (poly_unit_lbl)
       poly_unit_lbl->set_text(std::string("Units: ") + UnitSystem::label(u));
     if (poly_adj_sides) {
       poly_adj_sides->set_value(poly_sides);
       poly_adj_inflect->set_value(poly_inflection * 100.0);
-      poly_adj_cx->set_value(cw * 0.5);
-      poly_adj_cy->set_value(ch * 0.5);
-      poly_adj_r->set_value(std::min(cw, ch) * 0.2);
+    }
+    if (poly_spin_cx) {
+      poly_spin_cx->set_model(cm);
+      poly_spin_cy->set_model(cm);
+      poly_spin_r->set_model(cm);
+      double cw_px = cm ? double(cm->canvas_width())  : 0.0;
+      double ch_px = cm ? double(cm->canvas_height()) : 0.0;
+      // Polygon's "20% of short side" = the bounding box; R is half that.
+      double r = std::min(cw_px, ch_px) * 0.10;
+      poly_spin_cx->set_internal_value(cw_px * 0.5);
+      poly_spin_cy->set_internal_value(ch_px * 0.5);
+      poly_spin_r->set_internal_value(r);
     }
     poly_preview.queue_draw();
   });
@@ -4219,117 +4669,116 @@ void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
   auto *outer = make_pop_outer("Place Polygon / Star");
 
   // ── Interactive preview (160×160) ────────────────────────────────────
-  curvz::utils::set_name(poly_preview, "pop_tb_pol_pv", "popover_toolbar_polygon_preview_da");
+  curvz::utils::set_name(poly_preview, "pop_tb_pol_pv",
+                         "popover_toolbar_polygon_preview_da");
   poly_preview.set_size_request(160, 160);
   poly_preview.set_halign(Gtk::Align::CENTER);
   poly_preview.set_margin_bottom(6);
 
-  poly_preview.set_draw_func(
-      [this](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
-        int sides = poly_adj_sides ? (int)poly_adj_sides->get_value()
-                                   : poly_sides;
-        double inflect = poly_adj_inflect
-                             ? poly_adj_inflect->get_value() / 100.0
-                             : poly_inflection;
+  poly_preview.set_draw_func([this](const Cairo::RefPtr<Cairo::Context> &cr,
+                                    int w, int h) {
+    int sides = poly_adj_sides ? (int)poly_adj_sides->get_value() : poly_sides;
+    double inflect = poly_adj_inflect ? poly_adj_inflect->get_value() / 100.0
+                                      : poly_inflection;
 
-        double perfect_star =
-            (sides >= 5) ? std::cos(2.0 * M_PI / sides) / std::cos(M_PI / sides)
-                         : -1.0; // no valid star for N<5
-        bool snapped_star =
-            (perfect_star > 0.0 && std::abs(inflect - perfect_star) < 0.001);
-        bool snapped_poly = (inflect > 0.9990);
+    double perfect_star =
+        (sides >= 5) ? std::cos(2.0 * M_PI / sides) / std::cos(M_PI / sides)
+                     : -1.0; // no valid star for N<5
+    bool snapped_star =
+        (perfect_star > 0.0 && std::abs(inflect - perfect_star) < 0.001);
+    bool snapped_poly = (inflect > 0.9990);
 
-        double cx = w * 0.5;
-        double cy = h * 0.5;
-        double radius = std::min(w, h) * 0.40;
-        double inner_r = radius * inflect;
-        bool is_star = (inflect < 0.9999);
-        int total = is_star ? sides * 2 : sides;
-        double base_angle = -M_PI * 0.5; // point up
+    double cx = w * 0.5;
+    double cy = h * 0.5;
+    double radius = std::min(w, h) * 0.40;
+    double inner_r = radius * inflect;
+    bool is_star = (inflect < 0.9999);
+    int total = is_star ? sides * 2 : sides;
+    double base_angle = -M_PI * 0.5; // point up
 
-        // Dark background
-        cr->set_source_rgb(0.13, 0.13, 0.13);
-        cr->rectangle(0, 0, w, h);
-        cr->fill();
+    // Dark background
+    cr->set_source_rgb(0.13, 0.13, 0.13);
+    cr->rectangle(0, 0, w, h);
+    cr->fill();
 
-        // Shape path
-        cr->begin_new_path();
-        for (int i = 0; i < total; ++i) {
-          double angle =
-              base_angle + i * (is_star ? M_PI / sides : 2.0 * M_PI / sides);
-          double r = (!is_star || i % 2 == 0) ? radius : inner_r;
-          double px = cx + r * std::cos(angle);
-          double py = cy + r * std::sin(angle);
-          if (i == 0)
-            cr->move_to(px, py);
-          else
-            cr->line_to(px, py);
-        }
-        cr->close_path();
+    // Shape path
+    cr->begin_new_path();
+    for (int i = 0; i < total; ++i) {
+      double angle =
+          base_angle + i * (is_star ? M_PI / sides : 2.0 * M_PI / sides);
+      double r = (!is_star || i % 2 == 0) ? radius : inner_r;
+      double px = cx + r * std::cos(angle);
+      double py = cy + r * std::sin(angle);
+      if (i == 0)
+        cr->move_to(px, py);
+      else
+        cr->line_to(px, py);
+    }
+    cr->close_path();
 
-        // Fill
-        cr->set_source_rgba(0.3, 0.6, 1.0, 0.20);
-        cr->fill_preserve();
+    // Fill
+    cr->set_source_rgba(0.3, 0.6, 1.0, 0.20);
+    cr->fill_preserve();
 
-        // Stroke — green when snapped, blue otherwise
-        if (snapped_star || snapped_poly)
-          cr->set_source_rgba(0.3, 0.9, 0.4, 1.0);
-        else
-          cr->set_source_rgba(0.4, 0.7, 1.0, 0.95);
-        cr->set_line_width(1.5);
-        cr->set_line_join(Cairo::Context::LineJoin::MITER);
-        cr->stroke();
+    // Stroke — green when snapped, blue otherwise
+    if (snapped_star || snapped_poly)
+      cr->set_source_rgba(0.3, 0.9, 0.4, 1.0);
+    else
+      cr->set_source_rgba(0.4, 0.7, 1.0, 0.95);
+    cr->set_line_width(1.5);
+    cr->set_line_join(Cairo::Context::LineJoin::MITER);
+    cr->stroke();
 
-        // ── Inflection handle ─────────────────────────────────────────────
-        // Handle sits on the bisector closest to 0° (rightmost inner vertex).
-        // For a star: bisector angle = base_angle + (M_PI / sides)
-        // That's the angle of the first inner vertex (index 1).
-        // For a regular polygon we draw it at outer radius on the same
-        // bisector.
-        double hdl_angle = base_angle + M_PI / sides; // first bisector
-        double hdl_r = is_star ? inner_r : radius;
-        double hdl_x = cx + hdl_r * std::cos(hdl_angle);
-        double hdl_y = cy + hdl_r * std::sin(hdl_angle);
+    // ── Inflection handle ─────────────────────────────────────────────
+    // Handle sits on the bisector closest to 0° (rightmost inner vertex).
+    // For a star: bisector angle = base_angle + (M_PI / sides)
+    // That's the angle of the first inner vertex (index 1).
+    // For a regular polygon we draw it at outer radius on the same
+    // bisector.
+    double hdl_angle = base_angle + M_PI / sides; // first bisector
+    double hdl_r = is_star ? inner_r : radius;
+    double hdl_x = cx + hdl_r * std::cos(hdl_angle);
+    double hdl_y = cy + hdl_r * std::sin(hdl_angle);
 
-        // Dashed radial guide line from center to outer radius on bisector
-        cr->set_source_rgba(0.5, 0.5, 0.5, 0.5);
-        cr->set_line_width(0.75);
-        std::vector<double> dash = {3.0, 3.0};
-        cr->set_dash(dash, 0);
-        cr->move_to(cx, cy);
-        cr->line_to(cx + radius * std::cos(hdl_angle),
-                    cy + radius * std::sin(hdl_angle));
-        cr->stroke();
-        cr->set_dash(std::vector<double>{}, 0);
+    // Dashed radial guide line from center to outer radius on bisector
+    cr->set_source_rgba(0.5, 0.5, 0.5, 0.5);
+    cr->set_line_width(0.75);
+    std::vector<double> dash = {3.0, 3.0};
+    cr->set_dash(dash, 0);
+    cr->move_to(cx, cy);
+    cr->line_to(cx + radius * std::cos(hdl_angle),
+                cy + radius * std::sin(hdl_angle));
+    cr->stroke();
+    cr->set_dash(std::vector<double>{}, 0);
 
-        // Handle circle
-        const double HDL_R = 5.0;
-        cr->arc(hdl_x, hdl_y, HDL_R, 0, 2 * M_PI);
-        if (snapped_star || snapped_poly) {
-          cr->set_source_rgba(0.3, 0.9, 0.4, 1.0);
-          cr->fill_preserve();
-          cr->set_source_rgba(1.0, 1.0, 1.0, 0.9);
-        } else {
-          cr->set_source_rgba(0.25, 0.55, 1.0, 0.9);
-          cr->fill_preserve();
-          cr->set_source_rgba(1.0, 1.0, 1.0, 0.8);
-        }
-        cr->set_line_width(1.5);
-        cr->stroke();
+    // Handle circle
+    const double HDL_R = 5.0;
+    cr->arc(hdl_x, hdl_y, HDL_R, 0, 2 * M_PI);
+    if (snapped_star || snapped_poly) {
+      cr->set_source_rgba(0.3, 0.9, 0.4, 1.0);
+      cr->fill_preserve();
+      cr->set_source_rgba(1.0, 1.0, 1.0, 0.9);
+    } else {
+      cr->set_source_rgba(0.25, 0.55, 1.0, 0.9);
+      cr->fill_preserve();
+      cr->set_source_rgba(1.0, 1.0, 1.0, 0.8);
+    }
+    cr->set_line_width(1.5);
+    cr->stroke();
 
-        // Snap label
-        cr->set_source_rgba(0.5, 0.5, 0.5, 0.8);
-        cr->set_font_size(9);
-        if (snapped_poly) {
-          cr->set_source_rgba(0.3, 0.9, 0.4, 0.9);
-          cr->move_to(4, h - 4);
-          cr->show_text("polygon");
-        } else if (snapped_star) {
-          cr->set_source_rgba(0.3, 0.9, 0.4, 0.9);
-          cr->move_to(4, h - 4);
-          cr->show_text("perfect star");
-        }
-      });
+    // Snap label
+    cr->set_source_rgba(0.5, 0.5, 0.5, 0.8);
+    cr->set_font_size(9);
+    if (snapped_poly) {
+      cr->set_source_rgba(0.3, 0.9, 0.4, 0.9);
+      cr->move_to(4, h - 4);
+      cr->show_text("polygon");
+    } else if (snapped_star) {
+      cr->set_source_rgba(0.3, 0.9, 0.4, 0.9);
+      cr->move_to(4, h - 4);
+      cr->show_text("perfect star");
+    }
+  });
 
   // ── Inflection handle drag ────────────────────────────────────────────
   // Dragging the inner handle along the bisector radius sets inflection.
@@ -4417,7 +4866,8 @@ void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
   poly_adj_sides = Gtk::Adjustment::create(poly_sides, 3, 64, 1, 5);
   auto *sides_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
       "pop_tb_pol_sd", poly_adj_sides, 1, 0);
-  curvz::utils::set_name(sides_spin, "pop_tb_pol_sd", "popover_toolbar_polygon_sides_spn");
+  curvz::utils::set_name(sides_spin, "pop_tb_pol_sd",
+                         "popover_toolbar_polygon_sides_spn");
   sides_spin->set_hexpand(true);
   sides_row->append(*sides_spin);
   outer->append(*sides_row);
@@ -4432,10 +4882,10 @@ void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
   inf_row->append(*inf_lbl);
   poly_adj_inflect =
       Gtk::Adjustment::create(poly_inflection * 100.0, 1.0, 100.0, 0.5, 5.0);
-  auto *inf_spin =
-      Gtk::make_managed<curvz::widgets::SpinButton>(
-          "pop_tb_pol_in", poly_adj_inflect, 0.5, 1);
-  curvz::utils::set_name(inf_spin, "pop_tb_pol_in", "popover_toolbar_polygon_inflect_spn");
+  auto *inf_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "pop_tb_pol_in", poly_adj_inflect, 0.5, 1);
+  curvz::utils::set_name(inf_spin, "pop_tb_pol_in",
+                         "popover_toolbar_polygon_inflect_spn");
   inf_spin->set_hexpand(true);
   inf_row->append(*inf_spin);
   outer->append(*inf_row);
@@ -4447,18 +4897,11 @@ void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
       [this]() { poly_preview.queue_draw(); });
 
   // ── Placement fields ──────────────────────────────────────────────────
-  Gtk::SpinButton *pol_cx_spin = nullptr, *pol_cy_spin = nullptr,
-                  *pol_r_spin  = nullptr;
-  poly_adj_cx = make_pop_row(outer, "CX:", "pop_tb_pol_cx", &pol_cx_spin);
-  curvz::utils::set_name(pol_cx_spin, "pop_tb_pol_cx", "popover_toolbar_polygon_cx_spn");
-  poly_adj_cy = make_pop_row(outer, "CY:", "pop_tb_pol_cy", &pol_cy_spin);
-  curvz::utils::set_name(pol_cy_spin, "pop_tb_pol_cy", "popover_toolbar_polygon_cy_spn");
-  poly_adj_r = make_pop_row(outer, "R:", "pop_tb_pol_r", &pol_r_spin);
-  curvz::utils::set_name(pol_r_spin, "pop_tb_pol_r", "popover_toolbar_polygon_r_spn");
-  poly_adj_cx->set_value(500);
-  poly_adj_cy->set_value(500);
-  poly_adj_r->set_value(200);
-  poly_adj_r->set_lower(1.0);
+  // s290: cx/cy/r are doc-px through CurvzSpinButton.
+  const CanvasModel *cm0 = doc ? &doc->canvas : nullptr;
+  poly_spin_cx = make_pop_row_curvz(outer, "CX:", SpinType::PositionX, cm0);
+  poly_spin_cy = make_pop_row_curvz(outer, "CY:", SpinType::PositionY, cm0);
+  poly_spin_r  = make_pop_row_curvz(outer, "R:",  SpinType::Distance,  cm0);
 
   poly_unit_lbl = Gtk::make_managed<Gtk::Label>("Units: px");
   poly_unit_lbl->set_xalign(0.0f);
@@ -4467,19 +4910,20 @@ void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
 
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<curvz::widgets::Button>(
-      "pop_tb_pol_pl", "Place");
-  curvz::utils::set_name(place, "pop_tb_pol_pl", "popover_toolbar_polygon_place_btn");
+  auto *place =
+      Gtk::make_managed<curvz::widgets::Button>("pop_tb_pol_pl", "Place");
+  curvz::utils::set_name(place, "pop_tb_pol_pl",
+                         "popover_toolbar_polygon_place_btn");
   place->add_css_class("suggested-action");
   place->signal_clicked().connect([this]() {
-    if (!poly_adj_cx)
+    if (!poly_spin_cx)
       return;
     poly_sides = (int)poly_adj_sides->get_value();
     poly_inflection = poly_adj_inflect->get_value() / 100.0;
-    sig_place_polygon.emit(poly_adj_cx->get_value(),
-                                   poly_adj_cy->get_value(),
-                                   poly_adj_r->get_value(), poly_sides,
-                                   poly_inflection, -M_PI * 0.5);
+    sig_place_polygon.emit(poly_spin_cx->get_internal_value(),
+                           poly_spin_cy->get_internal_value(),
+                           poly_spin_r->get_internal_value(),
+                           poly_sides, poly_inflection, -M_PI * 0.5);
     poly_pop.popdown();
     sig_canvas_focus.emit();
   });
@@ -4491,7 +4935,8 @@ void Toolbar::Impl::build_polygon_popover(Gtk::ToggleButton *btn) {
 // ── Snap popover (right-click on snap toggle button)
 // ─────────────────────────────────────────
 void Toolbar::Impl::build_snap_popover(Gtk::Widget *widget) {
-  curvz::utils::set_name(snap_pop, "pop_tb_snap", "popover_toolbar_snap_settings_root");
+  curvz::utils::set_name(snap_pop, "pop_tb_snap",
+                         "popover_toolbar_snap_settings_root");
   // Attach a right-click gesture directly to the widget. Works for any
   // widget — the prior CurvzSwitch implementation needed this approach
   // because CurvzSwitch is a DrawingArea (not a ToggleButton); s152's
@@ -4501,13 +4946,12 @@ void Toolbar::Impl::build_snap_popover(Gtk::Widget *widget) {
   rclick->set_button(3);
   // s152 sub-ship 1 fix: claim on press so the right-click doesn't
   // bubble up to the toolbar root's density picker.
-  auto* rclick_raw = rclick.get();
-  rclick->signal_pressed().connect(
-      [this, rclick_raw](int, double, double) {
-        rclick_raw->set_state(Gtk::EventSequenceState::CLAIMED);
-        sig_snap_pop_open.emit(); // let MainWindow push current settings first
-        snap_pop.popup();
-      });
+  auto *rclick_raw = rclick.get();
+  rclick->signal_pressed().connect([this, rclick_raw](int, double, double) {
+    rclick_raw->set_state(Gtk::EventSequenceState::CLAIMED);
+    sig_snap_pop_open.emit(); // let MainWindow push current settings first
+    snap_pop.popup();
+  });
   widget->add_controller(rclick);
   snap_pop.set_parent(*widget);
   snap_pop.set_position(Gtk::PositionType::RIGHT);
@@ -4524,48 +4968,61 @@ void Toolbar::Impl::build_snap_popover(Gtk::Widget *widget) {
     cb->add_css_class("tb-pop-label");
     *slot = cb;
     cb->signal_toggled().connect([this]() {
-      if (snap_loading || !snap_cb_guides) return;
+      if (snap_loading || !snap_cb_guides)
+        return;
       SnapSettings s;
-      s.snap_guides  = snap_cb_guides->get_active();
-      s.snap_grid    = snap_cb_grid->get_active();
+      s.snap_guides = snap_cb_guides->get_active();
+      s.snap_grid = snap_cb_grid->get_active();
       s.snap_margins = snap_cb_margins->get_active();
-      s.snap_nodes   = snap_cb_nodes->get_active();
-      s.snap_edges   = snap_cb_edges->get_active();
+      s.snap_nodes = snap_cb_nodes->get_active();
+      s.snap_edges = snap_cb_edges->get_active();
       s.snap_centers = snap_cb_centers->get_active();
       sig_snap_settings.emit(s);
     });
     outer->append(*cb);
-    (void)label;  // label was used at construction, kept for clarity
+    (void)label; // label was used at construction, kept for clarity
   };
 
   {
-    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_g", "Snap to guides");
-    curvz::utils::set_name(cb, "pop_tb_snap_g", "popover_toolbar_snap_guides_check");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_g",
+                                                              "Snap to guides");
+    curvz::utils::set_name(cb, "pop_tb_snap_g",
+                           "popover_toolbar_snap_guides_check");
     add_snap_cb("Snap to guides", &snap_cb_guides, cb);
   }
   {
-    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_gr", "Snap to grid");
-    curvz::utils::set_name(cb, "pop_tb_snap_gr", "popover_toolbar_snap_grid_check");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_gr",
+                                                              "Snap to grid");
+    curvz::utils::set_name(cb, "pop_tb_snap_gr",
+                           "popover_toolbar_snap_grid_check");
     add_snap_cb("Snap to grid", &snap_cb_grid, cb);
   }
   {
-    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_m", "Snap to margins");
-    curvz::utils::set_name(cb, "pop_tb_snap_m", "popover_toolbar_snap_margins_check");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>(
+        "pop_tb_snap_m", "Snap to margins");
+    curvz::utils::set_name(cb, "pop_tb_snap_m",
+                           "popover_toolbar_snap_margins_check");
     add_snap_cb("Snap to margins", &snap_cb_margins, cb);
   }
   {
-    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_n", "Snap to nodes");
-    curvz::utils::set_name(cb, "pop_tb_snap_n", "popover_toolbar_snap_nodes_check");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_n",
+                                                              "Snap to nodes");
+    curvz::utils::set_name(cb, "pop_tb_snap_n",
+                           "popover_toolbar_snap_nodes_check");
     add_snap_cb("Snap to nodes", &snap_cb_nodes, cb);
   }
   {
-    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_e", "Snap to edges");
-    curvz::utils::set_name(cb, "pop_tb_snap_e", "popover_toolbar_snap_edges_check");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_e",
+                                                              "Snap to edges");
+    curvz::utils::set_name(cb, "pop_tb_snap_e",
+                           "popover_toolbar_snap_edges_check");
     add_snap_cb("Snap to edges", &snap_cb_edges, cb);
   }
   {
-    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>("pop_tb_snap_c", "Snap to centers");
-    curvz::utils::set_name(cb, "pop_tb_snap_c", "popover_toolbar_snap_centers_check");
+    auto *cb = Gtk::make_managed<curvz::widgets::CheckButton>(
+        "pop_tb_snap_c", "Snap to centers");
+    curvz::utils::set_name(cb, "pop_tb_snap_c",
+                           "popover_toolbar_snap_centers_check");
     add_snap_cb("Snap to centers", &snap_cb_centers, cb);
   }
 
@@ -4574,12 +5031,18 @@ void Toolbar::Impl::build_snap_popover(Gtk::Widget *widget) {
 
 void Toolbar::Impl::set_snap_settings(const SnapSettings &s) {
   snap_loading = true;
-  if (snap_cb_guides)  snap_cb_guides->set_active(s.snap_guides);
-  if (snap_cb_grid)    snap_cb_grid->set_active(s.snap_grid);
-  if (snap_cb_margins) snap_cb_margins->set_active(s.snap_margins);
-  if (snap_cb_nodes)   snap_cb_nodes->set_active(s.snap_nodes);
-  if (snap_cb_edges)   snap_cb_edges->set_active(s.snap_edges);
-  if (snap_cb_centers) snap_cb_centers->set_active(s.snap_centers);
+  if (snap_cb_guides)
+    snap_cb_guides->set_active(s.snap_guides);
+  if (snap_cb_grid)
+    snap_cb_grid->set_active(s.snap_grid);
+  if (snap_cb_margins)
+    snap_cb_margins->set_active(s.snap_margins);
+  if (snap_cb_nodes)
+    snap_cb_nodes->set_active(s.snap_nodes);
+  if (snap_cb_edges)
+    snap_cb_edges->set_active(s.snap_edges);
+  if (snap_cb_centers)
+    snap_cb_centers->set_active(s.snap_centers);
   snap_loading = false;
 }
 
@@ -4589,18 +5052,31 @@ void Toolbar::Impl::set_snap_settings(const SnapSettings &s) {
 // m_sig_place_spiral / m_sig_canvas_focus still live on public Toolbar;
 // reach via self->.
 void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
-  curvz::utils::set_name(spiral_pop, "pop_tb_spi", "popover_toolbar_spiral_root");
+  curvz::utils::set_name(spiral_pop, "pop_tb_spi",
+                         "popover_toolbar_spiral_root");
   setup_rclick_popover(btn, spiral_pop, [this]() {
-    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical ? UnitSystem::parse_unit(doc->canvas.phys_unit) : doc->canvas.display_unit) : popup_unit;
-    auto [cw, ch] = canvas_display_size(doc);
+    // s290: cx/cy/r are doc-px; turns/inner are dimensionless.
+    const CanvasModel *cm = doc ? &doc->canvas : nullptr;
+    Unit u = doc ? (doc->canvas.display_mode == DisplayMode::Physical
+                        ? UnitSystem::parse_unit(doc->canvas.phys_unit)
+                        : doc->canvas.display_unit)
+                 : popup_unit;
     if (spiral_unit_lbl)
       spiral_unit_lbl->set_text(std::string("Units: ") + UnitSystem::label(u));
     if (spiral_adj_turns) {
       spiral_adj_turns->set_value(spiral_turns);
       spiral_adj_inner->set_value(spiral_inner);
-      spiral_adj_cx->set_value(cw * 0.5);
-      spiral_adj_cy->set_value(ch * 0.5);
-      spiral_adj_r->set_value(std::min(cw, ch) * 0.2);
+    }
+    if (spiral_spin_cx) {
+      spiral_spin_cx->set_model(cm);
+      spiral_spin_cy->set_model(cm);
+      spiral_spin_r->set_model(cm);
+      double cw_px = cm ? double(cm->canvas_width())  : 0.0;
+      double ch_px = cm ? double(cm->canvas_height()) : 0.0;
+      double r = std::min(cw_px, ch_px) * 0.10;
+      spiral_spin_cx->set_internal_value(cw_px * 0.5);
+      spiral_spin_cy->set_internal_value(ch_px * 0.5);
+      spiral_spin_r->set_internal_value(r);
     }
     spiral_preview.queue_draw();
   });
@@ -4608,7 +5084,8 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
   auto *outer = make_pop_outer("Place Spiral");
 
   // ── Interactive preview (160×160) ────────────────────────────────────
-  curvz::utils::set_name(spiral_preview, "pop_tb_spi_pv", "popover_toolbar_spiral_preview_da");
+  curvz::utils::set_name(spiral_preview, "pop_tb_spi_pv",
+                         "popover_toolbar_spiral_preview_da");
   spiral_preview.set_size_request(160, 160);
   spiral_preview.set_halign(Gtk::Align::CENTER);
   spiral_preview.set_margin_bottom(6);
@@ -4632,8 +5109,7 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
 
     // S98: render via the same spiral_to_path the canvas uses, so the
     // preview always matches what gets placed. No inline reimplementation.
-    PathData pd = spiral_to_path(cx, cy, outer_r, inner_r, turns,
-                                 -M_PI * 0.5);
+    PathData pd = spiral_to_path(cx, cy, outer_r, inner_r, turns, -M_PI * 0.5);
 
     cr->begin_new_path();
     for (size_t i = 0; i < pd.nodes.size(); ++i) {
@@ -4669,10 +5145,10 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
   turns_row->append(*turns_lbl);
   spiral_adj_turns =
       Gtk::Adjustment::create(spiral_turns, 0.25, 20.0, 0.25, 1.0);
-  auto *turns_spin =
-      Gtk::make_managed<curvz::widgets::SpinButton>(
-          "pop_tb_spi_tn", spiral_adj_turns, 0.25, 2);
-  curvz::utils::set_name(turns_spin, "pop_tb_spi_tn", "popover_toolbar_spiral_turns_spn");
+  auto *turns_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "pop_tb_spi_tn", spiral_adj_turns, 0.25, 2);
+  curvz::utils::set_name(turns_spin, "pop_tb_spi_tn",
+                         "popover_toolbar_spiral_turns_spn");
   turns_spin->set_hexpand(true);
   turns_row->append(*turns_spin);
   outer->append(*turns_row);
@@ -4685,12 +5161,11 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
   inner_lbl->set_xalign(0.0f);
   inner_lbl->set_width_chars(10);
   inner_row->append(*inner_lbl);
-  spiral_adj_inner =
-      Gtk::Adjustment::create(spiral_inner, 0.0, 95.0, 1.0, 5.0);
-  auto *inner_spin =
-      Gtk::make_managed<curvz::widgets::SpinButton>(
-          "pop_tb_spi_ir", spiral_adj_inner, 1.0, 1);
-  curvz::utils::set_name(inner_spin, "pop_tb_spi_ir", "popover_toolbar_spiral_inner_r_spn");
+  spiral_adj_inner = Gtk::Adjustment::create(spiral_inner, 0.0, 95.0, 1.0, 5.0);
+  auto *inner_spin = Gtk::make_managed<curvz::widgets::SpinButton>(
+      "pop_tb_spi_ir", spiral_adj_inner, 1.0, 1);
+  curvz::utils::set_name(inner_spin, "pop_tb_spi_ir",
+                         "popover_toolbar_spiral_inner_r_spn");
   inner_spin->set_hexpand(true);
   inner_row->append(*inner_spin);
   outer->append(*inner_row);
@@ -4702,18 +5177,11 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
       [this]() { spiral_preview.queue_draw(); });
 
   // ── Placement fields ──────────────────────────────────────────────────
-  Gtk::SpinButton *spi_cx_spin = nullptr, *spi_cy_spin = nullptr,
-                  *spi_r_spin  = nullptr;
-  spiral_adj_cx = make_pop_row(outer, "CX:", "pop_tb_spi_cx", &spi_cx_spin);
-  curvz::utils::set_name(spi_cx_spin, "pop_tb_spi_cx", "popover_toolbar_spiral_cx_spn");
-  spiral_adj_cy = make_pop_row(outer, "CY:", "pop_tb_spi_cy", &spi_cy_spin);
-  curvz::utils::set_name(spi_cy_spin, "pop_tb_spi_cy", "popover_toolbar_spiral_cy_spn");
-  spiral_adj_r = make_pop_row(outer, "R:", "pop_tb_spi_r", &spi_r_spin);
-  curvz::utils::set_name(spi_r_spin, "pop_tb_spi_r", "popover_toolbar_spiral_r_spn");
-  spiral_adj_cx->set_value(500);
-  spiral_adj_cy->set_value(500);
-  spiral_adj_r->set_value(200);
-  spiral_adj_r->set_lower(1.0);
+  // s290: cx/cy/r are doc-px through CurvzSpinButton.
+  const CanvasModel *cm0 = doc ? &doc->canvas : nullptr;
+  spiral_spin_cx = make_pop_row_curvz(outer, "CX:", SpinType::PositionX, cm0);
+  spiral_spin_cy = make_pop_row_curvz(outer, "CY:", SpinType::PositionY, cm0);
+  spiral_spin_r  = make_pop_row_curvz(outer, "R:",  SpinType::Distance,  cm0);
 
   spiral_unit_lbl = Gtk::make_managed<Gtk::Label>("Units: px");
   spiral_unit_lbl->set_xalign(0.0f);
@@ -4722,20 +5190,21 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
 
   auto *btn_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
   btn_row->set_halign(Gtk::Align::END);
-  auto *place = Gtk::make_managed<curvz::widgets::Button>(
-      "pop_tb_spi_pl", "Place");
-  curvz::utils::set_name(place, "pop_tb_spi_pl", "popover_toolbar_spiral_place_btn");
+  auto *place =
+      Gtk::make_managed<curvz::widgets::Button>("pop_tb_spi_pl", "Place");
+  curvz::utils::set_name(place, "pop_tb_spi_pl",
+                         "popover_toolbar_spiral_place_btn");
   place->add_css_class("suggested-action");
   place->signal_clicked().connect([this]() {
-    if (!spiral_adj_cx)
+    if (!spiral_spin_cx)
       return;
     spiral_turns = spiral_adj_turns->get_value();
     spiral_inner = spiral_adj_inner->get_value();
-    double r = spiral_adj_r->get_value();
+    double r = spiral_spin_r->get_internal_value();
     double inner_r = r * (spiral_inner / 100.0);
-    sig_place_spiral.emit(spiral_adj_cx->get_value(),
-                                  spiral_adj_cy->get_value(), r, inner_r,
-                                  spiral_turns, -M_PI * 0.5);
+    sig_place_spiral.emit(spiral_spin_cx->get_internal_value(),
+                          spiral_spin_cy->get_internal_value(), r, inner_r,
+                          spiral_turns, -M_PI * 0.5);
     spiral_pop.popdown();
     sig_canvas_focus.emit();
   });
@@ -4744,7 +5213,8 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
   spiral_pop.set_child(*outer);
 }
 
-// ── S87 m1: swatch picker section ─────────────────────────────────────────────
+// ── S87 m1: swatch picker section
+// ─────────────────────────────────────────────
 //
 // Per-popover layout:
 //
@@ -4762,284 +5232,297 @@ void Toolbar::Impl::build_spiral_popover(Gtk::ToggleButton *btn) {
 // Box. set_swatch_library() flips visibility when a non-null library
 // arrives, and rebuilds the dropdown + chips.
 
-void Toolbar::Impl::build_swatch_picker_section(Gtk::Box& outer, bool is_stroke) {
-    auto* section = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
-    section->set_spacing(6);
-    section->set_margin_top(6);
+void Toolbar::Impl::build_swatch_picker_section(Gtk::Box &outer,
+                                                bool is_stroke) {
+  auto *section = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL);
+  section->set_spacing(6);
+  section->set_margin_top(6);
 
-    // Header: "Swatches" label + palette dropdown (right-aligned).
-    auto* header = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
-    header->set_spacing(6);
-    auto* title = Gtk::make_managed<Gtk::Label>("Swatches");
-    title->add_css_class("tb-pop-label");
-    title->set_xalign(0.0f);
-    title->set_hexpand(true);
-    header->append(*title);
+  // Header: "Swatches" label + palette dropdown (right-aligned).
+  auto *header = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+  header->set_spacing(6);
+  auto *title = Gtk::make_managed<Gtk::Label>("Swatches");
+  title->add_css_class("tb-pop-label");
+  title->set_xalign(0.0f);
+  title->set_hexpand(true);
+  header->append(*title);
 
-    // s197 m2: palette DropDown migrated to curvz::widgets::DropDown.
-    // The abbrev is picked by the is_stroke branch (pop_tb_fill_pdd vs
-    // pop_tb_strk_pdd) since the picker section is built once per slot.
-    // The initial model is an empty StringList; rebuild_palette_dropdown
-    // swaps it for the real palette list once swatch_library is wired —
-    // that runtime swap is the discriminator the substrate's structural
-    // m_model removal (this session) was designed to support: queries
-    // walk get_model() on demand rather than a stored copy that would
-    // go stale.
-    auto* dd = Gtk::make_managed<curvz::widgets::DropDown>(
-        is_stroke ? "pop_tb_strk_pdd" : "pop_tb_fill_pdd",
-        Gtk::StringList::create({}));
-    dd->add_css_class("tb-palette-dd");
-    header->append(*dd);
-    section->append(*header);
+  // s197 m2: palette DropDown migrated to curvz::widgets::DropDown.
+  // The abbrev is picked by the is_stroke branch (pop_tb_fill_pdd vs
+  // pop_tb_strk_pdd) since the picker section is built once per slot.
+  // The initial model is an empty StringList; rebuild_palette_dropdown
+  // swaps it for the real palette list once swatch_library is wired —
+  // that runtime swap is the discriminator the substrate's structural
+  // m_model removal (this session) was designed to support: queries
+  // walk get_model() on demand rather than a stored copy that would
+  // go stale.
+  auto *dd = Gtk::make_managed<curvz::widgets::DropDown>(
+      is_stroke ? "pop_tb_strk_pdd" : "pop_tb_fill_pdd",
+      Gtk::StringList::create({}));
+  dd->add_css_class("tb-palette-dd");
+  header->append(*dd);
+  section->append(*header);
 
-    // Chip flow. Constraints chosen to roughly match the StylesPanel
-    // chip-grid idiom (S85 cont-3 fix5): 24px chips, max 8 per row in
-    // the toolbar popover (which is narrower than the styles panel).
-    auto* flow = Gtk::make_managed<Gtk::FlowBox>();
-    flow->set_selection_mode(Gtk::SelectionMode::NONE);
-    flow->set_max_children_per_line(8);
-    flow->set_min_children_per_line(1);
-    flow->set_homogeneous(true);
-    flow->set_row_spacing(4);
-    flow->set_column_spacing(4);
-    flow->add_css_class("tb-chip-flow");
-    section->append(*flow);
+  // Chip flow. Constraints chosen to roughly match the StylesPanel
+  // chip-grid idiom (S85 cont-3 fix5): 24px chips, max 8 per row in
+  // the toolbar popover (which is narrower than the styles panel).
+  auto *flow = Gtk::make_managed<Gtk::FlowBox>();
+  flow->set_selection_mode(Gtk::SelectionMode::NONE);
+  flow->set_max_children_per_line(8);
+  flow->set_min_children_per_line(1);
+  flow->set_homogeneous(true);
+  flow->set_row_spacing(4);
+  flow->set_column_spacing(4);
+  flow->add_css_class("tb-chip-flow");
+  section->append(*flow);
 
-    // Stash pointers per slot so refresh / set_swatch_library can find
-    // the right widgets without conditionals scattered everywhere.
-    // s119: also set_name the dd/flow per slot so GTK Inspector sees
-    // distinct names for fill vs stroke. Branch is the natural seam —
-    // each call site provides literal abbrev/long_name strings, which
-    // is what widget_names_sync's harvester regex requires.
-    if (is_stroke) {
-        stroke_picker_section = section;
-        stroke_palette_dd     = dd;
-        stroke_chip_flow      = flow;
-        curvz::utils::set_name(dd, "pop_tb_strk_pdd", "popover_toolbar_stroke_palette_dd");
-        curvz::utils::set_name(flow, "pop_tb_strk_cf", "popover_toolbar_stroke_chip_flow");
-    } else {
-        fill_picker_section   = section;
-        fill_palette_dd       = dd;
-        fill_chip_flow        = flow;
-        curvz::utils::set_name(dd, "pop_tb_fill_pdd", "popover_toolbar_fill_palette_dd");
-        curvz::utils::set_name(flow, "pop_tb_fill_cf", "popover_toolbar_fill_chip_flow");
-    }
+  // Stash pointers per slot so refresh / set_swatch_library can find
+  // the right widgets without conditionals scattered everywhere.
+  // s119: also set_name the dd/flow per slot so GTK Inspector sees
+  // distinct names for fill vs stroke. Branch is the natural seam —
+  // each call site provides literal abbrev/long_name strings, which
+  // is what widget_names_sync's harvester regex requires.
+  if (is_stroke) {
+    stroke_picker_section = section;
+    stroke_palette_dd = dd;
+    stroke_chip_flow = flow;
+    curvz::utils::set_name(dd, "pop_tb_strk_pdd",
+                           "popover_toolbar_stroke_palette_dd");
+    curvz::utils::set_name(flow, "pop_tb_strk_cf",
+                           "popover_toolbar_stroke_chip_flow");
+  } else {
+    fill_picker_section = section;
+    fill_palette_dd = dd;
+    fill_chip_flow = flow;
+    curvz::utils::set_name(dd, "pop_tb_fill_pdd",
+                           "popover_toolbar_fill_palette_dd");
+    curvz::utils::set_name(flow, "pop_tb_fill_cf",
+                           "popover_toolbar_fill_chip_flow");
+  }
 
-    // Hidden by default — flipped on by set_swatch_library() when a
-    // library is wired and has at least one swatch.
-    section->set_visible(false);
+  // Hidden by default — flipped on by set_swatch_library() when a
+  // library is wired and has at least one swatch.
+  section->set_visible(false);
 
-    outer.append(*section);
+  outer.append(*section);
 }
 
-void Toolbar::Impl::set_swatch_library(const color::SwatchLibrary* lib) {
-    swatch_library = lib;
-    rebuild_swatch_pickers();
+void Toolbar::Impl::set_swatch_library(const color::SwatchLibrary *lib) {
+  swatch_library = lib;
+  rebuild_swatch_pickers();
 }
 
 void Toolbar::Impl::rebuild_swatch_pickers() {
-    // Both pickers might not exist yet (set_swatch_library could be
-    // called before build_*_popover; not the case in current MainWindow
-    // wiring, but the guard makes the method idempotent).
-    if (!fill_picker_section || !stroke_picker_section) return;
+  // Both pickers might not exist yet (set_swatch_library could be
+  // called before build_*_popover; not the case in current MainWindow
+  // wiring, but the guard makes the method idempotent).
+  if (!fill_picker_section || !stroke_picker_section)
+    return;
 
-    const bool has_lib = (swatch_library != nullptr) &&
-                         (swatch_library->swatch_count() > 0);
-    if (has_lib) {
-        rebuild_palette_dropdown(/*is_stroke=*/false);
-        rebuild_palette_dropdown(/*is_stroke=*/true);
-        rebuild_chip_grid(/*is_stroke=*/false);
-        rebuild_chip_grid(/*is_stroke=*/true);
-    }
+  const bool has_lib =
+      (swatch_library != nullptr) && (swatch_library->swatch_count() > 0);
+  if (has_lib) {
+    rebuild_palette_dropdown(/*is_stroke=*/false);
+    rebuild_palette_dropdown(/*is_stroke=*/true);
+    rebuild_chip_grid(/*is_stroke=*/false);
+    rebuild_chip_grid(/*is_stroke=*/true);
+  }
 
-    // S87 m1 v2: actual visibility is now driven by refresh_*_popover
-    // (which respects m_*_picker_open and the type-toggle state). Force
-    // a refresh so the Swatch button sensitivity, picker visibility,
-    // and colour-row visibility all reflect current state. If the
-    // popovers haven't been built yet (set_swatch_library called too
-    // early), refresh is harmless — set_active and set_visible on
-    // freshly-constructed widgets just no-op.
-    refresh_fill_popover();
-    refresh_stroke_popover();
+  // S87 m1 v2: actual visibility is now driven by refresh_*_popover
+  // (which respects m_*_picker_open and the type-toggle state). Force
+  // a refresh so the Swatch button sensitivity, picker visibility,
+  // and colour-row visibility all reflect current state. If the
+  // popovers haven't been built yet (set_swatch_library called too
+  // early), refresh is harmless — set_active and set_visible on
+  // freshly-constructed widgets just no-op.
+  refresh_fill_popover();
+  refresh_stroke_popover();
 }
 
 void Toolbar::Impl::rebuild_palette_dropdown(bool is_stroke) {
-    if (!swatch_library) return;
-    Gtk::DropDown* dd = is_stroke ? stroke_palette_dd : fill_palette_dd;
-    auto& palette_ids = is_stroke ? stroke_palette_ids : fill_palette_ids;
-    auto& conn        = is_stroke ? stroke_palette_dd_conn
-                                  : fill_palette_dd_conn;
-    if (!dd) return;
+  if (!swatch_library)
+    return;
+  Gtk::DropDown *dd = is_stroke ? stroke_palette_dd : fill_palette_dd;
+  auto &palette_ids = is_stroke ? stroke_palette_ids : fill_palette_ids;
+  auto &conn = is_stroke ? stroke_palette_dd_conn : fill_palette_dd_conn;
+  if (!dd)
+    return;
 
-    // Disconnect prior selection handler so programmatic refill doesn't
-    // fire a user-flow chip rebuild before the IDs vector is populated.
-    if (conn.connected()) conn.disconnect();
+  // Disconnect prior selection handler so programmatic refill doesn't
+  // fire a user-flow chip rebuild before the IDs vector is populated.
+  if (conn.connected())
+    conn.disconnect();
 
-    palette_ids.clear();
-    palette_ids.push_back(kAllPaletteId);
+  palette_ids.clear();
+  palette_ids.push_back(kAllPaletteId);
 
-    auto sl = Gtk::StringList::create({});
-    sl->append("All");
+  auto sl = Gtk::StringList::create({});
+  sl->append("All");
 
-    for (const auto& pid : swatch_library->all_palette_ids()) {
-        const color::Palette* p = swatch_library->find_palette(pid);
-        if (!p) continue;
-        palette_ids.push_back(pid);
-        sl->append(p->name.empty() ? std::string("(unnamed)") : p->name);
-    }
+  for (const auto &pid : swatch_library->all_palette_ids()) {
+    const color::Palette *p = swatch_library->find_palette(pid);
+    if (!p)
+      continue;
+    palette_ids.push_back(pid);
+    sl->append(p->name.empty() ? std::string("(unnamed)") : p->name);
+  }
 
-    dd->set_model(sl);
-    dd->set_selected(0);  // default to "All"
+  dd->set_model(sl);
+  dd->set_selected(0); // default to "All"
 
-    // Reconnect: row index → palette id; rebuild chip grid for the
-    // active slot only. The "other" slot keeps its independent state.
-    conn = dd->property_selected().signal_changed().connect(
-        [this, is_stroke]() {
-            rebuild_chip_grid(is_stroke);
-        });
+  // Reconnect: row index → palette id; rebuild chip grid for the
+  // active slot only. The "other" slot keeps its independent state.
+  conn = dd->property_selected().signal_changed().connect(
+      [this, is_stroke]() { rebuild_chip_grid(is_stroke); });
 }
 
 void Toolbar::Impl::rebuild_chip_grid(bool is_stroke) {
-    if (!swatch_library) return;
-    Gtk::FlowBox* flow = is_stroke ? stroke_chip_flow : fill_chip_flow;
-    Gtk::DropDown* dd  = is_stroke ? stroke_palette_dd : fill_palette_dd;
-    const auto& palette_ids = is_stroke ? stroke_palette_ids
-                                        : fill_palette_ids;
-    auto& shown_pid = is_stroke ? stroke_chips_palette_id
-                                : fill_chips_palette_id;
-    if (!flow || !dd || palette_ids.empty()) return;
+  if (!swatch_library)
+    return;
+  Gtk::FlowBox *flow = is_stroke ? stroke_chip_flow : fill_chip_flow;
+  Gtk::DropDown *dd = is_stroke ? stroke_palette_dd : fill_palette_dd;
+  const auto &palette_ids = is_stroke ? stroke_palette_ids : fill_palette_ids;
+  auto &shown_pid = is_stroke ? stroke_chips_palette_id : fill_chips_palette_id;
+  if (!flow || !dd || palette_ids.empty())
+    return;
 
-    // Resolve the requested palette id from the dropdown selection.
-    const auto sel = dd->get_selected();
-    if (sel == GTK_INVALID_LIST_POSITION ||
-        sel >= palette_ids.size()) return;
-    const std::string& requested_pid = palette_ids[sel];
+  // Resolve the requested palette id from the dropdown selection.
+  const auto sel = dd->get_selected();
+  if (sel == GTK_INVALID_LIST_POSITION || sel >= palette_ids.size())
+    return;
+  const std::string &requested_pid = palette_ids[sel];
 
-    // S87 m1 fix2: short-circuit when the requested palette is already
-    // rendered. The dropdown's property_selected can fire spuriously
-    // (panel rebuild gotcha from the handoff). Without this guard,
-    // every spurious fire rebuilt the FlowBox children, tearing down
-    // the chips' GestureClick controllers — causing the asymmetric
-    // chip-click-then-popdown bug where only the first click after a
-    // (spurious) rebuild dismissed the popover cleanly. Comparing the
-    // requested vs already-shown palette id makes the rebuild idempotent.
-    if (requested_pid == shown_pid && flow->get_first_child() != nullptr) {
-        return;
-    }
+  // S87 m1 fix2: short-circuit when the requested palette is already
+  // rendered. The dropdown's property_selected can fire spuriously
+  // (panel rebuild gotcha from the handoff). Without this guard,
+  // every spurious fire rebuilt the FlowBox children, tearing down
+  // the chips' GestureClick controllers — causing the asymmetric
+  // chip-click-then-popdown bug where only the first click after a
+  // (spurious) rebuild dismissed the popover cleanly. Comparing the
+  // requested vs already-shown palette id makes the rebuild idempotent.
+  if (requested_pid == shown_pid && flow->get_first_child() != nullptr) {
+    return;
+  }
 
-    // Tear down current children. FlowBox::remove takes a child widget;
-    // walk first_child until the box is empty (GTK4 idiom, same pattern
-    // as PaintEditor::rebuild_chip_grid).
-    while (auto* child = flow->get_first_child()) {
-        flow->remove(*child);
-    }
+  // Tear down current children. FlowBox::remove takes a child widget;
+  // walk first_child until the box is empty (GTK4 idiom, same pattern
+  // as PaintEditor::rebuild_chip_grid).
+  while (auto *child = flow->get_first_child()) {
+    flow->remove(*child);
+  }
 
-    std::vector<std::string> ids;
-    if (requested_pid == kAllPaletteId) {
-        ids = swatch_library->all_swatch_ids();
-    } else {
-        const color::Palette* p =
-            swatch_library->find_palette(requested_pid);
-        if (p) ids = p->swatches;
-    }
+  std::vector<std::string> ids;
+  if (requested_pid == kAllPaletteId) {
+    ids = swatch_library->all_swatch_ids();
+  } else {
+    const color::Palette *p = swatch_library->find_palette(requested_pid);
+    if (p)
+      ids = p->swatches;
+  }
 
-    for (const auto& id : ids) {
-        std::string name;
-        color::Color c;
-        if (!tb_resolve_solid(*swatch_library, id, name, c)) continue;
-
-        auto* area = Gtk::make_managed<Gtk::DrawingArea>();
-        area->set_content_width(TB_CHIP_SIZE);
-        area->set_content_height(TB_CHIP_SIZE);
-        // Capture by value — chip flow gets rebuilt whenever the palette
-        // changes, so closure lifetime is bounded by the next rebuild.
-        area->set_draw_func(
-            [c](const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) {
-                tb_paint_chip(cr, w, h, c);
-            });
-        area->add_css_class("swatch-chip");
-        area->set_cursor(Gdk::Cursor::create("pointer"));
-
-        std::string hex = color::to_hex(c);
-        std::string tip = name.empty() ? hex : (name + "  " + hex);
-        area->set_tooltip_text(tip);
-
-        // Left-click → copy swatch's RGB into m_def_* as Solid. Routes
-        // through apply_swatch_pick_to_* so the popover refresh + emit
-        // path matches the hex-paste flow.
-        //
-        // Important: signal_pressed (not signal_released). The toolbar's
-        // fill/stroke popovers are autohide; a GestureClick connected to
-        // signal_released claims the press-release sequence, which can
-        // interfere with the popover's outside-click dismissal.
-        //
-        // S87 m1 fix4: popdown is deferred to idle. Calling popdown()
-        // synchronously inside the gesture event handler races with
-        // GTK's grab management — when the chip click is a no-op
-        // (picked colour matches current colour, no broadcast chain
-        // forces focus elsewhere), the synchronous popdown gets
-        // cancelled and the popover stays open until the app loses
-        // focus. By queuing popdown for idle dispatch, the gesture
-        // event finishes first; idle then runs after the press is
-        // fully processed and popdown completes cleanly regardless of
-        // whether the pick caused a state change.
-        auto gesture = Gtk::GestureClick::create();
-        gesture->set_button(1);
-        const std::string captured_id = id;
-        const bool stroke_local = is_stroke;
-        gesture->signal_pressed().connect(
-            [this, captured_id, stroke_local](int, double, double) {
-                if (stroke_local)
-                    apply_swatch_pick_to_stroke(captured_id);
-                else
-                    apply_swatch_pick_to_fill(captured_id);
-                Glib::signal_idle().connect_once(
-                    [this, stroke_local]() {
-                        if (stroke_local) stroke_pop.popdown();
-                        else              fill_pop.popdown();
-                    });
-            });
-        area->add_controller(gesture);
-
-        flow->append(*area);
-    }
-
-    // S87 m1 fix2: record the palette this rebuild rendered, so a
-    // subsequent spurious dropdown signal_changed for the same id
-    // short-circuits at the guard above.
-    shown_pid = requested_pid;
-}
-
-void Toolbar::Impl::apply_swatch_pick_to_fill(const std::string& swatch_id) {
-    // S93 m4: defensive syncing guard. See apply_hex_to_fill.
-    if (syncing) return;
-    if (!swatch_library) return;
+  for (const auto &id : ids) {
     std::string name;
     color::Color c;
-    if (!tb_resolve_solid(*swatch_library, swatch_id, name, c)) return;
-    def_fill.type = FillStyle::Type::Solid;
-    def_fill.r = c.r;
-    def_fill.g = c.g;
-    def_fill.b = c.b;
-    refresh_fill_popover();
-    redraw_well();
-    emit_defaults();
+    if (!tb_resolve_solid(*swatch_library, id, name, c))
+      continue;
+
+    auto *area = Gtk::make_managed<Gtk::DrawingArea>();
+    area->set_content_width(TB_CHIP_SIZE);
+    area->set_content_height(TB_CHIP_SIZE);
+    // Capture by value — chip flow gets rebuilt whenever the palette
+    // changes, so closure lifetime is bounded by the next rebuild.
+    area->set_draw_func([c](const Cairo::RefPtr<Cairo::Context> &cr, int w,
+                            int h) { tb_paint_chip(cr, w, h, c); });
+    area->add_css_class("swatch-chip");
+    area->set_cursor(Gdk::Cursor::create("pointer"));
+
+    std::string hex = color::to_hex(c);
+    std::string tip = name.empty() ? hex : (name + "  " + hex);
+    area->set_tooltip_text(tip);
+
+    // Left-click → copy swatch's RGB into m_def_* as Solid. Routes
+    // through apply_swatch_pick_to_* so the popover refresh + emit
+    // path matches the hex-paste flow.
+    //
+    // Important: signal_pressed (not signal_released). The toolbar's
+    // fill/stroke popovers are autohide; a GestureClick connected to
+    // signal_released claims the press-release sequence, which can
+    // interfere with the popover's outside-click dismissal.
+    //
+    // S87 m1 fix4: popdown is deferred to idle. Calling popdown()
+    // synchronously inside the gesture event handler races with
+    // GTK's grab management — when the chip click is a no-op
+    // (picked colour matches current colour, no broadcast chain
+    // forces focus elsewhere), the synchronous popdown gets
+    // cancelled and the popover stays open until the app loses
+    // focus. By queuing popdown for idle dispatch, the gesture
+    // event finishes first; idle then runs after the press is
+    // fully processed and popdown completes cleanly regardless of
+    // whether the pick caused a state change.
+    auto gesture = Gtk::GestureClick::create();
+    gesture->set_button(1);
+    const std::string captured_id = id;
+    const bool stroke_local = is_stroke;
+    gesture->signal_pressed().connect(
+        [this, captured_id, stroke_local](int, double, double) {
+          if (stroke_local)
+            apply_swatch_pick_to_stroke(captured_id);
+          else
+            apply_swatch_pick_to_fill(captured_id);
+          Glib::signal_idle().connect_once([this, stroke_local]() {
+            if (stroke_local)
+              stroke_pop.popdown();
+            else
+              fill_pop.popdown();
+          });
+        });
+    area->add_controller(gesture);
+
+    flow->append(*area);
+  }
+
+  // S87 m1 fix2: record the palette this rebuild rendered, so a
+  // subsequent spurious dropdown signal_changed for the same id
+  // short-circuits at the guard above.
+  shown_pid = requested_pid;
 }
 
-void Toolbar::Impl::apply_swatch_pick_to_stroke(const std::string& swatch_id) {
-    // S93 m4: defensive syncing guard. See apply_hex_to_fill.
-    if (syncing) return;
-    if (!swatch_library) return;
-    std::string name;
-    color::Color c;
-    if (!tb_resolve_solid(*swatch_library, swatch_id, name, c)) return;
-    def_stroke.paint.type = FillStyle::Type::Solid;
-    def_stroke.paint.r = c.r;
-    def_stroke.paint.g = c.g;
-    def_stroke.paint.b = c.b;
-    refresh_stroke_popover();
-    redraw_well();
-    emit_defaults();
+void Toolbar::Impl::apply_swatch_pick_to_fill(const std::string &swatch_id) {
+  // S93 m4: defensive syncing guard. See apply_hex_to_fill.
+  if (syncing)
+    return;
+  if (!swatch_library)
+    return;
+  std::string name;
+  color::Color c;
+  if (!tb_resolve_solid(*swatch_library, swatch_id, name, c))
+    return;
+  def_fill.type = FillStyle::Type::Solid;
+  def_fill.r = c.r;
+  def_fill.g = c.g;
+  def_fill.b = c.b;
+  refresh_fill_popover();
+  redraw_well();
+  emit_defaults();
+}
+
+void Toolbar::Impl::apply_swatch_pick_to_stroke(const std::string &swatch_id) {
+  // S93 m4: defensive syncing guard. See apply_hex_to_fill.
+  if (syncing)
+    return;
+  if (!swatch_library)
+    return;
+  std::string name;
+  color::Color c;
+  if (!tb_resolve_solid(*swatch_library, swatch_id, name, c))
+    return;
+  def_stroke.paint.type = FillStyle::Type::Solid;
+  def_stroke.paint.r = c.r;
+  def_stroke.paint.g = c.g;
+  def_stroke.paint.b = c.b;
+  refresh_stroke_popover();
+  redraw_well();
+  emit_defaults();
 }
 
 } // namespace Curvz

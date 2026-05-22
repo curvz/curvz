@@ -2152,6 +2152,13 @@ void MainWindow::connect_signals() {
         }
         // Clipboard
         if (!shift && (kv == GDK_KEY_a || kv == GDK_KEY_A)) {
+          // s290 — In Node mode, Ctrl+A selects all nodes on every visible
+          // path, not all objects. Different selection state (m_node_selection
+          // vs m_selection), different intent.
+          if (m_canvas.active_tool() == ActiveTool::Node) {
+            m_canvas.node_select_all();
+            return true;
+          }
           // M4c-2e: Suppress Ctrl+A when primary is a Warp — global
           // object-select-all would disrupt envelope editing by
           // changing primary selection away from the Warp.
@@ -2168,6 +2175,11 @@ void MainWindow::connect_signals() {
         // continues to mean "cancel in-progress operation only" — see the
         // Esc handlers above).
         if (shift && (kv == GDK_KEY_a || kv == GDK_KEY_A)) {
+          // s290 — Node mode deselects nodes, not objects.
+          if (m_canvas.active_tool() == ActiveTool::Node) {
+            m_canvas.node_clear_selection();
+            return true;
+          }
           m_canvas.clear_selection();
           return true;
         }

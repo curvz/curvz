@@ -1,13 +1,14 @@
 #pragma once
+#include "CurvzDocument.hpp"
+#include "UnitSystem.hpp"
+#include <functional>
 #include <gtkmm.h>
 #include <sigc++/sigc++.h>
-#include <functional>
-#include "UnitSystem.hpp"
-#include "CurvzDocument.hpp"
 
 namespace Curvz {
 
-// ── SpinType ──────────────────────────────────────────────────────────────────
+// ── SpinType
+// ──────────────────────────────────────────────────────────────────
 //
 //   Distance   — signed distance in doc units; converts via UnitSystem.
 //                Use for offsets, gap fields where origin doesn't matter.
@@ -30,18 +31,19 @@ namespace Curvz {
 //   Integer    — whole numbers, no conversion. Step 1, 0 decimals.
 
 enum class SpinType {
-    Distance,
-    Width,
-    PositionX,
-    PositionY,
-    Angle,
-    Percentage,
-    Integer,
+  Distance,
+  Width,
+  PositionX,
+  PositionY,
+  Angle,
+  Percentage,
+  Integer,
 };
 
-// ── CurvzSpinButton ───────────────────────────────────────────────────────────
-// A Gtk::SpinButton that owns its Adjustment and handles unit conversion
-// internally.  Call sites work exclusively in internal (doc-unit) values.
+// ── CurvzSpinButton
+// ─────────────────────────────────────────────────────────── A CurvzSpinButton
+// that owns its Adjustment and handles unit conversion internally.  Call sites
+// work exclusively in internal (doc-unit) values.
 //
 // Fluent construction:
 //
@@ -70,110 +72,106 @@ enum class SpinType {
 
 class CurvzSpinButton : public Gtk::SpinButton {
 public:
-    // General constructor — for Distance, Width, Angle, Percentage, Integer.
-    explicit CurvzSpinButton(SpinType type,
-                              const CanvasModel* model = nullptr);
+  // General constructor — for Distance, Width, Angle, Percentage, Integer.
+  explicit CurvzSpinButton(SpinType type, const CanvasModel *model = nullptr);
 
-    // Position constructor — for PositionX / PositionY.
-    // ruler_origin is m_ruler_ox (for X) or m_ruler_oy (for Y).
-    CurvzSpinButton(SpinType type,
-                    const CanvasModel* model,
-                    double ruler_origin);
+  // Position constructor — for PositionX / PositionY.
+  // ruler_origin is m_ruler_ox (for X) or m_ruler_oy (for Y).
+  CurvzSpinButton(SpinType type, const CanvasModel *model, double ruler_origin);
 
-    // ── Fluent builder ────────────────────────────────────────────────────────
+  // ── Fluent builder ────────────────────────────────────────────────────────
 
-    CurvzSpinButton* with_value(double internal);
-    CurvzSpinButton* with_tooltip(const char* tip);
-    CurvzSpinButton* with_css(const char* css_class);
-    CurvzSpinButton* with_width_chars(int n);
-    CurvzSpinButton* on_changed(std::function<void(double)> cb);
+  CurvzSpinButton *with_value(double internal);
+  CurvzSpinButton *with_tooltip(const char *tip);
+  CurvzSpinButton *with_css(const char *css_class);
+  CurvzSpinButton *with_width_chars(int n);
+  CurvzSpinButton *on_changed(std::function<void(double)> cb);
 
-    // ── Model ─────────────────────────────────────────────────────────────────
+  // ── Model ─────────────────────────────────────────────────────────────────
 
-    void set_model(const CanvasModel* model);
+  void set_model(const CanvasModel *model);
 
-    // Update ruler origin (e.g. after user moves ruler zero point).
-    // Only meaningful for PositionX / PositionY types.
-    void set_ruler_origin(double origin);
+  // Update ruler origin (e.g. after user moves ruler zero point).
+  // Only meaningful for PositionX / PositionY types.
+  void set_ruler_origin(double origin);
 
-    // ── Value accessors ───────────────────────────────────────────────────────
+  // ── Value accessors ───────────────────────────────────────────────────────
 
-    void   set_internal_value(double internal);
-    double get_internal_value() const { return m_internal; }
+  void set_internal_value(double internal);
+  double get_internal_value() const { return m_internal; }
 
-    // ── Unit label ────────────────────────────────────────────────────────────
+  // ── Unit label ────────────────────────────────────────────────────────────
 
-    // Companion label — append to row box after spinbutton.
-    // Shows "px", "in", "mm", "pt" for Distance/Width/Position types.
-    // Blank for other types.
-    Gtk::Label* get_unit_label() { return m_unit_label; }
+  // Companion label — append to row box after spinbutton.
+  // Shows "px", "in", "mm", "pt" for Distance/Width/Position types.
+  // Blank for other types.
+  Gtk::Label *get_unit_label() { return m_unit_label; }
 
-    // ── Unit refresh ─────────────────────────────────────────────────────────
+  // ── Unit refresh ─────────────────────────────────────────────────────────
 
-    // Call when CanvasModel::display_unit changes.
-    // No-op for non-distance types.
-    void refresh_units();
+  // Call when CanvasModel::display_unit changes.
+  // No-op for non-distance types.
+  void refresh_units();
 
-    // ── Unit conversion (read-only) ──────────────────────────────────────────
-    //
-    // Convert a stored "internal" doc-space value to the user-facing display
-    // value (current display unit, ruler origin applied, Y-flipped for
-    // PositionY). Mirrors the conversion done internally on every
-    // adjustment update. Public so panels with read-only readouts (visual
-    // size labels, status bars, etc.) can format doc-space values the same
-    // way the editable spinners do.
-    double to_display(double internal) const;
+  // ── Unit conversion (read-only) ──────────────────────────────────────────
+  //
+  // Convert a stored "internal" doc-space value to the user-facing display
+  // value (current display unit, ruler origin applied, Y-flipped for
+  // PositionY). Mirrors the conversion done internally on every
+  // adjustment update. Public so panels with read-only readouts (visual
+  // size labels, status bars, etc.) can format doc-space values the same
+  // way the editable spinners do.
+  double to_display(double internal) const;
 
-    // ── Signal ───────────────────────────────────────────────────────────────
+  // ── Signal ───────────────────────────────────────────────────────────────
 
-    sigc::signal<void(double)>& signal_internal_changed() {
-        return m_signal_internal_changed;
-    }
+  sigc::signal<void(double)> &signal_internal_changed() {
+    return m_signal_internal_changed;
+  }
 
 private:
-    SpinType             m_type;
-    const CanvasModel*   m_model;
-    double               m_internal      = 0.0;
-    double               m_ruler_origin  = 0.0;  // PositionX/Y only
-    bool                 m_updating      = false;
+  SpinType m_type;
+  const CanvasModel *m_model;
+  double m_internal = 0.0;
+  double m_ruler_origin = 0.0; // PositionX/Y only
+  bool m_updating = false;
 
-    Glib::RefPtr<Gtk::Adjustment> m_adj;
-    Gtk::Label*                   m_unit_label = nullptr;
+  Glib::RefPtr<Gtk::Adjustment> m_adj;
+  Gtk::Label *m_unit_label = nullptr;
 
-    sigc::signal<void(double)> m_signal_internal_changed;
+  sigc::signal<void(double)> m_signal_internal_changed;
 
-    // Error popover — lazily constructed. Held as Glib::RefPtr so GTK
-    // manages lifetime across transient dismissal / reshow.
-    Gtk::Popover* m_err_popover = nullptr;
-    Gtk::Label*   m_err_label   = nullptr;
-    sigc::connection m_err_hide_timer;
+  // Error popover — lazily constructed. Held as Glib::RefPtr so GTK
+  // manages lifetime across transient dismissal / reshow.
+  Gtk::Popover *m_err_popover = nullptr;
+  Gtk::Label *m_err_label = nullptr;
+  sigc::connection m_err_hide_timer;
 
-    void   init();
-    void   apply_unit_params();
-    void   update_unit_label();
-    bool   is_distance_type() const;
-    double to_internal(double display)  const;
-    void   on_value_changed();
+  void init();
+  void apply_unit_params();
+  void update_unit_label();
+  bool is_distance_type() const;
+  double to_internal(double display) const;
+  void on_value_changed();
 
-    // Expression parsing
-    bool   type_allows_units() const;
-    Unit   type_default_unit() const;
-    // s263 m5 — returns the parser Domain matching this spinner's SpinType.
-    // Used by both the parser (for legal-suffix sets) and the keystroke
-    // filter (for which letter keys reach the entry buffer). Replaces the
-    // older binary `type_allows_units` discriminator at the use sites;
-    // `type_allows_units` is retained as a thin wrapper for source-compat
-    // and returns true iff domain is Length.
-    Domain type_domain() const;
-    bool   try_commit_text(const std::string& txt);  // returns true on success
-    void   show_error_popover(const std::string& bad_input,
-                              const std::string& msg);
-    void   hide_error_popover();
-    // s263 m5 — keystroke filter is now domain-aware. The legacy bool
-    // overload routes through Length/Dimensionless for source-compat; new
-    // call sites pass Domain directly.
-    static bool is_char_allowed(gunichar ch, Domain domain);
-    static bool is_char_allowed(gunichar ch, bool units_allowed);
+  // Expression parsing
+  bool type_allows_units() const;
+  Unit type_default_unit() const;
+  // s263 m5 — returns the parser Domain matching this spinner's SpinType.
+  // Used by both the parser (for legal-suffix sets) and the keystroke
+  // filter (for which letter keys reach the entry buffer). Replaces the
+  // older binary `type_allows_units` discriminator at the use sites;
+  // `type_allows_units` is retained as a thin wrapper for source-compat
+  // and returns true iff domain is Length.
+  Domain type_domain() const;
+  bool try_commit_text(const std::string &txt); // returns true on success
+  void show_error_popover(const std::string &bad_input, const std::string &msg);
+  void hide_error_popover();
+  // s263 m5 — keystroke filter is now domain-aware. The legacy bool
+  // overload routes through Length/Dimensionless for source-compat; new
+  // call sites pass Domain directly.
+  static bool is_char_allowed(gunichar ch, Domain domain);
+  static bool is_char_allowed(gunichar ch, bool units_allowed);
 };
 
 } // namespace Curvz

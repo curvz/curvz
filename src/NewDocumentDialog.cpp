@@ -1,11 +1,11 @@
 #include "NewDocumentDialog.hpp"
 #include "CurvzLog.hpp"
-#include "curvz_utils.hpp"  // s117 m18 v2
-#include "widgets/DropDown.hpp"  // s208 m5 — substrate theme dropdown
-#include "widgets/Button.hpp"  // s211 m2 — unregistered substrate Button for preset-button loops
-#include "widgets/SpinButton.hpp"  // s266 m1 — substrate SpinButton for size-tab spinners
-#include "widgets/ToggleButton.hpp"  // s266 m1 — substrate ToggleButton for aspect-lock
-#include "UnitSystem.hpp"  // s266 m1 — unit labels and parsing for the Units row
+#include "UnitSystem.hpp" // s266 m1 — unit labels and parsing for the Units row
+#include "curvz_utils.hpp" // s117 m18 v2
+#include "widgets/Button.hpp" // s211 m2 — unregistered substrate Button for preset-button loops
+#include "widgets/DropDown.hpp" // s208 m5 — substrate theme dropdown
+#include "widgets/SpinButton.hpp" // s266 m1 — substrate SpinButton for size-tab spinners
+#include "widgets/ToggleButton.hpp" // s266 m1 — substrate ToggleButton for aspect-lock
 #include <algorithm>
 #include <array>
 #include <cairomm/cairomm.h>
@@ -21,10 +21,11 @@
 
 namespace Curvz {
 
-// ── Thumbnail tile sizing ─────────────────────────────────────────────────────
-static constexpr int THUMB_IMG_PX   = 128;   // image area
-static constexpr int THUMB_LABEL_PX = 28;    // label height
-static constexpr int TEMPLATE_COLS  = 3;     // grid columns
+// ── Thumbnail tile sizing
+// ─────────────────────────────────────────────────────
+static constexpr int THUMB_IMG_PX = 128;  // image area
+static constexpr int THUMB_LABEL_PX = 28; // label height
+static constexpr int TEMPLATE_COLS = 3;   // grid columns
 
 // s266 m1: Quality/DPI/per-mode preset constants retired alongside the
 // four-tab structure. The Size tab carries px and page presets inside
@@ -35,7 +36,8 @@ static constexpr int TEMPLATE_COLS  = 3;     // grid columns
 // structure. The Size tab uses a Grid-with-column-headers idiom inline
 // in populate_size_tab(), parallel to the inspector's Size row.
 
-// ── Constructor ───────────────────────────────────────────────────────────────
+// ── Constructor
+// ───────────────────────────────────────────────────────────────
 NewDocumentDialog::NewDocumentDialog() {
   curvz::utils::set_name(*this, "dlg_nd", "new_document_dialog_root");
   set_title("New Document");
@@ -61,7 +63,8 @@ NewDocumentDialog::NewDocumentDialog() {
   name_lbl->add_css_class("section-label");
   m_name_entry.set_hexpand(true);
   m_name_entry.set_placeholder_text("icon");
-  curvz::utils::set_name(m_name_entry, "dlg_nd_nm", "new_document_dialog_name_entry");
+  curvz::utils::set_name(m_name_entry, "dlg_nd_nm",
+                         "new_document_dialog_name_entry");
   // NOTE: intentionally no on_commit(on_create). CurvzEntry's on_commit
   // fires on both Enter AND focus-leave; the latter means any click on a
   // template tile (which shifts focus off the entry) would submit the
@@ -71,7 +74,8 @@ NewDocumentDialog::NewDocumentDialog() {
   // isn't our last autofill, treat the name as user-owned and stop
   // overwriting it on template selection.
   m_name_entry.signal_changed().connect([this]() {
-    if (m_updating) return;
+    if (m_updating)
+      return;
     std::string cur = m_name_entry.get_text();
     if (cur == m_last_autofill) {
       // Still the autofill — either it just ran, or the user cleared and
@@ -103,12 +107,14 @@ NewDocumentDialog::NewDocumentDialog() {
   theme_lbl->add_css_class("section-label");
   m_theme_drop = Gtk::make_managed<curvz::widgets::DropDown>(
       "dlg_nd_thm", std::vector<Glib::ustring>{});
-  curvz::utils::set_name(m_theme_drop, "dlg_nd_thm", "new_document_dialog_theme_dd");
+  curvz::utils::set_name(m_theme_drop, "dlg_nd_thm",
+                         "new_document_dialog_theme_dd");
   m_theme_drop->set_hexpand(true);
   // Remember selection on user change. Guard against the populate path
   // firing the signal during rebuild.
   m_theme_drop->property_selected().signal_changed().connect([this]() {
-    if (m_updating) return;
+    if (m_updating)
+      return;
     auto sel = static_cast<std::size_t>(m_theme_drop->get_selected());
     if (sel < m_theme_drop_ids.size()) {
       m_remembered_theme_id = m_theme_drop_ids[sel];
@@ -116,14 +122,15 @@ NewDocumentDialog::NewDocumentDialog() {
   });
   m_theme_row->append(*theme_lbl);
   m_theme_row->append(*m_theme_drop);
-  m_theme_row->set_visible(false);  // populated/shown by show() when applicable
+  m_theme_row->set_visible(false); // populated/shown by show() when applicable
   root->append(*m_theme_row);
 
   // ── Notebook ──────────────────────────────────────────────────────────
-  curvz::utils::set_name(m_notebook, "dlg_nd_nb", "new_document_dialog_notebook");
+  curvz::utils::set_name(m_notebook, "dlg_nd_nb",
+                         "new_document_dialog_notebook");
   root->append(m_notebook);
   m_notebook.append_page(build_template_tab(), "Template");
-  m_notebook.append_page(build_size_tab(),     "Size");
+  m_notebook.append_page(build_size_tab(), "Size");
 
   // ── Preview section ───────────────────────────────────────────────────
   auto *sep = Gtk::make_managed<Gtk::Separator>();
@@ -177,8 +184,8 @@ NewDocumentDialog::NewDocumentDialog() {
           double mr = 0.05;
           cr->set_source_rgba(0.85, 0.35, 0.35, 0.6);
           cr->set_line_width(1.0);
-          cr->rectangle(ox + dw * mr, oy + dh * mr,
-                        dw * (1 - 2 * mr), dh * (1 - 2 * mr));
+          cr->rectangle(ox + dw * mr, oy + dh * mr, dw * (1 - 2 * mr),
+                        dh * (1 - 2 * mr));
           cr->stroke();
         }
 
@@ -193,7 +200,8 @@ NewDocumentDialog::NewDocumentDialog() {
   // Preview label
   m_preview_label.set_xalign(0.0f);
   m_preview_label.add_css_class("dim-label");
-  curvz::utils::set_name(m_preview_label, "dlg_nd_pvl", "new_document_dialog_preview_lbl");
+  curvz::utils::set_name(m_preview_label, "dlg_nd_pvl",
+                         "new_document_dialog_preview_lbl");
   prev_row->append(m_preview_label);
 
   // ── Buttons ───────────────────────────────────────────────────────────
@@ -205,8 +213,10 @@ NewDocumentDialog::NewDocumentDialog() {
   m_btn_cancel.set_margin_top(4);
   m_btn_create.set_margin_top(4);
   m_btn_create.add_css_class("suggested-action");
-  curvz::utils::set_name(m_btn_cancel, "dlg_nd_cnc", "new_document_dialog_cancel_btn");
-  curvz::utils::set_name(m_btn_create, "dlg_nd_cre", "new_document_dialog_create_btn");
+  curvz::utils::set_name(m_btn_cancel, "dlg_nd_cnc",
+                         "new_document_dialog_cancel_btn");
+  curvz::utils::set_name(m_btn_create, "dlg_nd_cre",
+                         "new_document_dialog_create_btn");
   btn_row->append(m_btn_cancel);
   btn_row->append(m_btn_create);
 
@@ -227,27 +237,29 @@ NewDocumentDialog::NewDocumentDialog() {
   //     — the template grid is independently populated by show(), and
   //     m_current was last set by the user's last interaction (Size-tab
   //     edits or a previous template pick); either is fine.
-  m_notebook.signal_switch_page().connect(
-      [this](Gtk::Widget *, guint page) {
-        if (page != 0) {
-          if (m_selected_builtin != BuiltIn::None || m_selected_disk >= 0)
-            clear_template_selection();
-          m_current = CanvasModel::from_ratio(1.0, 1.0, 1000);
-          m_current.intended_w    = 24.0;
-          m_current.intended_h    = 24.0;
-          m_current.intended_unit = "px";
-          Glib::signal_idle().connect_once(
-              [this]() { populate_size_tab(); refresh_preview(); });
-        }
+  m_notebook.signal_switch_page().connect([this](Gtk::Widget *, guint page) {
+    if (page != 0) {
+      if (m_selected_builtin != BuiltIn::None || m_selected_disk >= 0)
+        clear_template_selection();
+      m_current = CanvasModel::from_ratio(1.0, 1.0, 1000);
+      m_current.intended_w = 24.0;
+      m_current.intended_h = 24.0;
+      m_current.intended_unit = "px";
+      Glib::signal_idle().connect_once([this]() {
+        populate_size_tab();
         refresh_preview();
       });
+    }
+    refresh_preview();
+  });
 
   // Initial state
   m_current = CanvasModel::from_pixels(24, 24);
   refresh_preview();
 }
 
-// ── Tab: Template ─────────────────────────────────────────────────────────────
+// ── Tab: Template
+// ─────────────────────────────────────────────────────────────
 Gtk::Widget &NewDocumentDialog::build_template_tab() {
   m_tpl_box.set_margin(12);
   m_tpl_box.set_spacing(12);
@@ -263,8 +275,9 @@ Gtk::Widget &NewDocumentDialog::build_template_tab() {
   return m_tpl_scroll;
 }
 
-// ── populate_template_grid ────────────────────────────────────────────────────
-// Rebuild m_tpl_box contents from scratch. Structure:
+// ── populate_template_grid
+// ──────────────────────────────────────────────────── Rebuild m_tpl_box
+// contents from scratch. Structure:
 //   ┌ "Built-in" heading
 //   │   grid: [Blank][Default]
 //   ├ "<category>" heading
@@ -290,18 +303,18 @@ void NewDocumentDialog::populate_template_grid() {
   // "builtin" category. The picker already surfaces those as fixed tiles
   // in the Built-in row below, so strip them here to avoid rendering the
   // pair twice (once in the fixed row, once under a "builtin" heading).
-  m_disk_templates.erase(
-      std::remove_if(m_disk_templates.begin(), m_disk_templates.end(),
-                     [](const templates::TemplateEntry& e) {
-                         return templates::is_builtin(e);
-                     }),
-      m_disk_templates.end());
+  m_disk_templates.erase(std::remove_if(m_disk_templates.begin(),
+                                        m_disk_templates.end(),
+                                        [](const templates::TemplateEntry &e) {
+                                          return templates::is_builtin(e);
+                                        }),
+                         m_disk_templates.end());
 
   // Reset tile pointer registry — the widgets from the previous populate()
   // have been destroyed with their parent box, so these pointers are stale.
   // Disk-tile vector is sized to match m_disk_templates so index-based
   // lookup works after the fill loop below.
-  m_tile_blank   = nullptr;
+  m_tile_blank = nullptr;
   m_tile_default = nullptr;
   m_tile_disk.assign(m_disk_templates.size(), nullptr);
   // m4: regen state runs parallel to m_tile_disk. Reset to default-constructed
@@ -311,8 +324,7 @@ void NewDocumentDialog::populate_template_grid() {
 
   // Helpers --------------------------------------------------------------
 
-  auto make_tile = [this](const std::string &name,
-                          Gtk::DrawingArea *thumb_area,
+  auto make_tile = [this](const std::string &name, Gtk::DrawingArea *thumb_area,
                           std::function<void()> on_click) -> Gtk::Widget * {
     // Tile widget is a Gtk::Frame, not a Gtk::Button. A single
     // GestureClick controller on a Frame sees both press 1 and press 2
@@ -342,8 +354,10 @@ void NewDocumentDialog::populate_template_grid() {
     auto gesture = Gtk::GestureClick::create();
     gesture->signal_pressed().connect(
         [this, on_click](int n_press, double, double) {
-          if (n_press == 1) on_click();
-          else if (n_press == 2) on_create();
+          if (n_press == 1)
+            on_click();
+          else if (n_press == 2)
+            on_create();
         });
     frame->add_controller(gesture);
 
@@ -377,11 +391,10 @@ void NewDocumentDialog::populate_template_grid() {
         [this](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
           draw_builtin_thumb(cr, w, h, BuiltIn::Blank);
         });
-    auto *tile = make_tile("Blank", area, [this]() {
-      select_builtin(BuiltIn::Blank);
-    });
+    auto *tile =
+        make_tile("Blank", area, [this]() { select_builtin(BuiltIn::Blank); });
     builtin_grid->attach(*tile, 0, 0);
-    m_tile_blank = dynamic_cast<Gtk::Frame*>(tile);
+    m_tile_blank = dynamic_cast<Gtk::Frame *>(tile);
   }
   // Default tile — normally renders the synthetic built-in Default seed and
   // calls select_builtin(Default). When the user has set a DISK template as
@@ -409,17 +422,19 @@ void NewDocumentDialog::populate_template_grid() {
       // regen pipeline (m_disk_tile_state slots are for the disk-templates
       // grid below, not this one tile). If neither motif's PNG exists yet,
       // fall through to the synthesized Default placeholder.
-      std::string chosen =
-          (m_motif == templates::MotifTag::Light) ? e.thumb_path_light
-                                                  : e.thumb_path_dark;
+      std::string chosen = (m_motif == templates::MotifTag::Light)
+                               ? e.thumb_path_light
+                               : e.thumb_path_dark;
       if (chosen.empty()) {
         chosen = (m_motif == templates::MotifTag::Light) ? e.thumb_path_dark
-                                                          : e.thumb_path_light;
+                                                         : e.thumb_path_light;
       }
       if (!chosen.empty()) {
         Glib::RefPtr<Gdk::Pixbuf> pb;
-        try { pb = Gdk::Pixbuf::create_from_file(chosen); }
-        catch (const Glib::Error &) {}
+        try {
+          pb = Gdk::Pixbuf::create_from_file(chosen);
+        } catch (const Glib::Error &) {
+        }
         area->set_draw_func(
             [this, pb](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
               if (!pb) {
@@ -428,14 +443,16 @@ void NewDocumentDialog::populate_template_grid() {
               }
               int pw = pb->get_width();
               int ph = pb->get_height();
-              if (pw <= 0 || ph <= 0) return;
+              if (pw <= 0 || ph <= 0)
+                return;
               double scale = std::min((double)w / pw, (double)h / ph);
               double dw = pw * scale, dh = ph * scale;
               double ox = (w - dw) * 0.5, oy = (h - dh) * 0.5;
               cr->save();
               cr->translate(ox, oy);
               cr->scale(scale, scale);
-              // s135 m2: pumped — replaces deprecated gdk_cairo_set_source_pixbuf.
+              // s135 m2: pumped — replaces deprecated
+              // gdk_cairo_set_source_pixbuf.
               curvz::utils::cairo_set_source_pixbuf(cr, pb, 0, 0);
               cr->paint();
               cr->restore();
@@ -453,13 +470,14 @@ void NewDocumentDialog::populate_template_grid() {
           });
     }
 
-    auto *tile = make_tile(tile_label, area,
-        [this, user_disk_idx]() {
-          if (user_disk_idx >= 0) select_template(user_disk_idx);
-          else                    select_builtin(BuiltIn::Default);
-        });
+    auto *tile = make_tile(tile_label, area, [this, user_disk_idx]() {
+      if (user_disk_idx >= 0)
+        select_template(user_disk_idx);
+      else
+        select_builtin(BuiltIn::Default);
+    });
     builtin_grid->attach(*tile, 1, 0);
-    m_tile_default = dynamic_cast<Gtk::Frame*>(tile);
+    m_tile_default = dynamic_cast<Gtk::Frame *>(tile);
   }
 
   // ── Disk templates, grouped by category ───────────────────────────────
@@ -477,8 +495,8 @@ void NewDocumentDialog::populate_template_grid() {
       cur_category = e.meta.category;
       add_heading(cur_category);
       cat_grid = make_grid();
-      cat_col  = 0;
-      cat_row  = 0;
+      cat_col = 0;
+      cat_row = 0;
     }
 
     auto *area = Gtk::make_managed<Gtk::DrawingArea>();
@@ -501,10 +519,12 @@ void NewDocumentDialog::populate_template_grid() {
     //     stale state vector is replaced, so any draws on still-existing
     //     widgets read the new values harmlessly.
     area->set_draw_func(
-        [this, my_index](const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
+        [this, my_index](const Cairo::RefPtr<Cairo::Context> &cr, int w,
+                         int h) {
           // Bounds-guard: m_disk_tile_state may have been re-sized smaller
           // by a fresh populate while this widget is still draining a draw.
-          if (my_index < 0 || my_index >= (int)m_disk_tile_state.size()) return;
+          if (my_index < 0 || my_index >= (int)m_disk_tile_state.size())
+            return;
           const auto &state = m_disk_tile_state[my_index];
           // Always draw the procedural placeholder first. Cheap, motif-
           // aware, gives the user something to look at instantly.
@@ -534,11 +554,10 @@ void NewDocumentDialog::populate_template_grid() {
           }
         });
 
-    auto *tile = make_tile(e.meta.name, area, [this, my_index]() {
-      select_template(my_index);
-    });
+    auto *tile = make_tile(e.meta.name, area,
+                           [this, my_index]() { select_template(my_index); });
     cat_grid->attach(*tile, cat_col, cat_row);
-    m_tile_disk[my_index] = dynamic_cast<Gtk::Frame*>(tile);
+    m_tile_disk[my_index] = dynamic_cast<Gtk::Frame *>(tile);
     if (++cat_col >= TEMPLATE_COLS) {
       cat_col = 0;
       ++cat_row;
@@ -547,10 +566,10 @@ void NewDocumentDialog::populate_template_grid() {
 
   // m4: kick off background regen for every disk template that doesn't
   // already have a cached PNG for the current motif. Tiles already on disk
-  // load synchronously here in the worker (cheap — Gdk::Pixbuf::create_from_file
-  // is the same call we used to do inline) and crossfade in immediately.
-  // Tiles that need rendering go through the slower SVG-parse + Cairo path
-  // and arrive whenever they finish.
+  // load synchronously here in the worker (cheap —
+  // Gdk::Pixbuf::create_from_file is the same call we used to do inline) and
+  // crossfade in immediately. Tiles that need rendering go through the slower
+  // SVG-parse + Cairo path and arrive whenever they finish.
   kickoff_disk_regens();
 }
 
@@ -559,14 +578,20 @@ NewDocumentDialog::DefaultResolution
 NewDocumentDialog::resolve_effective_default() const {
   DefaultResolution r;
   auto ud = templates::user_default();
-  if (!ud) return r;  // AppDefault, unset
+  if (!ud)
+    return r; // AppDefault, unset
 
   // Builtin/blank starred → treat Default tile as Blank.
   if (templates::is_builtin(*ud)) {
     switch (templates::builtin_kind(*ud)) {
-      case templates::BuiltinKind::Blank:   r.kind = ResolvedDefault::Blank;      return r;
-      case templates::BuiltinKind::Default: r.kind = ResolvedDefault::AppDefault; return r;
-      case templates::BuiltinKind::None:    break;
+    case templates::BuiltinKind::Blank:
+      r.kind = ResolvedDefault::Blank;
+      return r;
+    case templates::BuiltinKind::Default:
+      r.kind = ResolvedDefault::AppDefault;
+      return r;
+    case templates::BuiltinKind::None:
+      break;
     }
     return r;
   }
@@ -575,7 +600,7 @@ NewDocumentDialog::resolve_effective_default() const {
   // have been filtered out of the list, so indices here refer to disk
   // templates only.
   for (size_t i = 0; i < m_disk_templates.size(); ++i) {
-    const auto& e = m_disk_templates[i];
+    const auto &e = m_disk_templates[i];
     if (e.meta.category == ud->meta.category && e.slug == ud->slug) {
       r.kind = ResolvedDefault::Disk;
       r.disk_idx = (int)i;
@@ -585,7 +610,8 @@ NewDocumentDialog::resolve_effective_default() const {
 
   // Default pointer references a template that doesn't resolve (stale
   // pointer, removed mid-session, etc.). Fall back to the app default.
-  LOG_INFO("NewDocumentDialog: user default '{}/{}' did not resolve — using app default",
+  LOG_INFO("NewDocumentDialog: user default '{}/{}' did not resolve — using "
+           "app default",
            ud->meta.category, ud->slug);
   return r;
 }
@@ -611,35 +637,38 @@ void NewDocumentDialog::select_builtin(BuiltIn kind) {
   }
 
   m_selected_builtin = kind;
-  m_selected_disk    = -1;
+  m_selected_disk = -1;
   const char *label = (kind == BuiltIn::Default) ? "Default" : "Blank";
   maybe_autofill_name(label);
   // Update preview: build the seed doc and read its canvas for the label
-  auto seed = (kind == BuiltIn::Default) ? build_default_seed()
-                                         : build_blank_seed();
-  if (seed) m_current = seed->canvas;
+  auto seed =
+      (kind == BuiltIn::Default) ? build_default_seed() : build_blank_seed();
+  if (seed)
+    m_current = seed->canvas;
   refresh_preview();
   refresh_tile_selection();
 }
 
 void NewDocumentDialog::select_template(int disk_index) {
-  if (disk_index < 0 || disk_index >= (int)m_disk_templates.size()) return;
+  if (disk_index < 0 || disk_index >= (int)m_disk_templates.size())
+    return;
   m_selected_builtin = BuiltIn::None;
-  m_selected_disk    = disk_index;
+  m_selected_disk = disk_index;
   const auto &e = m_disk_templates[disk_index];
   maybe_autofill_name(e.meta.name);
   // Parse the template SVG for an accurate preview. This is a bit
   // heavyweight — we're parsing on every click — but template SVGs are
   // small and this keeps the preview honest without a separate cache.
   auto seed = templates::load_document(e);
-  if (seed) m_current = seed->canvas;
+  if (seed)
+    m_current = seed->canvas;
   refresh_preview();
   refresh_tile_selection();
 }
 
 void NewDocumentDialog::clear_template_selection() {
   m_selected_builtin = BuiltIn::None;
-  m_selected_disk    = -1;
+  m_selected_disk = -1;
   refresh_tile_selection();
 }
 
@@ -656,18 +685,21 @@ void NewDocumentDialog::clear_template_selection() {
 // detect this by matching m_selected_disk against the same resolution the
 // grid builder used.
 void NewDocumentDialog::refresh_tile_selection() {
-  auto clear = [](Gtk::Frame* b) {
-    if (b) b->remove_css_class("tile-selected");
+  auto clear = [](Gtk::Frame *b) {
+    if (b)
+      b->remove_css_class("tile-selected");
   };
-  auto set_on = [](Gtk::Frame* b) {
-    if (b) b->add_css_class("tile-selected");
+  auto set_on = [](Gtk::Frame *b) {
+    if (b)
+      b->add_css_class("tile-selected");
   };
 
   // Strip from every known tile first so we never end up with two tiles
   // lit simultaneously.
   clear(m_tile_blank);
   clear(m_tile_default);
-  for (auto* b : m_tile_disk) clear(b);
+  for (auto *b : m_tile_disk)
+    clear(b);
 
   // Apply to the one matching current selection.
   if (m_selected_builtin == BuiltIn::Blank) {
@@ -730,8 +762,7 @@ void NewDocumentDialog::draw_builtin_thumb(
     double m = 0.05;
     cr->set_source_rgba(0.85, 0.35, 0.35, 0.6);
     cr->set_line_width(1.0);
-    cr->rectangle(cx + cw * m, cy + ch * m, cw * (1 - 2 * m),
-                  ch * (1 - 2 * m));
+    cr->rectangle(cx + cw * m, cy + ch * m, cw * (1 - 2 * m), ch * (1 - 2 * m));
     cr->stroke();
   }
 
@@ -791,9 +822,9 @@ void NewDocumentDialog::paint_disk_placeholder(
   // Grid + margin overlays from meta (when present). Same colour vocabulary
   // as draw_builtin_thumb so light/dark mode reads consistently across all
   // tiles in the dialog. Skipped silently when the meta says "no rules".
-  const int divisions  = entry.meta.grid_divisions;
+  const int divisions = entry.meta.grid_divisions;
   const double m_ratio = entry.meta.margin_ratio;
-  const double off_r   = entry.meta.grid_offset_ratio;
+  const double off_r = entry.meta.grid_offset_ratio;
 
   if (divisions > 0) {
     double doc_short = std::min(rect_w, rect_h);
@@ -817,8 +848,8 @@ void NewDocumentDialog::paint_disk_placeholder(
       if (mpx >= 1.0 && (rect_w - 2 * mpx) > 2.0 && (rect_h - 2 * mpx) > 2.0) {
         cr->set_source_rgba(0.85, 0.35, 0.35, 0.6);
         cr->set_line_width(1.0);
-        cr->rectangle(rect_x + mpx, rect_y + mpx,
-                      rect_w - 2 * mpx, rect_h - 2 * mpx);
+        cr->rectangle(rect_x + mpx, rect_y + mpx, rect_w - 2 * mpx,
+                      rect_h - 2 * mpx);
         cr->stroke();
       }
     }
@@ -836,12 +867,13 @@ void NewDocumentDialog::paint_disk_placeholder(
 // their own value. The m_updating guard prevents the signal_changed handler
 // from treating our own edit as user input.
 void NewDocumentDialog::maybe_autofill_name(const std::string &label) {
-  if (m_name_user_typed) return;
+  if (m_name_user_typed)
+    return;
   std::string filled = "Untitled - " + label;
-  m_updating    = true;
+  m_updating = true;
   m_last_autofill = filled;
   m_name_entry.set_text(filled);
-  m_updating    = false;
+  m_updating = false;
 }
 
 // ── Built-in seed builders ───────────────────────────────────────────────────
@@ -858,14 +890,14 @@ std::unique_ptr<CurvzDocument> NewDocumentDialog::build_default_seed() {
   auto *gl = doc->ensure_grid_layer();
   gl->grid_spacing_x = 100.0;
   gl->grid_spacing_y = 100.0;
-  gl->visible        = true;
+  gl->visible = true;
   // Margins: 50 on all four sides
   auto *ml = doc->ensure_margin_layer();
-  ml->margin_top    = 50.0;
+  ml->margin_top = 50.0;
   ml->margin_bottom = 50.0;
-  ml->margin_left   = 50.0;
-  ml->margin_right  = 50.0;
-  ml->visible       = true;
+  ml->margin_left = 50.0;
+  ml->margin_right = 50.0;
+  ml->visible = true;
   return doc;
 }
 
@@ -899,21 +931,30 @@ void NewDocumentDialog::compute_size_wh(double &w_out, double &h_out) const {
   const CanvasModel &cm = m_current;
   Unit disp_unit = cm.display_unit;
   auto unit_from_str = [](const std::string &s) -> Unit {
-    if (s == "in") return Unit::In;
-    if (s == "mm") return Unit::Mm;
-    if (s == "pt") return Unit::Pt;
+    if (s == "in")
+      return Unit::In;
+    if (s == "mm")
+      return Unit::Mm;
+    if (s == "pt")
+      return Unit::Pt;
     return Unit::Px;
   };
   auto inches_to_display = [](double inches, Unit u, int dpi) -> double {
-    if (u == Unit::Mm) return inches * 25.4;
-    if (u == Unit::Pt) return inches * 72.0;
-    if (u == Unit::Px) return inches * dpi;
+    if (u == Unit::Mm)
+      return inches * 25.4;
+    if (u == Unit::Pt)
+      return inches * 72.0;
+    if (u == Unit::Px)
+      return inches * dpi;
     return inches; // In
   };
   auto display_to_inches = [](double v, Unit u, int dpi) -> double {
-    if (u == Unit::Mm) return v / 25.4;
-    if (u == Unit::Pt) return v / 72.0;
-    if (u == Unit::Px) return (dpi > 0) ? v / dpi : v;
+    if (u == Unit::Mm)
+      return v / 25.4;
+    if (u == Unit::Pt)
+      return v / 72.0;
+    if (u == Unit::Px)
+      return (dpi > 0) ? v / dpi : v;
     return v; // In
   };
 
@@ -944,13 +985,13 @@ void NewDocumentDialog::compute_size_wh(double &w_out, double &h_out) const {
   h_out = inches_to_display(ch_in, disp_unit, kDPI);
 }
 
-// ── populate_size_tab ─────────────────────────────────────────────────────────
-// Tear down and re-lay out the four-row Size tab interior. Mirrors the
-// inspector's build_canvas_section structure 1:1 — Units+Orient on row 1,
-// Size W/H+lock on row 2, Size presets driven by Units on row 3, Ratio
-// presets always-visible on row 4. Driven entirely by m_current; any
-// handler that mutates m_current and wants the panel to reflect the new
-// state queues this function on an idle.
+// ── populate_size_tab
+// ───────────────────────────────────────────────────────── Tear down and
+// re-lay out the four-row Size tab interior. Mirrors the inspector's
+// build_canvas_section structure 1:1 — Units+Orient on row 1, Size W/H+lock on
+// row 2, Size presets driven by Units on row 3, Ratio presets always-visible on
+// row 4. Driven entirely by m_current; any handler that mutates m_current and
+// wants the panel to reflect the new state queues this function on an idle.
 void NewDocumentDialog::populate_size_tab() {
   // Bump generation so old captured lambdas can detect they're stale.
   ++m_build_gen;
@@ -979,23 +1020,33 @@ void NewDocumentDialog::populate_size_tab() {
   // Local helpers — keep parallel to compute_size_wh's internals so the
   // preset handlers and the spinner commit see the same conversions.
   auto inches_to_display = [](double inches, Unit u, int dpi) -> double {
-    if (u == Unit::Mm) return inches * 25.4;
-    if (u == Unit::Pt) return inches * 72.0;
-    if (u == Unit::Px) return inches * dpi;
+    if (u == Unit::Mm)
+      return inches * 25.4;
+    if (u == Unit::Pt)
+      return inches * 72.0;
+    if (u == Unit::Px)
+      return inches * dpi;
     return inches;
   };
   auto display_to_inches = [](double v, Unit u, int dpi) -> double {
-    if (u == Unit::Mm) return v / 25.4;
-    if (u == Unit::Pt) return v / 72.0;
-    if (u == Unit::Px) return (dpi > 0) ? v / dpi : v;
+    if (u == Unit::Mm)
+      return v / 25.4;
+    if (u == Unit::Pt)
+      return v / 72.0;
+    if (u == Unit::Px)
+      return (dpi > 0) ? v / dpi : v;
     return v;
   };
   auto unit_str_for_disp = [](Unit u) -> std::string {
     switch (u) {
-      case Unit::Px: return "px";
-      case Unit::In: return "in";
-      case Unit::Mm: return "mm";
-      case Unit::Pt: return "pt";
+    case Unit::Px:
+      return "px";
+    case Unit::In:
+      return "in";
+    case Unit::Mm:
+      return "mm";
+    case Unit::Pt:
+      return "pt";
     }
     return "px";
   };
@@ -1023,49 +1074,52 @@ void NewDocumentDialog::populate_size_tab() {
     guint u_sel = 0;
     for (guint i = 0; i < k_units_all.size(); ++i) {
       u_list->append(UnitSystem::label(k_units_all[i]));
-      if (k_units_all[i] == disp_unit) u_sel = i;
+      if (k_units_all[i] == disp_unit)
+        u_sel = i;
     }
-    auto *u_drop = Gtk::make_managed<curvz::widgets::DropDown>("dlg_nd_un",
-                                                               u_list);
-    curvz::utils::set_name(u_drop, "dlg_nd_un",
-                           "new_document_dialog_units_dd");
+    auto *u_drop =
+        Gtk::make_managed<curvz::widgets::DropDown>("dlg_nd_un", u_list);
+    curvz::utils::set_name(u_drop, "dlg_nd_un", "new_document_dialog_units_dd");
     u_drop->set_selected(u_sel);
     u_drop->set_hexpand(true);
     u_row->append(*u_drop);
 
     uint32_t u_gen = m_build_gen;
-    u_drop->property_selected().signal_changed().connect(
-        [this, u_drop, u_gen, inches_to_display, display_to_inches]() {
-          if (u_gen != m_build_gen || m_updating) return;
-          static const std::array<Unit, 4> units_all = {
-              Unit::Px, Unit::In, Unit::Mm, Unit::Pt};
-          auto sel = u_drop->get_selected();
-          if (sel >= units_all.size()) return;
-          Unit new_unit = units_all[sel];
-          Unit old_unit = m_current.display_unit;
-          // Convert intended_w/h between units so the SAME real-world size
-          // carries across — pure unit change shouldn't alter the delivery
-          // contract; only how it's spelled.
-          if (m_current.intended_w > 0.0 && m_current.intended_h > 0.0
-              && new_unit != old_unit) {
-            const int dpi = 96;
-            double w_in = display_to_inches(m_current.intended_w, old_unit,
-                                            dpi);
-            double h_in = display_to_inches(m_current.intended_h, old_unit,
-                                            dpi);
-            m_current.intended_w = inches_to_display(w_in, new_unit, dpi);
-            m_current.intended_h = inches_to_display(h_in, new_unit, dpi);
-            m_current.intended_unit = (new_unit == Unit::Mm)   ? "mm"
-                                      : (new_unit == Unit::Pt) ? "pt"
-                                      : (new_unit == Unit::In) ? "in"
-                                                               : "px";
-          }
-          m_current.display_unit = new_unit;
-          // Rebuild — Units drives spinner step/precision AND the preset
-          // row, so a unit change needs a full repopulate.
-          Glib::signal_idle().connect_once(
-              [this]() { populate_size_tab(); refresh_preview(); });
-        });
+    u_drop->property_selected().signal_changed().connect([this, u_drop, u_gen,
+                                                          inches_to_display,
+                                                          display_to_inches]() {
+      if (u_gen != m_build_gen || m_updating)
+        return;
+      static const std::array<Unit, 4> units_all = {Unit::Px, Unit::In,
+                                                    Unit::Mm, Unit::Pt};
+      auto sel = u_drop->get_selected();
+      if (sel >= units_all.size())
+        return;
+      Unit new_unit = units_all[sel];
+      Unit old_unit = m_current.display_unit;
+      // Convert intended_w/h between units so the SAME real-world size
+      // carries across — pure unit change shouldn't alter the delivery
+      // contract; only how it's spelled.
+      if (m_current.intended_w > 0.0 && m_current.intended_h > 0.0 &&
+          new_unit != old_unit) {
+        const int dpi = 96;
+        double w_in = display_to_inches(m_current.intended_w, old_unit, dpi);
+        double h_in = display_to_inches(m_current.intended_h, old_unit, dpi);
+        m_current.intended_w = inches_to_display(w_in, new_unit, dpi);
+        m_current.intended_h = inches_to_display(h_in, new_unit, dpi);
+        m_current.intended_unit = (new_unit == Unit::Mm)   ? "mm"
+                                  : (new_unit == Unit::Pt) ? "pt"
+                                  : (new_unit == Unit::In) ? "in"
+                                                           : "px";
+      }
+      m_current.display_unit = new_unit;
+      // Rebuild — Units drives spinner step/precision AND the preset
+      // row, so a unit change needs a full repopulate.
+      Glib::signal_idle().connect_once([this]() {
+        populate_size_tab();
+        refresh_preview();
+      });
+    });
 
     // Orientation buttons — one highlighted, click the inactive to swap W↔H.
     double cur_w = 0.0, cur_h = 0.0;
@@ -1076,13 +1130,13 @@ void NewDocumentDialog::populate_size_tab() {
       cur_h = m_current.canvas_height();
     }
     const bool is_landscape = (cur_w > cur_h);
-    const bool is_portrait  = !is_landscape;
+    const bool is_portrait = !is_landscape;
 
     auto *portrait_btn = Gtk::make_managed<curvz::widgets::Button>("dlg_nd_op");
     curvz::utils::set_name(portrait_btn, "dlg_nd_op",
                            "new_document_dialog_orient_portrait_btn");
-    auto *landscape_btn = Gtk::make_managed<curvz::widgets::Button>(
-        "dlg_nd_ol");
+    auto *landscape_btn =
+        Gtk::make_managed<curvz::widgets::Button>("dlg_nd_ol");
     curvz::utils::set_name(landscape_btn, "dlg_nd_ol",
                            "new_document_dialog_orient_landscape_btn");
 
@@ -1090,30 +1144,37 @@ void NewDocumentDialog::populate_size_tab() {
     portrait_btn->set_tooltip_text("Portrait — taller than wide");
     portrait_btn->add_css_class("flat");
     portrait_btn->add_css_class("orient-btn");
-    if (is_portrait) portrait_btn->add_css_class("orient-active");
+    if (is_portrait)
+      portrait_btn->add_css_class("orient-active");
 
     landscape_btn->set_icon_name("curvz-orientation-landscape-symbolic");
     landscape_btn->set_tooltip_text("Landscape — wider than tall");
     landscape_btn->add_css_class("flat");
     landscape_btn->add_css_class("orient-btn");
-    if (is_landscape) landscape_btn->add_css_class("orient-active");
+    if (is_landscape)
+      landscape_btn->add_css_class("orient-active");
 
     uint32_t s_gen = m_build_gen;
     auto swap_wh = [this, s_gen]() {
-      if (s_gen != m_build_gen) return;
+      if (s_gen != m_build_gen)
+        return;
       std::swap(m_current.ratio_w, m_current.ratio_h);
       std::swap(m_current.px_width, m_current.px_height);
       std::swap(m_current.phys_width, m_current.phys_height);
       std::swap(m_current.intended_w, m_current.intended_h);
-      Glib::signal_idle().connect_once(
-          [this]() { populate_size_tab(); refresh_preview(); });
+      Glib::signal_idle().connect_once([this]() {
+        populate_size_tab();
+        refresh_preview();
+      });
     };
 
     portrait_btn->signal_clicked().connect([this, swap_wh]() {
-      if (m_current.canvas_width() > m_current.canvas_height()) swap_wh();
+      if (m_current.canvas_width() > m_current.canvas_height())
+        swap_wh();
     });
     landscape_btn->signal_clicked().connect([this, swap_wh]() {
-      if (m_current.canvas_width() <= m_current.canvas_height()) swap_wh();
+      if (m_current.canvas_width() <= m_current.canvas_height())
+        swap_wh();
     });
 
     u_row->append(*portrait_btn);
@@ -1164,22 +1225,20 @@ void NewDocumentDialog::populate_size_tab() {
                                            : 0;
     double sz_lo = (disp_unit == Unit::In) ? 0.001 : 1.0;
 
-    auto adj_sw = Gtk::Adjustment::create(size_w, sz_lo, sz_max, sz_step,
-                                          sz_page);
+    auto adj_sw =
+        Gtk::Adjustment::create(size_w, sz_lo, sz_max, sz_step, sz_page);
     auto *sp_w = Gtk::make_managed<curvz::widgets::SpinButton>(
         "dlg_nd_sw", adj_sw, sz_step, sz_dec);
-    curvz::utils::set_name(sp_w, "dlg_nd_sw",
-                           "new_document_dialog_size_w_spn");
+    curvz::utils::set_name(sp_w, "dlg_nd_sw", "new_document_dialog_size_w_spn");
     sp_w->set_hexpand(true);
     sp_w->set_tooltip_text("Intended output width — the SVG's width "
                            "attribute (delivery size, not working precision)");
 
-    auto adj_sh = Gtk::Adjustment::create(size_h, sz_lo, sz_max, sz_step,
-                                          sz_page);
+    auto adj_sh =
+        Gtk::Adjustment::create(size_h, sz_lo, sz_max, sz_step, sz_page);
     auto *sp_h = Gtk::make_managed<curvz::widgets::SpinButton>(
         "dlg_nd_sh", adj_sh, sz_step, sz_dec);
-    curvz::utils::set_name(sp_h, "dlg_nd_sh",
-                           "new_document_dialog_size_h_spn");
+    curvz::utils::set_name(sp_h, "dlg_nd_sh", "new_document_dialog_size_h_spn");
     sp_h->set_hexpand(true);
     sp_h->set_tooltip_text("Intended output height — the SVG's height "
                            "attribute (delivery size, not working precision)");
@@ -1190,8 +1249,8 @@ void NewDocumentDialog::populate_size_tab() {
 
     // Aspect-lock toggle. Same monochrome bright/dim idiom as the
     // inspector's lock_btn (PropertiesPanel.cpp ~1177).
-    auto *lock_btn = Gtk::make_managed<curvz::widgets::ToggleButton>(
-        "dlg_nd_sl");
+    auto *lock_btn =
+        Gtk::make_managed<curvz::widgets::ToggleButton>("dlg_nd_sl");
     curvz::utils::set_name(lock_btn, "dlg_nd_sl",
                            "new_document_dialog_size_lock_toggle");
     lock_btn->set_active(m_size_aspect_locked);
@@ -1214,9 +1273,10 @@ void NewDocumentDialog::populate_size_tab() {
     // which point m_build_gen will have advanced and the gen-check below
     // makes the now-stale captures no-op.
     uint32_t s_gen = m_build_gen;
-    auto on_commit = [this, sp_w, sp_h, s_gen,
-                      disp_unit, unit_str_for_disp](Gtk::SpinButton *driver) {
-      if (s_gen != m_build_gen || m_updating) return;
+    auto on_commit = [this, sp_w, sp_h, s_gen, disp_unit,
+                      unit_str_for_disp](Gtk::SpinButton *driver) {
+      if (s_gen != m_build_gen || m_updating)
+        return;
       double new_w = sp_w->get_value();
       double new_h = sp_h->get_value();
 
@@ -1244,8 +1304,8 @@ void NewDocumentDialog::populate_size_tab() {
         m_current.ratio_w = new_w / s;
         m_current.ratio_h = new_h / s;
       }
-      m_current.intended_w    = new_w;
-      m_current.intended_h    = new_h;
+      m_current.intended_w = new_w;
+      m_current.intended_h = new_h;
       m_current.intended_unit = unit_str_for_disp(disp_unit);
       refresh_preview();
     };
@@ -1279,14 +1339,17 @@ void NewDocumentDialog::populate_size_tab() {
         btn->add_css_class("flat");
         btn->set_margin_start(1);
         btn->signal_clicked().connect([this, px, b_gen]() {
-          if (b_gen != m_build_gen) return;
-          m_current.ratio_w        = 1.0;
-          m_current.ratio_h        = 1.0;
-          m_current.intended_w     = (double)px;
-          m_current.intended_h     = (double)px;
-          m_current.intended_unit  = "px";
-          Glib::signal_idle().connect_once(
-              [this]() { populate_size_tab(); refresh_preview(); });
+          if (b_gen != m_build_gen)
+            return;
+          m_current.ratio_w = 1.0;
+          m_current.ratio_h = 1.0;
+          m_current.intended_w = (double)px;
+          m_current.intended_h = (double)px;
+          m_current.intended_unit = "px";
+          Glib::signal_idle().connect_once([this]() {
+            populate_size_tab();
+            refresh_preview();
+          });
         });
         pre_row->append(*btn);
       }
@@ -1296,9 +1359,9 @@ void NewDocumentDialog::populate_size_tab() {
         double w_in, h_in;
       };
       static const PagePreset PAGE_PRESETS[] = {
-          {"Letter",  8.5,  11.0},
-          {"A4",      8.27, 11.69},
-          {"A5",      5.83, 8.27},
+          {"Letter", 8.5, 11.0},
+          {"A4", 8.27, 11.69},
+          {"A5", 5.83, 8.27},
           {"Tabloid", 11.0, 17.0},
       };
       for (const auto &p : PAGE_PRESETS) {
@@ -1309,19 +1372,21 @@ void NewDocumentDialog::populate_size_tab() {
         double bw = p.w_in, bh = p.h_in;
         btn->signal_clicked().connect(
             [this, bw, bh, b_gen, disp_unit, inches_to_display]() {
-              if (b_gen != m_build_gen) return;
+              if (b_gen != m_build_gen)
+                return;
               double s_in = std::min(bw, bh);
               m_current.ratio_w = bw / s_in;
               m_current.ratio_h = bh / s_in;
               const int dpi = 96;
               m_current.intended_w = inches_to_display(bw, disp_unit, dpi);
               m_current.intended_h = inches_to_display(bh, disp_unit, dpi);
-              m_current.intended_unit =
-                  (disp_unit == Unit::Mm)   ? "mm"
-                  : (disp_unit == Unit::Pt) ? "pt"
-                                            : "in";
-              Glib::signal_idle().connect_once(
-                  [this]() { populate_size_tab(); refresh_preview(); });
+              m_current.intended_unit = (disp_unit == Unit::Mm)   ? "mm"
+                                        : (disp_unit == Unit::Pt) ? "pt"
+                                                                  : "in";
+              Glib::signal_idle().connect_once([this]() {
+                populate_size_tab();
+                refresh_preview();
+              });
             });
         pre_row->append(*btn);
       }
@@ -1358,7 +1423,8 @@ void NewDocumentDialog::populate_size_tab() {
       btn->set_margin_start(1);
       double bw = p.w, bh = p.h;
       btn->signal_clicked().connect([this, bw, bh, b_gen]() {
-        if (b_gen != m_build_gen) return;
+        if (b_gen != m_build_gen)
+          return;
         // New ratio (normalised so short axis = 1).
         double s = std::min(bw, bh);
         m_current.ratio_w = bw / s;
@@ -1373,8 +1439,10 @@ void NewDocumentDialog::populate_size_tab() {
           if (m_current.intended_unit.empty())
             m_current.intended_unit = "px";
         }
-        Glib::signal_idle().connect_once(
-            [this]() { populate_size_tab(); refresh_preview(); });
+        Glib::signal_idle().connect_once([this]() {
+          populate_size_tab();
+          refresh_preview();
+        });
       });
       rp_row->append(*btn);
     }
@@ -1415,27 +1483,28 @@ void NewDocumentDialog::refresh_preview() {
   m_thumb.queue_draw();
 }
 
-// ── show ──────────────────────────────────────────────────────────────────────
+// ── show
+// ──────────────────────────────────────────────────────────────────────
 
 void NewDocumentDialog::show(Gtk::Window &parent,
-                             const std::vector<theme::Theme>& available_themes,
-                             templates::MotifTag motif,
-                             double workspace_r, double workspace_g, double workspace_b,
-                             double artboard_r,  double artboard_g,  double artboard_b,
-                             Callback cb) {
+                             const std::vector<theme::Theme> &available_themes,
+                             templates::MotifTag motif, double workspace_r,
+                             double workspace_g, double workspace_b,
+                             double artboard_r, double artboard_g,
+                             double artboard_b, Callback cb) {
   m_callback = std::move(cb);
   set_transient_for(parent);
-  curvz::utils::apply_motif_class_from_parent(*this, parent);  // s117 m18 v2
+  curvz::utils::apply_motif_class_from_parent(*this, parent); // s117 m18 v2
   set_modal(true);
 
   // Cache motif colours for thumb rendering (draw funcs read these).
   m_workspace_r = workspace_r;
   m_workspace_g = workspace_g;
   m_workspace_b = workspace_b;
-  m_artboard_r  = artboard_r;
-  m_artboard_g  = artboard_g;
-  m_artboard_b  = artboard_b;
-  m_motif       = motif;
+  m_artboard_r = artboard_r;
+  m_artboard_g = artboard_g;
+  m_artboard_b = artboard_b;
+  m_motif = motif;
 
   // m4: bump regen generation. Any in-flight worker from a prior show()
   // will tag results with the old generation; the dispatcher drains and
@@ -1453,11 +1522,11 @@ void NewDocumentDialog::show(Gtk::Window &parent,
   }
 
   // Reset name state — each show() starts fresh.
-  m_updating       = true;
+  m_updating = true;
   m_name_user_typed = false;
   m_last_autofill.clear();
   m_name_entry.set_text("");
-  m_updating       = false;
+  m_updating = false;
 
   // ── Theme dropdown population (S104 m1 follow-on) ──────────────────────
   //
@@ -1475,10 +1544,10 @@ void NewDocumentDialog::show(Gtk::Window &parent,
 
     auto list = Gtk::StringList::create({});
     list->append("No theme");
-    m_theme_drop_ids.emplace_back();  // empty id = "No theme" sentinel
+    m_theme_drop_ids.emplace_back(); // empty id = "No theme" sentinel
 
-    int restored_index = 0;  // default: No theme
-    for (const auto& t : available_themes) {
+    int restored_index = 0; // default: No theme
+    for (const auto &t : available_themes) {
       list->append(t.header.name);
       m_theme_drop_ids.push_back(t.header.id);
       if (!m_remembered_theme_id.empty() &&
@@ -1500,7 +1569,7 @@ void NewDocumentDialog::show(Gtk::Window &parent,
 
   // Clear any lingering selection from a previous show
   m_selected_builtin = BuiltIn::None;
-  m_selected_disk    = -1;
+  m_selected_disk = -1;
 
   // Rebuild the template grid with the latest disk scan.
   // Deferred via signal_idle to avoid "snapshot without a current allocation"
@@ -1517,15 +1586,15 @@ void NewDocumentDialog::show(Gtk::Window &parent,
     populate_template_grid();
     DefaultResolution r = resolve_effective_default();
     switch (r.kind) {
-      case ResolvedDefault::Disk:
-        select_template(r.disk_idx);
-        break;
-      case ResolvedDefault::Blank:
-        select_builtin(BuiltIn::Blank);
-        break;
-      case ResolvedDefault::AppDefault:
-        select_builtin(BuiltIn::Default);
-        break;
+    case ResolvedDefault::Disk:
+      select_template(r.disk_idx);
+      break;
+    case ResolvedDefault::Blank:
+      select_builtin(BuiltIn::Blank);
+      break;
+    case ResolvedDefault::AppDefault:
+      select_builtin(BuiltIn::Default);
+      break;
     }
   });
 
@@ -1553,17 +1622,20 @@ void NewDocumentDialog::show(Gtk::Window &parent,
   // small-icon idiom Curvz defaults to. Clicking a preset overwrites
   // intent; quality stays at 1000.
   m_current = CanvasModel::from_ratio(1.0, 1.0, 1000);
-  m_current.intended_w    = 24.0;
-  m_current.intended_h    = 24.0;
+  m_current.intended_w = 24.0;
+  m_current.intended_h = 24.0;
   m_current.intended_unit = "px";
-  Glib::signal_idle().connect_once(
-      [this]() { populate_size_tab(); refresh_preview(); });
+  Glib::signal_idle().connect_once([this]() {
+    populate_size_tab();
+    refresh_preview();
+  });
 
   refresh_preview();
   present();
 }
 
-// ── Actions ───────────────────────────────────────────────────────────────────
+// ── Actions
+// ───────────────────────────────────────────────────────────────────
 void NewDocumentDialog::on_create() {
   std::unique_ptr<CurvzDocument> seed;
 
@@ -1583,7 +1655,8 @@ void NewDocumentDialog::on_create() {
         m_selected_disk < (int)m_disk_templates.size()) {
       seed = templates::load_document(m_disk_templates[m_selected_disk]);
       if (!seed) {
-        LOG_WARN("NewDocumentDialog: template load failed, falling back to blank");
+        LOG_WARN(
+            "NewDocumentDialog: template load failed, falling back to blank");
         seed = build_blank_seed();
       }
     } else if (m_selected_builtin == BuiltIn::Default) {
@@ -1616,9 +1689,10 @@ void NewDocumentDialog::on_create() {
   // An empty entry still produces an empty string here, which the caller
   // turns into "icon" via its own fallback.
 
-  LOG_INFO("NewDocumentDialog: created canvas {}×{} ratio {:.4g}:{:.4g} quality {}",
-           seed->canvas.canvas_width(), seed->canvas.canvas_height(),
-           seed->canvas.ratio_w, seed->canvas.ratio_h, seed->canvas.quality);
+  LOG_INFO(
+      "NewDocumentDialog: created canvas {}×{} ratio {:.4g}:{:.4g} quality {}",
+      seed->canvas.canvas_width(), seed->canvas.canvas_height(),
+      seed->canvas.ratio_w, seed->canvas.ratio_h, seed->canvas.quality);
 
   // Resolve the theme dropdown selection to an optional ThemeId. The
   // remembered id is kept on the dialog instance across opens — see
@@ -1629,8 +1703,8 @@ void NewDocumentDialog::on_create() {
   }
 
   hide();
-  if (m_callback) m_callback(std::move(seed), std::move(name),
-                             std::move(chosen_theme));
+  if (m_callback)
+    m_callback(std::move(seed), std::move(name), std::move(chosen_theme));
 }
 
 void NewDocumentDialog::on_cancel() { hide(); }
@@ -1645,8 +1719,8 @@ void NewDocumentDialog::on_cancel() { hide(); }
 //     a clump at once.
 //   - regen_worker() runs off-UI. It calls templates::ensure_thumb_for_motif()
 //     which is cache-or-render: instant on cache hit, slow (SVG parse + Cairo
-//     render + PNG write) on cache miss. Pushes a RegenResult to m_regen_results
-//     under m_regen_mutex, then emit()s m_regen_dispatcher.
+//     render + PNG write) on cache miss. Pushes a RegenResult to
+//     m_regen_results under m_regen_mutex, then emit()s m_regen_dispatcher.
 //   - on_regen_dispatch() runs on the UI thread (Glib::Dispatcher's only
 //     contract). Drains m_regen_results, loads each non-empty path into a
 //     Pixbuf, writes it onto the matching DiskTileState, kicks off the
@@ -1674,7 +1748,7 @@ void NewDocumentDialog::kickoff_disk_regens() {
     templates::TemplateEntry entry_snap = m_disk_templates[i];
     templates::MotifTag motif_snap = m_motif;
     double wr = m_workspace_r, wg = m_workspace_g, wb = m_workspace_b;
-    double ar = m_artboard_r,  ag = m_artboard_g,  ab = m_artboard_b;
+    double ar = m_artboard_r, ag = m_artboard_g, ab = m_artboard_b;
 
     // Glib::signal_timeout takes a slot returning bool (true = re-arm).
     // We capture by value so the slot survives the loop.
@@ -1683,11 +1757,12 @@ void NewDocumentDialog::kickoff_disk_regens() {
           // Re-check generation in case show() was called again during the
           // stagger window. If so, our gen is stale and we skip — the new
           // show() will have queued its own kickoffs.
-          if (gen != m_regen_generation.load(std::memory_order_acquire)) return;
-          std::thread([this, i, gen, entry_snap, motif_snap,
-                       wr, wg, wb, ar, ag, ab]() {
-            this->regen_worker(i, gen, entry_snap, motif_snap,
-                               wr, wg, wb, ar, ag, ab);
+          if (gen != m_regen_generation.load(std::memory_order_acquire))
+            return;
+          std::thread([this, i, gen, entry_snap, motif_snap, wr, wg, wb, ar, ag,
+                       ab]() {
+            this->regen_worker(i, gen, entry_snap, motif_snap, wr, wg, wb, ar,
+                               ag, ab);
           }).detach();
         },
         delay_ms);
@@ -1697,11 +1772,11 @@ void NewDocumentDialog::kickoff_disk_regens() {
 
 void NewDocumentDialog::regen_worker(int tile_index, uint64_t generation,
                                      templates::TemplateEntry entry,
-                                     templates::MotifTag motif,
-                                     double wr, double wg, double wb,
-                                     double ar, double ag, double ab) {
-  std::string out_path = templates::ensure_thumb_for_motif(
-      entry, motif, wr, wg, wb, ar, ag, ab);
+                                     templates::MotifTag motif, double wr,
+                                     double wg, double wb, double ar, double ag,
+                                     double ab) {
+  std::string out_path =
+      templates::ensure_thumb_for_motif(entry, motif, wr, wg, wb, ar, ag, ab);
 
   // Push result + emit dispatcher. Even on failure (empty out_path) we
   // emit so on_regen_dispatch can log and move on.
@@ -1730,8 +1805,9 @@ void NewDocumentDialog::on_regen_dispatch() {
     // Stale callback — dialog was closed and reopened during regen. PNG
     // is on disk for next time; nothing to do here.
     if (r.generation != cur_gen) {
-      LOG_DEBUG("on_regen_dispatch: dropping stale result for tile {} (gen {} != {})",
-                r.tile_index, r.generation, cur_gen);
+      LOG_DEBUG(
+          "on_regen_dispatch: dropping stale result for tile {} (gen {} != {})",
+          r.tile_index, r.generation, cur_gen);
       continue;
     }
 
@@ -1749,14 +1825,14 @@ void NewDocumentDialog::on_regen_dispatch() {
     try {
       pb = Gdk::Pixbuf::create_from_file(r.out_path);
     } catch (const Glib::Error &err) {
-      LOG_WARN("on_regen_dispatch: pixbuf load failed for '{}': {}",
-               r.out_path, err.what());
+      LOG_WARN("on_regen_dispatch: pixbuf load failed for '{}': {}", r.out_path,
+               err.what());
       continue;
     }
 
     auto &state = m_disk_tile_state[r.tile_index];
-    state.pb     = pb;
-    state.alpha  = 0.0;
+    state.pb = pb;
+    state.alpha = 0.0;
     state.fading = true;
 
     // Kick off the crossfade tick. Capture by value so the slot is
@@ -1769,9 +1845,11 @@ void NewDocumentDialog::on_regen_dispatch() {
 }
 
 bool NewDocumentDialog::tick_crossfade(int tile_index) {
-  if (tile_index < 0 || tile_index >= (int)m_disk_tile_state.size()) return false;
+  if (tile_index < 0 || tile_index >= (int)m_disk_tile_state.size())
+    return false;
   auto &state = m_disk_tile_state[tile_index];
-  if (!state.fading) return false;
+  if (!state.fading)
+    return false;
 
   // Linear ramp would feel a touch mechanical. Use a cheap ease-out by
   // squaring the inverse delta — gives a soft settle at the end.
@@ -1781,7 +1859,8 @@ bool NewDocumentDialog::tick_crossfade(int tile_index) {
     state.alpha = 1.0;
     state.fading = false;
   }
-  if (state.area) state.area->queue_draw();
+  if (state.area)
+    state.area->queue_draw();
   return state.fading;
 }
 

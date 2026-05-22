@@ -1,8 +1,8 @@
 #include "Ruler.hpp"
 #include "CurvzLog.hpp"
 #include "UnitSystem.hpp"
-#include "curvz_utils.hpp"             // s208 m5 — curvz::utils::set_name
-#include "widgets/Button.hpp"    // s208 m5 — substrate origin-popover btn
+#include "curvz_utils.hpp"    // s208 m5 — curvz::utils::set_name
+#include "widgets/Button.hpp" // s208 m5 — substrate origin-popover btn
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -62,13 +62,16 @@ struct TickScheme {
 // and gives ruler ticks the same coordinate system every other surface
 // reports.
 static inline bool ruler_has_intent(const RulerState &s) {
-  return s.intended_w > 0.0 && s.intended_h > 0.0 && s.canvas_w > 0.0
-         && s.canvas_h > 0.0;
+  return s.intended_w > 0.0 && s.intended_h > 0.0 && s.canvas_w > 0.0 &&
+         s.canvas_h > 0.0;
 }
 static inline Unit ruler_intent_unit(const RulerState &s) {
-  if (s.intended_unit == "in") return Unit::In;
-  if (s.intended_unit == "mm") return Unit::Mm;
-  if (s.intended_unit == "pt") return Unit::Pt;
+  if (s.intended_unit == "in")
+    return Unit::In;
+  if (s.intended_unit == "mm")
+    return Unit::Mm;
+  if (s.intended_unit == "pt")
+    return Unit::Pt;
   return Unit::Px;
 }
 
@@ -206,17 +209,17 @@ struct RulerPalette {
 };
 static const RulerPalette kPaletteDark = {
     {0.145, 0.145, 0.145}, // bg     #252525  (--bg-surface dark)
-    {0.55,  0.55,  0.55},  // tick   #999999  (--fg-muted dark, eyeballed)
-    {0.56,  0.56,  0.56},  // text   #8f8f8f  (--fg-muted dark, eyeballed)
-    {0.31,  0.60,  0.94},  // origin #3584e4  (--accent)
-    {0.31,  0.60,  0.94},  // cursor #3584e4  (--accent)
+    {0.55, 0.55, 0.55},    // tick   #999999  (--fg-muted dark, eyeballed)
+    {0.56, 0.56, 0.56},    // text   #8f8f8f  (--fg-muted dark, eyeballed)
+    {0.31, 0.60, 0.94},    // origin #3584e4  (--accent)
+    {0.31, 0.60, 0.94},    // cursor #3584e4  (--accent)
 };
 static const RulerPalette kPaletteLight = {
     {0.866, 0.866, 0.866}, // bg     #dddddd  (--bg-surface light)
     {0.290, 0.290, 0.290}, // tick   #4a4a4a  (--fg-muted light, s117 m4)
     {0.290, 0.290, 0.290}, // text   #4a4a4a  (--fg-muted light, s117 m4)
-    {0.31,  0.60,  0.94},  // origin #3584e4  (--accent, motif-invariant)
-    {0.31,  0.60,  0.94},  // cursor #3584e4  (--accent, motif-invariant)
+    {0.31, 0.60, 0.94},    // origin #3584e4  (--accent, motif-invariant)
+    {0.31, 0.60, 0.94},    // cursor #3584e4  (--accent, motif-invariant)
 };
 static const RulerPalette &palette_for(Motif m) {
   return m == Motif::Light ? kPaletteLight : kPaletteDark;
@@ -227,9 +230,9 @@ static const RulerPalette &palette_for(Motif m) {
 // px/in/mm/pt buttons, attaches it to `widget`, emits `on_unit` when a button
 // is clicked. `position` controls which edge of the anchor rect the popover
 // pops out from — Bottom suits horizontal rulers, Right suits vertical.
-static void build_ruler_unit_popover(Gtk::Widget &widget, Gtk::Popover &pop,
-                                     std::function<void(Unit)> on_unit,
-                                     Gtk::PositionType position = Gtk::PositionType::BOTTOM) {
+static void build_ruler_unit_popover(
+    Gtk::Widget &widget, Gtk::Popover &pop, std::function<void(Unit)> on_unit,
+    Gtk::PositionType position = Gtk::PositionType::BOTTOM) {
   static const std::pair<const char *, Unit> k_units[] = {
       {"px", Unit::Px}, {"in", Unit::In}, {"mm", Unit::Mm}, {"pt", Unit::Pt}};
 
@@ -251,7 +254,7 @@ static void build_ruler_unit_popover(Gtk::Widget &widget, Gtk::Popover &pop,
     // instance of the s209 m1 pattern: one signature change, eight
     // substrate widgets per app launch.
     auto *btn = Gtk::make_managed<curvz::widgets::Button>(
-                    curvz::scripting::unregistered, lbl);
+        curvz::scripting::unregistered, lbl);
     btn->add_css_class("flat");
     btn->add_css_class("tb-type-btn");
     btn->signal_clicked().connect([&pop, on_unit, unit = unit]() {
@@ -324,14 +327,13 @@ HRuler::HRuler() {
                            [this](Unit u) { m_sig_unit.emit(u); });
   auto cclick = Gtk::GestureClick::create();
   cclick->set_button(3); // S89: was Ctrl+left, now plain right-click
-  cclick->signal_pressed().connect(
-      [this](int, double x, double y) {
-        // Anchor the popover at the click point so it rises from where the
-        // user clicked, not the widget's default bounding-rect anchor.
-        Gdk::Rectangle r{(int)x, (int)y, 1, 1};
-        m_pop.set_pointing_to(r);
-        m_pop.popup();
-      });
+  cclick->signal_pressed().connect([this](int, double x, double y) {
+    // Anchor the popover at the click point so it rises from where the
+    // user clicked, not the widget's default bounding-rect anchor.
+    Gdk::Rectangle r{(int)x, (int)y, 1, 1};
+    m_pop.set_pointing_to(r);
+    m_pop.popup();
+  });
   add_controller(cclick);
 }
 void HRuler::set_state(const RulerState &s) {
@@ -378,16 +380,17 @@ void HRuler::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     auto now_ms = (uint64_t)g_get_monotonic_time() / 1000;
     if (now_ms - s_last_log_ms > 500) {
       s_last_log_ms = now_ms;
-      LOG_INFO("HRULER diag: on_draw widget=({}x{}) m_state zoom={:.4g} "
-               "pan=({:.1f},{:.1f}) canvas=({:.0f}x{:.0f}) intent=({:.4g}x{:.4g}) "
-               "intended_unit='{}' display_unit={} origin={:.1f} "
-               "→ ts.interval={:.4g} suffix='{}' user_left={:.4g} user_right={:.4g} "
-               "first_user={:.4g}",
-               w, h, m_state.zoom, m_state.pan_x, m_state.pan_y,
-               m_state.canvas_w, m_state.canvas_h, m_state.intended_w,
-               m_state.intended_h, m_state.intended_unit,
-               (int)m_state.display_unit, m_state.ruler_origin_x,
-               ts.interval, ts.suffix, user_left, user_right, first_user);
+      LOG_INFO(
+          "HRULER diag: on_draw widget=({}x{}) m_state zoom={:.4g} "
+          "pan=({:.1f},{:.1f}) canvas=({:.0f}x{:.0f}) intent=({:.4g}x{:.4g}) "
+          "intended_unit='{}' display_unit={} origin={:.1f} "
+          "→ ts.interval={:.4g} suffix='{}' user_left={:.4g} user_right={:.4g} "
+          "first_user={:.4g}",
+          w, h, m_state.zoom, m_state.pan_x, m_state.pan_y, m_state.canvas_w,
+          m_state.canvas_h, m_state.intended_w, m_state.intended_h,
+          m_state.intended_unit, (int)m_state.display_unit,
+          m_state.ruler_origin_x, ts.interval, ts.suffix, user_left, user_right,
+          first_user);
     }
   }
 
@@ -414,8 +417,8 @@ void HRuler::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     // already returns the right value; only the legacy non-intent
     // non-Physical path needs the extra from_px conversion.
     double display_val = doc_tick_to_display(doc_x, m_state, false);
-    if (!ruler_has_intent(m_state)
-        && m_state.display_mode != DisplayMode::Physical)
+    if (!ruler_has_intent(m_state) &&
+        m_state.display_mode != DisplayMode::Physical)
       display_val = UnitSystem::from_px(user_x, m_state.display_unit);
 
     std::string lbl = fmt_tick(display_val, ts);
@@ -527,19 +530,18 @@ VRuler::VRuler() {
   // ruler at the click's vertical position (the ruler is a tall skinny
   // strip, so BOTTOM positioning would make the popover hang off the top
   // of the ruler — which was the pre-fix behaviour).
-  build_ruler_unit_popover(*this, m_pop,
-                           [this](Unit u) { m_sig_unit.emit(u); },
-                           Gtk::PositionType::RIGHT);
+  build_ruler_unit_popover(
+      *this, m_pop, [this](Unit u) { m_sig_unit.emit(u); },
+      Gtk::PositionType::RIGHT);
   auto cclick = Gtk::GestureClick::create();
   cclick->set_button(3); // S89: was Ctrl+left, now plain right-click
-  cclick->signal_pressed().connect(
-      [this](int, double x, double y) {
-        // Anchor at the click — popover arrow points at the click spot;
-        // the popover body itself appears to the right of the ruler.
-        Gdk::Rectangle r{(int)x, (int)y, 1, 1};
-        m_pop.set_pointing_to(r);
-        m_pop.popup();
-      });
+  cclick->signal_pressed().connect([this](int, double x, double y) {
+    // Anchor at the click — popover arrow points at the click spot;
+    // the popover body itself appears to the right of the ruler.
+    Gdk::Rectangle r{(int)x, (int)y, 1, 1};
+    m_pop.set_pointing_to(r);
+    m_pop.popup();
+  });
   add_controller(cclick);
 }
 
@@ -607,8 +609,8 @@ void VRuler::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     // already returns the right value; only the legacy non-intent
     // non-Physical path needs the extra from_px conversion.
     double display_val = doc_tick_to_display(doc_y, m_state, true);
-    if (!ruler_has_intent(m_state)
-        && m_state.display_mode != DisplayMode::Physical)
+    if (!ruler_has_intent(m_state) &&
+        m_state.display_mode != DisplayMode::Physical)
       display_val = UnitSystem::from_px(user_y, m_state.display_unit);
 
     std::string lbl = fmt_tick(display_val, ts);
@@ -681,7 +683,10 @@ void VRuler::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
 
 // ── CornerSquare
 // ──────────────────────────────────────────────────────────────
-CornerSquare::CornerSquare() {
+CornerSquare::CornerSquare()
+    : m_x_spin(SpinType::Distance)
+    , m_y_spin(SpinType::Distance)
+{
   set_size_request(RULER_SIZE, RULER_SIZE);
   set_draw_func(sigc::mem_fun(*this, &CornerSquare::on_draw));
 
@@ -739,8 +744,33 @@ CornerSquare::CornerSquare() {
   auto rclick = Gtk::GestureClick::create();
   rclick->set_button(3);
   rclick->signal_pressed().connect([this](int, double, double) {
-    m_x_adj->set_value(m_state.ruler_origin_x);
-    m_y_adj->set_value(m_state.ruler_origin_y);
+    // s290: sync the popover's ephemeral CanvasModel from current ruler state
+    // so the spinners convert against the live document. Then prefill the
+    // spinners with the current ruler origin (doc-px in / user-Y-doc-px in).
+    m_pop_model.quality      = m_state.quality;
+    // canvas_width/canvas_height come from ratio_w/ratio_h × quality.
+    // m_state has canvas_w/canvas_h directly; derive ratios.
+    if (m_state.quality > 0) {
+      m_pop_model.ratio_w = m_state.canvas_w / (double)m_state.quality;
+      m_pop_model.ratio_h = m_state.canvas_h / (double)m_state.quality;
+    }
+    m_pop_model.display_mode = m_state.display_mode;
+    m_pop_model.display_unit = m_state.display_unit;
+    m_pop_model.phys_width   = m_state.phys_short;
+    m_pop_model.phys_height  = m_state.phys_short;
+    m_pop_model.phys_unit    = m_state.phys_unit;
+    m_pop_model.intended_w   = m_state.intended_w;
+    m_pop_model.intended_h   = m_state.intended_h;
+    m_pop_model.intended_unit = m_state.intended_unit;
+
+    if (m_unit_lbl) {
+      Unit u = (m_state.display_mode == DisplayMode::Physical)
+                   ? UnitSystem::parse_unit(m_state.phys_unit)
+                   : m_state.display_unit;
+      m_unit_lbl->set_text(std::string("Units: ") + UnitSystem::label(u));
+    }
+    m_x_spin.set_internal_value(m_state.ruler_origin_x);
+    m_y_spin.set_internal_value(m_state.ruler_origin_y);
     m_pop.popup();
   });
   add_controller(rclick);
@@ -759,29 +789,37 @@ void CornerSquare::build_origin_popover() {
   title->set_xalign(0.0f);
   outer->append(*title);
 
-  auto make_row = [&](const std::string &lbl, Gtk::SpinButton &spin,
-                      Glib::RefPtr<Gtk::Adjustment> &adj) {
+  // s290: spinners are CurvzSpinButton::Distance (set in ctor init list) —
+  // scale only, no offset or Y-flip. ruler_origin_x is doc-px and
+  // ruler_origin_y is user-Y-doc-px (page-relative, Y-up); both are scalars
+  // in the same display-unit scale. The popover holds an ephemeral CanvasModel
+  // synced from m_state so the spinner's intent-aware pump can convert against
+  // the current document.
+  m_x_spin.set_model(&m_pop_model);
+  m_y_spin.set_model(&m_pop_model);
+  m_x_spin.set_digits(2);
+  m_y_spin.set_digits(2);
+  m_x_spin.set_width_chars(8);
+  m_y_spin.set_width_chars(8);
+
+  auto make_row = [&](const std::string &lbl, CurvzSpinButton &spin) {
     auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
     row->set_spacing(6);
     auto *l = Gtk::make_managed<Gtk::Label>(lbl);
     l->set_width_chars(2);
     l->set_xalign(0.0f);
     l->add_css_class("tb-pop-label");
-    adj = Gtk::Adjustment::create(0.0, -99999.0, 99999.0, 1.0, 10.0);
-    spin.set_adjustment(adj);
-    spin.set_digits(2);
-    spin.set_width_chars(8);
     row->append(*l);
     row->append(spin);
     outer->append(*row);
   };
 
-  make_row("X", m_x_spin, m_x_adj);
-  make_row("Y", m_y_spin, m_y_adj);
+  make_row("X", m_x_spin);
+  make_row("Y", m_y_spin);
 
   // Commit typed value on Enter — use key controller (GTK4 SpinButton
   // signal_activate unreliable)
-  auto make_spin_enter = [this](Gtk::SpinButton &spin) {
+  auto make_spin_enter = [this](CurvzSpinButton &spin) {
     auto kc = Gtk::EventControllerKey::create();
     kc->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
     kc->signal_key_pressed().connect(
@@ -789,7 +827,8 @@ void CornerSquare::build_origin_popover() {
           if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
             spin.update();
             m_pop.popdown();
-            m_sig_origin.emit(m_x_adj->get_value(), m_y_adj->get_value());
+            m_sig_origin.emit(m_x_spin.get_internal_value(),
+                              m_y_spin.get_internal_value());
             return false;
           }
           return false;
@@ -808,15 +847,15 @@ void CornerSquare::build_origin_popover() {
   // s208 m5: substrate. CornerSquare is a single-instance member of
   // MainWindow's ruler corner; build_origin_popover runs once per app
   // lifetime, so the substrate registration is unproblematic.
-  auto *ok_btn = Gtk::make_managed<curvz::widgets::Button>(
-      "pop_or_set", "Set Origin");
-  curvz::utils::set_name(ok_btn, "pop_or_set",
-                         "popover_ruler_origin_set_btn");
+  auto *ok_btn =
+      Gtk::make_managed<curvz::widgets::Button>("pop_or_set", "Set Origin");
+  curvz::utils::set_name(ok_btn, "pop_or_set", "popover_ruler_origin_set_btn");
   ok_btn->add_css_class("tb-type-btn");
   ok_btn->add_css_class("tb-type-btn-active");
   ok_btn->signal_clicked().connect([this]() {
     m_pop.popdown();
-    m_sig_origin.emit(m_x_adj->get_value(), m_y_adj->get_value());
+    m_sig_origin.emit(m_x_spin.get_internal_value(),
+                      m_y_spin.get_internal_value());
   });
   outer->append(*ok_btn);
 

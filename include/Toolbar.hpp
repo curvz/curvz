@@ -272,8 +272,8 @@ public:
   using PlaceRefSignal = sigc::signal<void(double /*x*/, double /*y*/)>;
   using PlaceRectSignal = sigc::signal<void(double /*x*/, double /*y*/,
                                             double /*w*/, double /*h*/)>;
-  using PlaceEllipseSignal = sigc::signal<void(double /*cx*/, double /*cy*/,
-                                               double /*rx*/, double /*ry*/)>;
+  using PlaceEllipseSignal = sigc::signal<void(double /*x*/, double /*y*/,
+                                               double /*w*/, double /*h*/)>;
   using PlaceLineSignal = sigc::signal<void(double /*x1*/, double /*y1*/,
                                             double /*x2*/, double /*y2*/)>;
   using PlaceTextSignal =

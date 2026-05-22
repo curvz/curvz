@@ -3005,6 +3005,95 @@ void Canvas::clear_selection() {
   LOG_INFO("Canvas: clear_selection");
 }
 
+// s290 — Node-tool select-all. Walks every visible non-special-layer path
+// and adds every node index to m_node_selection. Primary slot points to
+// the first found path at node index 0 so the inspector + drag handlers
+// have a coherent primary; the n-order selection set is what drag /
+// delete / cross-path operations read.
+//
+// Independent of object-world select_all() — that mutates m_selection
+// (object-world primary set). Node mode operates on m_node_selection,
+// orthogonal data.
+void Canvas::node_select_all() {
+  if (!m_doc)
+    return;
+
+  m_node_selection.clear();
+  SceneNode *first_path = nullptr;
+
+  for (auto &layer : m_doc->layers) {
+    if (!layer->visible || layer->locked)
+      continue;
+    if (layer->is_special_layer())
+      continue;
+    // Recursive walk for nested Group/Compound children. Same pattern
+    // hit_test uses for descent.
+    std::function<void(std::vector<std::unique_ptr<SceneNode>> &)> walk;
+    walk = [&](std::vector<std::unique_ptr<SceneNode>> &children) {
+      for (auto &child : children) {
+        if (!child->visible)
+          continue;
+        if (child->type == SceneNode::Type::Group ||
+            child->type == SceneNode::Type::Compound ||
+            child->type == SceneNode::Type::ClipGroup) {
+          walk(child->children);
+          continue;
+        }
+        if (child->type != SceneNode::Type::Path || !child->path)
+          continue;
+        const int n = (int)child->path->nodes.size();
+        if (n == 0)
+          continue;
+        if (!first_path)
+          first_path = child.get();
+        for (int i = 0; i < n; ++i)
+          m_node_selection.push_back({child.get(), i});
+      }
+    };
+    walk(layer->children);
+  }
+
+  if (first_path) {
+    m_selected = first_path;
+    m_selection = {first_path};
+    m_selected_node = 0;
+    notify_object_selection_changed();
+    notify_node_selection_changed();
+    m_sig_node_changed.emit(m_selected, m_selected_node);
+  }
+  queue_draw();
+  LOG_INFO("Canvas: node_select_all — {} nodes across visible paths",
+           m_node_selection.size());
+}
+
+// s290 — Node-tool counterpart to clear_selection. Clears node selection
+// and the primary node slot. Object-world m_selection is left alone —
+// the user may still want the path selected as an object (so the
+// inspector can show stroke/fill); clearing the node selection just
+// means "no nodes are picked for next operation."
+void Canvas::node_clear_selection() {
+  LOG_INFO("[s290 diag] node_clear_selection: ENTRY  "
+           "m_node_selection.size={} m_selected_node={} "
+           "m_selected2={} m_selected_node2={}",
+           m_node_selection.size(), m_selected_node,
+           (void*)m_selected2, m_selected_node2);
+  if (m_node_selection.empty() && m_selected_node < 0)
+    return;
+  m_node_selection.clear();
+  m_selected_node = -1;
+  // s290 — defensive: also clear secondary node slot. The cross-path
+  // join/connect machinery sets m_selected2 / m_selected_node2 to mark a
+  // second path's "target" node, drawn as an orange ring separately from
+  // m_node_selection (Canvas_draw.cpp:852). A bare "clear nodes" must
+  // include this slot or it leaves a stray highlight.
+  m_selected2 = nullptr;
+  m_selected_node2 = -1;
+  notify_node_selection_changed();
+  m_sig_node_changed.emit(m_selected, m_selected_node);
+  queue_draw();
+  LOG_INFO("[s290 diag] node_clear_selection: EXIT  cleared");
+}
+
 void Canvas::copy_selected() {
   if (m_selection.empty() || !m_doc)
     return;

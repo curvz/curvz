@@ -457,6 +457,11 @@ set(SOURCES
     # SVG serialisation
     src/SvgWriter.cpp
     src/SvgParser.cpp
+    # s290 m1a — peer-class copy of SvgParser. m1b.1 added on_path
+    # fan-out; m1b.2 added on_compound/group bracketing; m1b.3 added
+    # on_layer bracketing and on_doc_metadata. m1 close: event stream
+    # is complete for the existing parser semantics.
+    src/AnimatingSvgParser.cpp
     src/SvgOptimiser.cpp
 
     # Tools
@@ -592,6 +597,7 @@ set(SOURCES
     src/widgets/Entry.cpp
     src/widgets/Scale.cpp
     src/widgets/SpinButton.cpp
+    src/widgets/RefPointGrid.cpp    # s290 — extracted 9-point anchor grid
     src/widgets/RefPointPicker.cpp  # s204 m4 — compound bbox-point picker
 
     # Custom widgets

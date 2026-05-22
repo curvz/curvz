@@ -1,5 +1,6 @@
 #include "MainWindow.hpp"
 #include "AppPreferences.hpp" // s139 m2 / s143 m1 — boolean-cleanup quality pref + sync
+#include "Application.hpp" // s219 m1 — Curvz::Application (main_window only)
 #include "ContextBar.hpp"
 #include "CoordSpace.hpp"
 #include "CurvzLog.hpp"
@@ -11,21 +12,20 @@
 #include "SvgParser.hpp"
 #include "SvgWriter.hpp"
 #include "TemplateLibrary.hpp"
-#include "scripting/LayersScriptable.hpp"  // s216 m1 — model Scriptable pilot
-#include "scripting/GuidesScriptable.hpp"  // s218 m1 — second model Scriptable
-#include "scripting/SwatchesScriptable.hpp"  // s221 m1 — third model Scriptable
-#include "scripting/PalettesScriptable.hpp"  // s243 m2 — eighth model Scriptable
-#include "scripting/StylesScriptable.hpp"  // s222 m1 — fourth model Scriptable
-#include "scripting/ThemesScriptable.hpp"  // s223 m1 — fifth model Scriptable
+#include "scripting/Action.hpp"        // s254 m2 — Tier 2 action wrappers
+#include "scripting/AppScriptable.hpp" // s263 m2 — third headless-verb singleton
+#include "scripting/ExportScriptable.hpp" // s251 m1 — second headless-verb singleton
+#include "scripting/GuidesScriptable.hpp" // s218 m1 — second model Scriptable
+#include "scripting/InspectorScriptable.hpp" // s222 m2 — inspector area Scriptable
+#include "scripting/LayersScriptable.hpp"    // s216 m1 — model Scriptable pilot
 #include "scripting/ObjectsScriptable.hpp"  // s230 m1 — sixth model Scriptable
-#include "scripting/InspectorScriptable.hpp"  // s222 m2 — inspector area Scriptable
-#include "scripting/ProjScriptable.hpp"      // s246 m1 — first headless-verb singleton
-#include "scripting/ExportScriptable.hpp"    // s251 m1 — second headless-verb singleton
-#include "scripting/AppScriptable.hpp"       // s263 m2 — third headless-verb singleton
-#include "scripting/Action.hpp"               // s254 m2 — Tier 2 action wrappers
-#include "scripting/ScripterWindow.hpp"    // s219 m1 — apply_scripter_pref present/hide
-#include "widgets/ToggleButton.hpp"  // s219 m1 — m_scripter_btn visibility flip
-#include "Application.hpp"                  // s219 m1 — Curvz::Application (main_window only)
+#include "scripting/PalettesScriptable.hpp" // s243 m2 — eighth model Scriptable
+#include "scripting/ProjScriptable.hpp" // s246 m1 — first headless-verb singleton
+#include "scripting/ScripterWindow.hpp" // s219 m1 — apply_scripter_pref present/hide
+#include "scripting/StylesScriptable.hpp"   // s222 m1 — fourth model Scriptable
+#include "scripting/SwatchesScriptable.hpp" // s221 m1 — third model Scriptable
+#include "scripting/ThemesScriptable.hpp"   // s223 m1 — fifth model Scriptable
+#include "widgets/ToggleButton.hpp" // s219 m1 — m_scripter_btn visibility flip
 #include <functional>
 #include <giomm/simpleactiongroup.h> // s144 m3 — recents action group
 #include <gtkmm/application.h>
@@ -85,23 +85,21 @@ namespace fs = std::filesystem;
 // the Scripter receives the resolved paths via its constructor, not
 // by calling these helpers itself.
 std::string scripts_user_dir() {
-    const std::string &override_path =
-        AppPreferences::instance().scripts_path_override();
-    std::string dir = !override_path.empty()
-        ? override_path
-        : (std::string(Glib::get_user_config_dir()) + "/curvz/scripts");
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    if (ec) {
-        LOG_WARN("scripts_user_dir: cannot create '{}': {}",
-                 dir, ec.message());
-    }
-    return dir;
+  const std::string &override_path =
+      AppPreferences::instance().scripts_path_override();
+  std::string dir =
+      !override_path.empty()
+          ? override_path
+          : (std::string(Glib::get_user_config_dir()) + "/curvz/scripts");
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  if (ec) {
+    LOG_WARN("scripts_user_dir: cannot create '{}': {}", dir, ec.message());
+  }
+  return dir;
 }
 
-std::string scripts_system_dir() {
-    return "/usr/share/curvz/scripts";
-}
+std::string scripts_system_dir() { return "/usr/share/curvz/scripts"; }
 
 // ─────────────────────────────────────────────────────────────────────
 // MainWindow.cpp — the glue.
@@ -122,7 +120,8 @@ std::string scripts_system_dir() {
 
 #include "css.hpp"
 
-MainWindow::MainWindow(Application & /*app*/) {
+MainWindow::MainWindow(Application & /*app*/)
+    : m_corner_radius_spin(SpinType::Distance) {
   curvz::utils::set_name(*this, "mw", "main_window_root");
   set_default_size(1400, 860);
 
@@ -292,11 +291,9 @@ MainWindow::MainWindow(Application & /*app*/) {
   // via on_add_layer / on_delete_layer's tail). The lambda is
   // identical to StylesScriptable's: returns &m_layers, the panel
   // member that lives at MainWindow scope.
-  m_layers_scriptable =
-      std::make_unique<curvz::scripting::LayersScriptable>(
-          [this]() -> CurvzProject* { return m_project.get(); },
-          &m_history,
-          [this]() -> LayersPanel* { return &m_layers; });
+  m_layers_scriptable = std::make_unique<curvz::scripting::LayersScriptable>(
+      [this]() -> CurvzProject * { return m_project.get(); }, &m_history,
+      [this]() -> LayersPanel * { return &m_layers; });
 
   // s218 m1 / s219 m1 — `guides` collection Scriptable. Same construction shape
   // as the layers Scriptable above: same project-getter (resolves
@@ -304,10 +301,8 @@ MainWindow::MainWindow(Application & /*app*/) {
   // same m_history pointer (captured for shape-symmetry — guides
   // aren't undoable today, but the wiring is in place for whenever
   // guide-flavored field-edit commands land).
-  m_guides_scriptable =
-      std::make_unique<curvz::scripting::GuidesScriptable>(
-          [this]() -> CurvzProject* { return m_project.get(); },
-          &m_history);
+  m_guides_scriptable = std::make_unique<curvz::scripting::GuidesScriptable>(
+      [this]() -> CurvzProject * { return m_project.get(); }, &m_history);
 
   // s221 m1 — `swatches` collection Scriptable. First library-
   // collection Scriptable (the previous two wrap SceneNode collections;
@@ -321,8 +316,7 @@ MainWindow::MainWindow(Application & /*app*/) {
   // EditSwatchCommand) and the Scriptable rides that plumbing.
   m_swatches_scriptable =
       std::make_unique<curvz::scripting::SwatchesScriptable>(
-          [this]() -> CurvzProject* { return m_project.get(); },
-          &m_history);
+          [this]() -> CurvzProject * { return m_project.get(); }, &m_history);
 
   // s243 m2 — `palettes` collection Scriptable. Sibling of
   // m_swatches_scriptable — both wrap CurvzProject::swatches (the
@@ -344,8 +338,7 @@ MainWindow::MainWindow(Application & /*app*/) {
   // m_themes_scriptable (no panel-side step needed).
   m_palettes_scriptable =
       std::make_unique<curvz::scripting::PalettesScriptable>(
-          [this]() -> CurvzProject* { return m_project.get(); },
-          &m_history);
+          [this]() -> CurvzProject * { return m_project.get(); }, &m_history);
 
   // s222 m1 — `styles` collection Scriptable. Second library-collection
   // Scriptable (sibling of m_swatches_scriptable; both wrap
@@ -368,11 +361,9 @@ MainWindow::MainWindow(Application & /*app*/) {
   // See StylesScriptable.hpp's "Panel visibility" block for the full
   // rationale and the comparison with SwatchesScriptable's library-
   // side fix-1.
-  m_styles_scriptable =
-      std::make_unique<curvz::scripting::StylesScriptable>(
-          [this]() -> CurvzProject* { return m_project.get(); },
-          &m_history,
-          [this]() -> StylesPanel* { return &m_styles; });
+  m_styles_scriptable = std::make_unique<curvz::scripting::StylesScriptable>(
+      [this]() -> CurvzProject * { return m_project.get(); }, &m_history,
+      [this]() -> StylesPanel * { return &m_styles; });
 
   // s223 m1 — `themes` collection Scriptable. Third library-collection
   // variant (sibling of m_swatches_scriptable and m_styles_scriptable;
@@ -394,10 +385,8 @@ MainWindow::MainWindow(Application & /*app*/) {
   // application of the visibility canon entry; this time the answer is
   // "no panel-side step needed because the panel doesn't filter."
   // Construction is two-arg, matching m_swatches_scriptable.
-  m_themes_scriptable =
-      std::make_unique<curvz::scripting::ThemesScriptable>(
-          [this]() -> CurvzProject* { return m_project.get(); },
-          &m_history);
+  m_themes_scriptable = std::make_unique<curvz::scripting::ThemesScriptable>(
+      [this]() -> CurvzProject * { return m_project.get(); }, &m_history);
 
   // s230 m1 — `objects` collection Scriptable. Sixth row-bound model
   // Scriptable, OPENS the multi-session `objects` arc. Wraps every
@@ -441,14 +430,12 @@ MainWindow::MainWindow(Application & /*app*/) {
   // end of s234: script-path mutations updated the doc model and the
   // iid index but never told Canvas anything changed, so the smoke
   // ran clean while the canvas kept rendering its previous frame.
-  m_objects_scriptable =
-      std::make_unique<curvz::scripting::ObjectsScriptable>(
-          [this]() -> CurvzProject* { return m_project.get(); },
-          &m_history,
-          [this]() {
-              m_canvas.queue_draw();
-              m_canvas.notify_document_changed();
-          });
+  m_objects_scriptable = std::make_unique<curvz::scripting::ObjectsScriptable>(
+      [this]() -> CurvzProject * { return m_project.get(); }, &m_history,
+      [this]() {
+        m_canvas.queue_draw();
+        m_canvas.notify_document_changed();
+      });
 
   // s222 m2 — `inspector` Scriptable. Flat verb surface (no proxy
   // routing) that delegates to MainWindow's existing collapse-all
@@ -469,8 +456,7 @@ MainWindow::MainWindow(Application & /*app*/) {
   // picker-fallthrough branch (which becomes a structured refusal
   // since scripts can't summon modals). See ProjScriptable.hpp for
   // the design block and the RunContext mask rationale.
-  m_proj_scriptable =
-      std::make_unique<curvz::scripting::ProjScriptable>(this);
+  m_proj_scriptable = std::make_unique<curvz::scripting::ProjScriptable>(this);
 
   // s251 m1 — `export` Scriptable. Second headless-verb singleton from
   // ARC m5b. Sibling singleton-host pattern as proj: flat verb surface,
@@ -506,15 +492,14 @@ MainWindow::MainWindow(Application & /*app*/) {
   // animator; this lambda returns immediately.
   // s288 m3 — third ctor arg: AnimateSvgFile callback. Sibling routing
   // for the SVG orchestrator entry point.
-  m_app_scriptable =
-      std::make_unique<curvz::scripting::AppScriptable>(
-          this,
-          [this](const std::string& d_string, double speed) {
-              m_canvas.welcome_enact_pen_path(d_string, speed);
-          },
-          [this](const std::string& svg_path, double speed) {
-              m_canvas.welcome_animate_svg_file(svg_path, speed);
-          });
+  m_app_scriptable = std::make_unique<curvz::scripting::AppScriptable>(
+      this,
+      [this](const std::string &d_string, double speed) {
+        m_canvas.welcome_enact_pen_path(d_string, speed);
+      },
+      [this](const std::string &svg_path, double speed) {
+        m_canvas.welcome_animate_svg_file(svg_path, speed);
+      });
 
   // s219 m1 — Scripter window construction. Previously lived in
   // Application::on_activate; moved here so MainWindow owns the
@@ -523,7 +508,8 @@ MainWindow::MainWindow(Application & /*app*/) {
   //
   // s267 m1 — scripts directory resolution lifted to scripts_user_dir()
   // and scripts_system_dir() free functions (defined at the top of
-  // this TU). User dir follows AppPreferences::scripts_path_override with fallback to
+  // this TU). User dir follows AppPreferences::scripts_path_override with
+  // fallback to
   // ~/.config/curvz/scripts; system dir is the install-time
   // /usr/share/curvz/scripts. The historical tests/scripts build-tree
   // probe is gone — that was test-runner ergonomics leaking into a
@@ -534,7 +520,7 @@ MainWindow::MainWindow(Application & /*app*/) {
   // a few lines below.
   {
     const std::string scripts_dir = scripts_user_dir();
-    const std::string sys_scripts  = scripts_system_dir();
+    const std::string sys_scripts = scripts_system_dir();
     m_scripter = std::make_unique<curvz::scripting::ScripterWindow>(
         scripts_dir, sys_scripts);
     LOG_INFO("MainWindow: Scripter constructed "
@@ -549,12 +535,12 @@ MainWindow::MainWindow(Application & /*app*/) {
     // scripting namespace independent of preferences plumbing,
     // symmetric with how Application bridges the listener's
     // SubtitleCallback to MainWindow's caption bar.
-    m_scripter->set_user_folder_changed_callback(
-        [](const std::string& path) {
-          AppPreferences::instance().set_scripts_path_override(path);
-          LOG_INFO("MainWindow: scripts_path_override -> '{}' "
-                   "(from Scripter folder picker)", path);
-        });
+    m_scripter->set_user_folder_changed_callback([](const std::string &path) {
+      AppPreferences::instance().set_scripts_path_override(path);
+      LOG_INFO("MainWindow: scripts_path_override -> '{}' "
+               "(from Scripter folder picker)",
+               path);
+    });
 
     // s191 m3 / s219 m1 — bridge `#[sub]` lines from the Scripter's
     // listener to MainWindow's caption bar. Previously wired in
@@ -564,10 +550,9 @@ MainWindow::MainWindow(Application & /*app*/) {
     // and ALSO hands the body text to set_subtitle() via this
     // bridge — where the user's eyes are while watching Curvz drive
     // itself is where the caption lands.
-    if (auto* lst = m_scripter->listener()) {
-      lst->set_subtitle_callback([this](const std::string& text) {
-        set_subtitle(text);
-      });
+    if (auto *lst = m_scripter->listener()) {
+      lst->set_subtitle_callback(
+          [this](const std::string &text) { set_subtitle(text); });
 
       // s201 m3 / s219 m1 — `do <action.name>` dispatch. The
       // script's user-driven verbs reach substrate widgets directly,
@@ -583,10 +568,10 @@ MainWindow::MainWindow(Application & /*app*/) {
       // The prefix list grows as new action-driven UI surfaces want
       // to be script-addressable. Today's roster:
       //   styles.* — StylesPanel kebab + context menu actions
-      lst->set_action_callback(
-          [this](const std::string& action_name) -> bool {
+      lst->set_action_callback([this](const std::string &action_name) -> bool {
         const auto dot = action_name.find('.');
-        if (dot == std::string::npos) return false;
+        if (dot == std::string::npos)
+          return false;
         const std::string prefix = action_name.substr(0, dot);
         if (prefix == "styles") {
           return m_styles.activate_action(action_name);
@@ -615,7 +600,8 @@ MainWindow::MainWindow(Application & /*app*/) {
   LOG_INFO("MainWindow created");
 }
 
-// s216 m1 / s218 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s246 m1 / s263 m2 — out-of-line dtor. The header forward-declares
+// s216 m1 / s218 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1
+// / s246 m1 / s263 m2 — out-of-line dtor. The header forward-declares
 // curvz::scripting::LayersScriptable, curvz::scripting::GuidesScriptable,
 // curvz::scripting::SwatchesScriptable, curvz::scripting::StylesScriptable,
 // curvz::scripting::ThemesScriptable, curvz::scripting::ObjectsScriptable,
@@ -710,7 +696,8 @@ void MainWindow::apply_scripter_pref() {
 // already set in ScripterWindow's ctor, so the X-button does the
 // same thing automatically.
 void MainWindow::show_scripter(bool visible) {
-  if (!m_scripter) return;  // defensive: ctor not finished yet
+  if (!m_scripter)
+    return; // defensive: ctor not finished yet
   if (visible) {
     m_scripter->show(*this);
   } else {
@@ -763,7 +750,6 @@ void MainWindow::setup_project() {
   apply_motif_to_window();
 }
 
-
 // ── Slots
 // ─────────────────────────────────────────────────────────────────────
 
@@ -779,7 +765,6 @@ void MainWindow::on_tool_changed(ActiveTool tool) {
   if (m_update_align_btn)
     m_update_align_btn();
 }
-
 
 void MainWindow::on_doc_activated(int index) {
   if (!m_project || index < 0 || index >= (int)m_project->documents.size())
@@ -814,7 +799,6 @@ void MainWindow::on_doc_activated(int index) {
   LOG_INFO("Doc activated: index {}", index);
 }
 
-
 // s108 m7: cycle through the project's documents with wraparound. Called
 // from the doc-next / doc-prev actions AND from the CAPTURE-phase
 // keyboard handler (Ctrl+Tab / Ctrl+Page_Down can't reliably reach the
@@ -833,7 +817,6 @@ void MainWindow::cycle_doc(int delta) {
   int next = ((cur + delta) % n + n) % n;
   on_doc_activated(next);
 }
-
 
 // ── rename_doc ────────────────────────────────────────────────────────────
 // Rename a document within the current project. Sanitises the name (spaces
@@ -895,6 +878,5 @@ void MainWindow::rename_doc(CurvzDocument *doc, std::string new_name) {
   m_project->save();
   update_all_panels();
 }
-
 
 } // namespace Curvz

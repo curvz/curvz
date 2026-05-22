@@ -30,34 +30,19 @@ RefPointPicker::RefPointPicker(std::string_view name,
     : ScriptableWidget<Gtk::Box>(name, Gtk::Orientation::HORIZONTAL, 8) {
 
   // ── Grid area (the 9-point picker) ──────────────────────────────────
-  m_grid_area.set_content_width(36);
-  m_grid_area.set_content_height(36);
-  m_grid_area.set_valign(Gtk::Align::CENTER);
-  // s204 m4 tweak: tag with a CSS class so theme rules can target the
-  // grid's `color:` property. on_grid_draw reads get_color() at paint
-  // time, so any CSS override at .refpoint-picker-grid (or via the
-  // motif's curvz-light/curvz-dark cascade) flows directly into the
-  // Cairo strokes. The composite itself also carries a class so CSS
-  // can target the whole picker if needed.
+  // s290: the visual grid is now a RefPointGrid child widget. The grid
+  // emits signal_preset_changed when the user clicks; we route that
+  // through our own set_preset() to keep mode + arbitrary state in sync.
   add_css_class("refpoint-picker");
-  m_grid_area.add_css_class("refpoint-picker-grid");
-  m_grid_area.set_draw_func([this](const Cairo::RefPtr<Cairo::Context> &cr,
-                                   int w, int h) { on_grid_draw(cr, w, h); });
-  {
-    auto click = Gtk::GestureClick::create();
-    click->set_button(GDK_BUTTON_PRIMARY);
-    click->signal_pressed().connect(
-        [this](int /*n_press*/, double x, double y) {
-          if (m_mode != Mode::Preset)
-            return;
-          Preset p;
-          if (!pixel_to_preset(x, y, &p))
-            return;
-          set_preset(p);
-        });
-    m_grid_area.add_controller(click);
-  }
-  append(m_grid_area);
+  // Seed the grid with the current preset and wire the click callback.
+  m_grid.set_preset(m_last_preset);
+  m_grid.signal_preset_changed().connect([this](RefPointGrid::Preset p) {
+    // s290 — any grid click selects that preset. set_preset flips Arbitrary
+    // back to Preset internally; the gate that used to live here was a
+    // vestige of the s286-removed checkbox.
+    set_preset(p);
+  });
+  append(m_grid);
 
   // s286 — Arbitrary checkbox removed. Mode is inferred from user
   // action via the spinner on_changed handlers below.
@@ -149,7 +134,8 @@ RefPointPicker::RefPointPicker(std::string_view name,
   }
 
   // s286 — apply_mode_appearance removed; spinners are always editable.
-  // The grid greys out / deselects via on_grid_draw's m_mode check.
+  // s290 — the embedded RefPointGrid greys out / deselects on mode flip
+  // via set_greyed() in set_mode below.
   refresh_xy_display();
 
   init_scriptable();
@@ -181,7 +167,7 @@ void RefPointPicker::set_bbox(double x, double y, double w, double h) {
     // would flood the trace during a 60Hz drag. Script subscribers
     // can poll via `get refpoint_picker.* x/y`.
   }
-  m_grid_area.queue_draw();
+  m_grid.queue_draw();
 }
 
 void RefPointPicker::set_mode(Mode m) {
@@ -206,7 +192,8 @@ void RefPointPicker::set_mode(Mode m) {
        ScriptValue::text(m_mode == Mode::Arbitrary ? "arbitrary" : "preset"));
   auto [px, py] = point();
   m_sig_point_changed.emit(px, py);
-  m_grid_area.queue_draw();
+  m_grid.set_greyed(m_mode == Mode::Arbitrary);
+  m_grid.queue_draw();
 }
 
 void RefPointPicker::set_preset(Preset p) {
@@ -217,8 +204,9 @@ void RefPointPicker::set_preset(Preset p) {
   refresh_xy_display();
   auto [px, py] = point();
   m_sig_point_changed.emit(px, py);
-  emit("point_changed", ScriptValue::text(preset_name(p)));
-  m_grid_area.queue_draw();
+  emit("point_changed", ScriptValue::text(RefPointGrid::name_of(p)));
+  m_grid.set_preset(p);
+  m_grid.queue_draw();
 }
 
 void RefPointPicker::set_arbitrary_xy(double doc_x, double doc_y) {
@@ -278,7 +266,7 @@ ScriptValue RefPointPicker::invoke_leaf(std::string_view verb,
           "RefPointPicker.set_preset expects one preset-name arg "
           "(NW N NE W C E SW S SE)");
     Preset p;
-    if (!preset_from_name(args[0].s, &p))
+    if (!RefPointGrid::from_name(args[0].s, &p))
       throw std::runtime_error("RefPointPicker.set_preset: unknown preset '" +
                                args[0].s + "'");
     set_preset(p);
@@ -314,7 +302,7 @@ ScriptValue RefPointPicker::query_leaf(std::string_view property) const {
     return ScriptValue::text(m_mode == Mode::Arbitrary ? "arbitrary"
                                                        : "preset");
   if (property == "preset")
-    return ScriptValue::text(preset_name(m_last_preset));
+    return ScriptValue::text(RefPointGrid::name_of(m_last_preset));
   if (property == "x") {
     auto [px, py] = point();
     (void)py;
@@ -388,30 +376,6 @@ double RefPointPicker::preset_doc_y(Preset p) const {
   return midy;
 }
 
-bool RefPointPicker::pixel_to_preset(double px, double py,
-                                     Preset *out_p) const {
-  const int W = m_grid_area.get_content_width();
-  const int H = m_grid_area.get_content_height();
-  const double margin = 4.0;
-  const double inner_w = W - 2 * margin;
-  const double inner_h = H - 2 * margin;
-  if (inner_w <= 0 || inner_h <= 0)
-    return false;
-  double fx = (px - margin) / inner_w;
-  double fy = (py - margin) / inner_h;
-  if (fx < -0.1 || fx > 1.1 || fy < -0.1 || fy > 1.1)
-    return false;
-  int col = (fx < 1.0 / 3.0) ? 0 : (fx < 2.0 / 3.0 ? 1 : 2);
-  int row = (fy < 1.0 / 3.0) ? 0 : (fy < 2.0 / 3.0 ? 1 : 2);
-  static const Preset table[3][3] = {
-      {Preset::NW, Preset::N, Preset::NE},
-      {Preset::W, Preset::C, Preset::E},
-      {Preset::SW, Preset::S, Preset::SE},
-  };
-  *out_p = table[row][col];
-  return true;
-}
-
 void RefPointPicker::refresh_xy_display() {
   auto [px, py] = point();
   m_loading = true;
@@ -420,166 +384,6 @@ void RefPointPicker::refresh_xy_display() {
   if (m_sp_y)
     m_sp_y->set_internal_value(py);
   m_loading = false;
-}
-
-void RefPointPicker::on_grid_draw(const Cairo::RefPtr<Cairo::Context> &cr,
-                                  int width, int height) {
-  const double margin = 4.0;
-  const double iw = width - 2 * margin;
-  const double ih = height - 2 * margin;
-  if (iw <= 0 || ih <= 0)
-    return;
-
-  // s204 m4 tweak: pull stroke color from the GTK theme so the widget
-  // reads correctly on both Curvz motifs (and any other GTK theme that
-  // hosts it later). `Gtk::Widget::get_color()` returns the CSS-resolved
-  // `color` property — black-ish on light, white-ish on dark. CSS callers
-  // can override via a custom class on the picker (.refpoint-picker
-  // { color: ...; }) without this code needing to know about motifs.
-  //
-  // Unselected dot fill is derived as the strokes complement: if FG is
-  // dark, fill is white; if FG is light, fill is black. Keeps the
-  // "small white-filled square outlined in stroke color" look the
-  // earlier hardcoded version had, but inverted on dark motif so the
-  // dots show as small dark squares outlined in the light FG — same
-  // visual semantics, theme-correct on both backgrounds.
-  auto fg = m_grid_area.get_color();
-  const double fr = fg.get_red();
-  const double fg_g = fg.get_green();
-  const double fb = fg.get_blue();
-  const bool fg_is_light = (fr + fg_g + fb) > 1.5; // sum > 1.5 → light FG
-  const double bg_r = fg_is_light ? 0.1 : 1.0;
-  const double bg_g = fg_is_light ? 0.1 : 1.0;
-  const double bg_b = fg_is_light ? 0.1 : 1.0;
-
-  const bool grey = (m_mode == Mode::Arbitrary);
-  const double a = grey ? 0.4 : 1.0;
-
-  auto set_fg = [&](double alpha = 1.0) {
-    cr->set_source_rgba(fr, fg_g, fb, a * alpha);
-  };
-  auto set_bg = [&](double alpha = 1.0) {
-    cr->set_source_rgba(bg_r, bg_g, bg_b, a * alpha);
-  };
-
-  set_fg();
-  cr->set_line_width(1.0);
-
-  // Outer rect.
-  cr->rectangle(margin + 0.5, margin + 0.5, iw - 1.0, ih - 1.0);
-  cr->stroke();
-
-  // s204 m4 tweak: thin bisecting cross through N–C–S and W–C–E,
-  // dividing the bounding rect into 4 visual cells. Drawn at half the
-  // outer stroke weight (0.5px) and BEFORE the dots so the dots paint
-  // over the intersection. Visually frames the 9-point picker as a
-  // 3x3 grid even when no dot is selected.
-  cr->save();
-  cr->set_line_width(0.5);
-  cr->move_to(margin + iw * 0.5, margin);
-  cr->line_to(margin + iw * 0.5, margin + ih);
-  cr->stroke();
-  cr->move_to(margin, margin + ih * 0.5);
-  cr->line_to(margin + iw, margin + ih * 0.5);
-  cr->stroke();
-  cr->restore();
-
-  // 9 dots at the inner-rect corners + edge midpoints + centre.
-  const double xs[3] = {margin, margin + iw * 0.5, margin + iw};
-  const double ys[3] = {margin, margin + ih * 0.5, margin + ih};
-  static const Preset table[3][3] = {
-      {Preset::NW, Preset::N, Preset::NE},
-      {Preset::W, Preset::C, Preset::E},
-      {Preset::SW, Preset::S, Preset::SE},
-  };
-  const double dot = 3.0;
-  for (int r = 0; r < 3; ++r) {
-    for (int c = 0; c < 3; ++c) {
-      const double x = xs[c];
-      const double y = ys[r];
-      const Preset p = table[r][c];
-      const bool selected = (m_mode == Mode::Preset && p == m_last_preset);
-      cr->rectangle(x - dot, y - dot, dot * 2, dot * 2);
-      if (selected) {
-        // Filled in FG (solid black on light motif, solid white-ish on dark).
-        set_fg();
-        cr->fill_preserve();
-        set_fg();
-        cr->stroke();
-      } else {
-        // Filled in complement (white on light motif, dark on dark motif),
-        // outlined in FG.
-        set_bg();
-        cr->fill_preserve();
-        set_fg();
-        cr->stroke();
-      }
-    }
-  }
-}
-
-const char *RefPointPicker::preset_name(Preset p) {
-  switch (p) {
-  case Preset::NW:
-    return "NW";
-  case Preset::N:
-    return "N";
-  case Preset::NE:
-    return "NE";
-  case Preset::W:
-    return "W";
-  case Preset::C:
-    return "C";
-  case Preset::E:
-    return "E";
-  case Preset::SW:
-    return "SW";
-  case Preset::S:
-    return "S";
-  case Preset::SE:
-    return "SE";
-  }
-  return "C";
-}
-
-bool RefPointPicker::preset_from_name(std::string_view name, Preset *out) {
-  if (name == "NW") {
-    *out = Preset::NW;
-    return true;
-  }
-  if (name == "N") {
-    *out = Preset::N;
-    return true;
-  }
-  if (name == "NE") {
-    *out = Preset::NE;
-    return true;
-  }
-  if (name == "W") {
-    *out = Preset::W;
-    return true;
-  }
-  if (name == "C") {
-    *out = Preset::C;
-    return true;
-  }
-  if (name == "E") {
-    *out = Preset::E;
-    return true;
-  }
-  if (name == "SW") {
-    *out = Preset::SW;
-    return true;
-  }
-  if (name == "S") {
-    *out = Preset::S;
-    return true;
-  }
-  if (name == "SE") {
-    *out = Preset::SE;
-    return true;
-  }
-  return false;
 }
 
 } // namespace curvz::widgets
