@@ -117,6 +117,16 @@ bool CurvzProject::save() const {
             {"px_width",       cm.px_width},
             {"px_height",      cm.px_height},
             {"display_unit",   UnitSystem::label(cm.display_unit)},
+            // s292 m1: render-intent fields (s264 m1 / s265 m2). Must
+            // persist on the JSON side too — the load path rebuilds the
+            // CanvasModel from JSON and reassigns doc->canvas, wiping any
+            // intent the SVG parser set. Default-zero on read so legacy
+            // pre-s292 project files load with intent unset and the
+            // doc->canvas SVG-side intent (if any) is preserved via the
+            // fallback copy in the load path below.
+            {"intended_w",     cm.intended_w},
+            {"intended_h",     cm.intended_h},
+            {"intended_unit",  cm.intended_unit},
             {"ruler_origin_x", doc->ruler_origin_x},
             {"ruler_origin_y", doc->ruler_origin_y}
         };
@@ -644,6 +654,18 @@ bool CurvzProject::load(const std::string& dir) {
             cm.px_width     = c.value("px_width",     24);
             cm.px_height    = c.value("px_height",    24);
             cm.display_unit = UnitSystem::parse_unit(c.value("display_unit", std::string{"px"}));
+            // s292 m1: render-intent fields. Two paths to populate:
+            //   1. JSON has them (post-s292 project files) -- read direct.
+            //   2. JSON doesn't (pre-s292 legacy) -- fall back to whatever
+            //      the SVG parser set on doc->canvas before we got here.
+            //      The SVG file itself carries data-curvz-intended-* attrs
+            //      since s264, so a legacy .curvz wrapping a post-s264 SVG
+            //      still round-trips correctly.
+            // Defaults to the doc->canvas (parser-set) value so the fallback
+            // is the default behavior when JSON keys are absent.
+            cm.intended_w    = c.value("intended_w",    doc->canvas.intended_w);
+            cm.intended_h    = c.value("intended_h",    doc->canvas.intended_h);
+            cm.intended_unit = c.value("intended_unit", doc->canvas.intended_unit);
             // Migrate: older builds saved pixel docs with display_mode=RatioQuality
             // and left px_width/height at the default (24). Detect by ratio==1:1
             // (pixel docs always normalise to 1:1) and fix px_width/height from quality.

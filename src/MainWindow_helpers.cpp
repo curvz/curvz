@@ -1131,53 +1131,22 @@ void MainWindow::import_svg_impl(const std::string &path,
       return;
     }
 
-    double src_w = (double)imported->canvas_width();
-    double src_h = (double)imported->canvas_height();
-    if (src_w <= 0)
-      src_w = 1000.0;
-    if (src_h <= 0)
-      src_h = 1000.0;
-
-    double scale;
-    int dst_w, dst_h;
+    // s292 m3: scale-and-fit lifted into curvz::utils::normalize_doc_for_target.
+    // The icon workflow normalises so the longest axis is 1000 working units;
+    // the verbatim branch leaves geometry untouched. Both callers (this and
+    // SvgPerformer::perform) now share the same pump.
     if (normalize_to_1000) {
-      // Icon workflow — rescale so the longest axis is 1000 units.
-      constexpr double QUALITY = 1000.0;
-      scale = QUALITY / std::max(src_w, src_h);
-      dst_w = (int)std::round(src_w * scale);
-      dst_h = (int)std::round(src_h * scale);
-    } else {
-      // Generic SVG import — preserve authored geometry verbatim.
-      scale = 1.0;
-      dst_w = (int)std::round(src_w);
-      dst_h = (int)std::round(src_h);
+      constexpr int QUALITY = 1000;
+      curvz::utils::normalize_doc_for_target(*imported, QUALITY, QUALITY);
     }
+    // Verbatim branch: no rescale, no canvas reassign — the parsed doc's
+    // canvas + geometry are inherited as-is below.
 
-    LOG_INFO("import_svg_impl: src={}x{} → dst={}x{} scale={:.6f} "
-             "(normalize={}, force_cc={})",
-             (int)src_w, (int)src_h, dst_w, dst_h, scale, normalize_to_1000,
-             force_currentcolor);
+    int dst_w = imported->canvas_width();
+    int dst_h = imported->canvas_height();
 
-    // Scale every node in the imported tree (no-op when scale == 1.0)
-    std::function<void(SceneNode &)> scale_node = [&](SceneNode &n) {
-      if (scale != 1.0 && n.path) {
-        for (auto &nd : n.path->nodes) {
-          nd.x = nd.x * scale;
-          nd.y = nd.y * scale;
-          nd.cx1 = nd.cx1 * scale;
-          nd.cy1 = nd.cy1 * scale;
-          nd.cx2 = nd.cx2 * scale;
-          nd.cy2 = nd.cy2 * scale;
-        }
-      }
-      if (scale != 1.0 && n.type == SceneNode::Type::Text) {
-        n.text_x *= scale;
-        n.text_y *= scale;
-        n.text_font_size *= scale;
-      }
-      for (auto &child : n.children)
-        scale_node(*child);
-    };
+    LOG_INFO("import_svg_impl: dst={}x{} (normalize={}, force_cc={})",
+             dst_w, dst_h, normalize_to_1000, force_currentcolor);
 
     // ── Build a new CurvzDocument for this import ───────────────────────
     auto new_doc = std::make_unique<CurvzDocument>();
@@ -1233,9 +1202,11 @@ void MainWindow::import_svg_impl(const std::string &path,
       if (!imp_layer->is_layer())
         continue;
       for (auto &child : imp_layer->children) {
-        LOG_INFO("import_svg_impl: scaling child type={} has_path={}",
+        LOG_INFO("import_svg_impl: importing child type={} has_path={}",
                  (int)child->type, child->path != nullptr);
-        scale_node(*child);
+        // s292 m3: geometry already scaled by normalize_doc_for_target
+        // above when normalize_to_1000 was true. Verbatim path needs no
+        // rescale.
         if (force_currentcolor)
           fix_style(*child);
         child->id = "imp" + std::to_string(s_import_counter++);

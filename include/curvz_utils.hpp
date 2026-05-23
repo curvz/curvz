@@ -222,6 +222,33 @@ int doc_anchor_count(const Curvz::CurvzDocument& doc);
 // direct children of regular Layer nodes, regardless of node count.
 int doc_object_count(const Curvz::CurvzDocument& doc);
 
+// ── Doc normalization pump (s292 m3) ─────────────────────────────────
+// Scale every path/text in `doc` so the document fits inside
+// (target_w × target_h), uniform-scaled by the longest axis. Reassigns
+// `doc.canvas` to a fresh Pixel-mode CanvasModel at the scaled dims.
+//
+// Use cases:
+//   * import_svg_impl's normalize_to_1000 icon workflow — call with
+//     (1000, 1000) to rescale a foreign SVG so its longest axis is 1000
+//     working units (lossless icon-design canvas).
+//   * SvgPerformer::perform — call with the user's active doc canvas
+//     dims so a foreign SVG fits inside the target before plan-build.
+//     Without this the performer draws at SVG-native coords, which can
+//     blow out of the target canvas (scott-bug: native 1000×1000 doc
+//     animated into a 300×300 canvas).
+//
+// What gets scaled: path anchor coords + handles, text x/y/font-size,
+// recursing into n.children. Matches import_svg_impl's pre-s292 scaler
+// scope verbatim — composite slots (clip_shape, blend_source_a/b,
+// warp_source) and Image/Ref geometry are NOT walked; that's a
+// pre-existing gap banked for a future focused milestone.
+//
+// Returns the scale factor applied (1.0 if doc already fits, < 1.0 if
+// shrunk, > 1.0 if grown). Returns 1.0 and is a no-op when target dims
+// are non-positive or the doc has degenerate dims.
+double normalize_doc_for_target(Curvz::CurvzDocument& doc,
+                                int target_w, int target_h);
+
 // ── Iid resolver pump (s167 m1) ──────────────────────────────────────
 // Project-level lookup of a SceneNode by internal_id (the stable UUID).
 // Walks every document in the project, returning the first hit.

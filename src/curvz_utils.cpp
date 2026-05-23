@@ -236,6 +236,84 @@ int doc_object_count(const Curvz::CurvzDocument &doc) {
   return total;
 }
 
+// ── normalize_doc_for_target (s292 m3) ───────────────────────────────
+// Scale a parsed doc's geometry to fit inside (target_w × target_h),
+// uniform-scaled by the longest axis. Reassigns doc.canvas to a Pixel-
+// mode CanvasModel at the resulting dst dims so canvas_width() /
+// canvas_height() agree with the geometry.
+//
+// Lifted from import_svg_impl's normalize_to_1000 branch (s292 m3
+// refactor — same algorithm, two callers: import_svg_impl for the icon
+// workflow, SvgPerformer::perform for the animator fit-to-canvas).
+// scale_node matches import_svg_impl's recursion scope exactly: walks
+// n.children, scales path coords + handles + text x/y/font-size. Image
+// geometry (image_x/y/w/h), Ref geometry (ref_x/y), and composite slots
+// (clip_shape, blend_source_a/b, warp_source) are NOT walked — that's
+// a pre-existing gap in import_svg_impl that this pump intentionally
+// preserves so the convergent-evidence gate is "behaves identically to
+// the pre-refactor import path." The slot/Image gap is banked for a
+// future focused milestone that fixes both call sites at once.
+double normalize_doc_for_target(Curvz::CurvzDocument &doc,
+                                int target_w, int target_h) {
+  if (target_w <= 0 || target_h <= 0)
+    return 1.0;
+
+  double src_w = (double)doc.canvas_width();
+  double src_h = (double)doc.canvas_height();
+  if (src_w <= 0.0 || src_h <= 0.0)
+    return 1.0;
+
+  // Uniform scale by the longest axis — same shape as import_svg_impl's
+  // QUALITY/max(src_w,src_h) calculation but generalised to arbitrary
+  // target dims rather than the icon-workflow's hardcoded 1000.
+  double target_long = (double)std::max(target_w, target_h);
+  double src_long    = std::max(src_w, src_h);
+  double scale       = target_long / src_long;
+
+  int dst_w = (int)std::round(src_w * scale);
+  int dst_h = (int)std::round(src_h * scale);
+
+  // Recursive scaler — lifted verbatim from import_svg_impl. No-op when
+  // scale == 1.0 (early-exit on the path-coord loop; text-field updates
+  // are arithmetically a no-op at scale 1.0 too, but the branch keeps
+  // them cheap).
+  std::function<void(Curvz::SceneNode &)> scale_node =
+      [&](Curvz::SceneNode &n) {
+        if (scale != 1.0 && n.path) {
+          for (auto &nd : n.path->nodes) {
+            nd.x   = nd.x   * scale;
+            nd.y   = nd.y   * scale;
+            nd.cx1 = nd.cx1 * scale;
+            nd.cy1 = nd.cy1 * scale;
+            nd.cx2 = nd.cx2 * scale;
+            nd.cy2 = nd.cy2 * scale;
+          }
+        }
+        if (scale != 1.0 && n.type == Curvz::SceneNode::Type::Text) {
+          n.text_x         *= scale;
+          n.text_y         *= scale;
+          n.text_font_size *= scale;
+        }
+        for (auto &child : n.children)
+          if (child) scale_node(*child);
+      };
+
+  for (auto &l : doc.layers) {
+    if (!l) continue;
+    for (auto &child : l->children)
+      if (child) scale_node(*child);
+  }
+
+  doc.canvas = Curvz::CanvasModel::from_pixels(dst_w, dst_h);
+
+  LOG_INFO("normalize_doc_for_target: src={}x{} -> dst={}x{} "
+           "(target={}x{}, scale={:.6f})",
+           (int)src_w, (int)src_h, dst_w, dst_h,
+           target_w, target_h, scale);
+
+  return scale;
+}
+
 // ── find_by_iid (s167 m1) ────────────────────────────────────────────
 // Project-level resolver — iterates documents in stack order and asks
 // each doc's iid index. The per-doc lookup is the heavy lifting (O(1)

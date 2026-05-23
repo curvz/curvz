@@ -197,6 +197,19 @@ void SvgPerformer::perform(const std::string& svg_path,
              src_doc->canvas_width(), src_doc->canvas_height(),
              src_doc->layers.size());
 
+    // s292 m3: normalize the parsed source to fit the target doc's canvas.
+    // Without this, a foreign SVG with a large native canvas (e.g. 1000×1000
+    // for scott-bug) performs at its native coords inside a small target
+    // (e.g. the welcome ceremony's 300×300), which blows out of frame.
+    // Shared with import_svg_impl's icon workflow via curvz::utils::
+    // normalize_doc_for_target — same algorithm, same scope, two callers.
+    // No-op when source already fits or target dims are degenerate.
+    curvz::utils::normalize_doc_for_target(
+        *src_doc, doc->canvas_width(), doc->canvas_height());
+
+    LOG_INFO("SvgPerformer: perform — post-normalize: canvas {}x{}",
+             src_doc->canvas_width(), src_doc->canvas_height());
+
     // Build the performance plan from the parsed tree.
     m_plan.clear();
     m_container_stack.clear();
