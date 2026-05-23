@@ -64,11 +64,25 @@ static void endpoints_from_angle(double angle_deg, double &x1, double &y1,
 
 // ── ctor ─────────────────────────────────────────────────────────────────────
 
+// s295 m1 — all eight spins are unregistered substrates. GradientDialog
+// is held both as a MainWindow member (m_gradient_dialog) and as a
+// StyleEditorDialog member (m_gradient_dialog) — two instances coexist
+// concurrently. Registering with hardcoded abbrevs (dlg_gr_pos, dlg_gr_op,
+// dlg_gr_ang, dlg_gr_r) collides on the second instance's construction;
+// the registry enforces process-wide uniqueness, set_name does not.
+// Substrate semantics (signal_internal_changed, value/min/max, rich
+// parser) still apply; the spins just aren't addressable by script
+// abbrev. The set_name calls below stay in place for widget_names.db
+// harvest and GTK inspector debugging.
 GradientDialog::GradientDialog()
-    : m_pos_spin(SpinType::Percentage), m_opacity_spin(SpinType::Percentage),
-      m_angle_spin(SpinType::Angle), m_x1_spin(SpinType::PositionX),
-      m_y1_spin(SpinType::PositionY), m_x2_spin(SpinType::PositionX),
-      m_y2_spin(SpinType::PositionY), m_r_spin(SpinType::Distance) {
+    : m_pos_spin(curvz::scripting::unregistered, SpinType::Percentage),
+      m_opacity_spin(curvz::scripting::unregistered, SpinType::Percentage),
+      m_angle_spin(curvz::scripting::unregistered, SpinType::Angle),
+      m_x1_spin(curvz::scripting::unregistered, SpinType::PositionX),
+      m_y1_spin(curvz::scripting::unregistered, SpinType::PositionY),
+      m_x2_spin(curvz::scripting::unregistered, SpinType::PositionX),
+      m_y2_spin(curvz::scripting::unregistered, SpinType::PositionY),
+      m_r_spin(curvz::scripting::unregistered, SpinType::Distance) {
   curvz::utils::set_name(*this, "dlg_gr", "gradient_dialog_root");
   set_title("Gradient editor");
   set_modal(true);

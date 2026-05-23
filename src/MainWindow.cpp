@@ -121,7 +121,7 @@ std::string scripts_system_dir() { return "/usr/share/curvz/scripts"; }
 #include "css.hpp"
 
 MainWindow::MainWindow(Application & /*app*/)
-    : m_corner_radius_spin(SpinType::Distance) {
+    : m_corner_radius_spin(curvz::scripting::unregistered, SpinType::Distance) {
   curvz::utils::set_name(*this, "mw", "main_window_root");
   set_default_size(1400, 860);
 

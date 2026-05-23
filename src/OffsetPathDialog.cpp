@@ -73,13 +73,24 @@ void OffsetPathDialog::build_distance_spin(const CanvasModel* model,
                                            double initial) {
     // Tear down previous children (spin + unit label) so doc switches don't
     // leave stale widgets pointing at a dead CanvasModel.
+    //
+    // s295 m1 — force-unregister the previous spin's Scriptable entry
+    // before remove(). GTK4 destroys widgets at idle priority; without
+    // the explicit unregister the new spin's registration would
+    // collide with the old spin's still-live registry slot on the
+    // SECOND show. Same pattern as PropertiesPanel::do_clear.
+    for (Gtk::Widget* c = m_dist_row.get_first_child(); c;
+         c = c->get_next_sibling()) {
+        curvz::utils::force_unregister_subtree(c);
+    }
     while (auto* child = m_dist_row.get_first_child()) {
         m_dist_row.remove(*child);
     }
     m_distance_spin = nullptr;
 
     m_distance_spin =
-        Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, model);
+        Gtk::make_managed<CurvzSpinButton>(
+            "dlg_off_dist", SpinType::Distance, model);
     curvz::utils::set_name(m_distance_spin, "dlg_off_dist", "offset_path_dialog_distance_spn");
     m_distance_spin->with_value(initial)
                     ->with_tooltip("Offset distance (negative = inward)")

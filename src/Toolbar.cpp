@@ -4056,8 +4056,13 @@ make_pop_row(Gtk::Box *outer, const char *label, std::string_view abbrev,
 // Prefill uses set_internal_value(doc_px); submit uses get_internal_value().
 // Receiver does no conversion — the value is already in doc-px.
 //
-// Drops scripter registration (CurvzSpinButton isn't ScriptableWidget yet);
-// the unification fork is tracked in ARC.md.
+// s295 m1 — CurvzSpinButton is now a ScriptableWidget substrate. This
+// helper uses the unregistered ctor because the toolbar popover spins
+// have no abbrevs (no `set_name` at the call sites in
+// build_rect_popover / build_ellipse_popover) — substrate semantics
+// apply (universal verbs, signal_internal_changed, parser), just no
+// script registry entry. Adding script handles per popover field is
+// a separate future opt-in.
 static CurvzSpinButton *
 make_pop_row_curvz(Gtk::Box *outer, const char *label, SpinType type,
                    const CanvasModel *cm) {
@@ -4068,7 +4073,8 @@ make_pop_row_curvz(Gtk::Box *outer, const char *label, SpinType type,
   lbl->set_xalign(0.0f);
   lbl->set_width_chars(4);
   row->append(*lbl);
-  auto *spin = Gtk::make_managed<CurvzSpinButton>(type, cm);
+  auto *spin = Gtk::make_managed<CurvzSpinButton>(
+      curvz::scripting::unregistered, type, cm);
   spin->set_hexpand(true);
   spin->set_width_chars(10);
   row->append(*spin);
@@ -4155,7 +4161,8 @@ void Toolbar::Impl::build_rect_popover(Gtk::ToggleButton *btn) {
     l->set_xalign(0.0f);
     l->set_width_chars(2);
     xy_row->append(*l);
-    rect_spin_x = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX, cm0);
+    rect_spin_x = Gtk::make_managed<CurvzSpinButton>(
+        curvz::scripting::unregistered, SpinType::PositionX, cm0);
     rect_spin_x->set_hexpand(true);
     rect_spin_x->set_width_chars(8);
     xy_row->append(*rect_spin_x);
@@ -4165,7 +4172,8 @@ void Toolbar::Impl::build_rect_popover(Gtk::ToggleButton *btn) {
     ly->set_xalign(0.0f);
     ly->set_width_chars(2);
     xy_row->append(*ly);
-    rect_spin_y = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY, cm0);
+    rect_spin_y = Gtk::make_managed<CurvzSpinButton>(
+        curvz::scripting::unregistered, SpinType::PositionY, cm0);
     rect_spin_y->set_hexpand(true);
     rect_spin_y->set_width_chars(8);
     xy_row->append(*rect_spin_y);
@@ -4181,7 +4189,8 @@ void Toolbar::Impl::build_rect_popover(Gtk::ToggleButton *btn) {
     l->set_xalign(0.0f);
     l->set_width_chars(2);
     wh_row->append(*l);
-    rect_spin_w = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, cm0);
+    rect_spin_w = Gtk::make_managed<CurvzSpinButton>(
+        curvz::scripting::unregistered, SpinType::Width, cm0);
     rect_spin_w->set_hexpand(true);
     rect_spin_w->set_width_chars(8);
     wh_row->append(*rect_spin_w);
@@ -4191,7 +4200,8 @@ void Toolbar::Impl::build_rect_popover(Gtk::ToggleButton *btn) {
     lh->set_xalign(0.0f);
     lh->set_width_chars(2);
     wh_row->append(*lh);
-    rect_spin_h = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, cm0);
+    rect_spin_h = Gtk::make_managed<CurvzSpinButton>(
+        curvz::scripting::unregistered, SpinType::Width, cm0);
     rect_spin_h->set_hexpand(true);
     rect_spin_h->set_width_chars(8);
     wh_row->append(*rect_spin_h);
@@ -4319,7 +4329,8 @@ void Toolbar::Impl::build_ellipse_popover(Gtk::ToggleButton *btn) {
     l->set_width_chars(2);
     xy_row->append(*l);
     ellipse_spin_x =
-        Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX, cm0);
+        Gtk::make_managed<CurvzSpinButton>(
+            curvz::scripting::unregistered, SpinType::PositionX, cm0);
     ellipse_spin_x->set_hexpand(true);
     ellipse_spin_x->set_width_chars(8);
     xy_row->append(*ellipse_spin_x);
@@ -4330,7 +4341,8 @@ void Toolbar::Impl::build_ellipse_popover(Gtk::ToggleButton *btn) {
     ly->set_width_chars(2);
     xy_row->append(*ly);
     ellipse_spin_y =
-        Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY, cm0);
+        Gtk::make_managed<CurvzSpinButton>(
+            curvz::scripting::unregistered, SpinType::PositionY, cm0);
     ellipse_spin_y->set_hexpand(true);
     ellipse_spin_y->set_width_chars(8);
     xy_row->append(*ellipse_spin_y);
@@ -4345,7 +4357,8 @@ void Toolbar::Impl::build_ellipse_popover(Gtk::ToggleButton *btn) {
     l->set_xalign(0.0f);
     l->set_width_chars(2);
     wh_row->append(*l);
-    ellipse_spin_w = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, cm0);
+    ellipse_spin_w = Gtk::make_managed<CurvzSpinButton>(
+        curvz::scripting::unregistered, SpinType::Width, cm0);
     ellipse_spin_w->set_hexpand(true);
     ellipse_spin_w->set_width_chars(8);
     wh_row->append(*ellipse_spin_w);
@@ -4355,7 +4368,8 @@ void Toolbar::Impl::build_ellipse_popover(Gtk::ToggleButton *btn) {
     lh->set_xalign(0.0f);
     lh->set_width_chars(2);
     wh_row->append(*lh);
-    ellipse_spin_h = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, cm0);
+    ellipse_spin_h = Gtk::make_managed<CurvzSpinButton>(
+        curvz::scripting::unregistered, SpinType::Width, cm0);
     ellipse_spin_h->set_hexpand(true);
     ellipse_spin_h->set_width_chars(8);
     wh_row->append(*ellipse_spin_h);

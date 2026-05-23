@@ -6,7 +6,7 @@
 
 namespace Curvz {
 
-BlendPopover::BlendPopover() : m_steps(SpinType::Integer) {
+BlendPopover::BlendPopover() : m_steps("pop_bld_st", SpinType::Integer) {
   curvz::utils::set_name(*this, "pop_bld", "blend_popover_root");
   // s154 m3: Blend has no canvas-interactive component (unlike SnR's
   // pivot drag), so autohide stays ON — outside-click dismisses the
@@ -145,8 +145,16 @@ BlendPopover::BlendPopover() : m_steps(SpinType::Integer) {
 // ── build_model_spins ────────────────────────────────────────────────────
 // (Re)creates the stroke-width start/end spins against the current
 // CanvasModel so unit labels reflect the active doc. Called per show().
+//
+// s295 m1 — CurvzSpinButton is now a Scriptable substrate; the per-row
+// teardown needs force_unregister_subtree to synchronously clear the
+// previous spins' registry entries before GTK's idle-priority
+// destruction runs. Without this, the second show() would collide on
+// the registered abbrevs (`pop_bld_sw`, `pop_bld_ew`). Same s199 m1
+// idiom as the step-repeat popover/dialog.
 void BlendPopover::build_model_spins(const CanvasModel *model) {
   auto clear_row = [](Gtk::Box &row) {
+    curvz::utils::force_unregister_subtree(&row);
     while (auto *child = row.get_first_child())
       row.remove(*child);
   };
@@ -162,7 +170,8 @@ void BlendPopover::build_model_spins(const CanvasModel *model) {
   double end_val =
       m_last_stroke_override ? m_last_stroke_end : m_seed_b_stroke_w;
 
-  m_stroke_start = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, model);
+  m_stroke_start = Gtk::make_managed<CurvzSpinButton>(
+      "pop_bld_sw", SpinType::Width, model);
   curvz::utils::set_name(m_stroke_start, "pop_bld_sw",
                          "blend_popover_start_w_spn");
   m_stroke_start->with_value(start_val)
@@ -175,7 +184,8 @@ void BlendPopover::build_model_spins(const CanvasModel *model) {
   if (auto *ul = m_stroke_start->get_unit_label())
     m_stroke_start_row.append(*ul);
 
-  m_stroke_end = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, model);
+  m_stroke_end = Gtk::make_managed<CurvzSpinButton>(
+      "pop_bld_ew", SpinType::Width, model);
   curvz::utils::set_name(m_stroke_end, "pop_bld_ew", "blend_popover_end_w_spn");
   m_stroke_end->with_value(end_val)
       ->with_tooltip("Stroke width at B (last intermediate "

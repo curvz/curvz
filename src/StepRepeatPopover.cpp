@@ -15,7 +15,7 @@ namespace Curvz {
 
 // ── ctor: layout built once, model-dependent spins populated per-show ────────
 StepRepeatPopover::StepRepeatPopover()
-    : m_copies(SpinType::Integer),
+    : m_copies("pop_sr_cp", SpinType::Integer),
       m_rotate_enable("Rotate around pivot")
 {
     curvz::utils::set_name(*this, "pop_sr", "step_repeat_popover_root");
@@ -237,9 +237,18 @@ StepRepeatPopover::StepRepeatPopover()
 // ── build_model_spins ─────────────────────────────────────────────────────────
 // Offset X/Y, Angle, Pivot X/Y — all (re)created per show() so CanvasModel
 // changes (doc switches) don't leave stale pointers.
+//
+// s295 m1 — CurvzSpinButton is now a Scriptable substrate; the per-row
+// teardown needs force_unregister_subtree to synchronously clear the
+// previous spins' registry entries before GTK's idle-priority
+// destruction runs. Without this, the second show() would collide on
+// the registered abbrevs (`pop_sr_ox` / `pop_sr_oy` / `pop_sr_ang` /
+// `pop_sr_px` / `pop_sr_py`). Same s199 m1 idiom as
+// PropertiesPanel::do_clear and TranslateDialog::rebuild_picker.
 void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
     // Tear down previous
     auto clear_row = [](Gtk::Box& row) {
+        curvz::utils::force_unregister_subtree(&row);
         while (auto* child = row.get_first_child()) row.remove(*child);
     };
     clear_row(m_off_x_row);
@@ -254,7 +263,8 @@ void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
     m_pivot_y = nullptr;
 
     // Offset X/Y — Distance (signed, doc units)
-    m_offset_x = Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, model);
+    m_offset_x = Gtk::make_managed<CurvzSpinButton>(
+        "pop_sr_ox", SpinType::Distance, model);
     curvz::utils::set_name(m_offset_x, "pop_sr_ox", "step_repeat_popover_offset_x_spn");
     m_offset_x->with_value(m_last_dx)
                ->with_tooltip("Horizontal offset between copies")
@@ -264,7 +274,8 @@ void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
     m_off_x_row.append(*m_offset_x);
     if (auto* ul = m_offset_x->get_unit_label()) m_off_x_row.append(*ul);
 
-    m_offset_y = Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, model);
+    m_offset_y = Gtk::make_managed<CurvzSpinButton>(
+        "pop_sr_oy", SpinType::Distance, model);
     curvz::utils::set_name(m_offset_y, "pop_sr_oy", "step_repeat_popover_offset_y_spn");
     m_offset_y->with_value(m_last_dy)
                ->with_tooltip("Vertical offset between copies")
@@ -275,7 +286,8 @@ void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
     if (auto* ul = m_offset_y->get_unit_label()) m_off_y_row.append(*ul);
 
     // Angle — degrees
-    m_angle_spin = Gtk::make_managed<CurvzSpinButton>(SpinType::Angle, model);
+    m_angle_spin = Gtk::make_managed<CurvzSpinButton>(
+        "pop_sr_ang", SpinType::Angle, model);
     curvz::utils::set_name(m_angle_spin, "pop_sr_ang", "step_repeat_popover_angle_spn");
     m_angle_spin->with_value(m_last_angle)
                 ->with_tooltip("Rotation applied per copy")
@@ -294,7 +306,7 @@ void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
     // Pivot X/Y — PositionX / PositionY (ruler_origin 0 so pivot is raw doc
     // coords, matching Canvas::on_pivot_dialog).
     m_pivot_x = Gtk::make_managed<CurvzSpinButton>(
-        SpinType::PositionX, model, 0.0);
+        "pop_sr_px", SpinType::PositionX, model, 0.0);
     curvz::utils::set_name(m_pivot_x, "pop_sr_px", "step_repeat_popover_pivot_x_spn");
     m_pivot_x->with_value(m_pivot_dx)
              ->with_tooltip("Pivot X (doc coords)")
@@ -305,7 +317,7 @@ void StepRepeatPopover::build_model_spins(const CanvasModel* model) {
     if (auto* ul = m_pivot_x->get_unit_label()) m_pivot_x_row.append(*ul);
 
     m_pivot_y = Gtk::make_managed<CurvzSpinButton>(
-        SpinType::PositionY, model, 0.0);
+        "pop_sr_py", SpinType::PositionY, model, 0.0);
     curvz::utils::set_name(m_pivot_y, "pop_sr_py", "step_repeat_popover_pivot_y_spn");
     m_pivot_y->with_value(m_pivot_dy)
              ->with_tooltip("Pivot Y (doc coords)")

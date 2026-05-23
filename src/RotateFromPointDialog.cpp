@@ -115,16 +115,25 @@ void RotateFromPointDialog::build() {
     // subsequent show() via set_model() in sync_from_state — so a
     // dialog opened in one document and re-opened in another picks
     // up the new doc's display_unit.
+    // s295 m1 — unregistered substrate ctors. These spins are
+    // unnamed (no `set_name` call at this site) so there's no abbrev
+    // to thread through; current behaviour is "never script-
+    // addressable" and we preserve that. Substrate semantics
+    // (universal verbs, signal_internal_changed, parser) still apply;
+    // adding script handles is a separate future opt-in.
     m_spin_x = Gtk::make_managed<CurvzSpinButton>(
+            curvz::scripting::unregistered,
             SpinType::PositionX, m_unit_model, /*ruler_origin=*/0.0);
     m_spin_x->set_hexpand(true);
 
     m_spin_y = Gtk::make_managed<CurvzSpinButton>(
+            curvz::scripting::unregistered,
             SpinType::PositionY, m_unit_model, /*ruler_origin=*/0.0);
     m_spin_y->set_hexpand(true);
 
     // Angle — degrees, no unit-label, always-zero-on-open.
     m_spin_a = Gtk::make_managed<CurvzSpinButton>(
+            curvz::scripting::unregistered,
             SpinType::Angle, m_unit_model);
     m_spin_a->set_hexpand(true);
 

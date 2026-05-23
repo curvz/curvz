@@ -440,7 +440,7 @@ void StyleEditorDialog::build_stroke_section(Gtk::Box& root) {
     grid->attach(*lbl_w, 0, row, 1, 1);
 
     m_stroke_width_sp = Gtk::make_managed<CurvzSpinButton>(
-        SpinType::Width, m_canvas_model);
+        "dlg_se_sw", SpinType::Width, m_canvas_model);
     curvz::utils::set_name(m_stroke_width_sp, "dlg_se_sw", "style_editor_dialog_stroke_width_spn");
     m_stroke_width_sp->with_value(m_working.stroke.width);
     grid->attach(*m_stroke_width_sp, 1, row, 1, 1);
@@ -618,7 +618,7 @@ void StyleEditorDialog::build_shadow_section(Gtk::Box& root) {
         Gtk::Orientation::HORIZONTAL, 4);
 
     m_shadow_dx_sp = Gtk::make_managed<CurvzSpinButton>(
-        SpinType::Distance, m_canvas_model);
+        "dlg_se_sdx", SpinType::Distance, m_canvas_model);
     curvz::utils::set_name(m_shadow_dx_sp, "dlg_se_sdx", "style_editor_dialog_shadow_dx_spn");
     m_shadow_dx_sp->with_value(m_working.shadow.dx)
                   ->with_tooltip("Horizontal offset (+right)");
@@ -626,7 +626,7 @@ void StyleEditorDialog::build_shadow_section(Gtk::Box& root) {
     if (auto* unit = m_shadow_dx_sp->get_unit_label()) off_row->append(*unit);
 
     m_shadow_dy_sp = Gtk::make_managed<CurvzSpinButton>(
-        SpinType::Distance, m_canvas_model);
+        "dlg_se_sdy", SpinType::Distance, m_canvas_model);
     curvz::utils::set_name(m_shadow_dy_sp, "dlg_se_sdy", "style_editor_dialog_shadow_dy_spn");
     m_shadow_dy_sp->with_value(m_working.shadow.dy)
                   ->with_tooltip("Vertical offset (+down)");
@@ -653,7 +653,7 @@ void StyleEditorDialog::build_shadow_section(Gtk::Box& root) {
     grid->attach(*lbl_blur, 0, row, 1, 1);
 
     m_shadow_blur_sp = Gtk::make_managed<CurvzSpinButton>(
-        SpinType::Width, m_canvas_model);
+        "dlg_se_sbl", SpinType::Width, m_canvas_model);
     curvz::utils::set_name(m_shadow_blur_sp, "dlg_se_sbl", "style_editor_dialog_shadow_blur_spn");
     m_shadow_blur_sp->with_value(m_working.shadow.blur)
                     ->with_tooltip("Blur radius (Gaussian stddev)");

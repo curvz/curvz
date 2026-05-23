@@ -1149,7 +1149,14 @@ void ThemeEditDialog::build_tab_grid(Gtk::Box &page) {
       lbl->set_size_request(72, -1);
       row->append(*lbl);
 
-      slot_x = Gtk::make_managed<CurvzSpinButton>(type, &m_unit_model);
+      // s295 m1 — unregistered substrate ctor. These slots are
+      // unnamed (no `set_name` call at this site) and the lambda is
+      // invoked twice per build with the same SpinType, so any shared
+      // abbrev would collide. Substrate semantics (universal verbs,
+      // signal_internal_changed, parser) still apply; just no script
+      // registry entry.
+      slot_x = Gtk::make_managed<CurvzSpinButton>(
+          curvz::scripting::unregistered, type, &m_unit_model);
       slot_x->set_internal_value(initial_x);
       slot_x->set_hexpand(true);
       slot_x->signal_internal_changed().connect([this, setter_x](double v) {
@@ -1162,7 +1169,8 @@ void ThemeEditDialog::build_tab_grid(Gtk::Box &page) {
       if (auto *ul = slot_x->get_unit_label())
         row->append(*ul);
 
-      slot_y = Gtk::make_managed<CurvzSpinButton>(type, &m_unit_model);
+      slot_y = Gtk::make_managed<CurvzSpinButton>(
+          curvz::scripting::unregistered, type, &m_unit_model);
       slot_y->set_internal_value(initial_y);
       slot_y->set_hexpand(true);
       slot_y->signal_internal_changed().connect([this, setter_y](double v) {
@@ -1299,7 +1307,8 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box &page) {
       sla->add_css_class("dim-label");
       row->append(*sla);
     }
-    slot_a = Gtk::make_managed<CurvzSpinButton>(type, &m_unit_model);
+    slot_a = Gtk::make_managed<CurvzSpinButton>(
+        curvz::scripting::unregistered, type, &m_unit_model);
     slot_a->set_internal_value(init_a);
     slot_a->set_hexpand(true);
     slot_a->signal_internal_changed().connect([this, setter_a](double v) {
@@ -1318,7 +1327,8 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box &page) {
       slb->add_css_class("dim-label");
       row->append(*slb);
     }
-    slot_b = Gtk::make_managed<CurvzSpinButton>(type, &m_unit_model);
+    slot_b = Gtk::make_managed<CurvzSpinButton>(
+        curvz::scripting::unregistered, type, &m_unit_model);
     slot_b->set_internal_value(init_b);
     slot_b->set_hexpand(true);
     slot_b->signal_internal_changed().connect([this, setter_b](double v) {
@@ -1345,7 +1355,8 @@ void ThemeEditDialog::build_tab_margins(Gtk::Box &page) {
     lbl->set_size_request(96, -1);
     row->append(*lbl);
 
-    slot = Gtk::make_managed<CurvzSpinButton>(type, &m_unit_model);
+    slot = Gtk::make_managed<CurvzSpinButton>(
+        curvz::scripting::unregistered, type, &m_unit_model);
     slot->set_internal_value(initial);
     slot->set_hexpand(true);
     slot->signal_internal_changed().connect([this, setter](double v) {

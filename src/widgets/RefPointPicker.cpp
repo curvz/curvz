@@ -66,7 +66,16 @@ RefPointPicker::RefPointPicker(std::string_view name,
     x_col->append(m_x_lbl);
 
     auto *x_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 2);
+    // s295 m1 — CurvzSpinButton is now a Scriptable substrate. The X/Y
+    // spins inside the picker are addressable via the parent
+    // RefPointPicker's scriptable name (e.g. "refpoint_picker.translate"),
+    // not as standalone widgets. Since multiple RefPointPicker instances
+    // exist concurrently (TranslateDialog, MainWindow's translate-picker,
+    // RotateFromPointDialog, inspector picker), hardcoded abbrevs would
+    // collide. Use the unregistered ctor — substrate semantics
+    // (signal_internal_changed, value/min/max, rich parser) still apply.
     m_sp_x = Gtk::make_managed<Curvz::CurvzSpinButton>(
+        curvz::scripting::unregistered,
         Curvz::SpinType::PositionX, canvas_model, ruler_origin_x);
     m_sp_x->with_width_chars(8);
     m_sp_x->add_css_class("prop-width-entry");
@@ -108,6 +117,7 @@ RefPointPicker::RefPointPicker(std::string_view name,
 
     auto *y_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 2);
     m_sp_y = Gtk::make_managed<Curvz::CurvzSpinButton>(
+        curvz::scripting::unregistered,
         Curvz::SpinType::PositionY, canvas_model, ruler_origin_y);
     m_sp_y->with_width_chars(8);
     m_sp_y->add_css_class("prop-width-entry");

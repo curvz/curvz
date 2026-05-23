@@ -1,6 +1,7 @@
 #pragma once
 #include "CurvzDocument.hpp"
 #include "UnitSystem.hpp"
+#include "scripting/ScriptableWidget.hpp" // s295 m1 — substrate inheritance
 #include <functional>
 #include <gtkmm.h>
 #include <sigc++/sigc++.h>
@@ -45,10 +46,37 @@ enum class SpinType {
 // that owns its Adjustment and handles unit conversion internally.  Call sites
 // work exclusively in internal (doc-unit) values.
 //
-// Fluent construction:
+// s295 m1 — inherits from ScriptableWidget<Gtk::SpinButton>, so every
+// CurvzSpinButton is registered in the script registry under the abbrev
+// passed to the ctor. Same vocabulary the curvz::widgets::SpinButton
+// family already exposes:
+//
+//   set <number>     — set_internal_value (clamped, fires
+//                      signal_internal_changed). Numeric back door.
+//   step <int>       — spin(STEP_FORWARD/BACKWARD, |n|) per direction.
+//   parse <string>   — route through try_commit_text — the rich
+//                      domain-aware parser (Length / Angle / Percentage
+//                      / Dimensionless). Returns Bool: true on commit,
+//                      false on refusal. Same path a typing user takes.
+//
+// Queries:
+//   value            — the INTERNAL (doc-unit) value, not the display
+//                      value. Scripts work in doc units; the inspector
+//                      live-tracking pattern emits internal values too.
+//   min / max        — adjustment bounds in DISPLAY units (they're the
+//                      adjustment's raw range; CurvzSpinButton scales
+//                      between display and internal at i/o time).
+//
+// Emits:
+//   value_changed <number>   on signal_internal_changed (real OR
+//                            script-driven). The emitted payload is
+//                            the internal value, matching `value`.
+//
+// Fluent construction (the abbrev is now mandatory):
 //
 //   // Distance / Width:
-//   auto *sp = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas)
+//   auto *sp = Gtk::make_managed<CurvzSpinButton>(
+//                  "ins_obj_w", SpinType::Width, m_canvas)
 //       ->with_value(obj->stroke.width)
 //       ->with_tooltip("Stroke thickness")
 //       ->with_css("tb-well-spin")
@@ -62,22 +90,47 @@ enum class SpinType {
 //
 //   // Position:
 //   auto *sp = Gtk::make_managed<CurvzSpinButton>(
-//                  SpinType::PositionX, m_canvas, m_ruler_ox)
+//                  "ins_obj_px", SpinType::PositionX, m_canvas, m_ruler_ox)
 //       ->with_value(obj->x)
 //       ->on_changed([this, obj](double v) {
 //           if (m_loading) return;
 //           obj->x = v;           // v is in doc units
 //           push_inspector_command(obj);
 //       });
+//
+//   // Per-show transient (popover field, per-loop helper) — use
+//   // the unregistered ctor to skip the registry. The widget is
+//   // still IS-A substrate type with set/step/parse and value/min/max,
+//   // it just can't be addressed by name from scripts. Required when
+//   // multiple instances would otherwise collide on a shared abbrev.
+//   auto *sp = Gtk::make_managed<CurvzSpinButton>(
+//                  curvz::scripting::unregistered,
+//                  SpinType::Width, m_canvas);
 
-class CurvzSpinButton : public Gtk::SpinButton {
+class CurvzSpinButton
+    : public curvz::scripting::ScriptableWidget<Gtk::SpinButton> {
 public:
   // General constructor — for Distance, Width, Angle, Percentage, Integer.
-  explicit CurvzSpinButton(SpinType type, const CanvasModel *model = nullptr);
+  CurvzSpinButton(std::string_view name, SpinType type,
+                  const CanvasModel *model = nullptr);
 
   // Position constructor — for PositionX / PositionY.
   // ruler_origin is m_ruler_ox (for X) or m_ruler_oy (for Y).
-  CurvzSpinButton(SpinType type, const CanvasModel *model, double ruler_origin);
+  CurvzSpinButton(std::string_view name, SpinType type,
+                  const CanvasModel *model, double ruler_origin);
+
+  // s295 m1 — unregistered substrate CurvzSpinButton. Mirrors the
+  // s211 m2 ctor on curvz::widgets::SpinButton: IS-A substrate type
+  // (same universal verbs, same SpinType surface, same lifecycle),
+  // but skips the script registry. Use at call sites where multiple
+  // instances would otherwise collide on a shared abbrev — per-show
+  // popovers that rebuild their spins on every open, per-loop helpers,
+  // etc. The (general / position) shape mirrors the two registered
+  // ctors above.
+  CurvzSpinButton(curvz::scripting::unregistered_t, SpinType type,
+                  const CanvasModel *model = nullptr);
+  CurvzSpinButton(curvz::scripting::unregistered_t, SpinType type,
+                  const CanvasModel *model, double ruler_origin);
 
   // ── Fluent builder ────────────────────────────────────────────────────────
 
@@ -128,6 +181,24 @@ public:
   sigc::signal<void(double)> &signal_internal_changed() {
     return m_signal_internal_changed;
   }
+
+  // ── Scriptable substrate (s295 m1) ───────────────────────────────────────
+  //
+  // ScriptableWidget routes the universal hide/show/visible surface
+  // through final-sealed invoke()/query(); leaves implement *_leaf()
+  // with their own verb/property table. See ScriptableWidget.hpp for
+  // the dispatch contract.
+
+  curvz::scripting::ScriptValue
+  invoke_leaf(std::string_view verb,
+              const curvz::scripting::ScriptArgs &args) override;
+  curvz::scripting::ScriptValue
+  query_leaf(std::string_view property) const override;
+  std::vector<std::string> leaf_verbs() const override;
+  std::vector<std::string> leaf_properties() const override;
+
+protected:
+  void bind_canonical() override;
 
 private:
   SpinType m_type;

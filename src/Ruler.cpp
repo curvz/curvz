@@ -684,8 +684,8 @@ void VRuler::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
 // ── CornerSquare
 // ──────────────────────────────────────────────────────────────
 CornerSquare::CornerSquare()
-    : m_x_spin(SpinType::Distance)
-    , m_y_spin(SpinType::Distance)
+    : m_x_spin(curvz::scripting::unregistered, SpinType::Distance)
+    , m_y_spin(curvz::scripting::unregistered, SpinType::Distance)
 {
   set_size_request(RULER_SIZE, RULER_SIZE);
   set_draw_func(sigc::mem_fun(*this, &CornerSquare::on_draw));

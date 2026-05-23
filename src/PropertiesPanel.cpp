@@ -2702,8 +2702,8 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
       // (prop-width-entry + node-spin classes, width_chars(10), block_scroll)
       // matches build_selection_section's make_pos_spin so the guide editor
       // looks like the object editor.
-      auto *sp_x = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX,
-                                                      m_canvas, m_ruler_ox);
+      auto *sp_x = Gtk::make_managed<CurvzSpinButton>(
+          "ins_obj_gd_x", SpinType::PositionX, m_canvas, m_ruler_ox);
       curvz::utils::set_name(sp_x, "ins_obj_gd_x",
                              "inspector_object_guide_x_spn");
       m_guide_sp_x = sp_x;
@@ -2721,8 +2721,8 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
         emit_prop_changed();
       });
 
-      auto *sp_y = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY,
-                                                      m_canvas, m_ruler_oy);
+      auto *sp_y = Gtk::make_managed<CurvzSpinButton>(
+          "ins_obj_gd_y", SpinType::PositionY, m_canvas, m_ruler_oy);
       curvz::utils::set_name(sp_y, "ins_obj_gd_y",
                              "inspector_object_guide_y_spn");
       m_guide_sp_y = sp_y;
@@ -2752,7 +2752,8 @@ void PropertiesPanel::build_object_guides_section(CurvzDocument *doc,
       // single value, not a pair. Same CSS / width / scroll-block as the
       // pos spinners above so all three look uniform.
       auto *sp_a =
-          Gtk::make_managed<CurvzSpinButton>(SpinType::Angle, m_canvas);
+          Gtk::make_managed<CurvzSpinButton>(
+              "ins_obj_gd_a", SpinType::Angle, m_canvas);
       curvz::utils::set_name(sp_a, "ins_obj_gd_a",
                              "inspector_object_guide_angle_spn");
       m_guide_sp_a = sp_a;
@@ -2963,7 +2964,8 @@ void PropertiesPanel::build_grid_section(CurvzDocument *doc, Gtk::Box *parent) {
     pg->attach(*make_hdr("Y"), 2, 1);
 
     m_grid_sp_sx =
-        Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
+        Gtk::make_managed<CurvzSpinButton>(
+            "ins_grd_sx", SpinType::Width, m_canvas);
     curvz::utils::set_name(m_grid_sp_sx, "ins_grd_sx",
                            "inspector_grid_spacing_x_spn");
     m_grid_sp_sx->with_value(gl->grid_spacing_x)->with_css("prop-width-entry");
@@ -2971,7 +2973,8 @@ void PropertiesPanel::build_grid_section(CurvzDocument *doc, Gtk::Box *parent) {
     block_scroll(m_grid_sp_sx, [this] { emit_canvas_focus(); });
 
     m_grid_sp_sy =
-        Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
+        Gtk::make_managed<CurvzSpinButton>(
+            "ins_grd_sy", SpinType::Width, m_canvas);
     curvz::utils::set_name(m_grid_sp_sy, "ins_grd_sy",
                            "inspector_grid_spacing_y_spn");
     m_grid_sp_sy->with_value(gl->grid_spacing_y)->with_css("prop-width-entry");
@@ -3010,7 +3013,8 @@ void PropertiesPanel::build_grid_section(CurvzDocument *doc, Gtk::Box *parent) {
     pg->attach(*make_hdr("Y"), 2, 1);
 
     m_grid_sp_ox =
-        Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, m_canvas);
+        Gtk::make_managed<CurvzSpinButton>(
+            "ins_grd_ox", SpinType::Distance, m_canvas);
     curvz::utils::set_name(m_grid_sp_ox, "ins_grd_ox",
                            "inspector_grid_offset_x_spn");
     m_grid_sp_ox->with_value(gl->grid_offset_x)->with_css("prop-width-entry");
@@ -3018,7 +3022,8 @@ void PropertiesPanel::build_grid_section(CurvzDocument *doc, Gtk::Box *parent) {
     block_scroll(m_grid_sp_ox, [this] { emit_canvas_focus(); });
 
     m_grid_sp_oy =
-        Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, m_canvas);
+        Gtk::make_managed<CurvzSpinButton>(
+            "ins_grd_oy", SpinType::Distance, m_canvas);
     curvz::utils::set_name(m_grid_sp_oy, "ins_grd_oy",
                            "inspector_grid_offset_y_spn");
     m_grid_sp_oy->with_value(gl->grid_offset_y)->with_css("prop-width-entry");
@@ -3174,8 +3179,9 @@ void PropertiesPanel::build_margin_section(CurvzDocument *doc,
     l->add_css_class("prop-lbl");
     return l;
   };
-  auto make_sp = [&](double doc_val) {
-    auto *sp = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
+  auto make_sp = [&](std::string_view name, double doc_val) {
+    auto *sp = Gtk::make_managed<CurvzSpinButton>(
+        name, SpinType::Width, m_canvas);
     sp->with_value(doc_val)->with_css("prop-width-entry");
     sp->set_hexpand(true);
     block_scroll(sp, [this] { emit_canvas_focus(); });
@@ -3192,10 +3198,10 @@ void PropertiesPanel::build_margin_section(CurvzDocument *doc,
     pg->attach(*lbl, 0, 0, 3, 1);
     pg->attach(*make_hdr("TOP"), 1, 1);
     pg->attach(*make_hdr("BOTTOM"), 2, 1);
-    m_margin_sp_t = make_sp(ml->margin_top);
+    m_margin_sp_t = make_sp("ins_mrg_t", ml->margin_top);
     curvz::utils::set_name(m_margin_sp_t, "ins_mrg_t",
                            "inspector_margins_top_spn");
-    m_margin_sp_b = make_sp(ml->margin_bottom);
+    m_margin_sp_b = make_sp("ins_mrg_b", ml->margin_bottom);
     curvz::utils::set_name(m_margin_sp_b, "ins_mrg_b",
                            "inspector_margins_bottom_spn");
     pg->attach(*m_margin_sp_t, 1, 2);
@@ -3227,10 +3233,10 @@ void PropertiesPanel::build_margin_section(CurvzDocument *doc,
     auto *pg = make_pg();
     pg->attach(*make_hdr("LEFT"), 1, 0);
     pg->attach(*make_hdr("RIGHT"), 2, 0);
-    m_margin_sp_l = make_sp(ml->margin_left);
+    m_margin_sp_l = make_sp("ins_mrg_l", ml->margin_left);
     curvz::utils::set_name(m_margin_sp_l, "ins_mrg_l",
                            "inspector_margins_left_spn");
-    m_margin_sp_r = make_sp(ml->margin_right);
+    m_margin_sp_r = make_sp("ins_mrg_r", ml->margin_right);
     curvz::utils::set_name(m_margin_sp_r, "ins_mrg_r",
                            "inspector_margins_right_spn");
     pg->attach(*m_margin_sp_l, 1, 1);
@@ -3279,7 +3285,8 @@ void PropertiesPanel::build_margin_section(CurvzDocument *doc,
     block_scroll(m_margin_sp_cg, [this] { emit_canvas_focus(); });
 
     m_margin_sp_cgap =
-        Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
+        Gtk::make_managed<CurvzSpinButton>(
+            "ins_mrg_cg", SpinType::Width, m_canvas);
     curvz::utils::set_name(m_margin_sp_cgap, "ins_mrg_cg",
                            "inspector_margins_col_gap_spn");
     m_margin_sp_cgap->with_value(ml->margin_col_gap)
@@ -3333,7 +3340,8 @@ void PropertiesPanel::build_margin_section(CurvzDocument *doc,
     block_scroll(m_margin_sp_rg, [this] { emit_canvas_focus(); });
 
     m_margin_sp_rgap =
-        Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
+        Gtk::make_managed<CurvzSpinButton>(
+            "ins_mrg_rg", SpinType::Width, m_canvas);
     curvz::utils::set_name(m_margin_sp_rgap, "ins_mrg_rg",
                            "inspector_margins_row_gap_spn");
     m_margin_sp_rgap->with_value(ml->margin_row_gap)
@@ -3586,8 +3594,9 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     grid->set_margin_top(4);
     grid->set_margin_bottom(4);
 
-    auto make_pos = [this](SpinType t, double doc_val, double ro) {
-      auto *s = Gtk::make_managed<CurvzSpinButton>(t, m_canvas, ro);
+    auto make_pos = [this](std::string_view name, SpinType t, double doc_val,
+                           double ro) {
+      auto *s = Gtk::make_managed<CurvzSpinButton>(name, t, m_canvas, ro);
       s->with_value(doc_val)
           ->with_css("prop-width-entry")
           ->with_css("node-spin");
@@ -3613,8 +3622,10 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     grid->attach(*make_hdr("X"), 1, 0);
     grid->attach(*make_hdr("Y"), 2, 0);
 
-    auto *sp_x = make_pos(SpinType::PositionX, obj->ref_x, m_ruler_ox);
-    auto *sp_y = make_pos(SpinType::PositionY, obj->ref_y, m_ruler_oy);
+    auto *sp_x = make_pos("ins_sel_ref_x", SpinType::PositionX, obj->ref_x,
+                          m_ruler_ox);
+    auto *sp_y = make_pos("ins_sel_ref_y", SpinType::PositionY, obj->ref_y,
+                          m_ruler_oy);
     curvz::utils::set_name(sp_x, "ins_sel_ref_x",
                            "inspector_selection_ref_x_spn");
     curvz::utils::set_name(sp_y, "ins_sel_ref_y",
@@ -3789,10 +3800,10 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     pos_grid->attach(*hdr_x, 1, 0);
     pos_grid->attach(*hdr_y, 2, 0);
 
-    auto *sp_tx = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX,
-                                                     m_canvas, m_ruler_ox);
-    auto *sp_ty = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY,
-                                                     m_canvas, m_ruler_oy);
+    auto *sp_tx = Gtk::make_managed<CurvzSpinButton>(
+        "ins_txt_x", SpinType::PositionX, m_canvas, m_ruler_ox);
+    auto *sp_ty = Gtk::make_managed<CurvzSpinButton>(
+        "ins_txt_y", SpinType::PositionY, m_canvas, m_ruler_oy);
     curvz::utils::set_name(sp_tx, "ins_txt_x", "inspector_text_x_spn");
     curvz::utils::set_name(sp_ty, "ins_txt_y", "inspector_text_y_spn");
     sp_tx->with_value(obj->text_x)->with_css("prop-width-entry");
@@ -3942,7 +3953,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       row->set_margin_bottom(2);
       row->append(*make_lbl("Baseline"));
       auto *sp =
-          Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, m_canvas);
+          Gtk::make_managed<CurvzSpinButton>(
+              "ins_txt_bsl", SpinType::Distance, m_canvas);
       sp->with_value(obj->text_baseline_shift)
           ->with_tooltip(
               "Baseline shift — perpendicular offset from path or baseline")
@@ -3973,7 +3985,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
       row->set_margin_bottom(2);
       row->append(*make_lbl("Spacing"));
       auto *sp =
-          Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, m_canvas);
+          Gtk::make_managed<CurvzSpinButton>(
+              "ins_txt_ls", SpinType::Distance, m_canvas);
       sp->with_value(obj->text_letter_spacing)
           ->with_tooltip("Letter spacing — extra advance between glyphs")
           ->with_css("prop-width-entry");
@@ -4140,7 +4153,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
         row->set_margin_bottom(2);
         row->append(*make_lbl("Offset"));
         auto *sp =
-            Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, m_canvas);
+            Gtk::make_managed<CurvzSpinButton>(
+                "ins_txt_pof", SpinType::Distance, m_canvas);
         sp->with_value(obj->text_path_offset)
             ->with_tooltip("Start offset along path")
             ->with_css("prop-width-entry");
@@ -4239,10 +4253,10 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     grid->attach(*make_hdr("Y"), 2, 0);
 
     // image_y is doc Y-down top; display Y is bottom of image in Y-up space
-    auto *sp_ix = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionX,
-                                                     m_canvas, m_ruler_ox);
-    auto *sp_iy = Gtk::make_managed<CurvzSpinButton>(SpinType::PositionY,
-                                                     m_canvas, m_ruler_oy);
+    auto *sp_ix = Gtk::make_managed<CurvzSpinButton>(
+        "ins_sel_img_x", SpinType::PositionX, m_canvas, m_ruler_ox);
+    auto *sp_iy = Gtk::make_managed<CurvzSpinButton>(
+        "ins_sel_img_y", SpinType::PositionY, m_canvas, m_ruler_oy);
     curvz::utils::set_name(sp_ix, "ins_sel_img_x",
                            "inspector_selection_image_x_spn");
     curvz::utils::set_name(sp_iy, "ins_sel_img_y",
@@ -4261,8 +4275,10 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     grid->attach(*make_hdr("WIDTH"), 1, 2);
     grid->attach(*make_hdr("HEIGHT"), 2, 2);
 
-    auto *sp_iw = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
-    auto *sp_ih = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
+    auto *sp_iw = Gtk::make_managed<CurvzSpinButton>(
+        "ins_sel_img_w", SpinType::Width, m_canvas);
+    auto *sp_ih = Gtk::make_managed<CurvzSpinButton>(
+        "ins_sel_img_h", SpinType::Width, m_canvas);
     curvz::utils::set_name(sp_iw, "ins_sel_img_w",
                            "inspector_selection_image_w_spn");
     curvz::utils::set_name(sp_ih, "ins_sel_img_h",
@@ -4510,16 +4526,18 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
   grid->attach(*hx, 1, 0);
   grid->attach(*hy, 2, 0);
 
-  auto make_pos_spin = [this](SpinType t, double doc_val, double ruler_orig) {
-    auto *s = Gtk::make_managed<CurvzSpinButton>(t, m_canvas, ruler_orig);
+  auto make_pos_spin = [this](std::string_view name, SpinType t, double doc_val,
+                              double ruler_orig) {
+    auto *s = Gtk::make_managed<CurvzSpinButton>(name, t, m_canvas, ruler_orig);
     s->with_value(doc_val)->with_css("prop-width-entry")->with_css("node-spin");
     s->with_width_chars(10);
     s->set_hexpand(true);
     block_scroll(s, [this] { emit_canvas_focus(); });
     return s;
   };
-  auto make_width_spin = [this](double doc_val) {
-    auto *s = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
+  auto make_width_spin = [this](std::string_view name, double doc_val) {
+    auto *s = Gtk::make_managed<CurvzSpinButton>(name, SpinType::Width,
+                                                  m_canvas);
     s->with_value(doc_val)->with_css("prop-width-entry")->with_css("node-spin");
     s->with_width_chars(10);
     s->set_hexpand(true);
@@ -4534,8 +4552,10 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
     return l;
   };
 
-  auto *sp_x = make_pos_spin(SpinType::PositionX, bx_doc, m_ruler_ox);
-  auto *sp_y = make_pos_spin(SpinType::PositionY, by_doc + bh_doc, m_ruler_oy);
+  auto *sp_x = make_pos_spin("ins_sel_x", SpinType::PositionX, bx_doc,
+                             m_ruler_ox);
+  auto *sp_y = make_pos_spin("ins_sel_y", SpinType::PositionY, by_doc + bh_doc,
+                             m_ruler_oy);
   curvz::utils::set_name(sp_x, "ins_sel_x", "inspector_selection_x_spn");
   curvz::utils::set_name(sp_y, "ins_sel_y", "inspector_selection_y_spn");
   m_sel_sp_x = sp_x;
@@ -4578,8 +4598,8 @@ void PropertiesPanel::build_selection_section(SceneNode *obj,
   grid->attach(*hw, 1, 3);
   grid->attach(*hh, 2, 3);
 
-  auto *sp_w = make_width_spin(bw_doc);
-  auto *sp_h = make_width_spin(bh_doc);
+  auto *sp_w = make_width_spin("ins_sel_w", bw_doc);
+  auto *sp_h = make_width_spin("ins_sel_h", bh_doc);
   curvz::utils::set_name(sp_w, "ins_sel_w", "inspector_selection_w_spn");
   curvz::utils::set_name(sp_h, "ins_sel_h", "inspector_selection_h_spn");
   m_sel_sp_w = sp_w;
@@ -5720,8 +5740,9 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
   grid->set_margin_bottom(4);
 
   // Helper: make a compact position spin for the node grid
-  auto make_spin = [this](SpinType t, double doc_val, double ro) {
-    auto *s = Gtk::make_managed<CurvzSpinButton>(t, m_canvas, ro);
+  auto make_spin = [this](std::string_view name, SpinType t, double doc_val,
+                          double ro) {
+    auto *s = Gtk::make_managed<CurvzSpinButton>(name, t, m_canvas, ro);
     s->with_value(doc_val)->with_css("prop-width-entry")->with_css("node-spin");
     s->with_width_chars(10);
     s->set_hexpand(true);
@@ -5847,8 +5868,8 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
   };
 
   // ── Handle In row (cx1/cy1) ───────────────────────────────────────────
-  auto *sp_ix = make_spin(SpinType::PositionX, nd.cx1, m_ruler_ox);
-  auto *sp_iy = make_spin(SpinType::PositionY, nd.cy1, m_ruler_oy);
+  auto *sp_ix = make_spin("ins_nod_ix", SpinType::PositionX, nd.cx1, m_ruler_ox);
+  auto *sp_iy = make_spin("ins_nod_iy", SpinType::PositionY, nd.cy1, m_ruler_oy);
   curvz::utils::set_name(sp_ix, "ins_nod_ix", "inspector_node_handle_in_x_spn");
   curvz::utils::set_name(sp_iy, "ins_nod_iy", "inspector_node_handle_in_y_spn");
   m_adj_ix = sp_ix->get_adjustment();
@@ -5862,8 +5883,8 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
   ++grid_row;
 
   // ── Node anchor row (x/y) ─────────────────────────────────────────────
-  auto *sp_ax = make_spin(SpinType::PositionX, nd.x, m_ruler_ox);
-  auto *sp_ay = make_spin(SpinType::PositionY, nd.y, m_ruler_oy);
+  auto *sp_ax = make_spin("ins_nod_ax", SpinType::PositionX, nd.x, m_ruler_ox);
+  auto *sp_ay = make_spin("ins_nod_ay", SpinType::PositionY, nd.y, m_ruler_oy);
   curvz::utils::set_name(sp_ax, "ins_nod_ax", "inspector_node_anchor_x_spn");
   curvz::utils::set_name(sp_ay, "ins_nod_ay", "inspector_node_anchor_y_spn");
   m_adj_ax = sp_ax->get_adjustment();
@@ -5880,8 +5901,8 @@ void PropertiesPanel::build_node_section(SceneNode *obj, int node_idx,
   }
 
   // ── Handle Out row (cx2/cy2) ──────────────────────────────────────────
-  auto *sp_ox = make_spin(SpinType::PositionX, nd.cx2, m_ruler_ox);
-  auto *sp_oy = make_spin(SpinType::PositionY, nd.cy2, m_ruler_oy);
+  auto *sp_ox = make_spin("ins_nod_ox", SpinType::PositionX, nd.cx2, m_ruler_ox);
+  auto *sp_oy = make_spin("ins_nod_oy", SpinType::PositionY, nd.cy2, m_ruler_oy);
   curvz::utils::set_name(sp_ox, "ins_nod_ox",
                          "inspector_node_handle_out_x_spn");
   curvz::utils::set_name(sp_oy, "ins_nod_oy",
@@ -6279,7 +6300,8 @@ void PropertiesPanel::build_blend_section(SceneNode *obj, Gtk::Box *parent) {
   auto *lbl_start = make_lbl("START W");
   grid->attach(*lbl_start, 0, row);
   auto *sp_start =
-      Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
+      Gtk::make_managed<CurvzSpinButton>(
+          "ins_blnd_sw", SpinType::Width, m_canvas);
   curvz::utils::set_name(sp_start, "ins_blnd_sw",
                          "inspector_blend_start_w_spn");
   sp_start
@@ -6295,7 +6317,8 @@ void PropertiesPanel::build_blend_section(SceneNode *obj, Gtk::Box *parent) {
 
   auto *lbl_end = make_lbl("END W");
   grid->attach(*lbl_end, 0, row);
-  auto *sp_end = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
+  auto *sp_end = Gtk::make_managed<CurvzSpinButton>(
+      "ins_blnd_ew", SpinType::Width, m_canvas);
   curvz::utils::set_name(sp_end, "ins_blnd_ew", "inspector_blend_end_w_spn");
   sp_end
       ->with_value(
@@ -6848,7 +6871,8 @@ void PropertiesPanel::build_shadow_section(SceneNode *obj, Gtk::Box *parent) {
   // used by every other distance row in the inspector.
   grid->attach(*make_lbl("OFFSET"), 0, row);
   auto *sp_dx =
-      Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, m_canvas);
+      Gtk::make_managed<CurvzSpinButton>(
+          "ins_shdw_dx", SpinType::Distance, m_canvas);
   curvz::utils::set_name(sp_dx, "ins_shdw_dx", "inspector_shadow_dx_spn");
   sp_dx->with_value(obj->shadow_dx)
       ->with_css("prop-width-entry")
@@ -6864,7 +6888,8 @@ void PropertiesPanel::build_shadow_section(SceneNode *obj, Gtk::Box *parent) {
   grid->attach(*dx_row, 1, row);
 
   auto *sp_dy =
-      Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, m_canvas);
+      Gtk::make_managed<CurvzSpinButton>(
+          "ins_shdw_dy", SpinType::Distance, m_canvas);
   curvz::utils::set_name(sp_dy, "ins_shdw_dy", "inspector_shadow_dy_spn");
   sp_dy->with_value(obj->shadow_dy)
       ->with_css("prop-width-entry")
@@ -6884,7 +6909,8 @@ void PropertiesPanel::build_shadow_section(SceneNode *obj, Gtk::Box *parent) {
   // Gaussian stddev in doc units. SpinType::Width is non-negative —
   // matches the renderer's clamp blur to >= 0.
   grid->attach(*make_lbl("BLUR"), 0, row);
-  auto *sp_blur = Gtk::make_managed<CurvzSpinButton>(SpinType::Width, m_canvas);
+  auto *sp_blur = Gtk::make_managed<CurvzSpinButton>(
+      "ins_shdw_bl", SpinType::Width, m_canvas);
   curvz::utils::set_name(sp_blur, "ins_shdw_bl", "inspector_shadow_blur_spn");
   sp_blur->with_value(obj->shadow_blur)
       ->with_css("prop-width-entry")
@@ -8443,7 +8469,8 @@ void PropertiesPanel::add_fill_stroke_section(SceneNode *obj,
       wl->set_xalign(0.0f);
       w_row->append(*wl);
       auto *w_spin =
-          Gtk::make_managed<CurvzSpinButton>(SpinType::Distance, m_canvas);
+          Gtk::make_managed<CurvzSpinButton>(
+              "ins_fs_strk_w", SpinType::Distance, m_canvas);
       curvz::utils::set_name(w_spin, "ins_fs_strk_w",
                              "inspector_fill_stroke_width_spn");
       w_spin->set_width_chars(6);
@@ -8798,7 +8825,8 @@ void PropertiesPanel::add_fill_stroke_section(SceneNode *obj,
     op_row->append(*op_lbl);
 
     auto *sp_op =
-        Gtk::make_managed<CurvzSpinButton>(SpinType::Percentage, m_canvas);
+        Gtk::make_managed<CurvzSpinButton>(
+            "ins_fs_op", SpinType::Percentage, m_canvas);
     curvz::utils::set_name(sp_op, "ins_fs_op",
                            "inspector_fill_stroke_opacity_spn");
     sp_op->with_value(obj->opacity * 100.0)->with_css("prop-width-entry");

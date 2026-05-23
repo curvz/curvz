@@ -59,17 +59,72 @@ static const char *display_mode_name(const CanvasModel *m) {
 
 // ── Construction
 // ──────────────────────────────────────────────────────────────
+//
+// s295 m1 — every CurvzSpinButton is now a ScriptableWidget<Gtk::SpinButton>.
+// The base ctor validates the name and registers in the script registry;
+// init_scriptable() (called at the end of each leaf ctor) dispatches
+// through the now-complete vtable into bind_canonical(). The remaining
+// CurvzSpinButton-specific setup lives in init(), which the ctors call
+// after init_scriptable().
+//
+// The four ctors split on two axes: registered-vs-unregistered (whether
+// the script registry sees this instance) × general-vs-position (whether
+// the type carries a ruler-origin offset). The position pair is just a
+// convenience overload for PositionX / PositionY — the ruler origin
+// could be set later via set_ruler_origin(), but the position ctors
+// keep the construction site fluent.
 
-CurvzSpinButton::CurvzSpinButton(SpinType type, const CanvasModel *model)
-    : Gtk::SpinButton(), m_type(type), m_model(model), m_ruler_origin(0.0) {
+CurvzSpinButton::CurvzSpinButton(std::string_view name, SpinType type,
+                                 const CanvasModel *model)
+    : curvz::scripting::ScriptableWidget<Gtk::SpinButton>(name), m_type(type),
+      m_model(model), m_ruler_origin(0.0) {
+  init_scriptable();
   init();
 }
 
-CurvzSpinButton::CurvzSpinButton(SpinType type, const CanvasModel *model,
-                                 double ruler_origin)
-    : Gtk::SpinButton(), m_type(type), m_model(model),
-      m_ruler_origin(ruler_origin) {
+CurvzSpinButton::CurvzSpinButton(std::string_view name, SpinType type,
+                                 const CanvasModel *model, double ruler_origin)
+    : curvz::scripting::ScriptableWidget<Gtk::SpinButton>(name), m_type(type),
+      m_model(model), m_ruler_origin(ruler_origin) {
+  init_scriptable();
   init();
+}
+
+// s295 m1 — unregistered substrate ctors. Forward the unregistered tag
+// to the template base (which forwards to Scriptable's unregistered
+// ctor — empty name, m_registered=false); the canonical signal handler
+// still wires up via bind_canonical(), emit() short-circuits at the
+// Scriptable layer, and the rest of the leaf shape stays uniform.
+CurvzSpinButton::CurvzSpinButton(curvz::scripting::unregistered_t,
+                                 SpinType type, const CanvasModel *model)
+    : curvz::scripting::ScriptableWidget<Gtk::SpinButton>(
+          curvz::scripting::unregistered),
+      m_type(type), m_model(model), m_ruler_origin(0.0) {
+  init_scriptable();
+  init();
+}
+
+CurvzSpinButton::CurvzSpinButton(curvz::scripting::unregistered_t,
+                                 SpinType type, const CanvasModel *model,
+                                 double ruler_origin)
+    : curvz::scripting::ScriptableWidget<Gtk::SpinButton>(
+          curvz::scripting::unregistered),
+      m_type(type), m_model(model), m_ruler_origin(ruler_origin) {
+  init_scriptable();
+  init();
+}
+
+// s295 m1 — canonical signal hook. The widget's "value changed" event
+// is signal_internal_changed (not Gtk::SpinButton's raw
+// signal_value_changed), because the substrate contract is "emit what
+// `value` queries return" — and `value` returns the internal doc-unit
+// value. signal_internal_changed already fires from on_value_changed()
+// AFTER to_internal() has projected display → internal, so this is the
+// right edge to broadcast on.
+void CurvzSpinButton::bind_canonical() {
+  m_signal_internal_changed.connect([this](double v) {
+    emit("value_changed", curvz::scripting::ScriptValue::real(v));
+  });
 }
 
 void CurvzSpinButton::init() {
@@ -638,6 +693,111 @@ void CurvzSpinButton::hide_error_popover() {
   m_err_hide_timer.disconnect();
   if (m_err_popover)
     m_err_popover->popdown();
+}
+
+// ── Scriptable substrate (s295 m1) ──────────────────────────────────────────
+//
+// Verb / property dispatch. The substrate vocabulary mirrors what
+// curvz::widgets::SpinButton exposes — `set` / `step` / `parse` writes,
+// `value` / `min` / `max` reads — so scripts addressing either widget
+// class get the same surface. Two differences worth flagging at the
+// implementation level:
+//
+//   1. `value` returns the INTERNAL (doc-unit) value via
+//      get_internal_value(), not the adjustment's display value. The
+//      canonical signal also broadcasts the internal value (via
+//      signal_internal_changed in bind_canonical above). Consistent
+//      across read / write / emit — scripts work in doc units, full
+//      stop.
+//
+//   2. `set` calls set_internal_value(), which routes through
+//      to_display() so the adjustment is updated in display units;
+//      on_value_changed then re-projects to internal and fires
+//      signal_internal_changed. Idempotent in steady state because
+//      m_internal is preserved across the round-trip.
+//
+//   3. `parse` uses try_commit_text — the rich domain-aware parser
+//      (Length / Angle / Percentage / Dimensionless) that handles
+//      unit suffixes ("12in", "45deg", "50%") and arithmetic
+//      expressions ("360/8"). The substrate's plain
+//      `try_parse_and_commit` (dimensionless-only) is reachable on
+//      curvz::widgets::SpinButton; the rich variant is reachable here.
+//      Same verb name, different polymorphic surface.
+
+curvz::scripting::ScriptValue
+CurvzSpinButton::invoke_leaf(std::string_view verb,
+                             const curvz::scripting::ScriptArgs &args) {
+  using curvz::scripting::ScriptValue;
+  using curvz::scripting::ValueKind;
+
+  if (verb == "set") {
+    if (args.size() != 1)
+      throw std::runtime_error("CurvzSpinButton.set expects one numeric arg");
+    double v = 0.0;
+    if (args[0].kind == ValueKind::Double)
+      v = args[0].d;
+    else if (args[0].kind == ValueKind::Int)
+      v = static_cast<double>(args[0].i);
+    else
+      throw std::runtime_error("CurvzSpinButton.set expects a number");
+    // The script `set` verb mirrors what a user typing into the field
+    // does: drives the adjustment directly so signal_value_changed →
+    // on_value_changed fires WITHOUT the m_updating guard, which then
+    // emits signal_internal_changed and lets downstream callbacks
+    // (the inspector's on_changed lambdas, command-push, canvas redraw)
+    // run. Calling set_internal_value() instead silences the chain
+    // (set_internal_value sets m_updating=true on purpose so external
+    // state syncs don't feedback-loop); script-driven writes must be
+    // observable, same as user-driven writes.
+    //
+    // m_internal is updated inside on_value_changed via
+    // to_internal(m_adj->get_value()), so we don't pre-assign it here.
+    m_adj->set_value(to_display(v));
+    return ScriptValue::null();
+  }
+
+  if (verb == "step") {
+    if (args.size() != 1 || args[0].kind != ValueKind::Int)
+      throw std::runtime_error("CurvzSpinButton.step expects one int arg");
+    long long n = args[0].i;
+    auto dir =
+        (n >= 0) ? Gtk::SpinType::STEP_FORWARD : Gtk::SpinType::STEP_BACKWARD;
+    for (long long i = 0; i < std::llabs(n); ++i)
+      spin(dir, 1.0);
+    return ScriptValue::null();
+  }
+
+  if (verb == "parse") {
+    if (args.size() != 1 || args[0].kind != ValueKind::String)
+      throw std::runtime_error("CurvzSpinButton.parse expects one string arg");
+    // try_commit_text is the rich domain-aware parser. Returns true on
+    // commit, false on refusal — the caller asserts post-call against
+    // `value` to confirm the outcome.
+    return ScriptValue::boolean(try_commit_text(args[0].s));
+  }
+
+  throw std::runtime_error("CurvzSpinButton: unknown verb '" +
+                           std::string(verb) + "'");
+}
+
+curvz::scripting::ScriptValue
+CurvzSpinButton::query_leaf(std::string_view property) const {
+  using curvz::scripting::ScriptValue;
+  if (property == "value")
+    return ScriptValue::real(m_internal);
+  if (property == "min")
+    return ScriptValue::real(m_adj->get_lower());
+  if (property == "max")
+    return ScriptValue::real(m_adj->get_upper());
+  return ScriptValue::null();
+}
+
+std::vector<std::string> CurvzSpinButton::leaf_verbs() const {
+  return {"set", "step", "parse"};
+}
+
+std::vector<std::string> CurvzSpinButton::leaf_properties() const {
+  return {"value", "min", "max"};
 }
 
 } // namespace Curvz

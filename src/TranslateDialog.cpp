@@ -529,7 +529,14 @@ void TranslateDialog::rebuild_picker(const CanvasModel* model,
     // and rebuilding spinners between them).
     //
     // Simpler approach: clear the row entirely and rebuild from scratch.
+    //
+    // s295 m1 — CurvzSpinButton is now a Scriptable substrate, so the
+    // move-row teardown needs the same force_unregister_subtree
+    // discipline as the picker_row above (same s199 m1 idiom — the
+    // existing abbrevs `dlg_xlt_mx` / `dlg_xlt_my` are registered, and
+    // re-show would collide without synchronous cleanup).
     if (m_move_row) {
+        curvz::utils::force_unregister_subtree(m_move_row);
         while (auto* c = m_move_row->get_first_child()) {
             m_move_row->remove(*c);
         }
@@ -538,7 +545,7 @@ void TranslateDialog::rebuild_picker(const CanvasModel* model,
         m_move_row->append(*lbl_x);
 
         m_move_dx_spin = Gtk::make_managed<CurvzSpinButton>(
-            SpinType::PositionX, model, rox);
+            "dlg_xlt_mx", SpinType::PositionX, model, rox);
         m_move_dx_spin->with_width_chars(8);
         m_move_dx_spin->add_css_class("prop-width-entry");
         m_move_dx_spin->add_css_class("node-spin");
@@ -553,7 +560,7 @@ void TranslateDialog::rebuild_picker(const CanvasModel* model,
         m_move_row->append(*lbl_y);
 
         m_move_dy_spin = Gtk::make_managed<CurvzSpinButton>(
-            SpinType::PositionY, model, roy);
+            "dlg_xlt_my", SpinType::PositionY, model, roy);
         m_move_dy_spin->with_width_chars(8);
         m_move_dy_spin->add_css_class("prop-width-entry");
         m_move_dy_spin->add_css_class("node-spin");
