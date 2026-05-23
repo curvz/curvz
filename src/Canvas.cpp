@@ -3816,6 +3816,19 @@ void Canvas::perform_svg_file(const std::string& svg_path,
   m_svg_performer.perform(svg_path, speed, m_doc, layer);
 }
 
+// ── Canvas::abort_svg_performance (s294 m5c) ───────────────────────────
+// Thin forwarder. Both callers (Esc-key handler in MainWindow's capture
+// controller, and the app.stop_animation Scriptable verb) route through
+// here so SvgPerformer stays the single source of truth for what abort
+// means.
+void Canvas::abort_svg_performance() {
+  m_svg_performer.abort();
+}
+
+bool Canvas::is_svg_playing() const {
+  return m_svg_performer.is_playing();
+}
+
 // s161 split: path_anchor_bbox moved here from Canvas_ops.cpp.
 //   Original Canvas.cpp routed it to OPS, but its sole caller
 //   subtree_path_bbox is in CORE. Keep call site in-TU.

@@ -1321,6 +1321,11 @@ void HelpWindow::build_topic_list() {
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-canvas-objects.md",  "Canvas & objects reference" },
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-dialogs.md",         "Dialogs & popovers reference" },
     { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-scripter-widget-index.md",    "Widget name index" },
+    // s294 m5d — Animation composition pattern. Lives under Developer
+    // because it documents the scripting philosophy demonstrated by the
+    // welcome autoplay — it is not a feature in its own right but a
+    // pattern users compose for themselves.
+    { RowKind::Leaf,    2, true,  "/com/curvz/app/help/addendum-developer-animating-svgs.md",           "Animating SVGs" },
   };
 }
 

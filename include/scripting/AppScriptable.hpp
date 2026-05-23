@@ -269,6 +269,14 @@ public:
     using AnimateSvgFile = std::function<void(const std::string& svg_path,
                                               double speed)>;
 
+    // s294 m5c — Stop-animation callback. The stop_animation verb
+    // routes through this; MainWindow wires it to a lambda that
+    // calls Canvas::abort_svg_performance. Takes no args — abort is
+    // a pure command, not parameterised on what to stop. May be
+    // empty (silent no-op), same gift-shape posture as the other
+    // app-verb callbacks.
+    using StopAnimation = std::function<void()>;
+
     // Registers as "app" via the Scriptable base ctor.
     // `main_window` is non-owning; the Scriptable is held as a member
     // of MainWindow and destroyed in MainWindow's dtor, so the pointer
@@ -281,9 +289,12 @@ public:
     // welcome-demo arc's first beat verb.
     // s288 m3 — third ctor arg: AnimateSvgFile callback for the
     // SVG-orchestrator verb.
+    // s294 m5c — fourth ctor arg: StopAnimation callback for the
+    // stop_animation verb.
     explicit AppScriptable(Curvz::MainWindow* main_window,
                            EnactPenPath  enact_pen_path  = {},
-                           AnimateSvgFile animate_svg    = {});
+                           AnimateSvgFile animate_svg    = {},
+                           StopAnimation  stop_animation = {});
     ~AppScriptable() override = default;
 
     ScriptValue invoke(std::string_view verb,
@@ -322,6 +333,11 @@ private:
                                           // hook. Routes to Canvas via
                                           // MainWindow lambda. May be
                                           // empty (silent no-op).
+    StopAnimation      m_stop_animation;  // s294 m5c — abort-an-in-flight-
+                                          // performance hook. Routes to
+                                          // Canvas::abort_svg_performance
+                                          // via MainWindow lambda. May
+                                          // be empty (silent no-op).
 };
 
 } // namespace curvz::scripting

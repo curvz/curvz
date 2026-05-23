@@ -165,7 +165,26 @@ void MainWindow::do_close_project() {
   m_styles.set_swatch_library(nullptr);
   m_themes.set_project(nullptr); // s147 m3
   m_toolbar.set_swatch_library(nullptr);
+  // s294 m5d+: belt-and-braces null. The load_project path lifts
+  // m_toolbar.set_document into update_all_panels's Group A so the
+  // pointer is current before any popover refresh reads it; that fix
+  // covers the load-while-open and close-then-open cases. Nulling
+  // here too means the close path leaves no panel with a dangling
+  // pointer at any moment, matching the pattern the rest of the
+  // close-project nulling enforces.
+  m_toolbar.set_document(nullptr);
   m_layers.set_project(nullptr);  // s171 m1 — match project lifecycle
+  // s294 m5d+: moved from Group B (line ~183 historical). The inspector
+  // holds a raw CurvzProject* and refresh() dereferences it through
+  // build_app_appearance_section. Leaving it pointing at the live
+  // project until after m_project.reset() opened a window where any
+  // signal that triggered an inspector rebuild (e.g. the doc_tabs
+  // refresh emitting active-doc-changed) would read freed memory.
+  // The App-group lift in s294 m5d widened that window because the
+  // App group now builds unconditionally — including in the no-canvas
+  // branch that refresh hits during close. Nulling here, alongside the
+  // other set_project(nullptr) calls, slams the door before reset().
+  m_properties.set_project(nullptr);
 
   // Drop the project — safe now that no panel holds a pointer into it.
   m_project.reset();
@@ -180,7 +199,6 @@ void MainWindow::do_close_project() {
   m_doc_tabs.set_project(nullptr);
   m_doc_tabs.refresh();
   m_gallery.set_project(nullptr);
-  m_properties.set_project(nullptr);
   Glib::signal_idle().connect_once([this]() {
     if (!m_closing)
       m_properties.show_empty();
@@ -706,6 +724,56 @@ MainWindow::script_new_doc(int width, int height) {
   LOG_INFO("script_new_doc: added '{}' to project ({}x{})",
            fname, width, height);
   return ScriptNewDocResult::Ok;
+}
+
+// ── s294 m5b — Welcome SVG autoplay boot hook ────────────────────────────────
+// See MainWindow.hpp for the design block. Called once from
+// Application::on_activate via an idle-scheduled closure.
+//
+// Layout: pref-gate → resolve → new doc → dispatch animation. Each step
+// LOG_INFOs its outcome so the trace channel can pinpoint where (if
+// anywhere) the boot hook bailed out.
+void MainWindow::play_welcome_animation_if_enabled() {
+  auto &prefs = AppPreferences::instance();
+
+  if (!prefs.welcome_autoplay()) {
+    LOG_INFO("Welcome autoplay: disabled by preference — skipping");
+    return;
+  }
+
+  const std::string svg_path = curvz::utils::resolve_welcome_svg_path();
+  if (svg_path.empty()) {
+    // Tier-3 fallthrough: no SVGs in ~/.config/curvz/welcome/ AND the
+    // bundled scott-bug wasn't found at any of the probed install
+    // prefixes. The resolver already considered every option; no
+    // further fallback to attempt here.
+    LOG_INFO("Welcome autoplay: no SVG resolved — skipping");
+    return;
+  }
+
+  // Add the fresh tab. 500x500 is the handoff's spec — gives the
+  // performer room to fit the source via the s292 m3 normalize pump
+  // regardless of the source SVG's native canvas. The dimensions are
+  // intentionally not user-tunable from a pref: the canvas exists to
+  // host the performance, not to be a real working document, and a
+  // standard size keeps the performance scale predictable across
+  // different welcome SVGs.
+  const ScriptNewDocResult new_doc_result = script_new_doc(500, 500);
+  if (new_doc_result != ScriptNewDocResult::Ok) {
+    // script_new_doc already LOG_INFO'd if it succeeded; on failure
+    // it returned silently without a log line. Surface the cause
+    // here so the boot hook's trace is complete.
+    LOG_WARN("Welcome autoplay: script_new_doc(500, 500) failed "
+             "(result={}) — skipping",
+             static_cast<int>(new_doc_result));
+    return;
+  }
+
+  const double multiplier =
+      welcome_speed_multiplier(prefs.welcome_speed());
+  LOG_INFO("Welcome autoplay: performing '{}' at speed={} (×{:.3f})",
+           svg_path, welcome_speed_name(prefs.welcome_speed()), multiplier);
+  m_canvas.perform_svg_file(svg_path, multiplier);
 }
 
 

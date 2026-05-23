@@ -78,6 +78,57 @@ namespace Curvz {
 // setter + one row in build_app_section.
 // ══════════════════════════════════════════════════════════════════════════════
 
+// s294 m5a — Welcome animation tempo.
+//
+// Five named tempo presets surfaced both in the inspector slider (m5d)
+// and to script users via app.animate_svg's speed arg. The script verb
+// accepts either the name (e.g. `medium`) or a raw double; the enum is
+// the canonical surface, the double is the underlying duration
+// multiplier passed to SvgPerformer.
+//
+// Why an enum and not a continuous double everywhere: the playback
+// engine takes a duration multiplier (smaller = faster, see
+// SvgPerformer's kSegmentGrowMs et al.) which leaks implementation
+// into the user surface. The enum is the user-facing vocabulary; the
+// multiplier is private to the playback layer. Five notches are
+// enough to land a "good" tempo without slider-fiddling and few
+// enough to memorise.
+//
+// Underlying multipliers are log-spaced (each step ~halves the beat
+// duration), which is how speed perception actually works — linear
+// spacing would feel uneven.
+//
+//   very_slow  → multiplier 2.0   (half-speed, contemplative)
+//   slow       → multiplier 1.0   (nominal — what the ms constants
+//                                  were originally tuned for)
+//   medium     → multiplier 0.5   (brisk, default)
+//   fast       → multiplier 0.25  (snappy)
+//   very_fast  → multiplier 0.1   (nearly instant, dramatic-reveal feel)
+//
+// Storage in preferences.json is the lowercase string name, not the
+// int — human-readable when Scott edits the JSON by hand, survives
+// reordering if the enum ever grows.
+enum class WelcomeSpeed {
+    VerySlow,
+    Slow,
+    Medium,
+    Fast,
+    VeryFast,
+};
+
+// Underlying duration multiplier for a tempo preset. Passed to
+// SvgPerformer's speed arg (smaller = faster playback). Pure
+// function, no state — safe to call from any layer.
+double welcome_speed_multiplier(WelcomeSpeed s);
+
+// String <-> enum, for JSON load/save and the script verb's
+// name-or-number parse. Names are lowercase snake_case; parse is
+// strict (no aliases). Returns false on unknown name (caller keeps
+// the default).
+const char* welcome_speed_name(WelcomeSpeed s);
+bool        welcome_speed_from_name(const std::string& name,
+                                    WelcomeSpeed& out);
+
 class AppPreferences {
 public:
     static AppPreferences& instance();
@@ -150,6 +201,27 @@ public:
     // and silently no-ops if absent. Takes effect on next launch.
     int  tooltip_delay_ms() const { return m_tooltip_delay_ms; }
     void set_tooltip_delay_ms(int v);
+
+    // s294 m5a — Welcome SVG autoplay on startup.
+    // When true (default), Application::on_activate idle-schedules a
+    // welcome animation after MainWindow construction: picks a random
+    // SVG from ~/.config/curvz/welcome/ (or falls back to the bundled
+    // scott-bug) and performs it in a fresh tab at welcome_speed
+    // tempo. When false, no animation on startup. The pref is read
+    // once at boot; toggling has no live effect, takes hold on next
+    // launch. Esc during playback aborts (m5c). Users wanting on-
+    // demand replayability compose their own scripts via the
+    // Scripter (see help page on the composition pattern).
+    bool welcome_autoplay() const { return m_welcome_autoplay; }
+    void set_welcome_autoplay(bool v);
+
+    // s294 m5a — Welcome animation tempo. Five named presets, see
+    // WelcomeSpeed at namespace scope above for the underlying
+    // multipliers. Default Medium. Storage in JSON is the string
+    // name (e.g. "medium"); unknown names fall back to the default
+    // without raising.
+    WelcomeSpeed welcome_speed() const { return m_welcome_speed; }
+    void         set_welcome_speed(WelcomeSpeed v);
 
     // s146 m3 — Warp creation defaults. When the user invokes Path ▸ Warp
     // on a selection, the resulting Warp's envelope is generated from
@@ -312,6 +384,12 @@ private:
     // s145 m1 — tooltip delay in ms. 150 was the s85 cont-6 hardcoded
     // override of GTK's 500ms default. Range 0..2000 per setter.
     int  m_tooltip_delay_ms = 150;
+    // s294 m5a — Welcome SVG autoplay on startup. See public docs above.
+    // Default true: fresh installs greet the user with the bundled
+    // scott-bug performance. Users opt out via the inspector switch
+    // (Application ▸ Startup) or by editing preferences.json directly.
+    bool         m_welcome_autoplay = true;
+    WelcomeSpeed m_welcome_speed    = WelcomeSpeed::Medium;
     // s146 m3 — Warp creation defaults. See public docs above.
     int  m_warp_default_top_count = 3;
     int  m_warp_default_bot_count = 3;

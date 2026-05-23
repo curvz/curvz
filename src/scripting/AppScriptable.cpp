@@ -38,6 +38,7 @@
 
 #include "scripting/AppScriptable.hpp"
 
+#include "AppPreferences.hpp"        // s294 m5c — welcome_speed_from_name / _multiplier
 #include "CurvzLog.hpp"
 #include "SvgParser.hpp"             // s290 m1a — for animating_parser_smoke
 #include "AnimatingSvgParser.hpp"    // s290 m1a — for animating_parser_smoke
@@ -284,11 +285,13 @@ namespace curvz::scripting {
 
 AppScriptable::AppScriptable(Curvz::MainWindow* main_window,
                              EnactPenPath  enact_pen_path,
-                             AnimateSvgFile animate_svg)
+                             AnimateSvgFile animate_svg,
+                             StopAnimation  stop_animation)
     : Scriptable("app")
     , m_main_window(main_window)
     , m_enact_pen_path(std::move(enact_pen_path))
-    , m_animate_svg(std::move(animate_svg)) {
+    , m_animate_svg(std::move(animate_svg))
+    , m_stop_animation(std::move(stop_animation)) {
     // Registry registration happens in the Scriptable base ctor under
     // the name "app". MainWindow holds us as a member; the registry
     // entry lives for the window's lifetime. The MainWindow pointer
@@ -410,15 +413,49 @@ ScriptValue AppScriptable::invoke(std::string_view verb,
         if (args[0].kind == ValueKind::String) svg_path = args[0].s;
         if (svg_path.empty()) return ScriptValue::null();
 
+        // s294 m5c — speed arg accepts EITHER a tempo name (string
+        // matching a WelcomeSpeed enum value) OR a raw double/int
+        // multiplier. The name form is the user-friendly surface
+        // documented in the help page; the raw-number form stays
+        // wired for back-compat with smokes 67/68 and the broader
+        // SvgPerformer multiplier semantic (which is what gets
+        // forwarded to perform_svg_file in both cases). Default to
+        // 1.0 (nominal tempo) when no arg supplied. Names map
+        // through welcome_speed_multiplier so "very_fast" lands at
+        // the same playback rate the welcome autoplay uses.
         double speed = 1.0;
         if (args.size() >= 2) {
-            if      (args[1].kind == ValueKind::Double) speed = args[1].d;
-            else if (args[1].kind == ValueKind::Int)
+            if (args[1].kind == ValueKind::String) {
+                Curvz::WelcomeSpeed s;
+                if (Curvz::welcome_speed_from_name(args[1].s, s)) {
+                    speed = Curvz::welcome_speed_multiplier(s);
+                }
+                // Unknown name keeps speed=1.0 — same graceful-
+                // degradation posture as the rest of the
+                // animation verbs.
+            } else if (args[1].kind == ValueKind::Double) {
+                speed = args[1].d;
+            } else if (args[1].kind == ValueKind::Int) {
                 speed = static_cast<double>(args[1].i);
+            }
         }
         if (speed <= 0.0) speed = 1.0;
 
         m_animate_svg(svg_path, speed);
+        return ScriptValue::null();
+    }
+
+    // s294 m5c — `stop_animation` verb. Aborts an in-flight SVG
+    // performance (welcome autoplay or any animate_svg run). Pure
+    // command, no args, returns null. Routes through MainWindow's
+    // lambda → Canvas::abort_svg_performance → SvgPerformer::abort.
+    // Same gift-shape graceful degradation as the other animation
+    // verbs: empty callback and no-active-performance are both
+    // silent no-ops. The script can confirm a perform was actually
+    // aborted by reading the log line emitted by SvgPerformer::abort.
+    if (verb == "stop_animation") {
+        if (!m_stop_animation) return ScriptValue::null();
+        m_stop_animation();
         return ScriptValue::null();
     }
 
@@ -617,6 +654,7 @@ std::vector<std::string> AppScriptable::verbs() const {
         "gtk_version",
         "enact_pen_path",
         "animate_svg",
+        "stop_animation",  // s294 m5c
         "animating_parser_smoke",
         "animating_emitter_smoke",
     };
@@ -673,6 +711,15 @@ AppScriptable::context_mask(std::string_view verb) const {
     }
     // s288 m3 — SVG orchestrator. Same rationale as enact_pen_path.
     if (verb == "animate_svg") {
+        return ctx::Scripter | ctx::TestRunner;
+    }
+    // s294 m5c — abort. Same trust profile as animate_svg: Scripter
+    // for interactive use, TestRunner for headless smokes. Macro OUT
+    // because a recorded "user pressed Esc at this moment" pause is
+    // not meaningful at replay time — the underlying animation's
+    // timing varies per replay, so the abort point would land
+    // somewhere different (or after the animation already finished).
+    if (verb == "stop_animation") {
         return ctx::Scripter | ctx::TestRunner;
     }
     // s290 m1a — AnimatingSvgParser diagnostic smoke. Scripter for

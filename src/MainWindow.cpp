@@ -495,6 +495,12 @@ MainWindow::MainWindow(Application & /*app*/)
   // s291 m2 — renamed Canvas-side methods (welcome_* → perform_*); verb
   // names on the AppScriptable surface stay unchanged (enact_pen_path,
   // animate_svg) so scripts continue to work without edits.
+  // s294 m5c — fourth ctor arg: StopAnimation callback. Same routing
+  // shape as the other two — thin lambda forwarding to a Canvas thin
+  // forwarder which then calls SvgPerformer::abort. The chain stays
+  // shallow so the trust boundary at the Scriptable layer is the only
+  // place verb-arg validation needs to happen; everything below is
+  // pure forwarding.
   m_app_scriptable = std::make_unique<curvz::scripting::AppScriptable>(
       this,
       [this](const std::string &d_string, double speed) {
@@ -502,6 +508,9 @@ MainWindow::MainWindow(Application & /*app*/)
       },
       [this](const std::string &svg_path, double speed) {
         m_canvas.perform_svg_file(svg_path, speed);
+      },
+      [this]() {
+        m_canvas.abort_svg_performance();
       });
 
   // s219 m1 — Scripter window construction. Previously lived in

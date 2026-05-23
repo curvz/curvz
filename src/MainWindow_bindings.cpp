@@ -1812,6 +1812,22 @@ void MainWindow::connect_signals() {
 
         // ── M4c-2e: Escape clears Warp envelope pick set ─────────────────
         // Must run BEFORE the pen-cancel Escape handler below so the key
+        // s294 m5c: Escape aborts an in-flight SVG performance.
+        // Sits at the very top of the Escape cascade because while a
+        // welcome animation (or any scripted app.animate_svg run) is
+        // playing, that's the most prominent thing on the canvas and
+        // the user's clearest intent for the Escape key is "stop
+        // that." If nothing's playing, falls through to the existing
+        // cascade (corner panel, warp picks, pen-tool commit, etc).
+        //
+        // No modifier filter — Esc with any modifier set still
+        // aborts. Same posture as text-editor cancel: the key's
+        // meaning is unconditional when there's something to cancel.
+        if (kv == GDK_KEY_Escape && m_canvas.is_svg_playing()) {
+          m_canvas.abort_svg_performance();
+          return true;
+        }
+
         // s194_m1: Escape dismisses the corner panel.  Required because
         // the panel has set_autohide(false) — GTK's automatic Escape
         // routing is bypassed, so we wire it explicitly here.  Must run

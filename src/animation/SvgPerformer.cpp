@@ -248,6 +248,65 @@ void SvgPerformer::perform(const std::string& svg_path,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// abort — s294 m5c — stop an in-flight performance immediately
+// ────────────────────────────────────────────────────────────────────────────
+//
+// Three concerns to handle, in order:
+//
+//   1. Stop the current tick loop. tick() guards against !m_playing at its
+//      top, so setting m_playing=false is enough to make the next-scheduled
+//      timeout return false and let GLib drop the callback.
+//
+//   2. Stop the deferred chain. The performer also schedules:
+//      - inter-step breath timeouts that call advance_plan() (line ~762
+//        in tick's end-of-beats branch)
+//      - end-of-plan reveal timeouts (two nested, at lines ~475 / ~480)
+//      These are connect_once handles; we can't disconnect them from
+//      outside. Instead we guard their bodies: each checks m_playing at
+//      the top and bails if false. Combined with clearing m_plan here
+//      (so even if a breath callback got past the guard, advance_plan's
+//      "while m_plan_idx < m_plan.size()" loop immediately exits), this
+//      makes the abort transactional with respect to the deferred chain.
+//
+//   3. Wipe overlay state. m_inflight_phantoms and m_held_phantoms drive
+//      Canvas::draw_overlay; clearing them and queueing a redraw makes
+//      the abort visually instant (no half-drawn beats left lingering).
+//
+// Already-committed scene nodes — paths that routed into m_target_doc /
+// m_target_layer via route_committed_node — STAY. Abort doesn't undo
+// what was drawn; it just stops drawing more. That matches user
+// expectation for pressing Esc mid-animation: "I've seen enough, stop
+// here." If they want to wipe the partial result they can close the
+// tab or undo.
+void SvgPerformer::abort() {
+    if (!m_playing) return;
+    LOG_INFO("SvgPerformer: abort — plan_idx={}/{}, beat_idx={}/{}, "
+             "container_depth={}",
+             m_plan_idx, m_plan.size(), m_beat_idx, m_beats.size(),
+             m_container_stack.size());
+
+    m_playing = false;
+
+    // Drop the plan and queue so a deferred breath callback that races
+    // past our m_playing guard at advance_plan's top still exits its
+    // loop immediately.
+    m_plan.clear();
+    m_plan_idx = 0;
+    m_beats.clear();
+    m_beat_idx = 0;
+    m_container_stack.clear();
+
+    // Wipe overlay state. The phantom vectors drive draw_overlay; the
+    // target pointers gate everything else.
+    m_inflight_phantoms.clear();
+    m_held_phantoms.clear();
+    m_target_doc   = nullptr;
+    m_target_layer = nullptr;
+
+    if (m_canvas) m_canvas->queue_draw();
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // build_plan_for_layer_children — walk a parsed Layer's contents
 // ────────────────────────────────────────────────────────────────────────────
 //
@@ -387,6 +446,13 @@ void SvgPerformer::build_plan_for_node(const SceneNode& src, int depth) {
 // asynchronously (PerformPath, which kicks off beats and yields control
 // to the tick loop).
 bool SvgPerformer::advance_plan() {
+    // s294 m5c — guard against deferred breath callbacks firing after
+    // abort. The plan vector is also cleared by abort(), so the while
+    // loop below would exit immediately even without this guard — but
+    // the explicit check makes the intent obvious and avoids walking
+    // any state at all post-abort.
+    if (!m_playing) return false;
+
     while (m_plan_idx < m_plan.size()) {
         Step& step = m_plan[m_plan_idx];
 
@@ -474,11 +540,18 @@ bool SvgPerformer::advance_plan() {
     LOG_INFO("SvgPerformer: plan exhausted, scheduling reveal");
     Glib::signal_timeout().connect_once(
         [this]() {
+            // s294 m5c — bail if abort() flipped m_playing while this
+            // reveal-stage was queued. Without the guard, an aborted
+            // perform followed by a new perform would race: this
+            // closure's toggle_outline_mode + the nested closure's
+            // null-out of m_target_doc would clobber the new run.
+            if (!m_playing) return;
             if (m_canvas && m_canvas->is_outline_mode()) {
                 m_canvas->toggle_outline_mode();
             }
             Glib::signal_timeout().connect_once(
                 [this]() {
+                    if (!m_playing) return;  // s294 m5c — same guard
                     m_target_doc   = nullptr;
                     m_target_layer = nullptr;
                     m_playing      = false;

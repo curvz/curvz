@@ -14,6 +14,7 @@
 #include "widgets/SpinButton.hpp"
 #include "widgets/ToggleButton.hpp"
 #include <algorithm>
+#include <array>
 #include <cairomm/context.h>
 #include <cmath>
 #include <gdk/gdkkeysyms.h>
@@ -3589,6 +3590,20 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
   // string literals, not constructed std::string c_str pointers). One
   // local helper keeps the body compact without re-introducing the
   // dynamic-string problem.
+  //
+  // s294: presets are plain Gtk::Button (not ToggleButton) — same
+  // historical reason as the fill/stroke type rows: radio-like row
+  // managed in code. Plain buttons have no :checked state, so the
+  // highlight is driven by manually swapping the `tb-type-btn-active`
+  // class (mirrors the S87 m1 fix4 CSS rule in css.hpp). The button
+  // pointers are captured into a fixed array so the highlight sweep
+  // can sync them on every adjustment change — that means typing in
+  // the spin, clicking a preset, AND opening the popover (which
+  // pushes zoom_level into the adjustment) all converge on the same
+  // refresh path.
+  std::array<std::pair<int, Gtk::Button *>, 5> zoom_presets{};
+  std::size_t preset_idx = 0;
+
   auto add_zoom_preset = [&](int pct, Gtk::Button *btn) {
     btn->add_css_class("tb-type-btn");
     btn->signal_clicked().connect([this, pct]() {
@@ -3596,6 +3611,7 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
         zoom_adj->set_value(pct);
     });
     preset_row->append(*btn);
+    zoom_presets[preset_idx++] = {pct, btn};
   };
   {
     auto *btn =
@@ -3633,6 +3649,27 @@ void Toolbar::Impl::build_zoom_popover(Gtk::ToggleButton *zoom_btn) {
     add_zoom_preset(400, btn);
   }
   outer->append(*preset_row);
+
+  // s294: drive the active-class swap from the adjustment. Single
+  // source of truth: whenever the spin value changes (preset click,
+  // typed entry, or the right-click handler's push of zoom_level
+  // before popup), sweep the five buttons and light up the one whose
+  // preset value matches. No match -> none lit (custom zoom).
+  if (zoom_adj) {
+    zoom_adj->signal_value_changed().connect([zoom_presets, this]() {
+      if (!zoom_adj)
+        return;
+      const int v = static_cast<int>(std::lround(zoom_adj->get_value()));
+      for (const auto &[pct, btn] : zoom_presets) {
+        if (!btn)
+          continue;
+        if (pct == v)
+          btn->add_css_class("tb-type-btn-active");
+        else
+          btn->remove_css_class("tb-type-btn-active");
+      }
+    });
+  }
 
   // Separator
   auto *sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);

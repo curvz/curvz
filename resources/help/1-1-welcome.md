@@ -42,6 +42,22 @@ worth a bookmark.
 > point or an "R" command on a selected object. You will find an easy
 > popup dailog or menu will present itself.
 
+## A note on the welcome animation
+
+If you just watched Curvz draw something into a fresh tab on launch, that
+was the welcome animation playing one of the SVGs from
+`~/.config/curvz/welcome/`. Drop your own SVGs in there and Curvz will
+pick one at random next time it launches. Empty folder, and you get the
+bundled `scott-bug.svg` instead. Press **Esc** during playback to skip
+it. You can turn the whole thing off in the inspector under
+**Application ▸ Startup**.
+
+That animation is not a special-purpose feature — it is Curvz running
+a tiny script, the same kind any user can write. If you want to replay
+your favourite SVG on demand (or build a longer ceremony than one
+file), the **Animating SVGs** page under Addendums ▸ Developer shows
+the composition pattern.
+
 ## A note on the manual itself
 
 The manual lives inside the app. There is no online copy and no external

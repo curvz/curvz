@@ -1130,4 +1130,34 @@ void path_data_doc_to_user(::Curvz::PathData& pd, double canvas_h);
 ::Curvz::FillStyle fill_attr_to_fill_style(const std::string& token);
 std::string        fill_style_to_fill_attr(const ::Curvz::FillStyle& fs);
 
+// ── Welcome SVG resolver (s294 m5a) ──────────────────────────────────
+//
+// Picks the SVG to use for the startup welcome animation. Two-tier
+// resolution:
+//
+//   1. Scan ~/.config/curvz/welcome/*.svg. If non-empty, return one
+//      entry at random. This is the user's own surface — drop SVGs
+//      in (file manager, command line, or a script that exports
+//      then copies) and they cycle through on subsequent launches.
+//      Filename order is filesystem-dependent and not promised; the
+//      random pick guarantees variety regardless.
+//
+//   2. If the folder is empty or doesn't exist, return the path to
+//      the installed bundled scott-bug.svg. This path is set at
+//      build time via the CMake install rule
+//      (share/curvz/welcome/scott-bug.svg under CMAKE_INSTALL_PREFIX),
+//      mirroring the user's folder shape one level up the tree.
+//
+//   3. If neither path is usable (gresource read fails, install
+//      tree is malformed, etc.), return the empty string. The
+//      caller treats empty as "skip autoplay silently" — LOG_INFO
+//      the skip but never error out. Welcome autoplay is a courtesy,
+//      not load-bearing.
+//
+// Pure with respect to side effects: the function reads the
+// filesystem and uses std::rand for the pick. No GTK, no Cairo,
+// no logging of selection (the caller logs once after resolution
+// succeeds, before kicking off playback).
+std::string resolve_welcome_svg_path();
+
 } // namespace curvz::utils

@@ -173,6 +173,21 @@ public:
 
     bool is_playing() const { return m_playing; }
 
+    // ── s294 m5c — Abort an in-flight performance ──────────────────────────
+    //
+    // Stops playback at the current beat, wipes the in-progress overlay
+    // (in-flight and held phantoms), and clears the queued plan so no
+    // further steps fire. Already-committed scene nodes (paths that
+    // routed into the user's doc before abort) STAY — abort is "stop
+    // drawing more," not "undo what was drawn."
+    //
+    // Safe to call when not playing: no-op + early return.
+    //
+    // Concurrent-callback safety: deferred timeouts (inter-step breaths,
+    // end-of-plan reveal stages) already in flight will still fire, but
+    // each is guarded by an m_playing check and bails harmlessly.
+    void abort();
+
     void draw_overlay(const Cairo::RefPtr<Cairo::Context>& cr,
                       double zoom,
                       double creation_r,

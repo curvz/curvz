@@ -14,7 +14,9 @@
 #include <chrono> // s269 m2 — trim_heap elapsed-us timing
 #include <cmath>
 #include <cstdio> // s236 m1 — snprintf for fmt2 in path-d emitter
+#include <cstdlib> // s294 m5a — getenv for ~/.config seam in welcome resolver
 #include <cstring>
+#include <random>  // s294 m5a — random pick from ~/.config/curvz/welcome/
 #include <sstream> // s236 m1 — ostringstream for path-d emitter
 #include <string>
 #include <vector>
@@ -2057,6 +2059,73 @@ std::string fill_style_to_fill_attr(const ::Curvz::FillStyle &fs) {
   }
   }
   return "none"; // unreachable; silences -Wreturn-type
+}
+
+// ── Welcome SVG resolver (s294 m5a) ──────────────────────────────────────────
+// Two-tier resolution: user folder first (random pick), bundled fallback
+// second. Empty return = "skip autoplay" — see header docs for the full
+// contract.
+std::string resolve_welcome_svg_path() {
+  namespace fs = std::filesystem;
+
+  // ── Tier 1: user-supplied SVGs in ~/.config/curvz/welcome/ ─────────────────
+  // Mirror AppPreferences's prefs_path() seam exactly: XDG_CONFIG_HOME wins
+  // if set, else $HOME/.config, else "." (the same defensive last fallback).
+  std::string user_dir;
+  {
+    const char *xdg = std::getenv("XDG_CONFIG_HOME");
+    const char *home = std::getenv("HOME");
+    std::string base = xdg ? xdg : (home ? std::string(home) + "/.config" : ".");
+    user_dir = base + "/curvz/welcome";
+  }
+
+  std::vector<std::string> user_svgs;
+  std::error_code ec;
+  if (fs::is_directory(user_dir, ec)) {
+    for (const auto &entry : fs::directory_iterator(user_dir, ec)) {
+      if (ec)
+        break;
+      if (!entry.is_regular_file(ec))
+        continue;
+      // Case-insensitive .svg check — users on case-sensitive filesystems
+      // may have legitimately-named .SVG files from upstream tooling.
+      std::string ext = entry.path().extension().string();
+      std::transform(ext.begin(), ext.end(), ext.begin(),
+                     [](unsigned char c) { return std::tolower(c); });
+      if (ext == ".svg")
+        user_svgs.push_back(entry.path().string());
+    }
+  }
+
+  if (!user_svgs.empty()) {
+    // std::mt19937 seeded from random_device — better entropy than std::rand
+    // and doesn't share global state with anyone else's rand calls. Static
+    // so successive launches in the same process (e.g. via Application
+    // re-activation) don't reseed to the same value.
+    static std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<std::size_t> dist(0, user_svgs.size() - 1);
+    return user_svgs[dist(rng)];
+  }
+
+  // ── Tier 2: bundled scott-bug installed at share/curvz/welcome/ ────────────
+  // The CMake install rule lands scott-bug.svg at
+  // ${CMAKE_INSTALL_DATADIR}/curvz/welcome/scott-bug.svg. Standard Linux
+  // installs put that at /usr/share or /usr/local/share; Flatpak bind-mounts
+  // it at /app/share. Try the common locations in order — the first one
+  // that resolves wins. Cheaper than threading the install prefix through
+  // a compile-time macro for a six-entry probe list.
+  static const char *const candidates[] = {
+      "/app/share/curvz/welcome/scott-bug.svg",       // Flatpak
+      "/usr/local/share/curvz/welcome/scott-bug.svg", // local install
+      "/usr/share/curvz/welcome/scott-bug.svg",       // distro install
+  };
+  for (const char *p : candidates) {
+    if (fs::is_regular_file(p, ec))
+      return p;
+  }
+
+  // ── Tier 3: nothing found, caller skips autoplay ───────────────────────────
+  return {};
 }
 
 } // namespace curvz::utils

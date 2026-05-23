@@ -2026,6 +2026,105 @@ void PropertiesPanel::build_app_section(Gtk::Box *parent) {
         LOG_INFO("PropertiesPanel: show_rulers_by_default → {}", on);
       });
     }
+
+    // ── Welcome autoplay (s294 m5d) ────────────────────────────────────────
+    // Boolean switch — when on, Application::on_activate idle-schedules a
+    // welcome animation on launch (picks a random SVG from
+    // ~/.config/curvz/welcome/ or falls back to the bundled scott-bug).
+    // Mirrors the "Reopen last project" row's shape (sibling boot-time
+    // prefs in the same Startup subsection).
+    {
+      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+      row->add_css_class("prop-row");
+      row->set_spacing(6);
+      row->set_margin_start(6);
+      row->set_margin_end(6);
+      row->set_margin_top(2);
+      row->set_margin_bottom(2);
+
+      auto *key = Gtk::make_managed<Gtk::Label>("Welcome animation");
+      key->add_css_class("prop-lbl");
+      key->set_xalign(0.0f);
+      key->set_hexpand(true);
+      row->append(*key);
+
+      auto *sw = Gtk::make_managed<CurvzSwitch>();
+      curvz::utils::set_name(sw, "ins_app_welcome_autoplay",
+                             "inspector_app_welcome_autoplay_switch");
+      sw->set_state(AppPreferences::instance().welcome_autoplay());
+      sw->set_valign(Gtk::Align::CENTER);
+      sw->set_tooltip_text(
+          "When on, Curvz greets you with a welcome animation on launch.\n"
+          "Pick the SVG to play by dropping it in "
+          "~/.config/curvz/welcome/ (random pick if you add several).\n"
+          "If empty, falls back to the bundled scott-bug.\n"
+          "Press Esc during playback to abort.\n"
+          "Takes effect on next launch.");
+      row->append(*sw);
+      body->append(*row);
+
+      sw->signal_toggled().connect([this, sw, gen](bool on) {
+        if (m_build_gen != gen || m_loading)
+          return;
+        AppPreferences::instance().set_welcome_autoplay(on);
+        LOG_INFO("PropertiesPanel: welcome_autoplay → {}", on);
+      });
+    }
+
+    // ── Welcome speed (s294 m5d) ───────────────────────────────────────────
+    // Five named tempo presets surfaced as a dropdown (rather than a
+    // continuous slider) because the underlying enum IS the surface —
+    // script users select the same names via `app animate_svg "..." <name>`.
+    // The DropDown index maps 1:1 to the WelcomeSpeed enum order
+    // (VerySlow=0, Slow=1, Medium=2, Fast=3, VeryFast=4); the on_changed
+    // handler converts back via the parser.
+    {
+      auto *row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL);
+      row->add_css_class("prop-row");
+      row->set_spacing(6);
+      row->set_margin_start(6);
+      row->set_margin_end(6);
+      row->set_margin_top(2);
+      row->set_margin_bottom(2);
+
+      auto *key = Gtk::make_managed<Gtk::Label>("Welcome speed");
+      key->add_css_class("prop-lbl");
+      key->set_xalign(0.0f);
+      key->set_hexpand(true);
+      row->append(*key);
+
+      // Visible labels mirror the enum names with friendlier casing.
+      // Index-to-enum mapping is positional — VerySlow at 0, VeryFast at 4.
+      auto items = Gtk::StringList::create(
+          {"Very slow", "Slow", "Medium", "Fast", "Very fast"});
+      auto *dd = Gtk::make_managed<curvz::widgets::DropDown>(
+          "ins_app_welcome_speed", items);
+      curvz::utils::set_name(dd, "ins_app_welcome_speed",
+                             "inspector_app_welcome_speed_dd");
+      dd->set_selected(
+          static_cast<guint>(AppPreferences::instance().welcome_speed()));
+      dd->set_valign(Gtk::Align::CENTER);
+      dd->add_css_class("prop-dropdown");
+      dd->set_tooltip_text(
+          "How quickly the welcome animation draws.\n"
+          "Same names work as the second arg to app animate_svg "
+          "in your own scripts.\n"
+          "Takes effect on next launch.");
+      row->append(*dd);
+      body->append(*row);
+
+      dd->property_selected().signal_changed().connect(
+          [this, dd, gen]() {
+            if (m_build_gen != gen || m_loading)
+              return;
+            auto idx = dd->get_selected();
+            if (idx > 4) return;  // defensive; StringList has exactly 5
+            auto s = static_cast<WelcomeSpeed>(idx);
+            AppPreferences::instance().set_welcome_speed(s);
+            LOG_INFO("PropertiesPanel: welcome_speed → {}",
+                     welcome_speed_name(s));
+          });
+    }
   }
 
   // ── Editing subsection (s145 m1) ───────────────────────────────────────────
@@ -5383,6 +5482,25 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
     m_undo_shadow_before = obj->read_shadow();
   }
 
+  // ── Application group (s143 m1; reordered s145 m2; lifted s294 m5d+) ──
+  // Sits at the top of the inspector by scope-hierarchy convention:
+  // Application → Project → Document → Object, broadest to narrowest.
+  // User-tier app preferences (AppPreferences::instance) — persists
+  // across projects and launches.
+  //
+  // s294: lifted ABOVE the !canvas guard. App-tier prefs aren't gated
+  // on a doc being loaded — they're process-scope (AppPreferences is
+  // a singleton). Hiding the group when no doc is open meant a user
+  // who closed all docs lost access to the welcome-autoplay toggle,
+  // theme switch, undo depth, etc. — which is exactly when they may
+  // want to tweak them. The Appearance subsection inside still self-
+  // guards on null project, so the only thing that's actually
+  // sensitive to project absence stays hidden; the rest renders.
+  {
+    auto *app_grp = add_group_collapsible("Application", false);
+    build_app_section(app_grp);
+  }
+
   if (!canvas) {
     // No document — show placeholder then collapsed sections
     auto *lbl = Gtk::make_managed<Gtk::Label>("No document");
@@ -5397,18 +5515,6 @@ void PropertiesPanel::refresh(CanvasModel *canvas, SceneNode *obj) {
     add_fill_stroke_section(nullptr, obj_grp);
     m_loading = false;
     return;
-  }
-
-  // ── Application group (s143 m1; reordered s145 m2) ──────────────
-  // Sits at the top of the inspector by scope-hierarchy convention:
-  // Application → Project → Document → Object, broadest to narrowest.
-  // User-tier app preferences (AppPreferences::instance) — persists
-  // across projects and launches. Default-collapsed because it's
-  // read-mostly (boot-time prefs, occasional tweaks) and the user's
-  // attention typically lives in Document/Object during editing.
-  {
-    auto *app_grp = add_group_collapsible("Application", false);
-    build_app_section(app_grp);
   }
 
   // ── Project group (s116 m6 → s148 m2: deleted) ───────────────
@@ -7060,20 +7166,21 @@ void PropertiesPanel::refresh_node(CanvasModel *canvas, SceneNode *obj,
     m_undo_shadow_before = obj->read_shadow();
   }
 
+  // ── Application group — see twin in the selection-empty assembly
+  // above for the lift rationale (s294). Built ABOVE the !canvas guard
+  // so it's always available, since AppPreferences is process-scope
+  // and not gated on a doc being loaded.
+  {
+    auto *app_grp = add_group_collapsible("Application", false);
+    build_app_section(app_grp);
+  }
+
   if (!canvas) {
     m_loading = false;
     return;
   }
 
   auto cm = std::make_shared<CanvasModel>(*canvas);
-
-  // ── Application group (s143 m1; reordered s145 m2) ──────────────
-  // Mirrored from the selection-empty assembly above. Application
-  // sits first by scope-hierarchy convention.
-  {
-    auto *app_grp = add_group_collapsible("Application", false);
-    build_app_section(app_grp);
-  }
 
   // ── Project group (s116 m6 → s148 m2: deleted; see twin in setup_layout) ─
 

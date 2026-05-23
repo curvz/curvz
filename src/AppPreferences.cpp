@@ -101,6 +101,28 @@ void AppPreferences::load() {
             m_tooltip_delay_ms = n;
         }
 
+        // s294 m5a — welcome autoplay + tempo. Tempo is stored as the
+        // lowercase string name (not an int) so the JSON stays
+        // human-readable. Unknown / mistyped names fall back to the
+        // default Medium without raising — same robustness pattern as
+        // the rest of this loader.
+        if (j.contains("welcome_autoplay") &&
+            j["welcome_autoplay"].is_boolean()) {
+            m_welcome_autoplay = j["welcome_autoplay"].get<bool>();
+        }
+        if (j.contains("welcome_speed") &&
+            j["welcome_speed"].is_string()) {
+            WelcomeSpeed s;
+            if (welcome_speed_from_name(
+                    j["welcome_speed"].get<std::string>(), s)) {
+                m_welcome_speed = s;
+            } else {
+                LOG_WARN("AppPreferences: welcome_speed='{}' not "
+                         "recognised — using default 'medium'",
+                         j["welcome_speed"].get<std::string>());
+            }
+        }
+
         // s146 m3 — warp defaults. Clamp at load to defend against
         // hand-edited preferences.json with out-of-range values.
         if (j.contains("warp_default_top_count") &&
@@ -223,7 +245,8 @@ void AppPreferences::load() {
                  "undo_history_depth={}, tooltip_delay_ms={}, "
                  "library_override={}, templates_override={}, "
                  "log_override={}, css_override={}, scripts_override={}, "
-                 "library_defaults_seeded={}, toolbar_density={}",
+                 "library_defaults_seeded={}, toolbar_density={}, "
+                 "welcome_autoplay={}, welcome_speed={}",
                  path, m_boolean_cleanup_quality,
                  m_reopen_last_project, m_recent_projects_max_count,
                  m_show_rulers_by_default, m_undo_history_depth,
@@ -234,7 +257,9 @@ void AppPreferences::load() {
                  m_custom_css_path_override.empty() ? "<default>" : m_custom_css_path_override,
                  m_scripts_path_override.empty() ? "<default>" : m_scripts_path_override,
                  m_library_defaults_seeded,
-                 m_toolbar_density);
+                 m_toolbar_density,
+                 m_welcome_autoplay,
+                 welcome_speed_name(m_welcome_speed));
     } catch (const std::exception& e) {
         LOG_WARN("AppPreferences: failed to parse {}: {} — using defaults",
                  path, e.what());
@@ -259,6 +284,11 @@ void AppPreferences::save() const {
     j["show_rulers_by_default"]     = m_show_rulers_by_default;
     j["undo_history_depth"]         = m_undo_history_depth;
     j["tooltip_delay_ms"]           = m_tooltip_delay_ms;
+    // s294 m5a — welcome autoplay + tempo. Tempo as string name, not
+    // int — keeps preferences.json human-readable when Scott edits by
+    // hand and survives enum reordering.
+    j["welcome_autoplay"]           = m_welcome_autoplay;
+    j["welcome_speed"]              = welcome_speed_name(m_welcome_speed);
     j["warp_default_top_count"]     = m_warp_default_top_count;
     j["warp_default_bot_count"]     = m_warp_default_bot_count;
     j["warp_default_preset"]        = m_warp_default_preset;
@@ -500,6 +530,68 @@ void AppPreferences::bump_quick_jump_count(int phase,
     if (slot < 1'000'000) ++slot;  // guard against pathological overflow
     save();
     m_sig_changed.emit();
+}
+
+// s294 m5a — Welcome autoplay + tempo setters. Standard pattern:
+// no-op if unchanged, save, signal. No clamping needed: bool is bool,
+// and WelcomeSpeed is a typed enum (the caller can't construct an
+// out-of-range value through the type system; ill-formed values can
+// only arrive via the JSON loader, which falls back to the default
+// before they ever reach this setter).
+void AppPreferences::set_welcome_autoplay(bool v) {
+    if (m_welcome_autoplay == v) return;
+    m_welcome_autoplay = v;
+    save();
+    m_sig_changed.emit();
+}
+
+void AppPreferences::set_welcome_speed(WelcomeSpeed v) {
+    if (m_welcome_speed == v) return;
+    m_welcome_speed = v;
+    save();
+    m_sig_changed.emit();
+}
+
+// ── Welcome speed enum helpers (free functions) ─────────────────────────────
+// These live at namespace scope (not as static members of AppPreferences)
+// because they're called from contexts that don't have an instance handle
+// — JSON load before the singleton is fully built, the SvgPerformer's
+// playback math, and the AppScriptable's name-or-number parse.
+
+double welcome_speed_multiplier(WelcomeSpeed s) {
+    // Log-spaced — each step ~halves the prior beat duration. Tuned
+    // so the default (Medium) is roughly 2x quicker than the
+    // ms-constants' nominal 1.0, which felt sluggish in actual
+    // playback (the constants were calibrated against a single
+    // contemplative test, not a default-tempo target).
+    switch (s) {
+        case WelcomeSpeed::VerySlow: return 2.0;
+        case WelcomeSpeed::Slow:     return 1.0;
+        case WelcomeSpeed::Medium:   return 0.5;
+        case WelcomeSpeed::Fast:     return 0.25;
+        case WelcomeSpeed::VeryFast: return 0.1;
+    }
+    return 0.5;  // unreachable; appeases the compiler
+}
+
+const char* welcome_speed_name(WelcomeSpeed s) {
+    switch (s) {
+        case WelcomeSpeed::VerySlow: return "very_slow";
+        case WelcomeSpeed::Slow:     return "slow";
+        case WelcomeSpeed::Medium:   return "medium";
+        case WelcomeSpeed::Fast:     return "fast";
+        case WelcomeSpeed::VeryFast: return "very_fast";
+    }
+    return "medium";  // unreachable
+}
+
+bool welcome_speed_from_name(const std::string& name, WelcomeSpeed& out) {
+    if (name == "very_slow") { out = WelcomeSpeed::VerySlow; return true; }
+    if (name == "slow")      { out = WelcomeSpeed::Slow;     return true; }
+    if (name == "medium")    { out = WelcomeSpeed::Medium;   return true; }
+    if (name == "fast")      { out = WelcomeSpeed::Fast;     return true; }
+    if (name == "very_fast") { out = WelcomeSpeed::VeryFast; return true; }
+    return false;
 }
 
 } // namespace Curvz

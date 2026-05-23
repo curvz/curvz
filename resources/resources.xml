@@ -219,6 +219,7 @@
     <file alias="addendum-developer-scripter-canvas-objects.md">help/addendum-developer-scripter-canvas-objects.md</file>
     <file alias="addendum-developer-scripter-dialogs.md">help/addendum-developer-scripter-dialogs.md</file>
     <file alias="addendum-developer-scripter-widget-index.md">help/addendum-developer-scripter-widget-index.md</file>
+    <file alias="addendum-developer-animating-svgs.md">help/addendum-developer-animating-svgs.md</file>
 
     <!-- Live image aliases — files exist on disk -->
     <file alias="img/1-3-workspace-overview.png">help/img/1-3-workspace-overview.png</file>

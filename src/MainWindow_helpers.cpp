@@ -890,6 +890,25 @@ void MainWindow::update_all_panels() {
   m_styles.set_library(&m_project->styles);           // S80 m4c
   m_styles.set_swatch_library(&m_project->swatches);  // S85 cont-3
   m_themes.set_project(m_project.get());              // s147 m3
+  // s294 m5d+: m_toolbar.set_document MUST run BEFORE
+  // set_swatch_library — same s249 m1 pattern, different panel.
+  //
+  // set_swatch_library triggers rebuild_swatch_pickers → refresh_*_popover
+  // synchronously (Toolbar.cpp:5347-5376). refresh_stroke_popover reads
+  // doc->canvas.phys_unit at line 2489. If m_impl->doc still points at
+  // the PREVIOUS m_project's freed CurvzDocument (which is the case on
+  // load-while-open, because m_project = std::move(project) at
+  // load_project entry freed the previous one), that string read crashes
+  // inside memcpy.
+  //
+  // Diagnosed via gdb backtrace under s294 m5d testing:
+  //   refresh_stroke_popover → Glib::ustring(std::string&) → memcpy
+  //   on a corrupted std::string header inside a freed CanvasModel.
+  //
+  // Toolbar::set_document is a plain pointer-store plus a label-text
+  // refresh (set_popup_unit on the placement-popover unit labels); no
+  // signals fire. Safe in Group A.
+  m_toolbar.set_document(doc);
   m_toolbar.set_swatch_library(&m_project->swatches); // S91
   // s171 m1 — re-bind project pointer; m_history is a stable member
   // address so that wiring (in MainWindow_zones) doesn't need refreshing.
@@ -935,8 +954,10 @@ void MainWindow::update_all_panels() {
     doc->snap = m_project->snap;
     m_toolbar.set_snap_enabled(doc->snap.enabled);
     m_toolbar.set_snap_settings(doc->snap);
-    // Keep popover unit labels in sync with document display unit
-    m_toolbar.set_document(doc);
+    // s294 m5d+: set_document call removed — it lifted to Group A so the
+    // toolbar's doc pointer is current before set_swatch_library triggers
+    // its downstream popover refresh. See Group A comment for the
+    // rationale (sibling to s249 m1's StylesPanel fix).
     // s265 m2: corner shows the intent unit when set (the user's typed
     // Size unit), else falls back to display_unit / phys_unit.
     auto resolve_corner_unit = [&]() -> Unit {

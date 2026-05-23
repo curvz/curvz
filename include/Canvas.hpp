@@ -879,6 +879,20 @@ public:
   // GTK main loop. Same thin-forwarder pattern as perform_pen_path.
   void perform_svg_file(const std::string& svg_path, double speed);
 
+  // s294 m5c — Abort an in-flight SVG performance. Thin forwarder to
+  // SvgPerformer::abort. Safe to call when no performance is running
+  // (silent no-op). See SvgPerformer::abort for the full contract:
+  // stops further beats, wipes overlay, leaves already-committed
+  // scene nodes alone.
+  void abort_svg_performance();
+
+  // s294 m5c — Query whether a performance is currently running. Used
+  // by the Esc-key handler in MainWindow's capture-phase controller to
+  // gate the abort: only consume the event if there's something to
+  // abort, otherwise let Esc fall through to whatever else listens
+  // for it (selection clear, modal close, etc.).
+  bool is_svg_playing() const;
+
   // ── Warp envelope drag (M4b) ─────────────────────────────────────────
   // Which part of an envelope is being dragged. None = not dragging.
   enum class WarpDragKind { None, Anchor, HandleIn, HandleOut };

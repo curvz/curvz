@@ -466,6 +466,23 @@ void Application::on_activate() {
   Glib::signal_timeout().connect_once([]() {
       LOG_INFO("Application: GLib main-loop timeout warmup fired");
   }, 0);
+
+  // s294 m5b — Welcome SVG autoplay boot hook. Idle-scheduled so the
+  // window has settled past present()'s realize cycle before the
+  // canvas widget is asked to host an animation. The MainWindow
+  // method does the pref check, the SVG resolution, the new-tab
+  // creation, and the dispatch into SvgPerformer; this site is just
+  // the timing seam. See MainWindow::play_welcome_animation_if_enabled
+  // for the full sequence and refusal contract.
+  //
+  // Capture by raw pointer rather than copying — Application owns
+  // m_main_window and outlives this closure; the window can't go
+  // away between the idle schedule and the idle fire because the
+  // event loop is single-threaded and the window's destruction
+  // would also kill the loop.
+  Glib::signal_idle().connect_once([win]() {
+      win->play_welcome_animation_if_enabled();
+  });
 }
 
 } // namespace Curvz

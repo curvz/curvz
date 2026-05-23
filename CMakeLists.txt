@@ -763,6 +763,22 @@ install(
     FILES_MATCHING PATTERN "*.curvzs"
 )
 
+# ── Bundled welcome SVG (s294 m5a) ────────────────────────────────────────────
+# scott-bug.svg also lives in the gresource bundle under help/img/, but the
+# welcome-autoplay resolver (curvz::utils::resolve_welcome_svg_path) needs a
+# loose-file path it can hand to parse_svg_file — that parser doesn't know
+# about gresource URIs and threading a gresource-aware loader through the
+# SVG layer is real architecture work, deferred to post-Flathub.
+#
+# Install location mirrors the user's ~/.config/curvz/welcome/ shape one
+# level up the tree: ${prefix}/share/curvz/welcome/scott-bug.svg. The
+# resolver probes /app, /usr/local, and /usr in that order (Flatpak,
+# local, distro) since the install prefix isn't known at runtime.
+install(
+    FILES ${CMAKE_SOURCE_DIR}/resources/help/img/scott-bug.svg
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/curvz/welcome
+)
+
 # ── Post-install hooks ────────────────────────────────────────────────────────
 # When installing into a real prefix (not staging for a package), refresh the
 # desktop, MIME, and icon caches so changes take effect immediately. Distro

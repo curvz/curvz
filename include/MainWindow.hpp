@@ -871,6 +871,49 @@ public:
   //        rationale).
   ScriptNewDocResult script_new_doc(int width, int height);
 
+  // ── s294 m5b — Welcome SVG autoplay boot hook ─────────────────────
+  //
+  // Called once from Application::on_activate via an idle-scheduled
+  // closure AFTER win->present() returns and the default project's
+  // active doc is up. The idle deferral matters: present() schedules
+  // realization but doesn't synchronously wait for it, and
+  // Canvas::perform_svg_file reads m_doc and dispatches into the
+  // performer which needs the canvas widget realized. Idle fires
+  // after the current event-loop tick has settled, by which time
+  // the window is mapped and the canvas has a real allocation.
+  //
+  // Behaviour:
+  //
+  //   1. If AppPreferences::welcome_autoplay() is false, no-op.
+  //      LOG_INFO the skip so the trace channel can confirm the
+  //      pref was honoured.
+  //
+  //   2. Resolve the SVG path via
+  //      curvz::utils::resolve_welcome_svg_path(). Empty return =
+  //      no usable SVG (user folder empty AND bundled fallback
+  //      not found). LOG_INFO the skip and no-op — welcome
+  //      autoplay is a courtesy, not load-bearing.
+  //
+  //   3. Call script_new_doc(500, 500) to add a fresh tab. The
+  //      handoff calls the helper directly rather than routing
+  //      through ProjScriptable::new_doc because this is an
+  //      internal boot hook, not a script-triggered verb — no
+  //      RunContext gate, no output buffer to write to, no need
+  //      for the Scriptable's argument-parsing overhead.
+  //
+  //   4. Resolve the tempo multiplier via
+  //      welcome_speed_multiplier(prefs.welcome_speed()) and
+  //      dispatch the animation via
+  //      m_canvas.perform_svg_file(path, multiplier).
+  //
+  // Idempotent: calling twice has no special protection beyond
+  // what SvgPerformer itself does (if a performance is already
+  // running, the second perform call replaces the queue). The
+  // boot hook is only wired once at startup, so this never
+  // matters in practice — documenting for future maintainers
+  // who might be tempted to call it from elsewhere.
+  void play_welcome_animation_if_enabled();
+
   // ── s251 m1 — script-side export svg helper ──────────────────────
   //
   // Sibling helper to the script_save_project / script_save_project_as
