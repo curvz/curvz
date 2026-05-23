@@ -56,6 +56,55 @@
 // STILL held (fourth instance of the same TestRunner-only mask
 // within this Scriptable; no novel shape).
 //
+// s293 m4 — sixth verb: `new_doc <width> <height>`. Opens a new
+// arc beyond m5b — the proj surface now extends one cardinality
+// level inward, from project-lifecycle verbs (the m5b five) to
+// in-project document-lifecycle verbs. Mechanically distinct
+// from every prior verb on this Scriptable:
+//
+//   - First multi-argument verb. Two positive integers; no path
+//     argument means no path_is_safe pre-flight. Argument
+//     validation lands entirely in the new_doc branch as integer
+//     parsing rather than the shared arg_as_string helper used
+//     by save_as / load / new.
+//
+//   - Adds to the existing project surface rather than replacing
+//     or destroying it. NOT under the surface-preservation rule
+//     — the script's trace surface (project, output buffer, host
+//     window) is untouched, only the active doc index moves.
+//     Mask is Scripter | TestRunner, sibling to save's mask; the
+//     first verb on this Scriptable since save (s246 m1) to earn
+//     Scripter context.
+//
+//   - No Dirty refusal. Adding a doc to a dirty project is a
+//     legitimate workflow (draw → new_doc → draw → save);
+//     refusing on dirty would break that. The surface-
+//     preservation family's Dirty refusals exist because those
+//     verbs DESTROY the dirty work; new_doc preserves it.
+//
+//   - No auto-save. The GUI's NewDocumentDialog callback calls
+//     m_project->save() after the add (desirable for the
+//     interactive "I clicked Create, the tab is now real" UX);
+//     new_doc does not. Script callers may stack mutations
+//     before persisting — auto-saving each add would write
+//     half-built state to disk.
+//
+// Seventh consumer of context_mask(); promotion STILL held (the
+// Scripter | TestRunner mask is the second distinct mask
+// appearing within this Scriptable but is NOT a novel shape —
+// save has carried that constant since s246 m1; the cluster
+// boundary tracks the surface-preservation rule cleanly, so a
+// registry promotion would still mostly be moving the if-chain
+// into a table without saving meaningful comment work).
+//
+// new_doc unblocks the welcome ceremony's stage-creation step:
+// the welcome script needs a sized blank stage before it
+// animates scott-bug into it, and pre-m4 the only ways to make
+// one were the New Document dialog (interactive only) or
+// proj.new <path> (creates a whole new project). See the
+// s292 → s293 handoff "What s293 should do" block for the arc
+// framing.
+//
 // (Subsequent milestones: `force_close`, `force_load`, `force_new`
 // when use cases name the need — all TestRunner-only by the same
 // surface-preservation rule.)
@@ -67,12 +116,12 @@
 // The body is small because each verb delegates to MainWindow's
 // script-side helper (`script_save_project` / `script_save_project_as`
 // / `script_close_project` / `script_load_project` /
-// `script_new_project`), which packages the same state checks the
-// GUI handler does plus the call to the underlying writer / teardown
-// / factory method. The helper returns an enum naming the outcome;
-// the Scriptable maps that enum to either a happy-path `ok` (return
-// Null) or a structured error throw (the listener catches and prints
-// `error invoke threw: <message>`).
+// `script_new_project` / `script_new_doc`), which packages the same
+// state checks the GUI handler does plus the call to the underlying
+// writer / teardown / factory method. The helper returns an enum
+// naming the outcome; the Scriptable maps that enum to either a
+// happy-path `ok` (return Null) or a structured error throw (the
+// listener catches and prints `error invoke threw: <message>`).
 //
 // save_as / load / new additionally pre-validate the path argument
 // through path_is_safe BEFORE calling the helper. That split (path-
@@ -80,6 +129,12 @@
 // the two gates in separate layers — the safety gate doesn't know
 // about project state, the state-check gate doesn't know about path
 // containment.
+//
+// new_doc has no path argument and so no path_is_safe step; its
+// Scriptable-layer pre-validation is integer parse + positivity
+// check on two args. The state-check + in-memory mutation lands in
+// script_new_doc the same way other helpers' state-check + I/O
+// lands in their script_* helpers.
 //
 // The Scriptable / MainWindow split keeps Scriptable thin (DSL-facing
 // string formatting + path-safety pre-flight on save_as) and keeps
@@ -112,6 +167,26 @@ namespace {
 std::string arg_as_string(const ScriptValue& v) {
     if (v.kind == ValueKind::String) return v.s;
     return {};
+}
+
+// s293 m4 — integer coercion for new_doc's width/height args.
+// First non-string-arg verb on this Scriptable; first use of an
+// int-arg helper.
+//
+// Sibling shape to ExportScriptable.cpp:122's arg_as_int (and the
+// other Scriptables that ship one): on Int kind, return the value
+// directly; on Double kind, truncate to long long; on any other
+// kind (including String, which arrives unparsed when the script
+// passes a quoted "1000"), return 0. The caller's `<= 0` refusal
+// branch catches both wrong-kind and non-positive cases under one
+// uniform error message — same posture as arg_as_string's
+// empty-string sentinel for save_as / load / new.
+long long arg_as_int(const ScriptValue& v) {
+    switch (v.kind) {
+        case ValueKind::Int:    return v.i;
+        case ValueKind::Double: return static_cast<long long>(v.d);
+        default:                return 0;
+    }
 }
 
 } // anon namespace
@@ -487,6 +562,79 @@ ScriptValue ProjScriptable::invoke(std::string_view verb,
         return ScriptValue::null();
     }
 
+    if (verb == "new_doc") {
+        // s293 m4 — sixth verb on this Scriptable. First
+        // multi-argument verb; first non-path-argument verb. Adds
+        // a fresh blank document of the supplied pixel dimensions
+        // to the currently-loaded project, and activates it. NOT
+        // under the surface-preservation rule (see header verb-
+        // surface block at `new_doc`).
+        //
+        // Argument validation: exactly two args, each coercible to
+        // a positive integer. The arg_as_int helper above returns
+        // 0 for non-Int / non-Double kinds, which falls through to
+        // the same `<= 0` refusal branch the helper layer also
+        // enforces — uniform error voice ("dimensions must be
+        // positive integers") covers both wrong-kind and
+        // wrong-range cases.
+        if (args.size() != 2) {
+            throw std::runtime_error(
+                "proj new_doc: expected exactly two arguments "
+                "(width and height in pixels)");
+        }
+        long long w = arg_as_int(args[0]);
+        long long h = arg_as_int(args[1]);
+        if (w <= 0 || h <= 0) {
+            // Combined refusal: catches non-Int/Double kinds (which
+            // arg_as_int turns into 0), zero, and negatives. Script
+            // author sees one clear message regardless of which
+            // path tripped.
+            throw std::runtime_error(
+                "proj new_doc: width and height must be positive "
+                "integers");
+        }
+
+        // Both args validated. Delegate to MainWindow's helper.
+        // The helper does drag check + (defensive) dimension check
+        // + doc construction + filename uniquing + push_back +
+        // active_doc_index bump + update_all_panels. No disk I/O.
+        using R = Curvz::MainWindow::ScriptNewDocResult;
+        switch (m_main_window->script_new_doc(
+                    static_cast<int>(w), static_cast<int>(h))) {
+            case R::Ok:
+                // The helper handled the in-memory mutation +
+                // panel refresh + LOG_INFO on success. Returning
+                // Null causes the listener to print `ok`.
+                return ScriptValue::null();
+            case R::NoProject:
+                // Sibling to save's NoProject refusal — you need a
+                // project to add a doc to. With the typical
+                // empty-default-project boot path this case is
+                // rare; the refusal exists for the edge case where
+                // new_doc is called between a proj close and a
+                // subsequent proj load / proj new.
+                throw std::runtime_error(
+                    "proj new_doc: no project loaded");
+            case R::Dragging:
+                throw std::runtime_error(
+                    "proj new_doc: canvas drag in progress");
+            case R::BadDimensions:
+                // Structurally unreachable through this call path
+                // (the args.size + arg_as_int + positivity gates
+                // above catch it first). Wired for defence-in-
+                // depth — if the helper is ever called from a
+                // future code path that doesn't pre-validate,
+                // the error surface is identical.
+                throw std::runtime_error(
+                    "proj new_doc: width and height must be positive "
+                    "integers");
+        }
+        // Unreachable — switch is exhaustive — but keeps the
+        // compiler quiet about non-void return paths (mirrors
+        // every other verb's tail on this Scriptable).
+        return ScriptValue::null();
+    }
+
     // Unknown verb — silent null, same posture as Inspector. The
     // listener doesn't currently flag unknown verbs (it does flag
     // unknown queries via the property() path); the surface stays
@@ -545,17 +693,21 @@ ScriptValue ProjScriptable::query(std::string_view property) const {
 }
 
 std::vector<std::string> ProjScriptable::verbs() const {
-    // s246 m1 / s247 m1 / s248 m1 / s249 m1 / s250 m1 — five verbs.
-    // m5b proj-surface arc CLOSES at this point: all five File-menu
-    // items (save / save_as / close / load / new) are addressable.
-    // force_close / force_load / force_new land in subsequent
-    // milestones when use cases name the need.
+    // s246 m1 / s247 m1 / s248 m1 / s249 m1 / s250 m1 — five File-menu
+    // verbs closing the m5b proj-surface arc.
+    // s293 m4 — sixth verb opening the in-project document-lifecycle
+    // arc: `new_doc <w> <h>` adds a sized blank doc to the existing
+    // project (no path argument, no surface-preservation rule).
+    // Future verbs (`force_close`, `force_load`, `force_new`,
+    // `close_doc`, `rename_doc`, `set_active_doc`) land in
+    // subsequent milestones when use cases name the needs.
     return {
         "save",
         "save_as",
         "close",
         "load",
         "new",
+        "new_doc",
     };
 }
 
@@ -570,7 +722,7 @@ std::vector<std::string> ProjScriptable::properties() const {
     };
 }
 
-// s246 m1 / s247 m1 / s248 m1 / s249 m1 / s250 m1 — RunContext mask declarations.
+// s246 m1 / s247 m1 / s248 m1 / s249 m1 / s250 m1 / s293 m4 — RunContext mask declarations.
 //
 // `save`    — ctx::Scripter | ctx::TestRunner. Macro OUT (canon's
 //             "Macro: not save_as <arbitrary>, not preferences
@@ -622,19 +774,36 @@ std::vector<std::string> ProjScriptable::properties() const {
 //             TestRunner-only constant as save_as, close, and
 //             load; no novel mask shape.
 //
+// `new_doc` — ctx::Scripter | ctx::TestRunner. Macro OUT (same
+//             reasoning as save's Macro-OUT — a recorded macro
+//             adding a doc to whatever project happens to be
+//             loaded at replay time surprises the user; macros
+//             are gesture-replay, not project-shape changes).
+//             NOT under the surface-preservation rule — new_doc
+//             ADDS a document to the existing project rather
+//             than destroying the project as a whole. The
+//             script's result surface (project, output buffer,
+//             host window) is untouched; only the active doc
+//             index moves, the same class of mutation any
+//             doc-affecting verb performs. Sibling to save's
+//             mask shape rather than to save_as / close / load /
+//             new — the first verb on this Scriptable since save
+//             (s246 m1) to earn Scripter context.
+//
 // Unknown verbs (typos, future verbs not yet declared) fall through
 // to the base default of ctx::all_three. That matches the note in
 // Scriptable::context_mask: "Unknown verb names (e.g. typos) SHOULD
 // fall through to the default — the invoke() method itself is
 // responsible for noticing the verb is unknown."
 //
-// Sixth consumer of context_mask() (Inspector + proj.save +
-// proj.save_as + proj.close + proj.load + proj.new). Registry-
-// promotion clock is at 6/n and STILL HELD by design — see
-// ProjScriptable.hpp's context_mask declaration block for the
-// at-six reasoning (new's mask is sibling to save_as's, close's,
-// and load's; no novel mask shape, fourth instance of the same
-// TestRunner-only constant within this Scriptable).
+// Seventh consumer of context_mask() (Inspector + proj.save +
+// proj.save_as + proj.close + proj.load + proj.new + proj.new_doc).
+// Registry-promotion clock is at 7/n and STILL HELD by design —
+// see ProjScriptable.hpp's context_mask declaration block for the
+// at-seven reasoning (new_doc's mask is sibling to save's; the
+// catalogue now reads two clusters of distinct masks, but the
+// cluster boundary tracks the surface-preservation rule cleanly,
+// and the same-shape-as-existing-verb argument still wins).
 RunContextMask
 ProjScriptable::context_mask(std::string_view verb) const {
     if (verb == "save") {
@@ -651,6 +820,9 @@ ProjScriptable::context_mask(std::string_view verb) const {
     }
     if (verb == "new") {
         return ctx::TestRunner;
+    }
+    if (verb == "new_doc") {
+        return ctx::Scripter | ctx::TestRunner;
     }
     return ctx::all_three;
 }

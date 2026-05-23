@@ -1,0 +1,275 @@
+# 69_proj_new_doc_smoke — sixth verb on the proj headless-verb
+# singleton (s293 m4). Opens a NEW arc beyond m5b — the proj surface
+# now extends one cardinality level inward, from project-lifecycle
+# verbs (the m5b five: save/save_as/close/load/new) to in-project
+# document-lifecycle verbs. `new_doc` is the first verb on that arc.
+#
+# Tier 4 row remains at 1/~4-5: same singleton, sixth verb; no tick.
+# Surface widening: proj verb count 5 → 6. Query count unchanged.
+#
+# ── What this smoke exercises ─────────────────────────────────────────────
+#
+# Unlike smoke 48 (proj new), THIS smoke runs the verb body from
+# Scripter context. new_doc declares its mask as
+# ctx::Scripter | ctx::TestRunner — sibling to save's mask, NOT to
+# save_as / close / load / new. The architectural reason: new_doc
+# ADDS a document to the existing project rather than destroying the
+# project as a whole. The script's result surface (project, output
+# buffer, host window) is untouched; only the active doc index
+# moves. That's not surface-erasing mutation — it's the same class
+# of mutation any doc-affecting verb (objects.add, palettes.swatch,
+# etc.) performs.
+#
+# Three call-shapes exercised below:
+#
+#   - Happy path: `proj new_doc 500 500` — two positive integers,
+#     valid project state. Expected trace: `ok`. Side effect: a
+#     fresh blank document of pixel size 500x500 lands in the
+#     project's documents list, becomes the active doc, panels
+#     refresh. No disk I/O (new_doc does NOT auto-save; the GUI
+#     dialog callback does, but the script verb leaves persistence
+#     to an explicit proj.save call).
+#
+#   - Argument-shape refusals: `proj new_doc` (zero args),
+#     `proj new_doc 100` (one arg), `proj new_doc 100 200 300`
+#     (three args). All three refuse at the Scriptable's
+#     args.size() != 2 check with "expected exactly two arguments
+#     (width and height in pixels)". Three different shapes, three
+#     identical structured refusals.
+#
+#   - Value refusals: `proj new_doc 0 100` (zero), `proj new_doc
+#     -50 100` (negative), `proj new_doc "wide" 100` (string).
+#     All three refuse at the `w <= 0 || h <= 0` check with "width
+#     and height must be positive integers". The string case
+#     reaches arg_as_int which returns 0 for non-Int/non-Double
+#     kinds, falling through to the same refusal — uniform error
+#     voice covers both wrong-kind and wrong-range cases.
+#
+# What this smoke CAN assert from Scripter:
+#
+#   - The project's `has_path` is unchanged after each call. The
+#     verb body adds an in-memory doc; it does not touch the
+#     project's disk path. `proj has_path` before and after each
+#     call is the assertable observable for "project surface
+#     preserved" — same shape smoke 48 uses for "project not
+#     destroyed."
+#
+#   - The happy-path call lands `ok` on the trace. Operator-visual
+#     in the trace; not an `assert` since the DSL's assert is
+#     equality-only on query results.
+#
+# What this smoke CANNOT assert from Scripter today:
+#
+#   - The new document's canvas dimensions. No `inspector` or
+#     `proj` query exposes the active doc's canvas width/height to
+#     the script today (inspector's properties are path-safety
+#     diagnostics; proj's are path / has_path / dirty). The 500x500
+#     contract is operator-visual: read the inspector panel after
+#     the run and confirm the Size section reads 500×500 px. A
+#     future inspector query for canvas dims would lift this to an
+#     assertable observable.
+#
+#   - The document count growing by one. No `proj.doc_count` query
+#     exists today. The operator-visual confirmation is "a new tab
+#     appeared in the DocTabBar at the top of the canvas, and the
+#     LOG_INFO line `script_new_doc: added 'Untitled.svg' to
+#     project (500x500)` appears in the curvz.log."
+#
+#   - The active_doc_index moving to point at the new doc. Same
+#     reason — no query for it. Operator-visual: the canvas now
+#     shows the new blank doc, not whatever was active before.
+#
+# ── Caller context ───────────────────────────────────────────────────────
+#
+# Runs through ScripterWindow's listener, m_context =
+# RunContext::Scripter. new_doc declares its mask as
+# ctx::Scripter | ctx::TestRunner, so the dispatcher's
+# context_allows check returns true for invokes from this caller —
+# the verb body runs.
+#
+# Seventh consumer of Scriptable::context_mask() in the codebase
+# (Inspector + proj.save + proj.save_as + proj.close + proj.load +
+# proj.new + proj.new_doc). Registry-promotion clock at 7/n; STILL
+# HELD by design (see ProjScriptable.hpp's context_mask block).
+# The catalogue now reads: two verbs at Scripter | TestRunner
+# (save, new_doc) and four verbs at TestRunner-only (save_as,
+# close, load, new). Two distinct mask shapes is a more interesting
+# catalogue than the previous 1+4 uniformity, but the cluster
+# boundary tracks the surface-preservation rule cleanly and no
+# typo bug has bitten — promotion still held.
+#
+# ── Test isolation ───────────────────────────────────────────────────────
+#
+# Mutates the project state — adds a doc. Repeatable but each run
+# accumulates one more Untitled[N].svg in the project's documents
+# list (the unique-suffix loop ensures no filename collision). To
+# clean up: undo isn't an option (doc-add isn't undoable today;
+# backlog), so either close the project without saving (the
+# in-memory adds dissolve) or manually delete the doc tabs via the
+# UI's tab close button.
+#
+# No disk I/O — the new doc lives in memory until the script (or
+# the user) issues an explicit save.
+
+#[sub] === Phase 1: project state precondition ===
+
+#[sub] Get the project's current directory path. Operator-visual:
+#[sub] this should be the .curvz directory Scott has open right now.
+#[sub] The has_path assertion below confirms the precondition for
+#[sub] the post-call sanity checks (path unchanged through every
+#[sub] new_doc call) — if has_path is false here, the sanity checks
+#[sub] are meaningless because there's no path to be unchanged.
+#[sub]
+#[sub] Unlike new — where has_path == false would be a legitimate
+#[sub] caller state (no project loaded, ready to create one) —
+#[sub] new_doc REQUIRES a loaded project (the NoProject refusal
+#[sub] branch). The smoke runs from a loaded-project state so the
+#[sub] happy path is reachable.
+
+get proj path
+
+assert proj has_path == true
+
+#[sub] === Phase 2: happy path — 500x500 ===
+
+#[sub] Call new_doc with two valid positive integers. Expected
+#[sub] trace line:
+#[sub]
+#[sub]   ok
+#[sub]
+#[sub] Side effects (operator-visual):
+#[sub]   - A new tab labelled "Untitled.svg" (or "Untitled2.svg" /
+#[sub]     "Untitled3.svg" / ... if previous runs left Untitled tabs
+#[sub]     behind) appears in DocTabBar.
+#[sub]   - The canvas switches to show the new blank doc.
+#[sub]   - The inspector's Size section reads 500 × 500 px.
+#[sub]   - curvz.log shows: `script_new_doc: added '<filename>' to
+#[sub]     project (500x500)`.
+
+proj new_doc 500 500
+
+#[sub] === Phase 3: post-happy-path sanity ===
+
+#[sub] After the new_doc call, the project's directory is unchanged.
+#[sub] The add was in-memory only (no auto-save); the project's
+#[sub] saved path is whatever it was before. Same structural
+#[sub] property smoke 48 confirms for new's refused calls: the
+#[sub] verb either runs or refuses without touching disk path.
+
+assert proj has_path == true
+
+#[sub] === Phase 4: argument-shape refusal — zero args ===
+
+#[sub] Call new_doc with no arguments. Expected trace line:
+#[sub]
+#[sub]   error invoke threw: proj new_doc: expected exactly two
+#[sub]   arguments (width and height in pixels)
+
+proj new_doc
+
+#[sub] === Phase 5: argument-shape refusal — one arg ===
+
+#[sub] Same refusal as Phase 4 — args.size() == 1 fails the
+#[sub] args.size() != 2 check identically.
+
+proj new_doc 100
+
+#[sub] === Phase 6: argument-shape refusal — three args ===
+
+#[sub] Same refusal as Phases 4 and 5 — args.size() == 3 also
+#[sub] fails the args.size() != 2 check. Three different shapes,
+#[sub] three identical structured refusals.
+
+proj new_doc 100 200 300
+
+#[sub] === Phase 7: value refusal — zero dimension ===
+
+#[sub] Call new_doc with a zero width. Expected trace line:
+#[sub]
+#[sub]   error invoke threw: proj new_doc: width and height must
+#[sub]   be positive integers
+#[sub]
+#[sub] The arg parse succeeds (0 is a valid Int literal); the
+#[sub] `w <= 0 || h <= 0` check fires. CanvasModel::from_pixels(0,
+#[sub] ...) would produce a degenerate canvas with zero viewBox
+#[sub] dimensions; the refusal prevents that.
+
+proj new_doc 0 100
+
+#[sub] === Phase 8: value refusal — negative dimension ===
+
+#[sub] Call new_doc with a negative width. Same refusal text as
+#[sub] Phase 7; -50 fails the `w <= 0` check.
+
+proj new_doc -50 100
+
+#[sub] === Phase 9: value refusal — string dimension ===
+
+#[sub] Call new_doc with a string in the width slot. The arg_as_int
+#[sub] helper returns 0 for non-Int/non-Double ScriptValue kinds
+#[sub] (String included); the resulting `w == 0` fails the `w <= 0`
+#[sub] check. Same refusal text as Phases 7 and 8 — uniform error
+#[sub] voice covers wrong-kind and wrong-range cases under one
+#[sub] message.
+
+proj new_doc "wide" 100
+
+#[sub] === Phase 10: post-refusal sanity ===
+
+#[sub] After six refused calls, the project's directory is still
+#[sub] unchanged. The refusals are structured early-returns
+#[sub] (Scriptable layer for arg shape and value, helper layer for
+#[sub] state); no project mutation happened on any of them.
+
+assert proj has_path == true
+
+#[sub] s293 m4 smoke complete. Expected summary line:
+#[sub]
+#[sub]   8 lines, 3 pass, 1 ok, 6 error
+#[sub]
+#[sub] - 3 PASS  : has_path == true at Phases 1, 3, 10 (path
+#[sub]             unchanged across happy path AND refusals)
+#[sub] - 1 ok    : the happy-path new_doc at Phase 2 (the verb
+#[sub]             body ran cleanly and returned Null)
+#[sub] - 6 error : the six refused new_doc calls at Phases 4-9
+#[sub]             (intentional — three argument-shape refusals
+#[sub]             and three value refusals)
+#[sub] - 1 operator-visual : the `get proj path` echo at Phase 1
+#[sub]
+#[sub] Tier 4 row stays at 1/~4-5 (no tick — same singleton, sixth
+#[sub] verb). Surface widening: `proj` Scriptable verb count goes
+#[sub] 5 → 6; context_mask() consumer count goes 6 → 7
+#[sub] (registry-promotion clock held at 7/n by design; first
+#[sub] verb on this Scriptable since save (s246 m1) to land at
+#[sub] the Scripter | TestRunner mask).
+#[sub]
+#[sub] m5b proj-surface arc remains closed at 5/5 File-menu items.
+#[sub] s293 m4 opens a new arc — in-project document-lifecycle
+#[sub] verbs — with new_doc as its first verb. Future siblings
+#[sub] (close_doc, rename_doc, set_active_doc) land when use
+#[sub] cases name the needs.
+
+#[sub] ── Manual exercise for the missing observables ─────────────
+#[sub]
+#[sub] After the smoke runs, manually verify:
+#[sub]
+#[sub]   - The new tab in DocTabBar reads "Untitled.svg" (or
+#[sub]     Untitled2/3/... if previous runs left tabs). Click it
+#[sub]     if not already active.
+#[sub]
+#[sub]   - The inspector's Size section reads 500 × 500 px and
+#[sub]     unit "px".
+#[sub]
+#[sub]   - The canvas is blank (no objects, no paths).
+#[sub]
+#[sub]   - The Layers panel shows two layers: "Layer 1" and
+#[sub]     "Guides" (the CurvzDocument default-ctor seed).
+#[sub]
+#[sub]   - tail -20 ~/.local/share/curvz/curvz.log shows the
+#[sub]     LOG_INFO line: `script_new_doc: added '<filename>' to
+#[sub]     project (500x500)`.
+#[sub]
+#[sub] These five operator-visuals become assertable observables
+#[sub] when the project sprouts inspector queries for canvas
+#[sub] dimensions, doc count, active doc filename, and layer
+#[sub] names. Banked for future Scriptable-surface widening.

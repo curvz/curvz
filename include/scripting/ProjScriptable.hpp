@@ -32,6 +32,36 @@
 // — that load doesn't have (load wants the path to exist; new
 // wants it not to).
 //
+// s293 m4 adds a sixth verb: `new_doc <width> <height>`. Opens a
+// NEW arc beyond m5b — the proj surface now extends one cardinality
+// level inward, from project-lifecycle verbs (save/save_as/close/
+// load/new) to in-project document-lifecycle verbs (new_doc; future
+// close_doc / rename_doc / set_active_doc when use cases name the
+// need). Mechanically distinct from all five earlier verbs in two
+// ways:
+//
+//   1. Takes two integer arguments (width, height in pixels) rather
+//      than zero (save/close) or one path (save_as/load/new). First
+//      multi-arg verb on this Scriptable; first non-path-argument
+//      verb. Argument validation must parse and bounds-check both.
+//
+//   2. Operates on the EXISTING project surface — adds a document
+//      without destroying or replacing the project. Not under the
+//      surface-preservation rule (the script's project, output
+//      buffer, and host window all stay alive). Mask is Scripter |
+//      TestRunner, sibling to save's mask. The first verb on this
+//      Scriptable that earns Scripter context since save (s246 m1)
+//      — every verb between save and new_doc landed
+//      TestRunner-only.
+//
+// new_doc unblocks the welcome ceremony's stage-creation step: the
+// welcome script needs a sized blank stage before it animates
+// scott-bug.svg into it, and pre-m4 the only ways to make one were
+// the New Document dialog (interactive only) or proj.new <path>
+// (creates a whole new project, not a doc-in-project). See the
+// s292 → s293 handoff "What s293 should do — m4" block for the
+// arc framing.
+//
 // See CANON.md "Headless-verb singletons" for the design rule this
 // implements (the substrate can address the GUI Save button but not
 // the resulting picker; scripts leapfrog the picker by passing the
@@ -62,7 +92,8 @@
 // `can_resolve` / `proxy_for` are unimplemented (inherit base no-op).
 //
 // ── Verb surface (s246 m1: `save`; s247 m1: + `save_as`; s248 m1: + `close`;
-//                 s249 m1: + `load`; s250 m1: + `new`) ────────────────────
+//                 s249 m1: + `load`; s250 m1: + `new`;
+//                 s293 m4: + `new_doc`) ─────────────────────────────────────
 //
 //   save                    — write the project to its current
 //                             directory. No arguments. The path is
@@ -600,6 +631,143 @@
 //                             Scriptable, no novel mask shape
 //                             earned.
 //
+//   new_doc <w> <h>         — s293 m4. Add a fresh blank document
+//                             of the supplied pixel dimensions to
+//                             the currently-loaded project, and
+//                             activate it. First multi-argument
+//                             verb on this Scriptable; first
+//                             non-path-argument verb (two
+//                             positive integers).
+//
+//                             Mechanically distinct from `new`:
+//                             new replaces the WHOLE project at a
+//                             new disk path; new_doc ADDS a doc
+//                             to the existing project, no disk
+//                             path involved (the new doc lives in
+//                             memory under an auto-generated
+//                             filename like "Untitled.svg" until
+//                             the script issues proj save).
+//
+//                             Contract — four refusal paths and one
+//                             happy path:
+//
+//                             - Wrong argument shape (not exactly
+//                               two args, or either arg not
+//                               coercible to a positive integer):
+//                               refuse with structured error.
+//                               Argument validation fires at the
+//                               Scriptable layer before any state
+//                               inspection. Two integer coercions
+//                               required — first non-string-arg
+//                               verb on this Scriptable, so the
+//                               coercion path is local to the
+//                               new_doc branch rather than the
+//                               shared arg_as_string helper used
+//                               by save_as/load/new.
+//
+//                             - No project loaded (m_project null):
+//                               refuse with structured error.
+//                               Sibling to save's NoProject refusal.
+//                               With the typical empty-default-
+//                               project boot path this is rare; the
+//                               refusal exists for the edge case
+//                               where new_doc is called between a
+//                               proj close and a proj load / proj
+//                               new.
+//
+//                             - Canvas drag in flight
+//                               (m_canvas.is_dragging()): refuse
+//                               with structured error. Same
+//                               posture as every project-state-
+//                               mutating verb on this Scriptable.
+//
+//                             - Dimensions non-positive: refuse
+//                               with structured error. The
+//                               Scriptable layer's integer-parse
+//                               step already enforces this, so the
+//                               helper's matching check is
+//                               structurally unreachable through
+//                               the wired call path — wired live
+//                               as defence-in-depth (sibling to
+//                               save_as's path_is_safe pre-flight
+//                               Scripter-unreachability note).
+//
+//                             - Otherwise: build a CurvzDocument
+//                               with canvas = from_pixels(w, h),
+//                               assign a unique "Untitled[N].svg"
+//                               filename within the project's
+//                               existing docs, push_back into
+//                               documents, set active_doc_index to
+//                               point at it, run update_all_panels.
+//                               Return Null (listener prints `ok`).
+//                               No disk I/O — the doc is in-memory
+//                               until the script saves.
+//
+//                             NOTE: NOT under the surface-
+//                             preservation rule. new_doc adds to
+//                             the existing project; the script's
+//                             trace surface (project, output
+//                             buffer, host window) is untouched.
+//                             The active doc index moves, which is
+//                             the same class of mutation any
+//                             doc-affecting verb performs
+//                             (objects.add, palettes.swatch, etc.)
+//                             — not the surface-erasing mutation
+//                             close/load/new perform on the
+//                             project as a whole.
+//
+//                             NOTE: NO Dirty refusal. Adding a doc
+//                             to a dirty project is a legitimate
+//                             workflow (draw → new_doc → draw →
+//                             save) — refusing on dirty would
+//                             break that. The surface-preservation
+//                             family's Dirty refusals exist
+//                             because those verbs DESTROY the
+//                             dirty work; new_doc preserves it.
+//
+//                             NOTE: NO auto-save. The GUI's
+//                             NewDocumentDialog callback calls
+//                             m_project->save() after the add;
+//                             new_doc does not. Script callers
+//                             may stack several mutations before
+//                             persisting — auto-saving each add
+//                             would write half-built state to
+//                             disk on every iteration.
+//
+//                             RunContext mask:
+//                                 ctx::Scripter | ctx::TestRunner
+//                             — Sibling to save's mask, NOT to
+//                             new's. new is TestRunner-only by the
+//                             surface-preservation rule; new_doc
+//                             escapes that rule because it doesn't
+//                             destroy the project surface. Macro
+//                             is OUT for the same reason save's
+//                             Macro is OUT (recorded macro adding
+//                             a doc to whatever project happens to
+//                             be loaded at replay time would
+//                             surprise the user — macros are
+//                             gesture-replay, not project-shape
+//                             changes).
+//
+//                             **Seventh consumer of context_mask()**
+//                             — clock goes 6/n → 7/n. The Scripter |
+//                             TestRunner mask is NOT a novel shape
+//                             (save has carried it since s246 m1),
+//                             but it IS the SECOND distinct shape
+//                             appearing within this Scriptable (the
+//                             intervening four verbs all landed
+//                             TestRunner-only). Promotion stance
+//                             discussed at the context_mask() decl
+//                             block below; brief preview here: the
+//                             second-distinct-mask appearance is
+//                             the kind of observation that might
+//                             eventually push the clock past hold,
+//                             but at 7/n with only two distinct
+//                             masks (Scripter|TestRunner vs
+//                             TestRunner) and no typo bugs bitten,
+//                             the same-shape-as-existing-verb
+//                             argument still wins.
+//
 // ── Query surface (s246 m1: `path`, `has_path`; s248 m1: + `dirty`) ────────
 //
 //   path                    — String. The project's directory path
@@ -714,7 +882,7 @@ public:
     std::vector<std::string> verbs()      const override;
     std::vector<std::string> properties() const override;
 
-    // s246 m1 / s247 m1 / s248 m1 / s249 m1 / s250 m1 — RunContext mask declarations.
+    // s246 m1 / s247 m1 / s248 m1 / s249 m1 / s250 m1 / s293 m4 — RunContext mask declarations.
     //
     //   save     — ctx::Scripter | ctx::TestRunner (Macro is OUT —
     //              per CANON's RunContext pseudocode and the
@@ -770,40 +938,60 @@ public:
     //              written against. Same TestRunner-only constant
     //              as save_as, close, and load; no novel mask
     //              shape.
+    //   new_doc  — ctx::Scripter | ctx::TestRunner. Macro is OUT
+    //              (same reasoning as save's Macro-OUT: a recorded
+    //              macro adding a doc to whatever project happens
+    //              to be loaded at replay time surprises the user;
+    //              macros are gesture-replay, not project-shape
+    //              changes). NOT under the surface-preservation
+    //              rule — new_doc adds a document to the existing
+    //              project rather than destroying the project as
+    //              a whole. The script's result surface (project,
+    //              output buffer, host window) is untouched; only
+    //              the active doc index moves, which is the same
+    //              class of mutation any doc-affecting verb
+    //              performs. Sibling to save's mask shape rather
+    //              than to save_as / close / load / new. First
+    //              verb on this Scriptable since save (s246 m1)
+    //              to earn Scripter context; the intervening four
+    //              verbs all landed TestRunner-only.
     //
-    // Future verbs (`force_close`, `force_load`, `force_new`) will
-    // declare their own masks here when they land. See
-    // scripting/RunContext.hpp for the enum and helper constants;
-    // see CANON's "RunContext gates the verb surface" entry for the
-    // declaration discipline.
+    // Future verbs (`force_close`, `force_load`, `force_new`,
+    // `close_doc`, `rename_doc`, `set_active_doc` when use cases
+    // name the needs) will declare their own masks here when they
+    // land. See scripting/RunContext.hpp for the enum and helper
+    // constants; see CANON's "RunContext gates the verb surface"
+    // entry for the declaration discipline.
     //
-    // NOTE: with `new` shipping, this is the SIXTH consumer of
-    // context_mask() (Inspector + this Scriptable's `save` +
-    // `save_as` + `close` + `load` + `new`). The registry-promotion
-    // clock is now at 6/n.
+    // NOTE: with `new_doc` shipping, this is the SEVENTH consumer
+    // of context_mask() (Inspector + this Scriptable's `save` +
+    // `save_as` + `close` + `load` + `new` + `new_doc`). The
+    // registry-promotion clock is now at 7/n.
     //
-    // **Decision (s250 m1): STILL HOLD the promotion.** Same
-    // reasoning as at 5/n: new's mask (TestRunner-only) is sibling
-    // to save_as's, close's, and load's — same constant applied to
-    // a fourth verb-name string within this Scriptable. No novel
-    // mask combination has appeared. The same-shape argument that
-    // applied at 3/3 still applies at 6/n.
+    // **Decision (s293 m4): STILL HOLD the promotion.** new_doc's
+    // mask (Scripter | TestRunner) is NOT a novel shape — save has
+    // carried that exact constant since s246 m1. But it IS the
+    // SECOND distinct mask appearing within this Scriptable; the
+    // intervening four verbs all shared TestRunner-only. The
+    // catalogue now reads: two verbs at Scripter | TestRunner
+    // (save, new_doc) and four verbs at TestRunner-only (save_as,
+    // close, load, new) — still markedly uniform, with the split
+    // tracking a clean architectural boundary (surface-
+    // preservation rule applies vs. doesn't).
     //
-    // The catalogue across this Scriptable is now markedly
-    // uniform: one verb at the Scripter | TestRunner mask (save),
-    // four verbs at the TestRunner-only mask (save_as, close,
-    // load, new). That uniformity strengthens the argument FOR a
-    // future promotion — when 80% of the verbs share a constant,
-    // hoisting it to a registry would dedupe the comment blocks
-    // even more than the if-branches. The argument AGAINST
-    // promotion-today is also unchanged: no typo bug has bitten,
-    // the catalogue hasn't grown past ~8 declarations, and no
-    // future consumer with a genuinely new mask shape has appeared
-    // (Macro-only verb, "TestRunner + special caller" combination,
-    // anything novel — new doesn't count, it just adds the fourth
-    // instance of the same TestRunner-only mask). Banked
+    // The catalogue diverging from "one outlier + four siblings"
+    // to "two clusters of distinct masks" is the kind of
+    // observation that could eventually push the clock past hold —
+    // but the cluster boundary is meaningful (it tracks the
+    // surface-preservation rule precisely), so a registry
+    // promotion would still mostly be moving the if-chain into a
+    // table without saving meaningful comment work. The
+    // promotion-today argument is unchanged: no typo bug has
+    // bitten, the catalogue hasn't crossed ~8 declarations, and
+    // no genuinely new mask combination has appeared (Macro-only,
+    // "TestRunner + special caller", anything novel). Banked
     // observation. See s248 handoff "Architectural forks" for the
-    // at-four reasoning; s249 / s250 don't change the call.
+    // at-four reasoning; s249 / s250 / s293 don't change the call.
     RunContextMask context_mask(std::string_view verb) const override;
 
 private:

@@ -614,6 +614,101 @@ MainWindow::script_new_project(const std::string& path) {
 }
 
 
+// s293 m4 — script-side counterpart to the NewDocumentDialog callback's
+// doc-add path. See the design block in MainWindow.hpp at
+// ScriptNewDocResult / script_new_doc for the enum's contract.
+//
+// The body mirrors the NewDocumentDialog::on_new (callback in
+// MainWindow_handlers.cpp on_new at the m_new_doc_dialog.show call
+// site, around line 213) BODY shape — build a CurvzDocument, set
+// canvas to from_pixels, sanitise + unique a filename, push_back into
+// m_project->documents, bump active_doc_index, update_all_panels.
+// Three departures from the dialog callback:
+//
+//   1. No theme application. The dialog hands the user-picked theme
+//      to ndd_apply_chosen_theme; script callers don't pick themes
+//      through this verb. Theme can be applied via a future
+//      proj.set_doc_theme verb or themes.* surface; this verb stays
+//      narrow.
+//
+//   2. No m_project->save() call. The dialog callback persists
+//      immediately because the interactive UX expects "I clicked
+//      Create, the tab is now real." Script callers may stack
+//      several mutations before committing — auto-saving each
+//      add would write half-built state. See the header for the
+//      full rationale.
+//
+//   3. Filename base is "Untitled" rather than a user-typed name.
+//      doc_stem_from_name preserves case and collapses non-
+//      alphanumerics, so "Untitled" comes out clean. The unique-
+//      suffix loop is the same as the dialog callback's.
+//
+// Refusal contract:
+//
+//   - NoProject. m_project is null. Same posture as script_save_project's
+//     NoProject refusal — you need a project to add a doc to. With the
+//     typical empty-default-project boot path this case is structurally
+//     rare; wired for symmetry with save and to give the script author
+//     a clean error message if they hit a transient no-project window.
+//
+//   - Dragging. m_canvas.is_dragging() is true. Same posture as every
+//     project-state-mutating helper.
+//
+//   - BadDimensions. width <= 0 or height <= 0. The Scriptable layer
+//     pre-validates the integer parse and the positivity check, so
+//     this branch is structurally unreachable through the wired call
+//     path (sibling Scripter-unreachability note to save_as's
+//     path_is_safe pre-flight). Wired live as a defence-in-depth
+//     belt-and-braces re-assertion of the invariant inside the helper
+//     — CanvasModel::from_pixels(<=0, ...) would produce a degenerate
+//     canvas (zero or negative viewBox dimensions) that downstream
+//     code reads as a bug rather than a user-visible error.
+//
+// On Ok: doc lives in m_project->documents, active_doc_index points at
+// it, panels rebuilt. No disk I/O happened. No LOG_INFO from inside the
+// helper here — match the GUI dialog callback's log line shape with a
+// LOG_INFO at the call site once the active_doc_index is set, so
+// the diagnostic reads "new_doc: added 'Untitled.svg' to project" the
+// same way the GUI's "on_new: added '...' to project" reads.
+MainWindow::ScriptNewDocResult
+MainWindow::script_new_doc(int width, int height) {
+  if (!m_project) {
+    return ScriptNewDocResult::NoProject;
+  }
+  if (m_canvas.is_dragging()) {
+    return ScriptNewDocResult::Dragging;
+  }
+  if (width <= 0 || height <= 0) {
+    // Defence-in-depth — the Scriptable validates this. See header.
+    return ScriptNewDocResult::BadDimensions;
+  }
+
+  auto doc = std::make_unique<CurvzDocument>();
+  // CurvzDocument's default ctor seeds canvas=24x24 + Layer 1 + Guides.
+  // Reassign canvas to the requested dimensions; layers stay.
+  doc->canvas = CanvasModel::from_pixels(width, height);
+
+  // Filename: "Untitled.svg" by default, uniqued against existing docs.
+  // Same uniquing loop the NewDocumentDialog callback uses.
+  std::string base = curvz::utils::doc_stem_from_name("Untitled");
+  std::string fname = base + ".svg";
+  int suffix = 2;
+  while (std::any_of(m_project->documents.begin(),
+                     m_project->documents.end(),
+                     [&](const auto &d) { return d->filename == fname; })) {
+    fname = base + std::to_string(suffix++) + ".svg";
+  }
+  doc->filename = fname;
+
+  m_project->documents.push_back(std::move(doc));
+  m_project->active_doc_index = (int)m_project->documents.size() - 1;
+  update_all_panels();
+  LOG_INFO("script_new_doc: added '{}' to project ({}x{})",
+           fname, width, height);
+  return ScriptNewDocResult::Ok;
+}
+
+
 // s251 m1 — script_export_svg helper. Sibling shape to the other
 // script_* helpers in this file: takes an already-path-is-safe-vetted
 // path, returns an enum naming the outcome. Body wraps

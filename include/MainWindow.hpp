@@ -789,6 +789,88 @@ public:
   // inspect, but MainWindow's in-memory state is unchanged.
   ScriptNewResult script_new_project(const std::string &path);
 
+  // ── s293 m4 — script-side proj new_doc helper ────────────────────
+  //
+  // Sibling to script_new_project (above) but operating one
+  // cardinality level down: new_doc ADDS a document to the
+  // currently-loaded project (existing project surface preserved),
+  // where new REPLACES the entire project (destroys + reseeds).
+  // The architectural delta drives the posture differences:
+  //
+  //   - new_doc is NOT under the surface-preservation rule. It
+  //     adds; it doesn't destroy. The script's trace surface
+  //     (project, output buffer, host window) is untouched. The
+  //     active doc index moves to the new doc, which is the same
+  //     class of mutation any other doc-affecting verb performs
+  //     (objects.add, palettes.swatch, etc.) — not the
+  //     surface-erasing mutation close/load/new perform on the
+  //     project as a whole. Mask is Scripter | TestRunner
+  //     (sibling to save, sibling to most doc-mutating verbs).
+  //
+  //   - new_doc does NOT auto-save the project after the add.
+  //     The GUI's NewDocumentDialog callback does call save() —
+  //     desirable for interactive workflows where the user sees
+  //     a new tab and expects it persisted. Script callers may
+  //     want to add several docs in a sequence before committing;
+  //     calling save() inside the helper would write a half-built
+  //     state to disk each iteration. The script caller drives
+  //     persistence explicitly via proj.save / proj.save_as.
+  //
+  //   - new_doc refuses on NO PROJECT loaded but NOT on Dirty.
+  //     Adding a doc to a dirty project is a legitimate
+  //     in-progress workflow (draw → new_doc → draw → save) —
+  //     refusing on dirty would break that. The surface-
+  //     preservation Dirty refusals (close/load/new) exist
+  //     because those verbs DESTROY the dirty work; new_doc
+  //     preserves it untouched.
+  //
+  //   Ok           — Document constructed, appended to
+  //                  m_project->documents, active_doc_index set to
+  //                  point at it, update_all_panels() ran. No
+  //                  disk I/O happened; the new doc lives in
+  //                  memory until the script saves.
+  //   NoProject    — m_project is null. Sibling to save's
+  //                  NoProject refusal; you need a project to
+  //                  add a doc to. The script caller can
+  //                  precede with proj.new <path> to ensure a
+  //                  project exists. With the typical empty-
+  //                  default-project boot path this case is
+  //                  rare; wired for symmetry with save.
+  //   Dragging     — m_canvas.is_dragging() is true. Same posture
+  //                  as every project-lifecycle helper.
+  //   BadDimensions — w <= 0 or h <= 0. The Scriptable
+  //                  pre-validates the integer parse and the
+  //                  >0 check, so this branch is structurally
+  //                  unreachable through the wired call path
+  //                  (sibling to save_as's path_is_safe
+  //                  Scripter-unreachability note). The helper
+  //                  re-asserts the invariant for safety because
+  //                  CanvasModel::from_pixels with non-positive
+  //                  dimensions would produce a degenerate canvas
+  //                  (zero or negative width/height in viewBox)
+  //                  that downstream code reads as a bug rather
+  //                  than a user error.
+  enum class ScriptNewDocResult {
+    Ok,
+    NoProject,
+    Dragging,
+    BadDimensions,
+  };
+
+  // Add a fresh blank document of the supplied pixel dimensions to
+  // the currently-loaded project and activate it. Filename is
+  // auto-generated as "Untitled.svg" (or "Untitled2.svg",
+  // "Untitled3.svg", ... uniqued against existing docs in the
+  // project — same shape as the NewDocumentDialog callback's
+  // uniquing loop in on_new). Canvas is from_pixels(w, h); the
+  // CurvzDocument default ctor already seeds Layer 1 + Guides, so
+  // no explicit layer setup needed here.
+  //
+  // Body — drag check, dimension check, build, append, activate,
+  //        refresh panels. No save() call (see header for the
+  //        rationale).
+  ScriptNewDocResult script_new_doc(int width, int height);
+
   // ── s251 m1 — script-side export svg helper ──────────────────────
   //
   // Sibling helper to the script_save_project / script_save_project_as
