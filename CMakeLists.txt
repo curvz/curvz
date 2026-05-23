@@ -583,12 +583,14 @@ set(SOURCES
     # tier2_action_audit.md for the full classification.
     src/scripting/Action.cpp
 
-    # s288 m2 — welcome-demo animation subsystem. WelcomeAnimator runs
-    # phantom-overlay performances on a Canvas layer to simulate the
-    # Pen tool (and eventually colour picker, etc.) building an SVG
-    # avatar piece by piece, committing a real Path SceneNode at the
-    # end of each performance. See animation/WelcomeAnimator.hpp.
-    src/animation/WelcomeAnimator.cpp
+    # s288 m2 — phantom-overlay animation engine. Originally
+    # WelcomeAnimator; renamed s291 m2 to SvgPerformer to reflect its
+    # scope as an SvgEmitter consumer (subscribes to the parse stream of
+    # AnimatingSvgParser, populates a queue of PendingPerformances from
+    # on_path callbacks, plays each as anchor-by-anchor beats, commits a
+    # real Path SceneNode at end of each performance). See
+    # animation/SvgPerformer.hpp.
+    src/animation/SvgPerformer.cpp
 
     src/widgets/ToggleButton.cpp
     src/widgets/Button.cpp

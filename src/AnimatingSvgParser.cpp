@@ -1957,6 +1957,21 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 SceneNode* gptr = g.get();
                 commit_child(stack.back().node, std::move(g));
                 // s290 m1b.2 — bracketing begin event for stack-based
+                // s291 m2 — parse the group's transform FIRST and stash
+                // it onto the SceneNode before emitting on_*_begin, so the
+                // consumer's const-ref reads the transform that's about to
+                // apply at stack-pop. (Today's tree-consumers don't read
+                // node->transform on groups — the parser folds the matrix
+                // into children at stack-pop instead — but the event
+                // stream needs to see it now, before the children stream
+                // in.) The stack entry below still holds the matrix as the
+                // source of truth for the pop-time apply; node->transform
+                // is purely for the consumer.
+                AffineMatrix g_xfm = parse_transform(attr(tag, "transform"));
+                gptr->transform.a = g_xfm.a; gptr->transform.b = g_xfm.b;
+                gptr->transform.c = g_xfm.c; gptr->transform.d = g_xfm.d;
+                gptr->transform.e = g_xfm.e; gptr->transform.f = g_xfm.f;
+
                 // containers. The node is now in its parent's children
                 // vector and we're about to push it onto the stack so
                 // child tags can stream into it. on_compound_begin /
@@ -1982,8 +1997,6 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                             warp_role_pending[gptr] = 's';
                     }
                 }
-                // Store the group's own transform so we can apply it on close
-                AffineMatrix g_xfm = parse_transform(attr(tag, "transform"));
                 // Curvz-originated groups carry data-curvz-group="1" or
                 // data-curvz-compound="1"; foreign groups lack these.
                 bool g_is_curvz = (attr(tag, "data-curvz-group")    == "1" ||
@@ -2105,6 +2118,12 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 // instead of scaled to fill the viewBox. Curvz-written layers
                 // never have transforms, so this is a no-op for them.
                 AffineMatrix l_xfm = parse_transform(attr(tag, "transform"));
+                // s291 m2 — stash on the node so on_layer_begin's
+                // const-ref carries the transform. Same rationale as
+                // the group/compound stash above.
+                l->transform.a = l_xfm.a; l->transform.b = l_xfm.b;
+                l->transform.c = l_xfm.c; l->transform.d = l_xfm.d;
+                l->transform.e = l_xfm.e; l->transform.f = l_xfm.f;
                 current_layer = l.get();
                 stack.clear();  // layers are always top-level
                 stack.push_back({current_layer, l_xfm, l_is_curvz});
@@ -2488,13 +2507,31 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                             child_ids.push_back(tok);
                     }
 
+                    // s291 m2 — parse and stash transform onto compound
+                    // before on_compound_begin so the consumer reads it
+                    // off the const ref. The matching apply_transform_to_node
+                    // call after the child-loop below still does the actual
+                    // tree-side application; this is solely so the event
+                    // stream sees the transform on the begin event. The
+                    // children's on_path events fire DURING the loop below
+                    // — the consumer needs to push the compound transform
+                    // onto its own stack at on_compound_begin so those
+                    // child on_path events compose correctly.
+                    {
+                        AffineMatrix cmp_xfm = parse_transform(attr(tag, "transform"));
+                        compound->transform.a = cmp_xfm.a; compound->transform.b = cmp_xfm.b;
+                        compound->transform.c = cmp_xfm.c; compound->transform.d = cmp_xfm.d;
+                        compound->transform.e = cmp_xfm.e; compound->transform.f = cmp_xfm.f;
+                    }
+
                     // s290 m1b.2 — atomic compound: fire on_compound_begin
                     // before the child-commit loop so the consumer sees
                     // the bracketing in document order. The compound is
                     // not yet in the tree (push_into_parent comes after
                     // the loop) but its metadata (id, name, fill from
-                    // apply_style_attrs, visibility, opacity) is set
-                    // above and visible to the emitter via the const ref.
+                    // apply_style_attrs, visibility, opacity, transform
+                    // stashed above) is set above and visible to the
+                    // emitter via the const ref.
                     if (emitter) emitter->on_compound_begin(*compound);
 
                     for (size_t ci = 0; ci < sub_ds.size(); ++ci) {
@@ -2576,6 +2613,17 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     apply_style_attrs(*compound, tag);
                     LOG_INFO("SvgParser: compound fill type={} r={:.2f} g={:.2f} b={:.2f}",
                              (int)compound->fill.type, compound->fill.r, compound->fill.g, compound->fill.b);
+
+                    // s291 m2 — stash transform onto compound before
+                    // on_compound_begin so the consumer reads it. Same
+                    // rationale as the Curvz-authored atomic compound
+                    // above.
+                    {
+                        AffineMatrix cmp_xfm = parse_transform(attr(tag, "transform"));
+                        compound->transform.a = cmp_xfm.a; compound->transform.b = cmp_xfm.b;
+                        compound->transform.c = cmp_xfm.c; compound->transform.d = cmp_xfm.d;
+                        compound->transform.e = cmp_xfm.e; compound->transform.f = cmp_xfm.f;
+                    }
 
                     // s290 m1b.2 — foreign multi-subpath compound is
                     // structurally identical to the Curvz-authored

@@ -696,26 +696,26 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     cr->restore();
   }
 
-  // ── Welcome demo phantom overlay — document space (s288 m2) ──────────
-  // When the WelcomeAnimator is mid-performance, it owns a list of
-  // phantom shapes (anchor squares, handle lever lines, partial Bezier
-  // segments) representing the in-flight construction. The actual model
-  // doesn't change during the performance; we paint phantoms on top of
-  // whatever's there. At commit time the animator mints a real Path
-  // SceneNode and clears its phantoms; subsequent on_draw calls see
-  // is_playing() == false and skip this branch.
+  // ── SVG-performer phantom overlay — document space (s288 m2, s291 m2) ─
+  // When the SvgPerformer is mid-performance, it owns a list of phantom
+  // shapes (anchor squares, handle lever lines, partial Bezier segments)
+  // representing the in-flight construction. The actual model doesn't
+  // change during the performance; we paint phantoms on top of whatever's
+  // there. At commit time the performer mints a real Path SceneNode and
+  // clears its phantoms; subsequent on_draw calls see is_playing() == false
+  // and skip this branch.
   //
-  // Independent of m_tool — the welcome plays regardless of which
-  // toolbar tool is "active" (the welcome is its own production; the
+  // Independent of m_tool — the performance plays regardless of which
+  // toolbar tool is "active" (the performance is its own production; the
   // ambient tool doesn't matter to it).
-  if (m_welcome_animator.is_playing() && m_doc) {
+  if (m_svg_performer.is_playing() && m_doc) {
     cr->save();
     cr->translate(ox, oy);
     cr->scale(m_zoom, m_zoom);
-    m_welcome_animator.draw_overlay(cr, m_zoom,
-                                    m_doc->creation_color_r(doc_motif()),
-                                    m_doc->creation_color_g(doc_motif()),
-                                    m_doc->creation_color_b(doc_motif()));
+    m_svg_performer.draw_overlay(cr, m_zoom,
+                                 m_doc->creation_color_r(doc_motif()),
+                                 m_doc->creation_color_g(doc_motif()),
+                                 m_doc->creation_color_b(doc_motif()));
     cr->restore();
   }
 

@@ -343,8 +343,9 @@ ScriptValue AppScriptable::invoke(std::string_view verb,
     }
 
     // s288 m2 — `enact_pen_path "<d>" <speed>` verb. Kicks off a
-    // welcome-demo Pen-path performance via the m_enact_pen_path
-    // callback (MainWindow wires it to Canvas::welcome_enact_pen_path).
+    // Pen-path performance via the m_enact_pen_path callback (MainWindow
+    // wires it to Canvas::perform_pen_path under the SvgPerformer
+    // rename in s291 m2; the verb name on this surface stays unchanged).
     //
     // Args (positional):
     //   0  d_string : SVG-d attribute string in user-space (Y-up,
@@ -352,7 +353,7 @@ ScriptValue AppScriptable::invoke(std::string_view verb,
     //   1  speed    : double, multiplier on beat durations (1.0 nominal)
     //
     // Returns immediately. The animation runs asynchronously on the
-    // main loop via Glib::Timeout owned by the WelcomeAnimator. The
+    // main loop via Glib::Timeout owned by the SvgPerformer. The
     // script's next line dispatches before the animation completes.
     //
     // Gift-shape graceful degradation: missing args, empty d-string,

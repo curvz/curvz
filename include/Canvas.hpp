@@ -13,7 +13,9 @@
 #include "math/CornerTreatment.hpp"
 #include "math/PathOffset.hpp"
 #include "tools/PenTool.hpp"
-#include "animation/WelcomeAnimator.hpp"  // s288 m2 — welcome-demo phantom overlay
+#include "animation/SvgPerformer.hpp"  // s291 m2 — SvgEmitter consumer that
+                                       // drives beat construction during an
+                                       // SVG parse (was WelcomeAnimator)
 
 // Forward-declare the rest of the swatch-library types we reference in the
 // public interface. Keeping SwatchLibrary.hpp out of this header avoids
@@ -843,7 +845,7 @@ public:
   // turned out to be the wrong architecture for the welcome demo (the
   // Node-tool overlay gates on selection state, which makes script-minted
   // paths invisible during animation). m2 supersedes with theatre: the
-  // WelcomeAnimator's phantom overlay (see below). This method is kept
+  // SvgPerformer's phantom overlay (see below). This method is kept
   // as a primitive for future edit-style beats — e.g. a color picker
   // slider that visibly drags during Phase 2 — but is not invoked by the
   // welcome-demo spine.
@@ -852,27 +854,30 @@ public:
                       Vec2 start, Vec2 end,
                       double duration_ms);
 
-  // ── Welcome demo (s288 m2) ─────────────────────────────────────────────
-  // Kick off a Pen-path performance: a phantom-overlay animation that
-  // simulates the Pen tool building one path anchor-by-anchor, then
-  // commits a real Path SceneNode at the end. The actual heavy lifting
-  // lives in animation::WelcomeAnimator; this method is a thin entry
-  // point that resolves the active doc/layer from m_doc and forwards.
+  // ── Pen-path performance (s288 m2, renamed s291 m2) ───────────────────
+  // Kick off a Pen-path performance from a raw SVG d-string: a phantom-
+  // overlay animation that simulates the Pen tool building one path
+  // anchor-by-anchor, then commits a real Path SceneNode at the end.
+  // The actual heavy lifting lives in animation::SvgPerformer; this
+  // method is a thin entry point that resolves the active doc/layer
+  // from m_doc and forwards.
   //
   // Returns immediately; the animation runs asynchronously via a
-  // Glib::Timeout owned by the animator. See animation/WelcomeAnimator.hpp
+  // Glib::Timeout owned by the performer. See animation/SvgPerformer.hpp
   // for the full architecture and m2 scope.
-  void welcome_enact_pen_path(const std::string& d_string, double speed);
+  void perform_pen_path(const std::string& d_string, double speed);
 
-  // ── Welcome demo SVG orchestrator (s288 m3) ────────────────────────────
-  // Kick off a multi-path performance: parses an SVG file via Curvz's
-  // own SvgParser, enqueues one Pen-path performance per Path SceneNode
-  // found, plays them back-to-back with a small inter-path breath.
-  // Each committed Path lands with the SVG's original fill/stroke.
+  // ── SVG-file performance (s288 m3, renamed s291 m2) ───────────────────
+  // Kick off a multi-path performance from an SVG file: constructs an
+  // AnimatingSvgParser with the performer as SvgEmitter, the parser
+  // fires on_path callbacks during the parse which enqueue one
+  // PendingPerformance per Path; the queue plays back-to-back with a
+  // small inter-path breath. Each committed Path lands with the SVG's
+  // original fill/stroke.
   //
-  // Returns immediately; the orchestration runs asynchronously on the
-  // GTK main loop. Same thin-forwarder pattern as welcome_enact_pen_path.
-  void welcome_animate_svg_file(const std::string& svg_path, double speed);
+  // Returns immediately; the performance runs asynchronously on the
+  // GTK main loop. Same thin-forwarder pattern as perform_pen_path.
+  void perform_svg_file(const std::string& svg_path, double speed);
 
   // ── Warp envelope drag (M4b) ─────────────────────────────────────────
   // Which part of an envelope is being dragged. None = not dragging.
@@ -1834,13 +1839,14 @@ private:
   PenTool m_pen_tool;
   bool m_pen_closing = false;
 
-  // ── Welcome-demo animator (s288 m2) ──────────────────────────────────
-  // Phantom-overlay animation engine for the first-launch welcome
-  // ceremony. is_playing() gates the welcome-overlay branch in
-  // Canvas_draw.cpp's on_draw; when idle it costs nothing. Initialised
-  // in the Canvas ctor with `this` so the animator can call queue_draw
-  // per tick. See animation/WelcomeAnimator.hpp.
-  animation::WelcomeAnimator m_welcome_animator{this};
+  // ── SVG performer (s288 m2, renamed s291 m2) ─────────────────────────
+  // Phantom-overlay animation engine that subscribes to the parse stream
+  // of AnimatingSvgParser (via SvgEmitter) and drives anchor-by-anchor
+  // beat construction. is_playing() gates the performer-overlay branch
+  // in Canvas_draw.cpp's on_draw; when idle it costs nothing. Initialised
+  // in the Canvas ctor with `this` so the performer can call queue_draw
+  // per tick. See animation/SvgPerformer.hpp.
+  animation::SvgPerformer m_svg_performer{this};
 
   // Line tool WIP state
   struct LineTool {

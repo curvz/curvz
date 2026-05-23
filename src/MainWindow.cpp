@@ -487,18 +487,21 @@ MainWindow::MainWindow(Application & /*app*/)
   // replay time, violating the recorded-macro mental model).
   //
   // s288 m2 — second ctor arg: EnactPenPath callback. Forwards to
-  // Canvas's thin entry point which forwards to the WelcomeAnimator.
+  // Canvas's thin entry point which forwards to the SvgPerformer.
   // The animation runs asynchronously via Glib::Timeout owned by the
-  // animator; this lambda returns immediately.
+  // performer; this lambda returns immediately.
   // s288 m3 — third ctor arg: AnimateSvgFile callback. Sibling routing
-  // for the SVG orchestrator entry point.
+  // for the SVG-file entry point.
+  // s291 m2 — renamed Canvas-side methods (welcome_* → perform_*); verb
+  // names on the AppScriptable surface stay unchanged (enact_pen_path,
+  // animate_svg) so scripts continue to work without edits.
   m_app_scriptable = std::make_unique<curvz::scripting::AppScriptable>(
       this,
       [this](const std::string &d_string, double speed) {
-        m_canvas.welcome_enact_pen_path(d_string, speed);
+        m_canvas.perform_pen_path(d_string, speed);
       },
       [this](const std::string &svg_path, double speed) {
-        m_canvas.welcome_animate_svg_file(svg_path, speed);
+        m_canvas.perform_svg_file(svg_path, speed);
       });
 
   // s219 m1 — Scripter window construction. Previously lived in
