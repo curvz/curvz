@@ -6,6 +6,8 @@
 #include "CurvzSpinButton.hpp"
 #include "MacroSystem.hpp"
 #include "SvgParser.hpp"
+#include "TextCursor.hpp"   // s301 m1c — full type needed for unique_ptr dtor + dispatch
+#include <glibmm/main.h>     // s301 m1c — Glib::signal_timeout for caret blink
 #include "widgets/RefPointPicker.hpp"  // s204 m4 — pivot right-click picker
 #include "widgets/Button.hpp"  // s209 m5: unregistered substrate Button (spiral Apply, blend Rebuild popovers)
 #include "curvz_utils.hpp"  // S97 m2 — box_blur_argb32 for drop-shadow render
@@ -561,6 +563,14 @@ Canvas::Canvas() {
 
   // Double-click detector — re-enters text edit when a Text node is
   // double-clicked while the Selection tool is active.
+  //
+  // s301 m1f — Also enters edit when a TEXT BOUNDARY is double-clicked.
+  // The boundary is the user-facing primitive in the unified container
+  // model; clicking it (and seeing handles) is "select the frame";
+  // double-clicking it is "edit the text inside this frame." The model
+  // matches InDesign: single = arrange, double = edit. Find the bound
+  // text node by walking the doc for a Text whose first
+  // text_boundary_ids entry matches the clicked boundary's iid.
   auto dbl_click = Gtk::GestureClick::create();
   dbl_click->set_button(1);
   dbl_click->signal_pressed().connect([this, dbl_click](int n_press, double x,
@@ -572,10 +582,45 @@ Canvas::Canvas() {
     double dx, dy;
     screen_to_doc(x, y, dx, dy);
     SceneNode *hit = hit_test(dx, dy);
-    if (hit && hit->is_text()) {
+    if (!hit) return;
+
+    // Case A: double-clicked the text node itself (legacy unbound or
+    // bound). Enter edit via Text tool's on_text_begin.
+    if (hit->is_text()) {
       m_sig_request_tool.emit(ActiveTool::Text);
-      // Defer on_text_begin until after tool switch has processed.
       Glib::signal_idle().connect_once([this, x, y]() { on_text_begin(x, y); });
+      return;
+    }
+
+    // Case B: double-clicked a path that's a text boundary. Find the
+    // bound text node and begin canvas-cursor edit on it. Stay in
+    // Selection tool — edit is an overlay, not a tool mode.
+    if (hit->type == SceneNode::Type::Path && hit->path && m_doc) {
+      SceneNode* bound_text = nullptr;
+      for (auto& layer : m_doc->layers) {
+        for (auto& c : layer->children) {
+          if (c && c->is_text() && !c->text_boundary_ids.empty() &&
+              c->text_boundary_ids.front() == hit->internal_id) {
+            bound_text = c.get();
+            break;
+          }
+        }
+        if (bound_text) break;
+      }
+      if (bound_text) {
+        m_text_editing = bound_text;
+        m_text_boundary_editing = hit;
+        m_text_is_new = false;
+        m_text_snapshot = TextEditCommand::snapshot_before(project(), bound_text);
+        m_text_has_snapshot = true;
+        m_selected = hit;
+        m_selection = {hit};
+        notify_object_selection_changed();
+        // (legacy Gtk::Entry was never shown for this bound path; no
+        //  need to hide it here. Avoids pulling widgets/Entry.hpp into
+        //  this TU just for an unreachable defensive hide.)
+        begin_text_cursor_edit(bound_text, hit);
+      }
     }
   });
   add_controller(dbl_click);
@@ -3775,6 +3820,22 @@ static void scrub_text_path_refs(const SceneNode *n, const std::string &dead_iid
       c->text_path_offset = 0.0;
       c->text_path_flip = false;
     }
+    // s301 m1a — also scrub the unified container-model bindings.
+    // Removing any boundary iid that points at the dead node, and clearing
+    // the line-pattern id if it matches. Same rationale as the text_path_id
+    // scrub above: leaving a stale iid produces silent dangling references
+    // that re-bind to whatever the iid index resolves to next (or to nothing,
+    // which presents as text reverting to legacy unbound rendering). For
+    // the boundary list, erasing rather than zeroing preserves the chain
+    // order of the remaining boundaries; if the dead node was the first
+    // boundary, the next-in-chain becomes the new first naturally.
+    if (c->is_text()) {
+      auto &bs = c->text_boundary_ids;
+      bs.erase(std::remove(bs.begin(), bs.end(), dead_iid), bs.end());
+      if (c->text_line_path_id == dead_iid) {
+        c->text_line_path_id = "";
+      }
+    }
     scrub_text_path_refs(c.get(), dead_iid);
   }
   if (n->clip_shape)
@@ -3785,6 +3846,217 @@ static void scrub_text_path_refs(const SceneNode *n, const std::string &dead_iid
     scrub_text_path_refs(n->blend_source_b.get(), dead_iid);
   if (n->warp_source)
     scrub_text_path_refs(n->warp_source.get(), dead_iid);
+}
+
+// ── s301 m1b — Cross-TU boundary lookup used by TextCursor ──────────────────
+// Walks every layer's direct children searching for a node whose
+// internal_id equals the requested iid. Linear scan: documents in active
+// edit are typically dozens to low hundreds of nodes; the cursor calls
+// this O(1) times per frame (only during text-edit mode), so we don't
+// need the lazy iid-index pump that the undo/redo machinery uses. The
+// scan is intentionally direct-children-only — boundaries always live at
+// the active layer level in 1b (no nesting inside groups), matching how
+// the text-tool marquee places them.
+SceneNode* Canvas::find_text_boundary(const std::string& iid) {
+  if (!m_doc || iid.empty()) return nullptr;
+  for (auto& layer : m_doc->layers) {
+    if (!layer) continue;
+    for (auto& c : layer->children) {
+      if (c && c->internal_id == iid) return c.get();
+    }
+  }
+  return nullptr;
+}
+
+// ── s301 m1g — Caret contrast color ─────────────────────────────────────────
+// CurrentColor-style rule: the caret should be visible against whatever
+// the artboard background is. Sample the doc's artboard color (same
+// source the renderer uses), compute perceived luma, and return either
+// white or black based on a 50% threshold. The threshold is the same
+// one the system theme uses internally for "is this a dark background"
+// decisions; works for the dark canvas the user is currently editing in
+// AND for hypothetical light artboards (printed-paper-style designs).
+void Canvas::caret_contrast_color(double& cr_r, double& cr_g, double& cr_b) const {
+  // Default: white on dark. Used when m_doc isn't available.
+  cr_r = cr_g = cr_b = 1.0;
+  if (!m_doc) return;
+
+  double bg_r = m_doc->artboard_bg_r(doc_motif());
+  double bg_g = m_doc->artboard_bg_g(doc_motif());
+  double bg_b = m_doc->artboard_bg_b(doc_motif());
+
+  // ITU-R BT.601 luma weights — close enough for contrast decisions
+  // and matches how every other "should I use light or dark text on
+  // this background" decision in design tooling gets made.
+  double luma = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b;
+  if (luma > 0.5) {
+    cr_r = cr_g = cr_b = 0.0;  // black on light
+  } else {
+    cr_r = cr_g = cr_b = 1.0;  // white on dark
+  }
+}
+
+// ── s301 m1c — Canvas destructor ────────────────────────────────────────────
+// Defaulted destructor moved out of the header so std::unique_ptr<TextCursor>
+// sees the full type. Without this, every TU that includes Canvas.hpp would
+// need to know about TextCursor — defeating the forward-decl. The blink
+// connection is disconnected here too to avoid a dangling callback firing
+// during teardown.
+Canvas::~Canvas() {
+  if (m_text_cursor_blink_conn.connected()) {
+    m_text_cursor_blink_conn.disconnect();
+  }
+}
+
+// ── s301 m1c — Begin an on-canvas text edit ─────────────────────────────────
+// Installs a TextCursor for the given text node + boundary, starts the
+// 530ms blink timer, and queues a redraw so the caret appears immediately.
+// The blink timer toggles the cursor's visibility and queues a redraw on
+// every tick; the connection is stored so we can disconnect on end.
+//
+// Per-platform-typical 530ms cadence (matches GTK/GNOME text widgets and
+// is close to the Mac/Windows defaults). Could become a preference later.
+void Canvas::begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary) {
+  if (!text_node) return;
+  // boundary may be null if a legacy unbound text somehow routes here —
+  // TextCursor's position_on_canvas returns invalid in that case and the
+  // caret simply doesn't render, but the buffer mutation still works.
+  (void)boundary;
+
+  end_text_cursor_edit();  // idempotent: clear any prior cursor first
+  m_text_cursor = std::make_unique<TextCursor>(this, text_node);
+
+  // Blink timer. 530ms is the visual cadence; we toggle visibility and
+  // queue_draw each tick. Capturing `this` is safe because Canvas owns
+  // the connection and disconnects it in end_text_cursor_edit / dtor.
+  m_text_cursor_blink_conn = Glib::signal_timeout().connect([this]() -> bool {
+    if (!m_text_cursor) return false;
+    m_text_cursor->toggle_visible();
+    queue_draw();
+    return true;
+  }, 530);
+
+  // Make sure the canvas has focus so key events arrive.
+  grab_focus();
+  queue_draw();
+}
+
+void Canvas::end_text_cursor_edit() {
+  if (m_text_cursor_blink_conn.connected()) {
+    m_text_cursor_blink_conn.disconnect();
+  }
+  m_text_cursor.reset();
+  queue_draw();
+}
+
+// ── s301 m1c — Key dispatch for on-canvas text editing ──────────────────────
+// Called from MainWindow_bindings.cpp's CAPTURE-phase key controller
+// BEFORE the global shortcut cascade. Returns true if the keystroke was
+// consumed by the active edit (the caller then returns true to stop
+// further dispatch). Returns false in all other cases — including when
+// the edit isn't active or the key is something we don't handle (e.g.
+// Ctrl+Z still passes through to the global undo handler).
+//
+// Modifier policy:
+//   - Plain key → buffer mutation or caret navigation.
+//   - Ctrl+key → NOT consumed here; falls through so Ctrl+Z, Ctrl+S,
+//     Ctrl+C/V/X reach their shortcut handlers. (Paste/copy/cut
+//     integration with the cursor is a later milestone — for now
+//     they're inert during edit.)
+//   - Alt+key → not consumed (Alt is shortcut signal in this codebase).
+//
+// Commit triggers in this handler:
+//   - Escape    → cancel (revert if new, restore snapshot if existing).
+//                 MainWindow's existing Escape handler still calls
+//                 cancel_text_edit; this returns true to stop further
+//                 dispatch first only if we DON'T want global handling.
+//                 Since we DO want cancel_text_edit to run (it lives in
+//                 MainWindow_bindings.cpp's Esc cascade), we return
+//                 false on Escape and let the cascade fire.
+//   - Enter     → insert newline into the buffer (multi-line edit). The
+//                 existing global Enter handler also calls
+//                 commit_text_edit; we return true here to override
+//                 that — Enter during canvas-cursor edit means newline,
+//                 NOT commit.
+bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
+  if (!m_text_cursor) return false;
+
+  bool ctrl = (mods & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
+  bool alt  = (mods & Gdk::ModifierType::ALT_MASK)     != Gdk::ModifierType{};
+  if (ctrl || alt) return false;  // shortcuts pass through
+
+  // Reset blink to visible on any user input so the cursor doesn't
+  // disappear mid-keystroke. Brief but noticeable polish.
+  if (m_text_cursor) m_text_cursor->set_visible(true);
+
+  switch (keyval) {
+    case GDK_KEY_Return:
+    case GDK_KEY_KP_Enter:
+      m_text_cursor->insert_newline();
+      m_sig_doc_changed.emit();
+      queue_draw();
+      return true;
+
+    case GDK_KEY_BackSpace:
+      if (m_text_cursor->backspace()) {
+        m_sig_doc_changed.emit();
+        queue_draw();
+      }
+      return true;
+
+    case GDK_KEY_Delete:
+      if (m_text_cursor->delete_forward()) {
+        m_sig_doc_changed.emit();
+        queue_draw();
+      }
+      return true;
+
+    case GDK_KEY_Left:
+      m_text_cursor->move_left();
+      queue_draw();
+      return true;
+
+    case GDK_KEY_Right:
+      m_text_cursor->move_right();
+      queue_draw();
+      return true;
+
+    case GDK_KEY_Home:
+      m_text_cursor->move_line_start();
+      queue_draw();
+      return true;
+
+    case GDK_KEY_End:
+      m_text_cursor->move_line_end();
+      queue_draw();
+      return true;
+
+    case GDK_KEY_Escape:
+      // Let the global Esc cascade run cancel_text_edit. Do NOT consume.
+      return false;
+
+    case GDK_KEY_Up:
+    case GDK_KEY_Down:
+      // Vertical caret nav is stubbed in 1c — Pango layout introspection
+      // for "move to same x on the next/prev visual line" is doable but
+      // beyond 1c scope. Consume the key so it doesn't trigger any
+      // global shortcut.
+      return true;
+
+    default: {
+      // Printable character? gdk_keyval_to_unicode returns 0 for
+      // non-printable keys (function keys, modifiers alone, etc.).
+      guint32 uc = gdk_keyval_to_unicode(keyval);
+      if (uc != 0 && uc >= 0x20 && uc != 0x7f) {
+        if (m_text_cursor->insert_char((gunichar)uc)) {
+          m_sig_doc_changed.emit();
+          queue_draw();
+        }
+        return true;
+      }
+      return false;
+    }
+  }
 }
 
 void Canvas::scrub_node_refs(const SceneNode *target) {
@@ -4740,8 +5012,32 @@ SceneNode *Canvas::hit_test(double doc_x, double doc_y) {
       // re-tests bbox-containment via the outer Compound branch, so
       // this is sound: we only get here for closed children of a
       // Compound whose own bbox already contains the click.
+      // s301 m1e — Text boundaries are interior-hittable even without
+      // fill. The boundary is the user-facing primitive ("the bbox");
+      // it has fill==None by default so it's visually invisible, but a
+      // click in the interior must hit it so the user can select and
+      // drag the frame. We treat any closed Path whose iid is
+      // referenced by some Text node's text_boundary_ids as having an
+      // implicit "fill" for hit-test purposes. The check is O(doc)
+      // per Path candidate; fine for click frequency.
+      bool is_text_boundary = false;
+      if (obj.path->closed && m_doc) {
+        for (auto &lyr : m_doc->layers) {
+          for (auto &c : lyr->children) {
+            if (c && c->is_text() && !c->text_boundary_ids.empty()) {
+              for (auto &bid : c->text_boundary_ids) {
+                if (bid == obj.internal_id) { is_text_boundary = true; break; }
+              }
+            }
+            if (is_text_boundary) break;
+          }
+          if (is_text_boundary) break;
+        }
+      }
+
       bool has_fill = (obj.fill.type != FillStyle::Type::None) ||
-                      (parent_is_compound && obj.path->closed);
+                      (parent_is_compound && obj.path->closed) ||
+                      is_text_boundary;
       if (has_fill)
         return &obj;
 

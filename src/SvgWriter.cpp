@@ -772,6 +772,25 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
             out << " data-curvz-path-offset=\"" << fmt6(obj.text_path_offset) << "\"";
             if (obj.text_path_flip) out << " data-curvz-path-flip=\"1\"";
         }
+        // s301 m1a — text container model round-trip. Boundary list emitted as
+        // space-separated iids in document order (= overflow-chain order); line
+        // pattern id and margins emitted only when non-default. All under the
+        // existing data-curvz-* namespace so non-Curvz SVG readers ignore them.
+        if (!obj.text_boundary_ids.empty()) {
+            out << " data-curvz-boundary-ids=\"";
+            for (size_t i = 0; i < obj.text_boundary_ids.size(); ++i) {
+                if (i) out << " ";
+                out << obj.text_boundary_ids[i];
+            }
+            out << "\"";
+        }
+        if (!obj.text_line_path_id.empty()) {
+            out << " data-curvz-line-path-id=\"" << obj.text_line_path_id << "\"";
+        }
+        if (obj.text_margin_top    != 0.0) out << " data-curvz-margin-top=\""    << fmt2(obj.text_margin_top)    << "\"";
+        if (obj.text_margin_bottom != 0.0) out << " data-curvz-margin-bottom=\"" << fmt2(obj.text_margin_bottom) << "\"";
+        if (obj.text_margin_left   != 0.0) out << " data-curvz-margin-left=\""   << fmt2(obj.text_margin_left)   << "\"";
+        if (obj.text_margin_right  != 0.0) out << " data-curvz-margin-right=\""  << fmt2(obj.text_margin_right)  << "\"";
         if (!obj.text_path_id.empty()) {
             // Emit SVG-standard textPath for interoperability with other SVG viewers
             out << ">\n";

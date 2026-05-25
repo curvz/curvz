@@ -58,6 +58,21 @@ static constexpr double MITER_LIMIT      = 4.0;  // miter-distance / stroke-half
 static constexpr double PARAM_EPS        = 1e-6; // min param separation
 static constexpr double RAY_PARALLEL_EPS = 1e-9; // |cross| below → treat parallel
 
+// ── s300 m1 — adaptive offset emitter ────────────────────────────────────────
+// New tier (2) producer. Mirrors s299 m10's warp emitter shape: source nodes
+// are the output skeleton (one anchor per source node, type preserved); fit
+// one cubic per source-segment between displaced endpoints; subdivide only
+// when the fit can't hit tolerance; necessity-Smooth anchors at split midpoints.
+//
+// Feature toggle: false → tier (2) is skipped entirely, dispatch flows
+// 1 → Clipper2 → T-H exactly as before s300. true → adaptive tier runs first
+// on closed paths only; open paths and any future bail-outs fall through to
+// Clipper2.
+static constexpr bool   OFFSET_USE_ADAPTIVE_EMITTER = false;
+static constexpr double OFFSET_FIT_TOL          = 0.5;  // doc units (~px at 1:1)
+static constexpr int    OFFSET_FIT_MAX_DEPTH    = 6;    // hard recursion ceiling
+static constexpr int    OFFSET_FIT_SAMPLE_COUNT = 12;   // dense samples per fit
+
 // ──────────────────────────────────────────────────────────────────────────────
 // §1 · Polynomial helpers for the pre-split step
 // ──────────────────────────────────────────────────────────────────────────────
@@ -957,6 +972,242 @@ static PathData polyline_to_bezier_path(const std::vector<Vec2>& poly, bool clos
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// §5b · s300 m1 — Adaptive offset emitter (source-node-skeleton producer)
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// Architectural shape (mirrors s299 m10's warp emitter):
+//
+//   1. Source nodes are the output skeleton. Every source node N appears in
+//      the output as one anchor at position (C(t_N) + d * n̂(t_N)) — the true
+//      mathematical offset of the source-node position. Type carries over
+//      (Corner stays Corner, Smooth stays Smooth, etc).
+//
+//   2. Per source-segment between adjacent source nodes, try to fit ONE cubic
+//      between the displaced endpoints with handles solved by least-squares
+//      against dense true-offset samples along that segment.
+//
+//   3. If max error <= OFFSET_FIT_TOL, accept. Otherwise split the source
+//      parameter range at midpoint and recurse — each recursion midpoint
+//      becomes a necessity-Smooth anchor between the source-node keepers.
+//      Hard depth ceiling at OFFSET_FIT_MAX_DEPTH.
+//
+// Result: minimal node set by construction. N source nodes → N output anchors
+// for a clean offset; one or two extra necessity anchors only where local
+// curvature relative to d demanded subdivision.
+//
+// Sign convention for d matches the rest of the file: caller passes signed d
+// (already accounts for winding direction via signed_area sign rule). The
+// emitter just adds d * normal at each parameter.
+//
+// m1 scope: closed paths only. Open paths and any future self-intersection
+// bail-out return std::nullopt so dispatch falls through to Clipper2/T-H.
+// Joins between source segments at Corner-typed nodes use the adjacent fits'
+// handles as-is (no miter/bevel logic yet — that's m3).
+
+// True offset of the source segment at parameter t: C(t) + d * n̂(t).
+static Vec2 offset_sample_at(double t, const CubicSegment& seg, double d) {
+    Vec2 p   = seg.at(t);
+    Vec2 nrm = seg.normal(t);
+    double nlen = nrm.length();
+    if (nlen < 1e-12) {
+        // Degenerate tangent (cusp or collapsed handle) — return raw point;
+        // caller's fit will absorb it as a noisy sample.
+        return p;
+    }
+    return p + nrm * (d / nlen);
+}
+
+// Fit one cubic between offset_sample_at(t_lo) and offset_sample_at(t_hi)
+// along the true-offset curve of the source segment. Returns fitted handles
+// (c1, c2 as absolute positions) and max point-distance error against dense
+// samples.
+//
+// Tangent directions at endpoints come from numerical derivative of the
+// true-offset function (cheap: two extra true-offset evaluations). Handle
+// scalar lengths come from a least-squares solve against SAMPLES true-
+// offset points. Same math shape as fit_warp_cubic in Canvas_ops.cpp.
+static void fit_offset_cubic(double t_lo, double t_hi,
+                             const CubicSegment& seg, double d,
+                             double& c1x, double& c1y,
+                             double& c2x, double& c2y,
+                             double& max_err) {
+    Vec2 p_lo = offset_sample_at(t_lo, seg, d);
+    Vec2 p_hi = offset_sample_at(t_hi, seg, d);
+
+    // Tangent directions at endpoints — numerical derivative of the true-
+    // offset function.
+    const double span = t_hi - t_lo;
+    const double delta = std::max(span * 1e-3, 1e-6);
+    double t_lo_eps = std::min(t_hi, t_lo + delta);
+    double t_hi_eps = std::max(t_lo, t_hi - delta);
+    Vec2 p_lo_eps = offset_sample_at(t_lo_eps, seg, d);
+    Vec2 p_hi_eps = offset_sample_at(t_hi_eps, seg, d);
+    Vec2 dA = p_lo_eps - p_lo;
+    Vec2 dB = p_hi    - p_hi_eps;
+    double lenA = dA.length();
+    double lenB = dB.length();
+    // Fall back to chord direction if the derivative degenerates.
+    Vec2 chord = p_hi - p_lo;
+    double chord_len = chord.length();
+    if (lenA < 1e-9) { dA = chord; lenA = chord_len; }
+    if (lenB < 1e-9) { dB = chord; lenB = chord_len; }
+    if (lenA > 1e-12) dA = dA * (1.0 / lenA);
+    if (lenB > 1e-12) dB = dB * (1.0 / lenB);
+
+    // Dense LSQ for handle scalars (alpha, beta) — same shape as the warp
+    // fit. The cubic is parametrised as
+    //   P(s) = B0·A + B1·(A + α·dA) + B2·(B - β·dB) + B3·B
+    // with s ∈ [0,1] mapped to t ∈ [t_lo, t_hi] linearly.
+    double S11 = 0, S12 = 0, S22 = 0, r1 = 0, r2 = 0;
+    for (int i = 1; i < OFFSET_FIT_SAMPLE_COUNT; ++i) {
+        double s = (double)i / OFFSET_FIT_SAMPLE_COUNT;
+        double t_sample = t_lo + s * span;
+        Vec2 Q = offset_sample_at(t_sample, seg, d);
+        double u = 1.0 - s;
+        double B0 = u*u*u, B1 = 3*u*u*s, B2 = 3*u*s*s, B3 = s*s*s;
+        double Rx = Q.x - p_lo.x*(B0 + B1) - p_hi.x*(B2 + B3);
+        double Ry = Q.y - p_lo.y*(B0 + B1) - p_hi.y*(B2 + B3);
+        double c1xC = B1 * dA.x, c1yC = B1 * dA.y;
+        double c2xC = -B2 * dB.x, c2yC = -B2 * dB.y;
+        S11 += c1xC*c1xC + c1yC*c1yC;
+        S12 += c1xC*c2xC + c1yC*c2yC;
+        S22 += c2xC*c2xC + c2yC*c2yC;
+        r1  += Rx*c1xC + Ry*c1yC;
+        r2  += Rx*c2xC + Ry*c2yC;
+    }
+    double det = S11*S22 - S12*S12;
+    double alpha, beta;
+    if (std::abs(det) > 1e-12) {
+        alpha = (r1*S22 - r2*S12) / det;
+        beta  = (r2*S11 - r1*S12) / det;
+    } else {
+        // Degenerate — fall back to 1/3 chord length.
+        alpha = beta = chord_len / 3.0;
+    }
+    double max_handle = chord_len * 2.0 + 1.0;
+    if (alpha < 0.0) alpha = 0.0; else if (alpha > max_handle) alpha = max_handle;
+    if (beta  < 0.0) beta  = 0.0; else if (beta  > max_handle) beta  = max_handle;
+
+    c1x = p_lo.x + dA.x * alpha;
+    c1y = p_lo.y + dA.y * alpha;
+    c2x = p_hi.x - dB.x * beta;
+    c2y = p_hi.y - dB.y * beta;
+
+    // Measure max error of the fit at the sample points.
+    max_err = 0.0;
+    for (int i = 1; i < OFFSET_FIT_SAMPLE_COUNT; ++i) {
+        double s = (double)i / OFFSET_FIT_SAMPLE_COUNT;
+        double t_sample = t_lo + s * span;
+        Vec2 Q = offset_sample_at(t_sample, seg, d);
+        double u = 1.0 - s;
+        double Px = u*u*u*p_lo.x + 3*u*u*s*c1x + 3*u*s*s*c2x + s*s*s*p_hi.x;
+        double Py = u*u*u*p_lo.y + 3*u*u*s*c1y + 3*u*s*s*c2y + s*s*s*p_hi.y;
+        double dx = Q.x - Px;
+        double dy = Q.y - Py;
+        double err = std::sqrt(dx*dx + dy*dy);
+        if (err > max_err) max_err = err;
+    }
+}
+
+// Recursive emit. Caller must have already pushed the anchor at t_lo before
+// invoking. This call either accepts a single-cubic fit (patches the previous
+// anchor's outgoing handle with c1, emits one anchor at t_hi with incoming
+// handle c2 and the provided type) OR splits at midpoint and recurses on
+// both halves (midpoint becomes a necessity-Smooth anchor).
+static void emit_offset_segment(PathData& out, int depth,
+                                double t_lo, double t_hi,
+                                const CubicSegment& seg, double d,
+                                BezierNode::Type type_at_t_hi) {
+    double c1x, c1y, c2x, c2y, err;
+    fit_offset_cubic(t_lo, t_hi, seg, d, c1x, c1y, c2x, c2y, err);
+
+    bool accept = (err <= OFFSET_FIT_TOL) || (depth >= OFFSET_FIT_MAX_DEPTH);
+    if (accept) {
+        if (!out.nodes.empty()) {
+            BezierNode& prev = out.nodes.back();
+            prev.cx2 = c1x;
+            prev.cy2 = c1y;
+        }
+        Vec2 p_hi = offset_sample_at(t_hi, seg, d);
+        BezierNode nd;
+        nd.x = p_hi.x;
+        nd.y = p_hi.y;
+        nd.cx1 = c2x;
+        nd.cy1 = c2y;
+        nd.cx2 = p_hi.x;     // provisional; patched by next emit if any
+        nd.cy2 = p_hi.y;
+        nd.type = type_at_t_hi;
+        out.nodes.push_back(nd);
+        return;
+    }
+
+    double t_mid = 0.5 * (t_lo + t_hi);
+    emit_offset_segment(out, depth + 1, t_lo, t_mid, seg, d,
+                        BezierNode::Type::Smooth);
+    emit_offset_segment(out, depth + 1, t_mid, t_hi, seg, d,
+                        type_at_t_hi);
+}
+
+// Walk the BezierPath segment-by-segment, emitting one anchor per source node
+// (type preserved) plus necessity anchors where the fit demanded subdivision.
+// Closed-path dedupe at end mirrors warp_path_data: the wrap-around segment
+// emits a duplicate of node-0; merge its incoming handle onto the original
+// node-0 anchor and pop the duplicate.
+//
+// m1 scope: closed paths only. Returns std::nullopt on open input so the
+// caller falls through to Clipper2/T-H.
+static std::optional<PathData> offset_path_adaptive(const PathData& path,
+                                                     double d) {
+    if (!path.closed) return std::nullopt;
+    if (path.nodes.size() < 2) return std::nullopt;
+
+    BezierPath bp = BezierPath::from_path_data(path);
+    int n_nodes = (int)bp.nodes.size();
+    int n_segs  = bp.segment_count();
+    if (n_segs < 1) return std::nullopt;
+
+    PathData out;
+    out.closed = true;
+
+    // Emit leading anchor: source node 0 displaced by d * n̂ at t=0 of segment 0.
+    {
+        CubicSegment seg0 = bp.segment(0);
+        Vec2 p0 = offset_sample_at(0.0, seg0, d);
+        BezierNode nd;
+        nd.x = p0.x;
+        nd.y = p0.y;
+        nd.cx1 = p0.x;
+        nd.cy1 = p0.y;
+        nd.cx2 = p0.x;
+        nd.cy2 = p0.y;
+        nd.type = bp.nodes[0].type;
+        out.nodes.push_back(nd);
+    }
+
+    // Walk segments. At t=1 of segment si the source node is (si+1) mod n,
+    // and its type is what the output anchor at that position inherits.
+    for (int si = 0; si < n_segs; ++si) {
+        CubicSegment seg = bp.segment(si);
+        int src_next = (si + 1) % n_nodes;
+        emit_offset_segment(out, 0, 0.0, 1.0, seg, d,
+                            bp.nodes[src_next].type);
+    }
+
+    // Closed-path dedupe: the wrap-around emit produced a duplicate of node 0
+    // as the last entry. Move its incoming handle onto the first anchor and
+    // drop the duplicate.
+    if (out.nodes.size() > 1) {
+        BezierNode& last  = out.nodes.back();
+        BezierNode& first = out.nodes.front();
+        first.cx1 = last.cx1;
+        first.cy1 = last.cy1;
+        out.nodes.pop_back();
+    }
+
+    return out;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // §6 · Public API
 // ──────────────────────────────────────────────────────────────────────────────
 std::vector<PathData> offset_path(const PathData& path,
@@ -1037,6 +1288,55 @@ std::vector<PathData> offset_path(const PathData& path,
             if (auto pd = fast(-distance)) results.push_back(*pd);
             return results;
         }
+    }
+
+    // ── s300 m1 — Adaptive emitter tier (closed paths only) ─────────────────
+    // Off by default (OFFSET_USE_ADAPTIVE_EMITTER = false). When on, attempts
+    // a source-node-skeleton adaptive cubic fit per source segment, producing
+    // minimal-node output by construction. Returns std::nullopt to decline
+    // (open paths in m1; self-intersection bail-out comes in m2) and fall
+    // through to Clipper2 below.
+    //
+    // Same winding-sign convention as T-H below: signed_area > 0 means CW
+    // in Y-down doc space, outward is the +d direction after the sign flip.
+    if (OFFSET_USE_ADAPTIVE_EMITTER && path.closed) {
+        BezierPath bp_w = BezierPath::from_path_data(path);
+        double area_w  = bp_w.signed_area();
+        double d_out_w = (area_w > 0.0) ? -distance :  distance;
+        double d_in_w  = (area_w > 0.0) ?  distance : -distance;
+
+        auto adaptive = [&](double d_signed) -> std::optional<PathData> {
+            return offset_path_adaptive(path, d_signed);
+        };
+
+        if (side == OffsetSide::Outside) {
+            if (auto pd = adaptive(d_out_w)) {
+                LOG_DEBUG("PathOffset: adaptive emitter (Outside) "
+                          "produced {} nodes", pd->nodes.size());
+                return { *pd };
+            }
+        } else if (side == OffsetSide::Inside) {
+            if (auto pd = adaptive(d_in_w)) {
+                LOG_DEBUG("PathOffset: adaptive emitter (Inside) "
+                          "produced {} nodes", pd->nodes.size());
+                return { *pd };
+            }
+        } else {
+            // Both — emit outer at d_out and inner at d_in as TWO independent
+            // PathDatas. Matches the regular-shape-fast-path "Both" behavior:
+            // two concentric loops, not a stitched stroke band. Stitching is
+            // the stroke-outliner's job (expand_stroke_op).
+            std::vector<PathData> results;
+            if (auto pd = adaptive(d_out_w)) results.push_back(*pd);
+            if (auto pd = adaptive(d_in_w))  results.push_back(*pd);
+            if (!results.empty()) {
+                LOG_DEBUG("PathOffset: adaptive emitter (Both) "
+                          "produced {} loops", results.size());
+                return results;
+            }
+        }
+        // Fall through to Clipper2 — adaptive declined (open path or future
+        // bail-out trigger).
     }
 
     // ── Clipper2 path (irregular shapes) — s260 ─────────────────────────────

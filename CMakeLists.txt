@@ -331,6 +331,11 @@ set(SOURCES
     src/Canvas_input.cpp  # s161 — Canvas split, INPUT TU (event state machines)
     src/Canvas_ops.cpp    # s161 — Canvas split, OPS TU (boolean/blend/warp/etc.)
     src/Canvas_draw.cpp   # s161 — Canvas split, DRAW TU (all draw_*, on_draw)
+    src/TextCursor.cpp    # s301 m1b — text editing primitive (model + caret
+                          # geometry + render). Used by Canvas during text
+                          # edit mode; not called from anywhere in 1b — the
+                          # class is the foundation that 1c will hook into
+                          # the keyhandler + glyph renderer.
     src/SelectionContext.cpp  # s158 m1 — capability classifier (Info+Actions)
     src/DocumentGallery.cpp
     src/PropertiesPanel.cpp
@@ -404,6 +409,10 @@ set(SOURCES
     # uniformity strip. See include/math/PathNormalize.hpp and PathReduce.hpp.
     src/math/PathNormalize.cpp
     src/math/PathReduce.cpp
+    # s300 m3 — shape-driven minimal-node refit (Douglas-Peucker for cubics).
+    # Source-agnostic, type-agnostic cleanup pass. Called by expand_stroke_op
+    # to strip Clipper2's dense polyline noise from stroke bands.
+    src/math/PathSimplify.cpp
 
     # Color system. See ARCHITECTURE.md "Color System".
     # Phase 1: atoms + interop with existing FillStyle. No renderers migrate

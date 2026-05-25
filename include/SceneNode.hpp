@@ -591,6 +591,37 @@ struct SceneNode {
       0.0; // arc-length start offset along path in doc units
   bool text_path_flip = false; // true = text hangs below path (inside circle)
 
+  // ── s301 m1a — Text container model (data foundation) ──────────────────────
+  // The unified text model (see docs/text_unified_model.md) decomposes text
+  // rendering into three primitives: a boundary (closed path defining where
+  // text appears), a line pattern (path each line follows, default horizontal),
+  // and the text content itself. A text node binds to zero or more boundary
+  // paths and optionally one line-pattern path by iid.
+  //
+  // Empty list / empty id = legacy unbound text — renders using text_x/text_y
+  // and the existing draw_text_node code path, fully backward compatible. As
+  // milestone 1b wires the renderer to honor these bindings, an unbound text
+  // will keep behaving as it does today and a bound text will route through
+  // the new container-aware path.
+  //
+  // Threading: when text overflows the first boundary, it continues in the
+  // second, and so on. A boundary participates in at most one chain — see
+  // text_unified_model.md "Valid candidates" rule.
+  std::vector<std::string> text_boundary_ids;
+  // Optional line-pattern path. Empty = default horizontal line pattern.
+  // When set, every line of text follows this path, duplicated downward at
+  // the leading distance. This is how text-on-path is expressed in the
+  // unified model — set the line pattern, the renderer applies the rules.
+  std::string text_line_path_id;
+  // Inset margins from the boundary edge inward (doc units). Text flows in
+  // the inset region, not the raw boundary. Zero on all four sides = boundary
+  // edge IS the text edge (matches today's "no margin" expectation for newly
+  // created frames).
+  double text_margin_top    = 0.0;
+  double text_margin_bottom = 0.0;
+  double text_margin_left   = 0.0;
+  double text_margin_right  = 0.0;
+
   // Image data — meaningful on Image only
   std::string image_path; // absolute path to the image file
   double image_x = 0.0;   // top-left x in doc space (Y-down)
@@ -775,6 +806,13 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->text_path_id = src.text_path_id;
   dst->text_path_offset = src.text_path_offset;
   dst->text_path_flip = src.text_path_flip;
+  // s301 m1a — text container model field copy
+  dst->text_boundary_ids = src.text_boundary_ids;
+  dst->text_line_path_id = src.text_line_path_id;
+  dst->text_margin_top    = src.text_margin_top;
+  dst->text_margin_bottom = src.text_margin_bottom;
+  dst->text_margin_left   = src.text_margin_left;
+  dst->text_margin_right  = src.text_margin_right;
   dst->image_path = src.image_path;
   dst->image_x = src.image_x;
   dst->image_y = src.image_y;

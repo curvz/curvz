@@ -1629,6 +1629,21 @@ void MainWindow::connect_signals() {
             return false;
         }
 
+        // ── s301 m1c — Canvas text editor takes plain keystrokes ────────────
+        // When a TextCursor edit is active (bound text being typed into via
+        // on-canvas caret, no Gtk::Entry), route plain keys to the canvas
+        // editor before any global shortcut handler runs. Returns true if
+        // consumed (stops the cascade); returns false for Ctrl/Alt
+        // shortcuts and for keys the editor doesn't handle (e.g. F-keys,
+        // Tab), which then fall through to the cascade as usual. The
+        // editor explicitly does NOT consume Escape (so the existing Esc
+        // cascade can run cancel_text_edit) — see handle_text_edit_key
+        // for the per-key policy.
+        if (m_canvas.text_cursor_active()) {
+          if (m_canvas.handle_text_edit_key(kv, mod))
+            return true;
+        }
+
         // ── Space press — forward to canvas for Space+drag pan ──────────────
         // In Ruler tool, space clears the current measurement for a fresh pick.
         if (kv == GDK_KEY_space) {

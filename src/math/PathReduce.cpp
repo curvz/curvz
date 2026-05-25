@@ -181,7 +181,9 @@ static bool window_eligible(const BezierPath& bp, int idx,
 }
 
 // ── reduce_redundant_curve_nodes ──────────────────────────────────────────────
-int reduce_redundant_curve_nodes(PathData& path) {
+int reduce_redundant_curve_nodes(
+    PathData& path,
+    const std::vector<std::pair<double, double>>& extra_pins) {
     // Guard: primitive shapes (Rect/Ellipse/Star/Polygon) must keep their
     // node count intact — the NodeSet params index into the node array.
     if (!path.node_sets.empty()) return 0;
@@ -195,7 +197,19 @@ int reduce_redundant_curve_nodes(PathData& path) {
     // moves a node's own coordinates (it refits the FLANKING anchors'
     // handles only).
     std::vector<PinPoint> pins = build_keeper_pins(bp);
-    int pin_count = (int)pins.size();
+    int internal_pin_count = (int)pins.size();
+
+    // s300 m2 — merge caller-supplied keeper positions (Expand Stroke uses
+    // this to pin translated source-node positions and cap geometry).
+    // PinPoint is std::pair<double,double> so the types match directly.
+    int extra_pin_count = 0;
+    if (!extra_pins.empty()) {
+        pins.reserve(pins.size() + extra_pins.size());
+        for (const auto& p : extra_pins) {
+            pins.push_back(p);
+            ++extra_pin_count;
+        }
+    }
 
     // Per the algorithm: outer "until a sweep deletes zero" loop with an
     // inner forward sweep that backs up one step after each deletion. The
@@ -235,8 +249,8 @@ int reduce_redundant_curve_nodes(PathData& path) {
     if (total_deleted > 0) {
         path = bp.to_path_data();
         LOG_DEBUG("PathReduce: deleted {} curve node(s) in {} pass(es) "
-                  "(pinned {} keeper anchor(s))",
-                  total_deleted, pass + 1, pin_count);
+                  "(pinned {} internal + {} caller-supplied keeper(s))",
+                  total_deleted, pass + 1, internal_pin_count, extra_pin_count);
     }
     return total_deleted;
 }

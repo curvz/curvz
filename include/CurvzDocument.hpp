@@ -613,7 +613,13 @@ struct CurvzDocument {
         // and dragging a refpt stomped its name with the new coords —
         // both violations of the "non-empty name + UUIDs/derived
         // strings never appear in user-facing UI" rule.
-        Ref
+        Ref,
+        // s301 m1b: text container boundary path — created by the text
+        // tool's click-or-marquee gesture alongside the bound text node.
+        // Distinct from generic Rectangle since the boundary has a
+        // semantic role ("this rect defines where text 'Foo' lives")
+        // rather than just being a free-standing shape.
+        TextBoundary
     };
 
     // Walks every SceneNode in the document and inserts its non-empty
@@ -680,6 +686,7 @@ struct CurvzDocument {
             case NameKind::Outline:        prefix = "Outline ";         break;
             case NameKind::ExpandedStroke: prefix = "Expanded Stroke "; break;
             case NameKind::Ref:            prefix = "Ref ";             break;
+            case NameKind::TextBoundary:   prefix = "Text Boundary ";   break;
         }
         std::unordered_set<std::string> taken;
         collect_names(taken);

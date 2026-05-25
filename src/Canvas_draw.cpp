@@ -6,6 +6,7 @@
 #include "CurvzSpinButton.hpp"
 #include "MacroSystem.hpp"
 #include "SvgParser.hpp"
+#include "TextCursor.hpp"   // s301 m1c — compute_text_layout + caret render
 #include "curvz_utils.hpp"  // S97 m2 — box_blur_argb32 for drop-shadow render
 #include "color/SwatchLibrary.hpp"  // set_swatch_library + apply_swatch_to_selection
 #include "color/FillStyleInterop.hpp"  // to_fillstyle — live-recolour walk (s70 M3)
@@ -276,8 +277,108 @@ void Canvas::draw_text_on_path(const Cairo::RefPtr<Cairo::Context> &cr,
   g_object_unref(layout);
 }
 
+// ── s301 m1c — Glyph render for bound text ──────────────────────────────────
+// Consumes compute_text_layout. For each baseline, builds a single-line
+// Pango layout of the baseline's byte range (already done inside the
+// layout function, but re-paints from scratch here because the layout's
+// PangoLayout* pointers are good for sizing+caret lookup, not necessarily
+// for pango_cairo_show_layout on this specific cairo context).
+//
+// Actually — Pango layouts ARE cairo-context-independent for rendering
+// purposes; pango_cairo_show_layout draws them into whatever context is
+// active. We re-use the pango layouts from BaselineLayout.
+//
+// Each baseline draws its chunk starting at (x_start, y - ascent) so the
+// Pango layout's top-left aligns with the visual top of the line and the
+// text's baseline lands on bl.y as intended.
+void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
+                                    const SceneNode& text_obj,
+                                    const SceneNode& boundary) {
+  TextLayout tl = compute_text_layout(&boundary, &text_obj);
+
+  // ── s301 m1k — Overflow indicator (drawn before baselines-empty
+  // early-return) ───────────────────────────────────────────────────────
+  // When the bbox is too short to hold ANY baseline (interior height
+  // < ascent), compute_text_layout produces zero baselines and
+  // bytes_consumed stays 0 — i.e. 100% of the buffer overflows. The
+  // earlier version put this check after the early-return, so a
+  // user who shrank the bbox to nothing saw no glyphs AND no overflow
+  // marker, leaving them confused about what happened to their text.
+  //
+  // Drawing this first (regardless of baselines) is the correct fix:
+  // the indicator exists to signal "your content isn't all visible",
+  // and the most extreme version of that is "none of it is visible".
+  if (tl.bytes_consumed < text_obj.text_content.size() &&
+      boundary.path && boundary.path->nodes.size() >= 3) {
+    const auto& bp = boundary.path->nodes;
+    double bx0 = bp[0].x, by0 = bp[0].y;
+    double bx1 = bx0, by1 = by0;
+    for (const auto& n : bp) {
+      if (n.x < bx0) bx0 = n.x; if (n.x > bx1) bx1 = n.x;
+      if (n.y < by0) by0 = n.y; if (n.y > by1) by1 = n.y;
+    }
+    constexpr double SQ_SCREEN_PX = 10.0;
+    double sq_doc = SQ_SCREEN_PX / std::max(m_zoom, 0.001);
+    cr->save();
+    cr->set_source_rgba(0.85, 0.15, 0.15, 1.0);  // solid red
+    cr->rectangle(bx1 - sq_doc, by1 - sq_doc, sq_doc, sq_doc);
+    cr->fill();
+    cr->set_source_rgba(1.0, 1.0, 1.0, 0.9);
+    cr->set_line_width(1.0 / std::max(m_zoom, 0.001));
+    cr->rectangle(bx1 - sq_doc, by1 - sq_doc, sq_doc, sq_doc);
+    cr->stroke();
+    cr->restore();
+  }
+
+  if (tl.baselines.empty()) return;
+
+  cr->save();
+  apply_fill(cr, text_obj.fill);
+
+  for (const auto& bl : tl.baselines) {
+    if (!bl.pango) continue;
+    cr->save();
+    // Pango layout origin is top-left; place at (x_start, y - ascent).
+    cr->move_to(bl.x_start, bl.y - bl.ascent);
+    pango_cairo_show_layout(cr->cobj(), bl.pango.get());
+    cr->restore();
+  }
+
+  // Optional stroke — re-walk and stroke each line's outline.
+  if (text_obj.stroke.paint.type != FillStyle::Type::None) {
+    for (const auto& bl : tl.baselines) {
+      if (!bl.pango) continue;
+      cr->save();
+      cr->move_to(bl.x_start, bl.y - bl.ascent);
+      pango_cairo_layout_path(cr->cobj(), bl.pango.get());
+      apply_stroke_style(cr, text_obj.stroke);
+      cr->stroke();
+      cr->restore();
+    }
+  }
+
+  cr->restore();
+}
+
 void Canvas::draw_text_node(const Cairo::RefPtr<Cairo::Context> &cr,
                             const SceneNode &obj) {
+  // ── s301 m1c — Bound text routes to draw_text_in_boundary ─────────────
+  // Text bound to one or more boundaries lays out via compute_text_layout
+  // (the universal flow) and renders one Pango chunk per baseline. If
+  // the first boundary iid can't be resolved (deleted, dangling), fall
+  // through to the legacy text_x/text_y path so the text remains visible
+  // — better degraded behavior than disappearing.
+  if (!obj.text_boundary_ids.empty()) {
+    SceneNode *boundary = find_text_boundary(obj.text_boundary_ids.front());
+    if (boundary && boundary->path) {
+      draw_text_in_boundary(cr, obj, *boundary);
+      return;
+    }
+    LOG_DEBUG("draw_text_node: bound but boundary iid='{}' not resolved",
+              obj.text_boundary_ids.front());
+    // Fall through to legacy rendering.
+  }
+
   if (obj.text_content.empty()) {
     // Draw a placeholder cursor line so the user sees where text will appear.
     // We're inside the doc-space transform (translate+scale already applied).
@@ -530,7 +631,18 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   // without draggable handles, via the bbox_only flag on
   // draw_selection_handles below). Gives visual confirmation of what
   // the eyedropper will apply to.
-  if (m_tool == ActiveTool::Selection || m_tool == ActiveTool::Eyedropper) {
+  //
+  // s301 m1i — Also fires when a bound-text edit is active, regardless
+  // of tool. The bbox is the user-facing primitive in the unified text
+  // container model; the user expects to see its handles whenever they
+  // are arranging or editing it. Without this gate the marquee flow
+  // (which leaves tool as Text) renders the bbox glyphs and baselines
+  // but no handles — confusing because the user can't see what they
+  // can grab. Adding `m_text_boundary_editing` to the gate makes the
+  // handles follow the conceptual state of the bbox rather than the
+  // tool choice.
+  if (m_tool == ActiveTool::Selection || m_tool == ActiveTool::Eyedropper ||
+      m_text_boundary_editing) {
     cr->save();
     cr->translate(ox, oy);
     cr->scale(m_zoom, m_zoom);
@@ -896,6 +1008,25 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   // ── Text-on-Path tool overlay ─────────────────────────────────────────
   if (m_tool == ActiveTool::TextOnPath)
     draw_top_overlay(cr);
+
+  // ── s301 m1b/m1c — Text baseline guides ───────────────────────────────
+  // Draw whenever (a) a text edit is active, OR (b) a bound text or its
+  // boundary is selected. The helper itself decides which case applies
+  // and which text/boundary pair to use.
+  draw_text_baseline_guides(cr);
+
+  // ── s301 m1c/m1f — Caret render. Inside doc-space transform; the
+  //    cursor manages its own line width and color (zoom-aware width,
+  //    color from text fill).
+  if (m_text_cursor) {
+    const double ox_dc = doc_origin_x();
+    const double oy_dc = doc_origin_y();
+    cr->save();
+    cr->translate(ox_dc, oy_dc);
+    cr->scale(m_zoom, m_zoom);
+    m_text_cursor->render(cr);
+    cr->restore();
+  }
 
   // ── Guide-construct overlay (any tool, pre-empts visual focus) ────────
   if (m_guide_construct_active)
@@ -3750,6 +3881,107 @@ void Canvas::draw_ruler_overlay(const Cairo::RefPtr<Cairo::Context> &cr,
   double by_user = m_doc->canvas_height() - nb_y;
   draw_measurement_annotations(cr, ax_user, ay_user, bx_user, by_user,
                                /*push_labels=*/true);
+}
+
+// ── s301 m1c — Baseline guides consume the universal layout function ────────
+// Reads the baseline list produced by compute_text_layout (the same one
+// the glyph renderer and the cursor use) and paints each baseline as a
+// dashed hairline from its (x_start, y) to (x_end, y). For 1c's
+// rectangular case every baseline is the full interior width; the
+// segment-level call is identical to the prior stride-loop, but the
+// data source is now the layout function — so when Arc E generalizes
+// compute_text_layout to outline-intersection scanline, the guides
+// follow the boundary shape automatically with zero change here.
+void Canvas::draw_text_baseline_guides(
+    const Cairo::RefPtr<Cairo::Context> &cr) {
+  if (!m_doc) return;
+
+  // Identify which text+boundary pair to render guides for. Three sources,
+  // in priority order:
+  //   1. Active edit (m_text_editing + m_text_boundary_editing).
+  //   2. A selected boundary whose iid is referenced by some text node's
+  //      text_boundary_ids (select the boundary → show its guides).
+  //   3. A selected bound text node whose first boundary resolves.
+  SceneNode* text_for_guides = nullptr;
+  SceneNode* boundary_for_guides = nullptr;
+
+  if (m_text_editing && m_text_boundary_editing) {
+    text_for_guides = m_text_editing;
+    boundary_for_guides = m_text_boundary_editing;
+  } else if (m_selected) {
+    if (m_selected->is_text() && !m_selected->text_boundary_ids.empty()) {
+      text_for_guides = m_selected;
+      boundary_for_guides = find_text_boundary(
+          m_selected->text_boundary_ids.front());
+    } else if (m_selected->is_path()) {
+      // Walk doc once to find a text node whose first boundary is this.
+      for (auto& layer : m_doc->layers) {
+        for (auto& c : layer->children) {
+          if (c->is_text() && !c->text_boundary_ids.empty() &&
+              c->text_boundary_ids.front() == m_selected->internal_id) {
+            text_for_guides = c.get();
+            boundary_for_guides = m_selected;
+            break;
+          }
+        }
+        if (text_for_guides) break;
+      }
+    }
+  }
+
+  if (!text_for_guides || !boundary_for_guides) return;
+
+  TextLayout tl = compute_text_layout(boundary_for_guides, text_for_guides);
+  if (tl.baselines.empty()) return;
+
+  cr->save();
+  cr->set_source_rgba(0.30, 0.55, 0.85, 0.45);
+  cr->set_line_width(1.0);
+  std::vector<double> dash = {3.0, 3.0};
+  cr->set_dash(dash, 0);
+
+  // s301 m1e — Margin rect. Drawn as a faint dashed rectangle inside the
+  // boundary at the interior extents — that's the geometry text actually
+  // occupies. Helps the user see why text isn't reaching the bbox edge
+  // (because of the 9pt margins) and provides a visible target for the
+  // "the text frame has margins" concept that's otherwise invisible.
+  // Computed from the boundary path's bbox + the text node's margins,
+  // exactly the same math compute_text_layout uses for interior extents.
+  if (boundary_for_guides && boundary_for_guides->path &&
+      boundary_for_guides->path->nodes.size() >= 3) {
+    const auto& bp_nodes = boundary_for_guides->path->nodes;
+    double bx0 = bp_nodes[0].x, by0 = bp_nodes[0].y;
+    double bx1 = bx0, by1 = by0;
+    for (const auto& n : bp_nodes) {
+      if (n.x < bx0) bx0 = n.x; if (n.x > bx1) bx1 = n.x;
+      if (n.y < by0) by0 = n.y; if (n.y > by1) by1 = n.y;
+    }
+    double ix0 = bx0 + text_for_guides->text_margin_left;
+    double iy0 = by0 + text_for_guides->text_margin_top;
+    double ix1 = bx1 - text_for_guides->text_margin_right;
+    double iy1 = by1 - text_for_guides->text_margin_bottom;
+    if (ix1 > ix0 && iy1 > iy0) {
+      double sx0, sy0, sx1, sy1;
+      doc_to_screen(ix0, iy0, sx0, sy0);
+      doc_to_screen(ix1, iy1, sx1, sy1);
+      cr->rectangle(std::floor(sx0) + 0.5, std::floor(sy0) + 0.5,
+                    std::floor(sx1 - sx0), std::floor(sy1 - sy0));
+      cr->stroke();
+    }
+  }
+
+  for (const auto& bl : tl.baselines) {
+    double sx0, sx1, sy_unused, sy;
+    double sx_unused;
+    doc_to_screen(bl.x_start, 0.0, sx0, sy_unused);
+    doc_to_screen(bl.x_end,   0.0, sx1, sy_unused);
+    doc_to_screen(0.0, bl.y, sx_unused, sy);
+    cr->move_to(sx0, std::floor(sy) + 0.5);
+    cr->line_to(sx1, std::floor(sy) + 0.5);
+    cr->stroke();
+  }
+
+  cr->restore();
 }
 
 void Canvas::draw_top_overlay(const Cairo::RefPtr<Cairo::Context> &cr) {

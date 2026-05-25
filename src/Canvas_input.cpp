@@ -5,6 +5,7 @@
 #include "CurvzSpinButton.hpp"
 #include "MacroSystem.hpp"
 #include "SvgParser.hpp"
+#include "TextCursor.hpp"   // s301 m1c — begin_text_cursor_edit + commit/cancel
 #include "curvz_utils.hpp"  // S97 m2 — box_blur_argb32 for drop-shadow render
 #include "widgets/Entry.hpp"  // s208 m5 — substrate text-overlay entry full type
 #include "color/SwatchLibrary.hpp"  // set_swatch_library + apply_swatch_to_selection
@@ -570,6 +571,14 @@ void Canvas::on_text_begin(double sx, double sy) {
     m_selected = hit;
     m_selection = {hit};  // s159 m2: sync for SelectionContext
     notify_object_selection_changed();
+    // s301 m1b: resolve the bound boundary so the baseline-guide overlay
+    // re-appears during edit. Unbound legacy texts leave it null; the
+    // overlay won't draw and behavior matches pre-s301.
+    m_text_boundary_editing = nullptr;
+    if (!hit->text_boundary_ids.empty()) {
+      m_text_boundary_editing = find_text_boundary(
+          hit->text_boundary_ids.front());
+    }
     // s168 m1 DIAG — STRIP after triage (re-added in m5; clobbered when
     // m4 overwrote Canvas_input.cpp from baseline)
     LOG_INFO("[IIDDIAG] TextEdit::snapshot_before  hit_iid='{}' "
@@ -610,8 +619,25 @@ void Canvas::on_text_begin(double sx, double sy) {
     notify_object_selection_changed();
   }
 
-  // Show and populate the entry.
-  if (m_text_entry) {
+  // s301 m1c — Choose editor surface based on whether the text is bound
+  // to a boundary. Bound text edits via canvas TextCursor (no widget).
+  // Unbound legacy text continues to edit via the floating Gtk::Entry —
+  // migration of that path can land in a later milestone once the
+  // canvas-cursor model is fully proven.
+  bool use_canvas_cursor =
+      m_text_editing && !m_text_editing->text_boundary_ids.empty() &&
+      m_text_boundary_editing != nullptr;
+
+  if (use_canvas_cursor) {
+    // Hide any legacy entry that might still be visible from a prior
+    // edit so it doesn't visually overlap the canvas caret.
+    if (m_text_entry) {
+      m_text_entry_conn_activate.disconnect();
+      m_text_entry_conn_changed.disconnect();
+      m_text_entry->set_visible(false);
+    }
+    begin_text_cursor_edit(m_text_editing, m_text_boundary_editing);
+  } else if (m_text_entry) {
     m_text_entry_conn_activate.disconnect();
     m_text_entry_conn_changed.disconnect();
 
@@ -640,22 +666,28 @@ void Canvas::commit_text_edit() {
   if (!m_text_editing)
     return;
 
-  std::string content = m_text_entry ? m_text_entry->get_text() : "";
+  // s301 m1c — Content source depends on which edit path is active.
+  // If the canvas TextCursor is up, the text has been mutated in real
+  // time and already lives on m_text_editing->text_content; do NOT read
+  // from the (hidden) Gtk::Entry. Legacy unbound path still reads from
+  // the entry as before.
+  std::string content;
+  if (m_text_cursor) {
+    content = m_text_editing->text_content;
+  } else {
+    content = m_text_entry ? m_text_entry->get_text() : "";
+  }
 
   if (content.empty() && m_text_is_new) {
-    // Nothing typed — delete the placeholder node.
     cancel_text_edit();
     return;
   }
 
   m_text_editing->text_content = content;
 
-  // Push undo command via TextEditCommand (full before/after snapshot).
   if (m_history) {
     if (!m_text_is_new && m_text_has_snapshot) {
-      // Existing node edit.
       m_text_snapshot.record_after(m_text_editing);
-      // s168 m1 DIAG — STRIP after triage (re-added in m5)
       LOG_INFO("[IIDDIAG] TextEdit::push  capturing iid='{}' "
                "obj_name='{}' obj_type={}  before='{}' after='{}'",
                m_text_snapshot.obj_iid,
@@ -667,15 +699,26 @@ void Canvas::commit_text_edit() {
           std::make_unique<TextEditCommand>(std::move(m_text_snapshot)));
       m_text_has_snapshot = false;
     } else if (m_text_is_new) {
-      // New node — AddNodeCommand so Ctrl+Z deletes it.
+      // s301 m1b: paired-add for marquee-created text+boundary.
       for (auto &layer : m_doc->layers) {
+        bool found_text = false;
         for (auto &child : layer->children) {
-          if (child.get() == m_text_editing) {
-            m_history->push(std::make_unique<AddNodeCommand>(
-                layer.get(), clone_node(*m_text_editing)));
-            break;
-          }
+          if (child.get() == m_text_editing) { found_text = true; break; }
         }
+        if (!found_text) continue;
+
+        if (m_text_boundary_editing) {
+          auto composite = std::make_unique<CompositeCommand>("Add text frame");
+          composite->add(std::make_unique<AddNodeCommand>(
+              layer.get(), clone_node(*m_text_editing)));
+          composite->add(std::make_unique<AddNodeCommand>(
+              layer.get(), clone_node(*m_text_boundary_editing)));
+          m_history->push(std::move(composite));
+        } else {
+          m_history->push(std::make_unique<AddNodeCommand>(
+              layer.get(), clone_node(*m_text_editing)));
+        }
+        break;
       }
     }
   }
@@ -684,19 +727,26 @@ void Canvas::commit_text_edit() {
     m_text_entry->set_visible(false);
   m_text_entry_conn_activate.disconnect();
   m_text_entry_conn_changed.disconnect();
+  end_text_cursor_edit();  // s301 m1c: tear down canvas cursor + blink timer
 
-  // Select the committed node so it's immediately moveable.
-  SceneNode *committed = m_text_editing;
-  m_selected = committed;
-  m_selection = {committed};
+  // s301 m1d — Post-commit selection. The boundary is the user-facing
+  // primitive ("the bbox") and selecting it makes the 8 handles draw
+  // around the full bbox extent. Selecting the text node instead would
+  // show handles only around the rendered glyphs, which is unhelpful
+  // for a frame-based text model. If there's no paired boundary
+  // (legacy unbound edit), fall back to the text node so the user
+  // still has a selection target.
+  SceneNode *to_select = m_text_boundary_editing
+                             ? m_text_boundary_editing
+                             : m_text_editing;
+  m_selected = to_select;
+  m_selection = {to_select};
 
   m_sig_doc_changed.emit();
   notify_object_selection_changed();
   m_text_editing = nullptr;
+  m_text_boundary_editing = nullptr;
   m_text_is_new = false;
-  // Stay in Text tool so user can click to add another text node,
-  // but also switch to Selection so the committed node can be moved right away.
-  // Emitting request_tool(Selection) mimics what place_shape_node does.
   m_sig_request_tool.emit(ActiveTool::Selection);
   queue_draw();
 }
@@ -705,32 +755,72 @@ void Canvas::cancel_text_edit() {
   if (!m_text_editing)
     return;
 
-  if (m_text_is_new) {
-    // Remove the freshly-created node.
+  // s301 m1e — Bound text frames are first-class objects. An empty frame
+  // is a valid existing object — the user created it with a real
+  // intent ("I want a frame here, maybe I'll type into it later"). So:
+  //   - If this is a NEW bound text + boundary pair (the m_text_is_new
+  //     marquee/click case) and the user cancels, we KEEP the frame.
+  //     The boundary stays selected as a real object the user can drag,
+  //     resize, or re-enter via double-click later.
+  //   - If this is a NEW LEGACY unbound text (no boundary), the prior
+  //     "discard on cancel-with-empty" behavior still applies: a bare
+  //     text with no content and no frame is just noise; remove it.
+  //   - If editing an EXISTING text, never delete on cancel — revert
+  //     to snapshot is the right behavior, and the existing
+  //     m_text_is_new == false path naturally skips removal.
+  bool is_new_bound = m_text_is_new && (m_text_boundary_editing != nullptr);
+  bool is_new_unbound_empty =
+      m_text_is_new && !m_text_boundary_editing &&
+      m_text_editing && m_text_editing->text_content.empty();
+
+  if (is_new_unbound_empty) {
+    // Remove the bare (unbound, empty) text node.
     for (auto &layer : m_doc->layers) {
       auto &ch = layer->children;
-      auto it = std::find_if(ch.begin(), ch.end(),
-                             [this](const std::unique_ptr<SceneNode> &n) {
-                               return n.get() == m_text_editing;
-                             });
-      if (it != ch.end()) {
-        ch.erase(it);
+      ch.erase(std::remove_if(
+          ch.begin(), ch.end(),
+          [this](const std::unique_ptr<SceneNode> &n) {
+            return n.get() == m_text_editing;
+          }), ch.end());
+    }
+    m_selected = nullptr;
+    m_selection.clear();
+    notify_object_selection_changed();
+  } else if (is_new_bound) {
+    // Empty new bound frame → push an AddNodeCommand pair so undo can
+    // erase the just-created frame. The frame becomes a real persistent
+    // object the user can grab and use.
+    if (m_history && m_doc) {
+      for (auto &layer : m_doc->layers) {
+        bool found_text = false;
+        for (auto &child : layer->children) {
+          if (child.get() == m_text_editing) { found_text = true; break; }
+        }
+        if (!found_text) continue;
+        auto composite = std::make_unique<CompositeCommand>("Add text frame");
+        composite->add(std::make_unique<AddNodeCommand>(
+            layer.get(), clone_node(*m_text_editing)));
+        composite->add(std::make_unique<AddNodeCommand>(
+            layer.get(), clone_node(*m_text_boundary_editing)));
+        m_history->push(std::move(composite));
         break;
       }
     }
-    m_selected = nullptr;
-    // s159 m2: defensive cleanup. The freshly-created node was just
-    // erased above; if it was in m_selection, that pointer is dangling.
-    m_selection.clear();
+    // Keep the boundary selected so handles render — user can drag it.
+    m_selected = m_text_boundary_editing;
+    m_selection = {m_text_boundary_editing};
     notify_object_selection_changed();
   }
+  // Editing an existing text with no changes: nothing to do, just exit.
 
   if (m_text_entry)
     m_text_entry->set_visible(false);
   m_text_entry_conn_activate.disconnect();
   m_text_entry_conn_changed.disconnect();
+  end_text_cursor_edit();  // s301 m1c: tear down canvas cursor + blink timer
 
   m_text_editing = nullptr;
+  m_text_boundary_editing = nullptr;
   m_text_is_new = false;
   m_sig_doc_changed.emit();
   queue_draw();
@@ -1214,7 +1304,54 @@ void Canvas::on_draw_begin(double x, double y) {
     // Restore the previous tool (like Illustrator — one-shot pick).
     m_sig_request_tool.emit(m_prev_tool);
   } else if (m_tool == ActiveTool::Text) {
-    on_text_begin(x, y);
+    // s301 m1b — Text tool press semantics:
+    //   1. Hit-test for existing text. If hit, enter legacy edit mode
+    //      for it via on_text_begin (which handles existing-text editing
+    //      uniformly with creation when called from this seam).
+    //   2. Otherwise, set up marquee drawing state. Release decides
+    //      between auto-default bbox (no drag) and marquee-sized bbox
+    //      (real drag); either way a boundary + bound text are created.
+    //
+    // s301 m1e — If an edit is already in progress, commit it first.
+    // Pressing in Text tool with an active edit is the user's signal
+    // "I'm done with this frame; start something new." Without this
+    // we'd stack two edits.
+    if (m_text_editing) {
+      commit_text_edit();
+    }
+    SceneNode *existing_hit = nullptr;
+    for (auto &layer : m_doc->layers) {
+      if (!layer->visible || layer->locked) continue;
+      for (int i = (int)layer->children.size() - 1; i >= 0; --i) {
+        SceneNode *obj = layer->children[i].get();
+        if (!obj->is_text()) continue;
+        double approx_w = obj->text_content.size() * obj->text_font_size * 0.6;
+        double approx_h = obj->text_font_size * 1.4;
+        double ox = obj->text_x;
+        double oy = obj->text_y - approx_h;
+        if (obj->text_anchor == "middle") ox -= approx_w * 0.5;
+        if (obj->text_anchor == "end")    ox -= approx_w;
+        if (dx >= ox && dx <= ox + approx_w &&
+            dy >= oy && dy <= oy + approx_h) {
+          existing_hit = obj;
+          break;
+        }
+      }
+      if (existing_hit) break;
+    }
+
+    if (existing_hit) {
+      on_text_begin(x, y);
+    } else {
+      m_drawing = true;
+      m_draw_start_dx = dx;
+      m_draw_start_dy = dy;
+      m_draw_cur_dx = dx;
+      m_draw_cur_dy = dy;
+      m_draw_start_effective_dx = dx;
+      m_draw_start_effective_dy = dy;
+      queue_draw();
+    }
   }
 }
 
@@ -1801,6 +1938,110 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
   if (m_drawing) {
     m_drawing = false;
 
+    // ── s301 m1b — Text tool boundary commit (click or marquee) ─────────────
+    if (m_tool == ActiveTool::Text) {
+      double dw = m_draw_cur_dx - m_draw_start_dx;
+      double dh = m_draw_cur_dy - m_draw_start_dy;
+      constexpr double TEXT_MARQUEE_MIN = 4.0;
+      bool real_drag = (std::abs(dw) >= TEXT_MARQUEE_MIN) ||
+                       (std::abs(dh) >= TEXT_MARQUEE_MIN);
+
+      constexpr double TEXT_DEFAULT_FONT_SIZE = 24.0;
+      constexpr double TEXT_DEFAULT_MARGIN    = 9.0;  // s301 m1d: was 4, bumped per Scott's feedback (lean to 9pt baseline-to-edge gutter)
+      constexpr double LEADING_FACTOR         = 1.2;
+      double leading = TEXT_DEFAULT_FONT_SIZE * LEADING_FACTOR;
+
+      double x1, y1, w, h;
+      if (real_drag) {
+        x1 = std::min(m_draw_start_dx, m_draw_cur_dx);
+        y1 = std::min(m_draw_start_dy, m_draw_cur_dy);
+        double x2 = std::max(m_draw_start_dx, m_draw_cur_dx);
+        double y2 = std::max(m_draw_start_dy, m_draw_cur_dy);
+        w = x2 - x1;
+        h = y2 - y1;
+      } else {
+        // Click default: 300 doc units (~3.1 inches at 1:1) baseline width
+        // plus side margins. Tall enough for one leading-unit baseline plus
+        // top/bottom margins.
+        x1 = m_draw_start_dx;
+        y1 = m_draw_start_dy;
+        w  = 300.0 + 2.0 * TEXT_DEFAULT_MARGIN;
+        h  = leading + 2.0 * TEXT_DEFAULT_MARGIN;
+      }
+
+      SceneNode *layer = m_doc->active_layer();
+      if (!layer) layer = m_doc->layers[0].get();
+
+      auto boundary = std::make_unique<SceneNode>();
+      boundary->type = SceneNode::Type::Path;
+      boundary->internal_id = generate_internal_id();
+      boundary->name =
+          m_doc->next_default_name(CurvzDocument::NameKind::TextBoundary);
+      boundary->path = std::make_unique<PathData>(rect_to_path(x1, y1, w, h));
+      style::mutate_appearance(*boundary, [](SceneNode &n) {
+        n.fill.type   = FillStyle::Type::None;
+        n.stroke.paint.type = FillStyle::Type::None;
+      });
+
+      auto txt = std::make_unique<SceneNode>();
+      txt->type = SceneNode::Type::Text;
+      txt->internal_id = generate_internal_id();
+      txt->name = m_doc->next_default_name(CurvzDocument::NameKind::Text);
+      style::mutate_appearance(*txt, [this](SceneNode &n) {
+        n.fill = m_def_fill;
+        n.stroke = m_def_stroke;
+        n.stroke.paint.type = FillStyle::Type::None;
+      });
+      txt->text_x = x1;
+      txt->text_y = y1 + TEXT_DEFAULT_FONT_SIZE;
+      txt->text_font_family = "Sans";
+      txt->text_font_size = TEXT_DEFAULT_FONT_SIZE;
+      txt->text_anchor = "start";
+      txt->text_align  = "left";
+      txt->text_margin_top    = TEXT_DEFAULT_MARGIN;
+      txt->text_margin_bottom = TEXT_DEFAULT_MARGIN;
+      txt->text_margin_left   = TEXT_DEFAULT_MARGIN;
+      txt->text_margin_right  = TEXT_DEFAULT_MARGIN;
+      txt->text_boundary_ids.push_back(boundary->internal_id);
+
+      layer->children.insert(layer->children.begin(), std::move(boundary));
+      SceneNode *boundary_ptr = layer->children.front().get();
+      layer->children.insert(layer->children.begin(), std::move(txt));
+      SceneNode *text_ptr = layer->children.front().get();
+
+      // Select the boundary — selection handles appear on the bbox.
+      m_selected = boundary_ptr;
+      m_selection = {boundary_ptr};
+      notify_object_selection_changed();
+
+      m_text_editing = text_ptr;
+      m_text_boundary_editing = boundary_ptr;
+      m_text_is_new = true;
+      m_text_has_snapshot = false;
+
+      // s301 m1c — On-canvas edit. No Gtk::Entry widget. The cursor's
+      // keystrokes mutate text_content directly; the canvas paints the
+      // glyphs via compute_text_layout and the caret via TextCursor.
+      // Ensure the legacy widget (still around for unbound legacy text)
+      // is hidden so it doesn't visually conflict with the canvas
+      // caret while a bound edit is active.
+      if (m_text_entry) {
+        m_text_entry_conn_activate.disconnect();
+        m_text_entry_conn_changed.disconnect();
+        m_text_entry->set_visible(false);
+      }
+      begin_text_cursor_edit(text_ptr, boundary_ptr);
+
+      LOG_INFO("Text {}: bbox ({:.1f},{:.1f}) {:.1f}x{:.1f} "
+               "boundary_iid='{}' text_iid='{}'",
+               real_drag ? "marquee" : "click",
+               x1, y1, w, h,
+               boundary_ptr->internal_id, text_ptr->internal_id);
+      m_sig_doc_changed.emit();
+      queue_draw();
+      return;
+    }
+
     // Re-apply Shift/Alt constrains at commit (mirrors on_draw_update)
     if (m_tool == ActiveTool::Rect || m_tool == ActiveTool::Ellipse) {
       double dw = m_draw_cur_dx - m_draw_start_dx;
@@ -2038,6 +2279,32 @@ void Canvas::on_select_begin(double x, double y) {
     SceneNode *hit = hit_test(dx, dy);
     finish_clip_pick(hit);
     return;
+  }
+
+  // ── s301 m1f — Selection-tool click commits an active canvas text
+  //    edit if the click doesn't land on the currently-editing nodes.
+  //    Behavior mirrors InDesign: clicking outside an active text edit
+  //    exits edit mode (the click then proceeds to its normal target,
+  //    which may be empty canvas → deselect, another object → select,
+  //    or the bbox itself → select-without-edit). If the click DOES
+  //    land on the editing text or its boundary, we let the edit
+  //    continue uninterrupted — caret placement / repositioning lives
+  //    in the cursor flow, not here. For 1f only the commit-on-miss is
+  //    implemented; caret repositioning by click is a later milestone.
+  if (m_text_cursor && m_text_editing) {
+    SceneNode *click_hit = hit_test(dx, dy);
+    bool click_is_on_edit =
+        (click_hit == m_text_editing) ||
+        (click_hit && click_hit == m_text_boundary_editing);
+    if (!click_is_on_edit) {
+      commit_text_edit();
+      // Fall through — the click still does whatever it would normally
+      // do (select something else, etc.).
+    } else {
+      // Click is on the editing target. Eat it for now (1f); the cursor
+      // stays active and the user can continue typing.
+      return;
+    }
   }
 
   // ── Refpt drag? Check before guide/handle/object — refpts aren't

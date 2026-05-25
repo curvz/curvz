@@ -1,5 +1,7 @@
 #pragma once
 #include "../SceneNode.hpp"
+#include <utility>
+#include <vector>
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PathReduce — keeper-anchored redundant-curve-node deletion
@@ -61,6 +63,16 @@ namespace Curvz {
 //
 // No-op (returns 0) if path has fewer than 4 nodes, or has non-empty
 // node_sets (primitive shape).
-int reduce_redundant_curve_nodes(PathData& path);
+//
+// `extra_pins` — caller-supplied additional anchor positions to pin
+// against deletion. Merged with the internally-built run-anchor pins
+// before the reduce sweep. Used by Expand Stroke (s300 m2) to pin the
+// translated source-node positions and cap geometry on Clipper2-produced
+// stroke band output, so the load-bearing points of the band survive
+// reduction while the dense polyline noise between them gets cleaned up.
+// Default empty → behavior identical to the pre-s300 single-arg version.
+int reduce_redundant_curve_nodes(
+    PathData& path,
+    const std::vector<std::pair<double, double>>& extra_pins = {});
 
 } // namespace Curvz

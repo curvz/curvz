@@ -330,6 +330,15 @@ struct TextEditCommand : CurvzCommand {
     bool        before_text_path_flip = false;
     double      before_baseline_shift = 0.0;
     double      before_letter_spacing = 0.0;
+    // s301 m1a — text container model snapshot fields. Empty list / empty id /
+    // zero margins are the unbound-legacy baseline so a TextEditCommand
+    // snapshot of a pre-s301 text node looks identical to before this change.
+    std::vector<std::string> before_boundary_ids;
+    std::string before_line_path_id;
+    double      before_margin_top    = 0.0;
+    double      before_margin_bottom = 0.0;
+    double      before_margin_left   = 0.0;
+    double      before_margin_right  = 0.0;
     // after state
     std::string after_content, after_family, after_anchor, after_align;
     double      after_x = 0, after_y = 0, after_size = 0;
@@ -341,6 +350,13 @@ struct TextEditCommand : CurvzCommand {
     bool        after_text_path_flip = false;
     double      after_baseline_shift = 0.0;
     double      after_letter_spacing = 0.0;
+    // s301 m1a — text container model after-state fields.
+    std::vector<std::string> after_boundary_ids;
+    std::string after_line_path_id;
+    double      after_margin_top    = 0.0;
+    double      after_margin_bottom = 0.0;
+    double      after_margin_left   = 0.0;
+    double      after_margin_right  = 0.0;
 
     static TextEditCommand snapshot_before(CurvzProject* proj, SceneNode* o) {
         TextEditCommand c;
@@ -364,6 +380,13 @@ struct TextEditCommand : CurvzCommand {
         c.before_text_path_flip   = o->text_path_flip;
         c.before_baseline_shift   = o->text_baseline_shift;
         c.before_letter_spacing   = o->text_letter_spacing;
+        // s301 m1a — text container model
+        c.before_boundary_ids  = o->text_boundary_ids;
+        c.before_line_path_id  = o->text_line_path_id;
+        c.before_margin_top    = o->text_margin_top;
+        c.before_margin_bottom = o->text_margin_bottom;
+        c.before_margin_left   = o->text_margin_left;
+        c.before_margin_right  = o->text_margin_right;
         return c;
     }
     void record_after(SceneNode* o) {
@@ -385,6 +408,13 @@ struct TextEditCommand : CurvzCommand {
         after_text_path_flip   = o->text_path_flip;
         after_baseline_shift   = o->text_baseline_shift;
         after_letter_spacing   = o->text_letter_spacing;
+        // s301 m1a — text container model
+        after_boundary_ids  = o->text_boundary_ids;
+        after_line_path_id  = o->text_line_path_id;
+        after_margin_top    = o->text_margin_top;
+        after_margin_bottom = o->text_margin_bottom;
+        after_margin_left   = o->text_margin_left;
+        after_margin_right  = o->text_margin_right;
     }
     void apply(SceneNode* o, bool after) const {
         if (!o) return;
@@ -405,6 +435,13 @@ struct TextEditCommand : CurvzCommand {
         o->text_path_flip     = after ? after_text_path_flip   : before_text_path_flip;
         o->text_baseline_shift= after ? after_baseline_shift   : before_baseline_shift;
         o->text_letter_spacing= after ? after_letter_spacing   : before_letter_spacing;
+        // s301 m1a — text container model
+        o->text_boundary_ids  = after ? after_boundary_ids  : before_boundary_ids;
+        o->text_line_path_id  = after ? after_line_path_id  : before_line_path_id;
+        o->text_margin_top    = after ? after_margin_top    : before_margin_top;
+        o->text_margin_bottom = after ? after_margin_bottom : before_margin_bottom;
+        o->text_margin_left   = after ? after_margin_left   : before_margin_left;
+        o->text_margin_right  = after ? after_margin_right  : before_margin_right;
     }
     void execute() override;  // see CommandHistory.cpp
     void undo()    override;  // see CommandHistory.cpp

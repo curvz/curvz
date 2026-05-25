@@ -2267,6 +2267,30 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 obj->text_path_flip = (attr(tag, "data-curvz-path-flip") == "1");
             }
 
+            // s301 m1a — text container model parsing. Iid migration for
+            // boundary list and line-path id is handled below in the same
+            // pass that already migrates text_path_id (see svgid_to_iid map
+            // around line 2666). Margins are simple scalars, no migration
+            // needed.
+            auto bids = attr(tag, "data-curvz-boundary-ids");
+            if (!bids.empty()) {
+                obj->text_boundary_ids.clear();
+                size_t i = 0;
+                while (i < bids.size()) {
+                    while (i < bids.size() && std::isspace((unsigned char)bids[i])) ++i;
+                    size_t j = i;
+                    while (j < bids.size() && !std::isspace((unsigned char)bids[j])) ++j;
+                    if (j > i) obj->text_boundary_ids.emplace_back(bids.substr(i, j - i));
+                    i = j;
+                }
+            }
+            auto lpid = attr(tag, "data-curvz-line-path-id");
+            if (!lpid.empty()) obj->text_line_path_id = lpid;
+            auto mt = attr(tag, "data-curvz-margin-top");    if (!mt.empty()) obj->text_margin_top    = dbl(mt);
+            auto mb = attr(tag, "data-curvz-margin-bottom"); if (!mb.empty()) obj->text_margin_bottom = dbl(mb);
+            auto ml = attr(tag, "data-curvz-margin-left");   if (!ml.empty()) obj->text_margin_left   = dbl(ml);
+            auto mr = attr(tag, "data-curvz-margin-right");  if (!mr.empty()) obj->text_margin_right  = dbl(mr);
+
             if (attr(tag, "display") == "none") obj->visible = false;
             auto op = attr(tag, "opacity");
             if (!op.empty()) obj->opacity = dbl(op, 1.0);
@@ -2729,6 +2753,54 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     n->text_path_id.clear();
                     n->text_path_offset = 0.0;
                     n->text_path_flip   = false;
+                }
+            }
+        }
+        // s301 m1a — migrate the unified container model refs the same way.
+        // SVG-id format (rare, only relevant for hand-edited files) gets
+        // remapped via svgid_to_iid; stale UUID format gets cleared
+        // (no auto-rescue: a multi-boundary chain has no "only path in doc"
+        // analog to rescue against). The text_path_id rescue is kept for
+        // backward compatibility with old files; the new fields don't need
+        // it because they're brand-new and no pre-s301 file can carry them.
+        if (n->is_text()) {
+            for (auto it = n->text_boundary_ids.begin();
+                 it != n->text_boundary_ids.end(); /* advance below */) {
+                if (it->empty()) { it = n->text_boundary_ids.erase(it); continue; }
+                if (!is_uuid(*it)) {
+                    auto m = svgid_to_iid.find(*it);
+                    if (m != svgid_to_iid.end()) {
+                        LOG_DEBUG("SvgParser: migrated text_boundary_id '{}' → '{}'",
+                                  *it, m->second);
+                        *it = m->second;
+                        ++it;
+                    } else {
+                        LOG_WARN("SvgParser: dropped unresolved text_boundary_id '{}'", *it);
+                        it = n->text_boundary_ids.erase(it);
+                    }
+                } else if (known_iids.find(*it) == known_iids.end()) {
+                    LOG_WARN("SvgParser: dropped stale text_boundary_id '{}'", *it);
+                    it = n->text_boundary_ids.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (!n->text_line_path_id.empty()) {
+                if (!is_uuid(n->text_line_path_id)) {
+                    auto m = svgid_to_iid.find(n->text_line_path_id);
+                    if (m != svgid_to_iid.end()) {
+                        LOG_DEBUG("SvgParser: migrated text_line_path_id '{}' → '{}'",
+                                  n->text_line_path_id, m->second);
+                        n->text_line_path_id = m->second;
+                    } else {
+                        LOG_WARN("SvgParser: cleared unresolved text_line_path_id '{}'",
+                                 n->text_line_path_id);
+                        n->text_line_path_id.clear();
+                    }
+                } else if (known_iids.find(n->text_line_path_id) == known_iids.end()) {
+                    LOG_WARN("SvgParser: cleared stale text_line_path_id '{}'",
+                             n->text_line_path_id);
+                    n->text_line_path_id.clear();
                 }
             }
         }

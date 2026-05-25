@@ -4901,6 +4901,1297 @@ void Canvas::text_to_paths_op() {
   queue_draw();
 }
 
+// ── s300 m4 piece 1 — Source-event enumeration (LOG-ONLY diagnostic) ─────────
+//
+// Walks the source path being stroked and enumerates the geometric events
+// that drive band-keeper positions:
+//
+//   1. Authored nodes — each emits 2 band keepers (outer + inner translation
+//      along local normal at the node), type inherited from the source node.
+//
+//   2. Self-intersections — pairs of non-adjacent source segments crossing.
+//      Each crossing point emits 4 band keepers (2 crossing segments × 2
+//      sides), all forced Corner type because the band traversal genuinely
+//      turns at each.
+//
+//   3. Caps (open paths) — at each endpoint, additional keepers per cap
+//      style: butt=0 extras, round=1 (apex), square=2 (corners).
+//
+// THIS PIECE DOES NOT CHANGE EXPAND STROKE OUTPUT. It logs only, so we can
+// verify the enumeration is correct before downstream pieces depend on it.
+//
+// Log prefix: [STROKE-EV] — grep for this in the log to see the dump.
+//
+// Local-normal computation at a source node: averages the outgoing handle
+// direction (segment N start) with the incoming handle direction (segment
+// N-1 end), with chord-relative epsilon fallback for degenerate handles.
+// Same pattern used in the (reverted) m2 keeper-builder.
+//
+// Local-normal at a self-intersection: the tangent of the crossing segment
+// at the crossing parameter, evaluated by CubicSegment::tangent.
+
+namespace {
+
+// Unit tangent at source node index `i` of path `src`. Averages incoming
+// and outgoing handle directions with chord-relative epsilon. Returns
+// (0,0) if both tangents are degenerate (shouldn't happen on real paths).
+static void stroke_ev_tangent_at_node(const PathData& src, int i,
+                                       double& tx, double& ty) {
+  const int n = (int)src.nodes.size();
+  auto handle_or_chord = [](double ax, double ay, double hx, double hy,
+                            double ox, double oy,
+                            double& dx, double& dy) {
+    double cdx = ox - ax, cdy = oy - ay;
+    double clen_sq = cdx*cdx + cdy*cdy;
+    double hdx = hx - ax, hdy = hy - ay;
+    double hlen_sq = hdx*hdx + hdy*hdy;
+    if (hlen_sq > 2.5e-5 * clen_sq) { dx = hdx; dy = hdy; }
+    else                            { dx = cdx; dy = cdy; }
+  };
+  double out_dx = 0, out_dy = 0, in_dx = 0, in_dy = 0;
+  bool has_out = false, has_in = false;
+  if (i < n - 1 || src.closed) {
+    int nxt = (i + 1) % n;
+    handle_or_chord(src.nodes[i].x, src.nodes[i].y,
+                    src.nodes[i].cx2, src.nodes[i].cy2,
+                    src.nodes[nxt].x, src.nodes[nxt].y,
+                    out_dx, out_dy);
+    has_out = true;
+  }
+  if (i > 0 || src.closed) {
+    int prv = (i - 1 + n) % n;
+    double dx_in, dy_in;
+    handle_or_chord(src.nodes[i].x, src.nodes[i].y,
+                    src.nodes[i].cx1, src.nodes[i].cy1,
+                    src.nodes[prv].x, src.nodes[prv].y,
+                    dx_in, dy_in);
+    // Arriving-at-i direction is -(i->prev)
+    in_dx = -dx_in; in_dy = -dy_in;
+    has_in = true;
+  }
+  double sx = 0, sy = 0;
+  auto normalize = [](double& x, double& y) {
+    double L = std::sqrt(x*x + y*y);
+    if (L > 1e-12) { x /= L; y /= L; }
+  };
+  if (has_out) { normalize(out_dx, out_dy); sx += out_dx; sy += out_dy; }
+  if (has_in)  { normalize(in_dx,  in_dy);  sx += in_dx;  sy += in_dy;  }
+  normalize(sx, sy);
+  tx = sx; ty = sy;
+}
+
+// Type-name for the log.
+static const char* stroke_ev_type_name(BezierNode::Type t) {
+  switch (t) {
+    case BezierNode::Type::Smooth:    return "Smooth";
+    case BezierNode::Type::Cusp:      return "Cusp";
+    case BezierNode::Type::Symmetric: return "Symmetric";
+    case BezierNode::Type::Corner:    return "Corner";
+  }
+  return "?";
+}
+
+static const char* stroke_ev_cap_name(LineCap c) {
+  switch (c) {
+    case LineCap::Butt:   return "Butt";
+    case LineCap::Round:  return "Round";
+    case LineCap::Square: return "Square";
+  }
+  return "?";
+}
+
+// The enumeration pass. Logs to [STROKE-EV]. Returns nothing (yet) —
+// piece 1 is observation-only.
+static void stroke_ev_enumerate(const PathData& src, double half,
+                                 LineCap cap_style) {
+  const int n = (int)src.nodes.size();
+  LOG_INFO("[STROKE-EV] enter: n={}, closed={}, half={}, cap={}",
+           n, src.closed ? "true" : "false", half,
+           stroke_ev_cap_name(cap_style));
+  if (n < 2) {
+    LOG_INFO("[STROKE-EV] degenerate path (n<2), no events");
+    return;
+  }
+
+  // ── Event class 1: authored nodes ──────────────────────────────────────
+  // Per node: position, type, tangent, normal, two translated keeper
+  // positions on outer (+half*n̂) and inner (-half*n̂) sides.
+  for (int i = 0; i < n; ++i) {
+    double tx, ty;
+    stroke_ev_tangent_at_node(src, i, tx, ty);
+    double nx = -ty, ny = tx; // 90deg-CCW
+    double ax = src.nodes[i].x, ay = src.nodes[i].y;
+    double kox = ax + half * nx, koy = ay + half * ny;
+    double kix = ax - half * nx, kiy = ay - half * ny;
+    LOG_INFO("[STROKE-EV] node[{}] pos=({:.2f},{:.2f}) type={} "
+             "tan=({:.3f},{:.3f}) "
+             "keep_outer=({:.2f},{:.2f}) keep_inner=({:.2f},{:.2f})",
+             i, ax, ay, stroke_ev_type_name(src.nodes[i].type),
+             tx, ty, kox, koy, kix, kiy);
+  }
+
+  // ── Event class 2: self-intersections ──────────────────────────────────
+  // Walk pairs of non-adjacent source segments, call CubicSegment::intersect
+  // on each pair. Adjacency means "share an endpoint node" — segment i and
+  // segment i+1 both touch node i+1, so they're adjacent; segment i and
+  // segment i-1 both touch node i. For closed paths the wraparound case
+  // (last segment and first segment share node 0) is also adjacent.
+  //
+  // Real path self-intersection cases:
+  //   - figure-8: 1 intersection between two non-adjacent segments
+  //   - self-overlapping loop: 1+ intersections
+  //   - degenerate (kiss, tangential): not detected by CubicSegment::intersect
+  //     at default epsilon; treat as 0 intersections and let downstream
+  //     bail-to-Clipper2 handle them.
+  BezierPath bp = BezierPath::from_path_data(src);
+  const int n_segs = bp.segment_count();
+  int isect_count = 0;
+  for (int i = 0; i < n_segs; ++i) {
+    for (int j = i + 1; j < n_segs; ++j) {
+      // Skip adjacent pairs.
+      // Open path: adjacent iff |i-j|==1.
+      // Closed path: adjacent iff |i-j|==1 OR (i==0 && j==n_segs-1).
+      bool adjacent = (j - i == 1);
+      if (src.closed && i == 0 && j == n_segs - 1) adjacent = true;
+      if (adjacent) continue;
+
+      CubicSegment sa = bp.segment(i);
+      CubicSegment sb = bp.segment(j);
+      auto hits = sa.intersect(sb);
+      for (const auto& [ta, tb] : hits) {
+        // Crossing point — same in both segment parameterisations.
+        Vec2 P = sa.at(ta);
+        // Tangents at the crossing on each segment.
+        Vec2 tan_a = sa.tangent(ta);
+        Vec2 tan_b = sb.tangent(tb);
+        double La = tan_a.length();
+        double Lb = tan_b.length();
+        if (La > 1e-12) tan_a = tan_a * (1.0 / La);
+        if (Lb > 1e-12) tan_b = tan_b * (1.0 / Lb);
+        // Four keeper positions: each crossing-segment's two normal sides.
+        // Normal = 90deg-CCW perpendicular to tangent.
+        double na_x = -tan_a.y, na_y = tan_a.x;
+        double nb_x = -tan_b.y, nb_y = tan_b.x;
+        double ka_out_x = P.x + half * na_x, ka_out_y = P.y + half * na_y;
+        double ka_in_x  = P.x - half * na_x, ka_in_y  = P.y - half * na_y;
+        double kb_out_x = P.x + half * nb_x, kb_out_y = P.y + half * nb_y;
+        double kb_in_x  = P.x - half * nb_x, kb_in_y  = P.y - half * nb_y;
+        LOG_INFO("[STROKE-EV] isect[{}] seg{}@t={:.3f} x seg{}@t={:.3f} "
+                 "pos=({:.2f},{:.2f}) "
+                 "tanA=({:.3f},{:.3f}) tanB=({:.3f},{:.3f})",
+                 isect_count, i, ta, j, tb, P.x, P.y,
+                 tan_a.x, tan_a.y, tan_b.x, tan_b.y);
+        LOG_INFO("[STROKE-EV]   isect[{}] keepers (all Corner): "
+                 "A_out=({:.2f},{:.2f}) A_in=({:.2f},{:.2f}) "
+                 "B_out=({:.2f},{:.2f}) B_in=({:.2f},{:.2f})",
+                 isect_count, ka_out_x, ka_out_y, ka_in_x, ka_in_y,
+                 kb_out_x, kb_out_y, kb_in_x, kb_in_y);
+        ++isect_count;
+      }
+    }
+  }
+  LOG_INFO("[STROKE-EV] total self-intersections found: {}", isect_count);
+
+  // ── Event class 3: caps (open paths only) ──────────────────────────────
+  // Endpoint keepers depend on cap style. The endpoint's own translated-
+  // source keepers were already emitted as node events above.
+  //   Butt:   no extras.
+  //   Round:  1 extra at apex = endpoint + half * outward-tangent.
+  //   Square: 2 extras at endpoint + half * outward-tangent ± half * normal.
+  // Outward-tangent: at start node (i=0), curve travels INTO the path, so
+  // outward = -tangent; at end node (i=n-1), curve travels OUT of the path,
+  // so outward = +tangent.
+  if (!src.closed) {
+    auto log_cap = [&](int endpoint_idx, double sign) {
+      double tx, ty;
+      stroke_ev_tangent_at_node(src, endpoint_idx, tx, ty);
+      double ox = sign * tx, oy = sign * ty;
+      double nx = -ty,       ny = tx;
+      double ax = src.nodes[endpoint_idx].x;
+      double ay = src.nodes[endpoint_idx].y;
+      if (cap_style == LineCap::Butt) {
+        LOG_INFO("[STROKE-EV] cap@node[{}] Butt — no extra keepers",
+                 endpoint_idx);
+      } else if (cap_style == LineCap::Round) {
+        double apx = ax + half * ox, apy = ay + half * oy;
+        LOG_INFO("[STROKE-EV] cap@node[{}] Round — apex=({:.2f},{:.2f}) "
+                 "(Smooth)", endpoint_idx, apx, apy);
+      } else if (cap_style == LineCap::Square) {
+        double c1x = ax + half*ox + half*nx, c1y = ay + half*oy + half*ny;
+        double c2x = ax + half*ox - half*nx, c2y = ay + half*oy - half*ny;
+        LOG_INFO("[STROKE-EV] cap@node[{}] Square — "
+                 "corner1=({:.2f},{:.2f}) corner2=({:.2f},{:.2f}) "
+                 "(both Corner)",
+                 endpoint_idx, c1x, c1y, c2x, c2y);
+      }
+    };
+    log_cap(0, -1.0);
+    log_cap(n - 1, +1.0);
+  }
+  LOG_INFO("[STROKE-EV] done");
+}
+
+// ── s300 m4 piece 2 — Band-traversal-order keeper emission (LOG-ONLY) ────────
+//
+// Walks the source-event list (currently just nodes + caps; intersection
+// events deferred to a future fallback) and emits keepers in the order they
+// appear when traversing the band's outline.
+//
+// Closed source path: the band is TWO independent closed loops.
+//   - Outer loop: emit each source node's outer keeper, in source order
+//     (0, 1, 2, ..., n-1, close back to 0).
+//   - Inner loop: emit each source node's inner keeper, in source order
+//     (0, 1, 2, ..., n-1, close back to 0).
+//   The two loops are emitted to separate output buffers so the caller can
+//   wrap them as a Compound (matching offset_path's Both-on-closed return
+//   shape).
+//
+// Open source path: the band is ONE closed loop traversing:
+//   outer keepers forward (node 0 → n-1) → end-cap keepers → inner keepers
+//   reverse (node n-1 → 0) → start-cap keepers → close back to start.
+//
+// Type rule: each translated keeper inherits its source node's type. Cap
+// keepers carry Smooth (round apex) or Corner (square corner) per cap-style
+// geometry. At coincident-node pairs (two nodes at the same position with
+// different tangents — the snapped-crossing pattern), the keeper type is
+// forced to Corner regardless of the source node's tag, because the band
+// genuinely turns at those positions. (Detection: two consecutive emitted
+// keepers within COINCIDENT_TOL doc units of each other.)
+//
+// Log prefix: [STROKE-TR]. Pure observation — does NOT change expand_stroke
+// output.
+
+struct StrokeKeeper {
+  double           x, y;
+  BezierNode::Type type;
+  // Provenance — for diagnostic purposes. Lets the log explain WHY each
+  // keeper was emitted (which source-node index, which cap, etc).
+  const char*      kind;       // "node-outer", "node-inner", "cap-apex", etc
+  int              source_idx; // index of source node (-1 for cap-only keepers)
+};
+
+// Coincidence tolerance for the snapped-crossing-pair detection. 0.5 doc
+// units — well above the inspector-snap precision, well below any realistic
+// inter-node spacing on a non-pathological path.
+static constexpr double STROKE_TR_COINCIDENT_TOL = 0.5;
+
+static bool stroke_tr_within(double ax, double ay, double bx, double by,
+                              double tol) {
+  double dx = ax - bx, dy = ay - by;
+  return (dx*dx + dy*dy) <= (tol*tol);
+}
+
+// Compute outer & inner translated keeper positions and inherited type for
+// source node `i`. Same math as the enumeration's per-node block but
+// returned as values rather than logged.
+// Compute outer & inner translated keeper positions and inherited type for
+// source node `i`. Outer = source + half*n̂, inner = source - half*n̂, where
+// n̂ is the 90deg-CCW perpendicular to the tangent. Which physical side is
+// "outer" depends on source winding, but downstream we don't care which
+// label gets which side — we just need the two sides to be consistent with
+// themselves, and we use Clipper2's output to confirm where the band edge
+// actually lies for handle fitting.
+static void stroke_tr_node_keepers(const PathData& src, int i, double half,
+                                    double& ox, double& oy,
+                                    double& ix, double& iy,
+                                    BezierNode::Type& type) {
+  double tx, ty;
+  stroke_ev_tangent_at_node(src, i, tx, ty);
+  double nx = -ty, ny = tx;
+  double ax = src.nodes[i].x, ay = src.nodes[i].y;
+  ox = ax + half * nx;
+  oy = ay + half * ny;
+  ix = ax - half * nx;
+  iy = ay - half * ny;
+  type = src.nodes[i].type;
+}
+
+// Cap-extras emission. Pushes 0/1/2 keepers onto `out` per cap style.
+// `sign`: -1 at start node (cap extends opposite curve travel), +1 at end.
+static void stroke_tr_emit_cap(const PathData& src, int endpoint_idx,
+                                double sign, double half, LineCap cap_style,
+                                std::vector<StrokeKeeper>& out) {
+  double tx, ty;
+  stroke_ev_tangent_at_node(src, endpoint_idx, tx, ty);
+  double ox = sign * tx, oy = sign * ty;
+  double nx = -ty,       ny = tx;
+  double ax = src.nodes[endpoint_idx].x;
+  double ay = src.nodes[endpoint_idx].y;
+  if (cap_style == LineCap::Butt) {
+    // No extras — endpoint translated keepers already in the band sequence
+    // serve as the cap's two corners (= the chord stitching outer to inner).
+  } else if (cap_style == LineCap::Round) {
+    out.push_back({ax + half * ox, ay + half * oy,
+                   BezierNode::Type::Smooth, "cap-apex", -1});
+  } else if (cap_style == LineCap::Square) {
+    out.push_back({ax + half*ox + half*nx, ay + half*oy + half*ny,
+                   BezierNode::Type::Corner, "cap-sq-corner", -1});
+    out.push_back({ax + half*ox - half*nx, ay + half*oy - half*ny,
+                   BezierNode::Type::Corner, "cap-sq-corner", -1});
+  }
+}
+
+// Identify source-node indices that are coincident in position with another
+// source node (the snapped-crossing pattern). Used to force Corner type on
+// keepers emitted FROM those nodes, regardless of the source node's own type
+// tag — because the band's outline at a source self-crossing genuinely
+// turns, even if the source itself was authored as Smooth there.
+//
+// Returns a vector<bool> of length src.nodes.size(); true at indices that
+// are part of a coincident pair (or larger cluster).
+//
+// O(n²) scan — fine for typical n in the tens or low hundreds.
+static std::vector<bool>
+stroke_tr_find_coincident_source_nodes(const PathData& src) {
+  const int n = (int)src.nodes.size();
+  std::vector<bool> result(n, false);
+  for (int i = 0; i < n; ++i) {
+    for (int j = i + 1; j < n; ++j) {
+      if (stroke_tr_within(src.nodes[i].x, src.nodes[i].y,
+                          src.nodes[j].x, src.nodes[j].y,
+                          STROKE_TR_COINCIDENT_TOL)) {
+        result[i] = true;
+        result[j] = true;
+      }
+    }
+  }
+  return result;
+}
+
+// Type-name helper for the trace log.
+static const char* stroke_tr_type_name(BezierNode::Type t) {
+  switch (t) {
+    case BezierNode::Type::Smooth:    return "Smooth";
+    case BezierNode::Type::Cusp:      return "Cusp";
+    case BezierNode::Type::Symmetric: return "Symmetric";
+    case BezierNode::Type::Corner:    return "Corner";
+  }
+  return "?";
+}
+
+static void stroke_tr_log_loop(const char* label,
+                                const std::vector<StrokeKeeper>& loop) {
+  LOG_INFO("[STROKE-TR] {} loop: {} keepers", label, (int)loop.size());
+  for (size_t i = 0; i < loop.size(); ++i) {
+    const auto& k = loop[i];
+    LOG_INFO("[STROKE-TR]   [{}] ({:.2f},{:.2f}) type={} kind={} "
+             "src_idx={}", (int)i, k.x, k.y,
+             stroke_tr_type_name(k.type), k.kind, k.source_idx);
+  }
+}
+
+// The traversal pass. Builds the keeper sequence(s) and logs them. Pure
+// observation in piece 2 — caller doesn't yet use the output.
+static void stroke_tr_traverse(const PathData& src, double half,
+                                LineCap cap_style) {
+  const int n = (int)src.nodes.size();
+  if (n < 2) {
+    LOG_INFO("[STROKE-TR] degenerate path (n<2), no traversal");
+    return;
+  }
+
+  // Pre-scan for coincident-position source nodes (the snapped-crossing
+  // pattern). Any keeper emitted FROM a coincident-node index gets its
+  // type forced to Corner because the band's outline genuinely turns at
+  // a self-crossing regardless of the source node's authored type.
+  std::vector<bool> coincident = stroke_tr_find_coincident_source_nodes(src);
+  int coincident_count = 0;
+  for (bool b : coincident) if (b) ++coincident_count;
+  LOG_INFO("[STROKE-TR] coincident source-node count: {}", coincident_count);
+
+  if (src.closed) {
+    // ── Closed source: outer envelope + per-arc inner loops ──────────────
+    //
+    // Outer envelope: ALL source nodes in source order, one closed loop.
+    // The self-crossings show up as Corner-typed keepers at coincident
+    // indices.
+    //
+    // Inner: at each self-crossing the inner side topology splits. The
+    // figure-8 has two coincident nodes (the snapped pair at the
+    // crossing) which divide the source into two arcs, each forming its
+    // own closed sub-region. Clipper2 returns one inner loop per arc.
+    // We emit one ideal-keeper inner loop per arc, in REVERSE arc order
+    // (so winding opposes the outer envelope — even-odd hole behavior).
+    //
+    // For non-self-crossing closed source (no coincident nodes), there's
+    // one implicit arc that wraps the whole node array, and we emit one
+    // inner loop with all N keepers (matching the simple case).
+
+    // Outer envelope.
+    std::vector<StrokeKeeper> outer_loop;
+    outer_loop.reserve(n);
+    for (int i = 0; i < n; ++i) {
+      double ox, oy, ix, iy;
+      BezierNode::Type t;
+      stroke_tr_node_keepers(src, i, half, ox, oy, ix, iy, t);
+      if (coincident[i]) t = BezierNode::Type::Corner;
+      outer_loop.push_back({ox, oy, t, "node-outer", i});
+    }
+    stroke_tr_log_loop("outer", outer_loop);
+
+    // Arc splitting. Collect indices of coincident nodes; these are arc
+    // boundaries. Every arc starts AT a coincident node and ends AT the
+    // next coincident node (inclusive on both ends).
+    std::vector<int> arc_boundaries;
+    for (int i = 0; i < n; ++i) {
+      if (coincident[i]) arc_boundaries.push_back(i);
+    }
+
+    std::vector<std::vector<int>> arcs; // each arc is a list of source indices
+    if (arc_boundaries.empty()) {
+      // No self-crossing. One implicit arc = full loop.
+      std::vector<int> full_arc;
+      full_arc.reserve(n);
+      for (int i = 0; i < n; ++i) full_arc.push_back(i);
+      arcs.push_back(std::move(full_arc));
+    } else {
+      // For each pair of consecutive boundary indices, walk source order
+      // from boundary[k] to boundary[k+1] inclusive, emit as one arc.
+      // Wrap-around: from last boundary back to first, walking through
+      // the array end and wrapping to the start.
+      int B = (int)arc_boundaries.size();
+      for (int k = 0; k < B; ++k) {
+        int start_idx = arc_boundaries[k];
+        int end_idx   = arc_boundaries[(k + 1) % B];
+        std::vector<int> arc;
+        int i = start_idx;
+        while (true) {
+          arc.push_back(i);
+          if (i == end_idx && arc.size() > 1) break;
+          i = (i + 1) % n;
+          // Safety: if we walked the full array, give up.
+          if ((int)arc.size() > n + 1) break;
+        }
+        arcs.push_back(std::move(arc));
+      }
+    }
+    LOG_INFO("[STROKE-TR] arcs: {} arc(s) of sizes", (int)arcs.size());
+    for (size_t a = 0; a < arcs.size(); ++a) {
+      std::string sizes;
+      sizes = "  arc[" + std::to_string(a) + "] indices: ";
+      for (int idx : arcs[a]) sizes += std::to_string(idx) + " ";
+      LOG_INFO("[STROKE-TR] {}", sizes);
+    }
+
+    // Emit one inner loop per arc, in REVERSE arc order.
+    for (size_t a = 0; a < arcs.size(); ++a) {
+      std::vector<StrokeKeeper> inner_loop;
+      inner_loop.reserve(arcs[a].size());
+      for (int rev_i = (int)arcs[a].size() - 1; rev_i >= 0; --rev_i) {
+        int src_i = arcs[a][rev_i];
+        double ox, oy, ix, iy;
+        BezierNode::Type t;
+        stroke_tr_node_keepers(src, src_i, half, ox, oy, ix, iy, t);
+        if (coincident[src_i]) t = BezierNode::Type::Corner;
+        inner_loop.push_back({ix, iy, t, "node-inner", src_i});
+      }
+      std::string label = "inner-arc[" + std::to_string(a) + "]";
+      stroke_tr_log_loop(label.c_str(), inner_loop);
+    }
+  } else {
+    // ── Open source: one closed loop ─────────────────────────────────────
+    // outer forward → end-cap → inner reverse → start-cap → close
+    std::vector<StrokeKeeper> band_loop;
+    band_loop.reserve(2 * n + 4); // 2N nodes + up to 2 cap keepers per end
+
+    // Outer side, node 0 to node n-1.
+    for (int i = 0; i < n; ++i) {
+      double ox, oy, ix, iy;
+      BezierNode::Type t;
+      stroke_tr_node_keepers(src, i, half, ox, oy, ix, iy, t);
+      if (coincident[i]) t = BezierNode::Type::Corner;
+      band_loop.push_back({ox, oy, t, "node-outer", i});
+    }
+    // End cap at node n-1 (curve travels outward).
+    stroke_tr_emit_cap(src, n - 1, +1.0, half, cap_style, band_loop);
+    // Inner side, node n-1 to node 0 (reverse).
+    for (int i = n - 1; i >= 0; --i) {
+      double ox, oy, ix, iy;
+      BezierNode::Type t;
+      stroke_tr_node_keepers(src, i, half, ox, oy, ix, iy, t);
+      if (coincident[i]) t = BezierNode::Type::Corner;
+      band_loop.push_back({ix, iy, t, "node-inner", i});
+    }
+    // Start cap at node 0 (curve travels outward in the OPPOSITE direction
+    // of source travel, hence sign=-1).
+    stroke_tr_emit_cap(src, 0, -1.0, half, cap_style, band_loop);
+
+    stroke_tr_log_loop("band", band_loop);
+  }
+  LOG_INFO("[STROKE-TR] done");
+}
+
+// ── s300 m4 piece 4d — Build new band by working one Clipper2 path at a time ─
+//
+// Architectural shift from earlier piece-4 attempts:
+//
+// Earlier piece-4 versions tried to a-priori split keepers into "outer
+// envelope" and "inner-arc" loops based on source topology, then assign
+// each composed loop to a Clipper2 result by centroid proximity. That
+// approach mixed structural assumptions (where keepers BELONG by source
+// topology) with empirical assignment (which Clipper2 path each loop
+// matches), and it failed on self-crossing sources because crossing-region
+// keepers sit on the OUTER envelope path while non-crossing source-node
+// keepers sit on per-lobe inner-hole paths. Mixing keepers from different
+// physical Clipper2 paths produced contaminated guidance lookups and bad
+// fits.
+//
+// The piece-4d framing: walk ONE Clipper2 path at a time. For each path:
+//
+//   1. Enumerate the candidate keepers (2N total: source_node ± half * n̂,
+//      one outer-side and one inner-side per source node, plus any cap
+//      extras for open sources).
+//   2. For each candidate, find its closest Clipper2 anchor in this path.
+//      If within tolerance, the candidate belongs to THIS path. Candidates
+//      that don't find a close anchor get skipped — they belong to a
+//      different Clipper2 path which gets its own pass.
+//   3. Sort the assigned candidates by their position along the Clipper2
+//      path (the index of their closest anchor in path traversal order).
+//   4. Build a new PathData with those candidates as anchors. Fit handles
+//      between adjacent ones using closest-Clipper2-anchor-to-chord-midpoint
+//      as guidance.
+//
+// Stay on one Clipper2 path. Compound results at the end via the existing
+// CompoundOp.
+//
+// Side & winding: dropped entirely. Each keeper has its own position; the
+// path order determines handle direction (handles point toward the next
+// keeper along the Clipper2 path's traversal). No outer-vs-inner side
+// bookkeeping needed.
+
+static constexpr double STROKE_FIT_KEEPER_TOL = 1.0; // doc units
+
+// A candidate keeper: a source-derived position that MIGHT lie on some
+// Clipper2 path. After assignment we know which one.
+struct StrokeCandidate {
+  double           x, y;
+  BezierNode::Type type;
+  int              source_idx;
+  bool             is_outer_side; // true: source + half*n̂, false: source - half*n̂
+};
+
+// Build the full candidate list for a source. For closed source: 2N
+// candidates (every source node contributes an outer-side and inner-side
+// candidate). Cap candidates for open source deferred to a later piece.
+static std::vector<StrokeCandidate>
+stroke_fit_enumerate_candidates(const PathData& src, double half) {
+  std::vector<StrokeCandidate> out;
+  if (!src.closed) return out; // open source deferred
+  std::vector<bool> coincident = stroke_tr_find_coincident_source_nodes(src);
+  const int n = (int)src.nodes.size();
+  out.reserve(2 * n);
+  for (int i = 0; i < n; ++i) {
+    double ox, oy, ix, iy;
+    BezierNode::Type t;
+    stroke_tr_node_keepers(src, i, half, ox, oy, ix, iy, t);
+    if (coincident[i]) t = BezierNode::Type::Corner;
+    out.push_back({ox, oy, t, i, true});
+    out.push_back({ix, iy, t, i, false});
+  }
+  LOG_INFO("[STROKE-FIT] enumerated {} candidates ({} src nodes x 2 sides)",
+           (int)out.size(), n);
+  return out;
+}
+
+// Detect Corner anchors in Clipper2 output by turn angle. Walks each
+// Clipper2 path; for each anchor computes the turn angle (the angle
+// between the incoming polyline edge and the outgoing polyline edge).
+// Anchors with sharp turns (above threshold) are real geometric corners
+// of the band — typically the bowtie corners at self-crossing sites.
+//
+// Adds the K sharpest anchors per path as Corner-typed candidates, where
+// K is at most 4 per crossing point (since a self-crossing produces 4
+// corners total in the outer envelope's bowtie). For non-crossing
+// sources, the threshold rejects all polyline noise and no extra
+// candidates are added.
+//
+// The threshold: 30 degrees. Polyline-flatten noise typically produces
+// 1-5 degree turns between consecutive anchors on smooth arcs; the
+// bowtie corners produce 60-120 degree turns. 30 degrees safely
+// distinguishes.
+static std::vector<StrokeCandidate>
+stroke_fit_detect_clipper_corners(const std::vector<PathData>& clipper_results,
+                                    int expected_corners_per_crossing,
+                                    int total_crossings) {
+  std::vector<StrokeCandidate> out;
+  const double TURN_THRESHOLD_RAD = 30.0 * M_PI / 180.0;
+  // For incoming edge (anchor[i-1] -> anchor[i]) with direction d_in, and
+  // outgoing edge (anchor[i] -> anchor[i+1]) with direction d_out, the
+  // turn angle is acos(dot(d_in, d_out)). A 0-deg turn means straight;
+  // 180-deg means a U-turn. We flag turns > TURN_THRESHOLD_RAD.
+
+  // Track for logging only.
+  int expected_total = expected_corners_per_crossing * total_crossings;
+  LOG_INFO("[STROKE-FIT] corner-detect: expecting up to {} corner anchors "
+           "({} per crossing x {} crossings)",
+           expected_total, expected_corners_per_crossing, total_crossings);
+
+  for (int pi = 0; pi < (int)clipper_results.size(); ++pi) {
+    const PathData& path = clipper_results[pi];
+    const int N = (int)path.nodes.size();
+    if (N < 3 || !path.closed) continue;
+
+    // Collect (anchor_idx, turn_angle_rad) above threshold.
+    std::vector<std::pair<int, double>> sharp_turns;
+    for (int i = 0; i < N; ++i) {
+      int prev = (i - 1 + N) % N;
+      int next = (i + 1) % N;
+      double inx = path.nodes[i].x - path.nodes[prev].x;
+      double iny = path.nodes[i].y - path.nodes[prev].y;
+      double outx = path.nodes[next].x - path.nodes[i].x;
+      double outy = path.nodes[next].y - path.nodes[i].y;
+      double iL = std::sqrt(inx*inx + iny*iny);
+      double oL = std::sqrt(outx*outx + outy*outy);
+      if (iL < 1e-9 || oL < 1e-9) continue;
+      double dot = (inx*outx + iny*outy) / (iL * oL);
+      if (dot > 1.0) dot = 1.0;
+      if (dot < -1.0) dot = -1.0;
+      double turn_rad = std::acos(dot); // 0 = straight, pi = U-turn
+      if (turn_rad > TURN_THRESHOLD_RAD) {
+        sharp_turns.push_back({i, turn_rad});
+      }
+    }
+
+    if (sharp_turns.empty()) continue;
+
+    // Sort by turn angle, descending (sharpest first).
+    std::sort(sharp_turns.begin(), sharp_turns.end(),
+              [](const std::pair<int,double>& a,
+                 const std::pair<int,double>& b) {
+                return a.second > b.second;
+              });
+
+    // Take at most expected_total sharp turns from this path. Practically
+    // the outer envelope holds ALL bowtie corners (4 per crossing); inner
+    // paths typically have zero sharp turns.
+    int take = std::min((int)sharp_turns.size(), expected_total);
+    LOG_INFO("[STROKE-FIT] clipper[{}]: {} sharp turns, taking {}",
+             pi, (int)sharp_turns.size(), take);
+    for (int k = 0; k < take; ++k) {
+      int ai = sharp_turns[k].first;
+      double turn_deg = sharp_turns[k].second * 180.0 / M_PI;
+      StrokeCandidate c;
+      c.x = path.nodes[ai].x;
+      c.y = path.nodes[ai].y;
+      c.type = BezierNode::Type::Corner;
+      c.source_idx = -1;          // not source-derived
+      c.is_outer_side = false;    // n/a
+      out.push_back(c);
+      LOG_INFO("[STROKE-FIT]   corner cand pos=({:.2f},{:.2f}) turn={:.1f}deg",
+               c.x, c.y, turn_deg);
+    }
+  }
+  return out;
+}
+
+
+// Returns -1 if path is empty. Sets out_d2 to squared distance.
+static int stroke_fit_closest_in_path(const PathData& path,
+                                       double tx, double ty, double& out_d2) {
+  int best = -1;
+  out_d2 = std::numeric_limits<double>::infinity();
+  const int n = (int)path.nodes.size();
+  for (int i = 0; i < n; ++i) {
+    double dx = path.nodes[i].x - tx;
+    double dy = path.nodes[i].y - ty;
+    double d2 = dx*dx + dy*dy;
+    if (d2 < out_d2) { out_d2 = d2; best = i; }
+  }
+  return best;
+}
+
+// Side-aware handle direction at a keeper. Returns a unit vector along the
+// source-node tangent, with the sign chosen so the vector points TOWARD
+// the given target position (i.e. into the section toward the next keeper).
+static void stroke_fit_handle_dir_toward(const PathData& src, int source_idx,
+                                          double kx, double ky,
+                                          double tx, double ty,
+                                          double& hx, double& hy) {
+  double sx, sy;
+  stroke_ev_tangent_at_node(src, source_idx, sx, sy);
+  // sx,sy is a unit tangent at the source node. Check which sign points
+  // toward (tx,ty) from (kx,ky).
+  double vx = tx - kx, vy = ty - ky;
+  double dot = sx * vx + sy * vy;
+  if (dot >= 0) { hx = sx; hy = sy; }
+  else          { hx = -sx; hy = -sy; }
+}
+
+// Solve handle scalars (alpha, beta) for a cubic from A to B with tangent
+// directions tA (outgoing from A toward B) and tB (outgoing from B toward
+// A), such that the cubic passes as close as possible to the truth points
+// truth[0..N-1] in the least-squares sense.
+//
+// For each truth point Q_k we estimate its parameter t_k along the cubic
+// by projecting (Q_k - A) onto the chord (B - A), clamped to [0, 1].
+// Then the cubic decomposes as:
+//   P(t) = base(t) + alpha * u(t) * tA + beta * v(t) * tB
+// where:
+//   u(t) = 3(1-t)^2 * t
+//   v(t) = 3(1-t) * t^2
+//   base(t) = (1-t)^3*A + 3(1-t)^2*t*A + 3(1-t)*t^2*B + t^3*B
+//           = ((1-t)^3 + 3(1-t)^2*t) * A + (3(1-t)*t^2 + t^3) * B
+// Each truth point contributes two equations (x and y components):
+//   alpha * u(t_k) * tAx + beta * v(t_k) * tBx = Qx_k - base_x(t_k)
+//   alpha * u(t_k) * tAy + beta * v(t_k) * tBy = Qy_k - base_y(t_k)
+// Stack all 2N equations into MᵀM * [alpha,beta]ᵀ = Mᵀr (normal equations).
+// 2x2 system, solved by direct inverse.
+//
+// If the system is rank-deficient (tA parallel to tB, or no truth points),
+// fall back to chord-third handles.
+struct StrokeTruthPoint { double x, y; };
+static void stroke_fit_solve_handles_lsq(double ax, double ay,
+                                          double bx, double by,
+                                          double tAx, double tAy,
+                                          double tBx, double tBy,
+                                          const std::vector<StrokeTruthPoint>& truth,
+                                          double& c1x, double& c1y,
+                                          double& c2x, double& c2y) {
+  double chord_dx = bx - ax, chord_dy = by - ay;
+  double chord_len_sq = chord_dx*chord_dx + chord_dy*chord_dy;
+  double chord_len = std::sqrt(chord_len_sq);
+
+  auto chord_fallback = [&]() {
+    c1x = ax + chord_dx / 3.0;
+    c1y = ay + chord_dy / 3.0;
+    c2x = bx - chord_dx / 3.0;
+    c2y = by - chord_dy / 3.0;
+  };
+
+  if (truth.empty() || chord_len < 1e-9) { chord_fallback(); return; }
+
+  // Build normal-equations 2x2: M = [[sum u^2*|tA|^2, sum u*v*(tA.tB)],
+  //                                 [sum u*v*(tA.tB), sum v^2*|tB|^2]]
+  //                        rhs = [sum u*(tA . (Q - base)),
+  //                               sum v*(tB . (Q - base))]
+  // Since tA and tB are unit, |tA|^2 = |tB|^2 = 1.
+  double tA_dot_tB = tAx*tBx + tAy*tBy;
+  double M11 = 0.0, M12 = 0.0, M22 = 0.0;
+  double r1 = 0.0, r2 = 0.0;
+
+  for (const auto& q : truth) {
+    // Estimate t by chord projection.
+    double vx = q.x - ax, vy = q.y - ay;
+    double t = (vx*chord_dx + vy*chord_dy) / chord_len_sq;
+    if (t < 0.0) t = 0.0;
+    else if (t > 1.0) t = 1.0;
+
+    double one_minus_t = 1.0 - t;
+    double u = 3.0 * one_minus_t * one_minus_t * t;
+    double v = 3.0 * one_minus_t * t * t;
+
+    double base_coeff_A = one_minus_t*one_minus_t*one_minus_t
+                          + 3.0*one_minus_t*one_minus_t*t;
+    double base_coeff_B = 3.0*one_minus_t*t*t + t*t*t;
+    double base_x = base_coeff_A * ax + base_coeff_B * bx;
+    double base_y = base_coeff_A * ay + base_coeff_B * by;
+
+    double dx = q.x - base_x;
+    double dy = q.y - base_y;
+
+    M11 += u*u;
+    M12 += u*v * tA_dot_tB;
+    M22 += v*v;
+
+    r1 += u * (tAx*dx + tAy*dy);
+    r2 += v * (tBx*dx + tBy*dy);
+  }
+
+  double det = M11*M22 - M12*M12;
+  double alpha, beta;
+  if (std::abs(det) > 1e-12) {
+    alpha = ( r1 * M22 - r2 * M12) / det;
+    beta  = (-r1 * M12 + r2 * M11) / det;
+  } else {
+    chord_fallback();
+    return;
+  }
+
+  double max_len = chord_len * 2.0 + 1.0;
+  if (alpha < 0.0) alpha = 0.0; else if (alpha > max_len) alpha = max_len;
+  if (beta  < 0.0) beta  = 0.0; else if (beta  > max_len) beta  = max_len;
+
+  c1x = ax + alpha * tAx;
+  c1y = ay + alpha * tAy;
+  c2x = bx + beta * tBx;
+  c2y = by + beta * tBy;
+}
+
+// Build one new loop from a single Clipper2 path, picking the candidates
+// that lie on it (within tolerance) and fitting handles.
+static PathData
+stroke_fit_build_from_path(const PathData& clipper_path,
+                            const std::vector<StrokeCandidate>& candidates,
+                            const PathData& src,
+                            double half,
+                            int clipper_idx /* for logging */) {
+  PathData out;
+  out.closed = true;
+  const int CN = (int)clipper_path.nodes.size();
+  if (CN < 3) {
+    // Degenerate Clipper2 path — pass through.
+    LOG_INFO("[STROKE-FIT] clipper[{}] too small ({} anchors), passthrough",
+             clipper_idx, CN);
+    return clipper_path;
+  }
+
+  // Find which candidates have their closest anchor in THIS path within
+  // tolerance. Record (path-anchor-index, candidate-index, distance).
+  struct Assigned {
+    int    path_anchor_idx;
+    int    candidate_idx;
+    double d2;
+  };
+  std::vector<Assigned> assigned;
+  double tol2 = STROKE_FIT_KEEPER_TOL * STROKE_FIT_KEEPER_TOL;
+  for (int ci = 0; ci < (int)candidates.size(); ++ci) {
+    double d2;
+    int ai = stroke_fit_closest_in_path(clipper_path,
+                                          candidates[ci].x, candidates[ci].y,
+                                          d2);
+    if (ai >= 0 && d2 <= tol2) {
+      assigned.push_back({ai, ci, d2});
+    }
+  }
+
+  LOG_INFO("[STROKE-FIT] clipper[{}]: {} candidates assigned of {} total",
+           clipper_idx, (int)assigned.size(), (int)candidates.size());
+
+  if ((int)assigned.size() < 3) {
+    LOG_INFO("[STROKE-FIT] clipper[{}] <3 candidates assigned, passthrough",
+             clipper_idx);
+    return clipper_path;
+  }
+
+  // De-duplicate: if multiple candidates pointed to the same path anchor,
+  // keep the closest one only.
+  std::sort(assigned.begin(), assigned.end(),
+            [](const Assigned& a, const Assigned& b) {
+              if (a.path_anchor_idx != b.path_anchor_idx)
+                return a.path_anchor_idx < b.path_anchor_idx;
+              return a.d2 < b.d2;
+            });
+  std::vector<Assigned> deduped;
+  deduped.reserve(assigned.size());
+  for (size_t i = 0; i < assigned.size(); ++i) {
+    if (deduped.empty() ||
+        deduped.back().path_anchor_idx != assigned[i].path_anchor_idx) {
+      deduped.push_back(assigned[i]);
+    }
+  }
+  assigned = std::move(deduped);
+
+  // Sort by path-anchor-index — this gives keeper order along the
+  // Clipper2 path's traversal direction.
+  std::sort(assigned.begin(), assigned.end(),
+            [](const Assigned& a, const Assigned& b) {
+              return a.path_anchor_idx < b.path_anchor_idx;
+            });
+
+  const int K = (int)assigned.size();
+  LOG_INFO("[STROKE-FIT] clipper[{}] keeper order along path:", clipper_idx);
+  for (int k = 0; k < K; ++k) {
+    const auto& ca = candidates[assigned[k].candidate_idx];
+    LOG_INFO("[STROKE-FIT]   [{}] path_idx={} cand src={} side={} "
+             "pos=({:.2f},{:.2f}) type={}",
+             k, assigned[k].path_anchor_idx, ca.source_idx,
+             ca.is_outer_side ? "outer" : "inner",
+             ca.x, ca.y,
+             ca.type == BezierNode::Type::Corner ? "Corner" :
+             ca.type == BezierNode::Type::Smooth ? "Smooth" : "Symmetric");
+  }
+
+  // ── Build keeper list with per-anchor path index and source-link info ──
+  // Each entry tracks:
+  //   - path_anchor_idx: where on the Clipper2 path this keeper sits
+  //   - source_idx: source-node index if source-derived, -1 if Clipper-derived
+  //                 (corner-detected or bridge-inserted)
+  //   - is_outer_side, type: from the originating candidate
+  //   - pos_x, pos_y: anchor position (may differ slightly from Clipper2
+  //                   anchor for source-derived keepers; same as Clipper2
+  //                   anchor for Clipper-derived ones)
+  struct StrokeAnchor {
+    int              path_anchor_idx;
+    int              source_idx;
+    bool             is_outer_side;
+    BezierNode::Type type;
+    double           pos_x, pos_y;
+  };
+  std::vector<StrokeAnchor> anchors;
+  anchors.reserve(K);
+  for (int k = 0; k < K; ++k) {
+    const auto& ca = candidates[assigned[k].candidate_idx];
+    anchors.push_back({assigned[k].path_anchor_idx, ca.source_idx,
+                        ca.is_outer_side, ca.type, ca.x, ca.y});
+  }
+
+  // ── Iterative fit with bridge-node insertion ──
+  // Fit-error tolerance for triggering bridge insertion. 0.6 doc units —
+  // tightened down from the visible-sliver tolerance of piece 4f (1.0)
+  // and loosened up from piece 4g (0.3) where smooth-handle kinks needed
+  // many bridges to compensate. With Clipper2-local-tangent handle
+  // locking (this pass), smooth keepers actually fit smoothly and need
+  // fewer bridges.
+  constexpr double STROKE_FIT_ERROR_TOL = 0.45;
+  constexpr int    STROKE_FIT_MAX_BRIDGE_PASSES = 4;
+
+  auto cubic_at = [](double ax, double ay, double bx, double by,
+                     double c1x, double c1y, double c2x, double c2y,
+                     double t,
+                     double& outx, double& outy) {
+    double om = 1.0 - t;
+    double w0 = om*om*om;
+    double w1 = 3.0*om*om*t;
+    double w2 = 3.0*om*t*t;
+    double w3 = t*t*t;
+    outx = w0*ax + w1*c1x + w2*c2x + w3*bx;
+    outy = w0*ay + w1*c1y + w2*c2y + w3*by;
+  };
+
+  // Returns -1 if section is within tolerance; otherwise returns the
+  // Clipper2 path index of the worst-error truth point.
+  auto worst_error_pi = [&](int ai, int aj, double c1x, double c1y,
+                             double c2x, double c2y, double& out_err) -> int {
+    int start_pi = anchors[ai].path_anchor_idx;
+    int end_pi   = anchors[aj].path_anchor_idx;
+    double ax = anchors[ai].pos_x, ay = anchors[ai].pos_y;
+    double bx = anchors[aj].pos_x, by = anchors[aj].pos_y;
+    double chord_dx = bx - ax, chord_dy = by - ay;
+    double chord_len_sq = chord_dx*chord_dx + chord_dy*chord_dy;
+    if (chord_len_sq < 1e-9) { out_err = 0.0; return -1; }
+    double worst_err_sq = -1.0;
+    int    worst_pi = -1;
+    int    pi = (start_pi + 1) % CN;
+    int    safety = CN + 1;
+    while (safety-- > 0) {
+      if (pi == end_pi) break;
+      double qx = clipper_path.nodes[pi].x;
+      double qy = clipper_path.nodes[pi].y;
+      // Project onto chord to estimate t.
+      double vx = qx - ax, vy = qy - ay;
+      double t = (vx*chord_dx + vy*chord_dy) / chord_len_sq;
+      if (t < 0.0) t = 0.0;
+      else if (t > 1.0) t = 1.0;
+      double cx, cy;
+      cubic_at(ax, ay, bx, by, c1x, c1y, c2x, c2y, t, cx, cy);
+      double ex = qx - cx, ey = qy - cy;
+      double e2 = ex*ex + ey*ey;
+      if (e2 > worst_err_sq) { worst_err_sq = e2; worst_pi = pi; }
+      pi = (pi + 1) % CN;
+    }
+    out_err = (worst_err_sq < 0) ? 0.0 : std::sqrt(worst_err_sq);
+    if (out_err > STROKE_FIT_ERROR_TOL) return worst_pi;
+    return -1;
+  };
+
+  // Compute the local tangent at a Clipper2 path anchor by averaging chord
+  // directions across a window of nearby anchors. For Smooth/Symmetric
+  // keepers the window straddles the anchor symmetrically (W anchors on
+  // each side). For Corner keepers we use one-sided windows: the "side"
+  // arg of +1 averages anchors AFTER (path-forward of) the keeper, -1
+  // averages anchors BEFORE.
+  //
+  // Returns a unit vector pointing along the Clipper2 path's local
+  // direction at the keeper. Caller chooses the sign convention.
+  // Window radius 3 = 3 anchors on each side = 6 chord contributions.
+  // For Corner one-sided: 3 anchors on the chosen side = 3 chords.
+  auto clipper_local_tangent = [&](int path_anchor_idx, int side,
+                                    double& tx, double& ty) {
+    const int WINDOW = 3;
+    double sx = 0.0, sy = 0.0;
+    int count = 0;
+    if (side == 0) {
+      // Smooth: symmetric window. Chord direction from anchor[i] to
+      // anchor[i+1] for i in [path_idx - W, path_idx + W - 1].
+      for (int off = -WINDOW; off < WINDOW; ++off) {
+        int i = ((path_anchor_idx + off) % CN + CN) % CN;
+        int n = (i + 1) % CN;
+        double dx = clipper_path.nodes[n].x - clipper_path.nodes[i].x;
+        double dy = clipper_path.nodes[n].y - clipper_path.nodes[i].y;
+        double L = std::sqrt(dx*dx + dy*dy);
+        if (L > 1e-9) {
+          sx += dx / L;
+          sy += dy / L;
+          ++count;
+        }
+      }
+    } else if (side > 0) {
+      // Corner outgoing: anchors AFTER the keeper.
+      for (int off = 0; off < WINDOW; ++off) {
+        int i = (path_anchor_idx + off) % CN;
+        int n = (i + 1) % CN;
+        double dx = clipper_path.nodes[n].x - clipper_path.nodes[i].x;
+        double dy = clipper_path.nodes[n].y - clipper_path.nodes[i].y;
+        double L = std::sqrt(dx*dx + dy*dy);
+        if (L > 1e-9) {
+          sx += dx / L;
+          sy += dy / L;
+          ++count;
+        }
+      }
+    } else {
+      // Corner incoming: anchors BEFORE the keeper (returned with sign
+      // flipped so the vector points AWAY from the keeper backward along
+      // the path, which is "incoming from this side" for the fit).
+      for (int off = 1; off <= WINDOW; ++off) {
+        int n = ((path_anchor_idx - off + 1) % CN + CN) % CN;
+        int i = ((n - 1) % CN + CN) % CN;
+        double dx = clipper_path.nodes[n].x - clipper_path.nodes[i].x;
+        double dy = clipper_path.nodes[n].y - clipper_path.nodes[i].y;
+        double L = std::sqrt(dx*dx + dy*dy);
+        if (L > 1e-9) {
+          sx -= dx / L;
+          sy -= dy / L;
+          ++count;
+        }
+      }
+    }
+    if (count > 0) {
+      double L = std::sqrt(sx*sx + sy*sy);
+      if (L > 1e-9) { tx = sx/L; ty = sy/L; }
+      else          { tx = 1.0;  ty = 0.0; }
+    } else {
+      tx = 1.0; ty = 0.0;
+    }
+  };
+
+  auto fit_one_section = [&](int ai, int aj,
+                              double& out_c1x, double& out_c1y,
+                              double& out_c2x, double& out_c2y) {
+    const StrokeAnchor& Ai = anchors[ai];
+    const StrokeAnchor& Aj = anchors[aj];
+
+    int start_pi = Ai.path_anchor_idx;
+    int end_pi   = Aj.path_anchor_idx;
+    std::vector<StrokeTruthPoint> truth;
+    truth.reserve(CN);
+    int pi = (start_pi + 1) % CN;
+    int safety = CN + 1;
+    while (safety-- > 0) {
+      if (pi == end_pi) break;
+      truth.push_back({clipper_path.nodes[pi].x, clipper_path.nodes[pi].y});
+      pi = (pi + 1) % CN;
+    }
+
+    // Handle tangent directions. The keeper's local tangent along the
+    // Clipper2 path determines the handle direction. For Smooth/Symmetric
+    // keepers, both adjacent sections share the same tangent direction at
+    // the keeper — handles end up colinear through the anchor (Smooth-
+    // handle constraint satisfied automatically). For Corner keepers,
+    // the outgoing side (this section's Ki) uses path-forward window;
+    // the incoming side (this section's Kj) uses path-backward window;
+    // the two are independent so a sharp angle can form.
+    double tAx, tAy;
+    {
+      // Tangent at Ki pointing toward Kj.
+      int side = (Ai.type == BezierNode::Type::Corner) ? +1 : 0;
+      clipper_local_tangent(Ai.path_anchor_idx, side, tAx, tAy);
+      // Ensure sign points TOWARD Kj.
+      double vx = Aj.pos_x - Ai.pos_x, vy = Aj.pos_y - Ai.pos_y;
+      if (tAx*vx + tAy*vy < 0) { tAx = -tAx; tAy = -tAy; }
+    }
+    double tBx, tBy;
+    {
+      // Tangent at Kj pointing toward Ki.
+      int side = (Aj.type == BezierNode::Type::Corner) ? -1 : 0;
+      clipper_local_tangent(Aj.path_anchor_idx, side, tBx, tBy);
+      // Ensure sign points TOWARD Ki.
+      double vx = Ai.pos_x - Aj.pos_x, vy = Ai.pos_y - Aj.pos_y;
+      if (tBx*vx + tBy*vy < 0) { tBx = -tBx; tBy = -tBy; }
+    }
+
+    stroke_fit_solve_handles_lsq(Ai.pos_x, Ai.pos_y, Aj.pos_x, Aj.pos_y,
+                                  tAx, tAy, tBx, tBy,
+                                  truth,
+                                  out_c1x, out_c1y, out_c2x, out_c2y);
+  };
+
+  // Pass 0..MAX: fit all sections, check errors, insert bridges where
+  // needed, re-fit. Keep an array of per-section handle values that we'll
+  // copy into the output PathData at the end.
+  struct SectionHandles {
+    double c1x, c1y, c2x, c2y;
+  };
+
+  std::vector<SectionHandles> section_handles;
+  for (int pass = 0; pass <= STROKE_FIT_MAX_BRIDGE_PASSES; ++pass) {
+    int A = (int)anchors.size();
+    section_handles.assign(A, {0, 0, 0, 0});
+
+    // Fit every section.
+    for (int k = 0; k < A; ++k) {
+      int j = (k + 1) % A;
+      SectionHandles& sh = section_handles[k];
+      fit_one_section(k, j, sh.c1x, sh.c1y, sh.c2x, sh.c2y);
+    }
+
+    if (pass == STROKE_FIT_MAX_BRIDGE_PASSES) break;
+
+    // Find sections that exceeded tolerance; collect insertion data.
+    // We collect ALL insertions in this pass, then apply them at end so
+    // index references in this pass stay stable.
+    struct PendingBridge {
+      int section_k;         // section between anchors[k] and anchors[(k+1)%A]
+      int worst_pi;          // path index where the worst-error truth point is
+      double err;
+    };
+    std::vector<PendingBridge> pending;
+    for (int k = 0; k < A; ++k) {
+      int j = (k + 1) % A;
+      const SectionHandles& sh = section_handles[k];
+      double err;
+      int worst_pi = worst_error_pi(k, j, sh.c1x, sh.c1y,
+                                       sh.c2x, sh.c2y, err);
+      if (worst_pi >= 0) {
+        pending.push_back({k, worst_pi, err});
+      }
+    }
+
+    if (pending.empty()) {
+      LOG_INFO("[STROKE-FIT] clipper[{}] pass {}: all sections within "
+               "tolerance ({:.2f}), done with {} anchors",
+               clipper_idx, pass, STROKE_FIT_ERROR_TOL, A);
+      break;
+    }
+
+    LOG_INFO("[STROKE-FIT] clipper[{}] pass {}: {} sections need bridges, "
+             "inserting (current anchor count {})",
+             clipper_idx, pass, (int)pending.size(), A);
+
+    // Build new anchor list with bridges interleaved. Walk anchors in
+    // order; if a section starting at anchor k has a pending bridge,
+    // insert the bridge between k and k+1.
+    std::vector<StrokeAnchor> new_anchors;
+    new_anchors.reserve(A + (int)pending.size());
+    // Sort pending by section_k so we can step through linearly.
+    std::sort(pending.begin(), pending.end(),
+              [](const PendingBridge& a, const PendingBridge& b) {
+                return a.section_k < b.section_k;
+              });
+    size_t pidx = 0;
+    for (int k = 0; k < A; ++k) {
+      new_anchors.push_back(anchors[k]);
+      while (pidx < pending.size() && pending[pidx].section_k == k) {
+        int wpi = pending[pidx].worst_pi;
+        StrokeAnchor bridge;
+        bridge.path_anchor_idx = wpi;
+        bridge.source_idx      = -1;  // Clipper-derived bridge
+        bridge.is_outer_side   = false;
+        bridge.type            = BezierNode::Type::Smooth;
+        bridge.pos_x = clipper_path.nodes[wpi].x;
+        bridge.pos_y = clipper_path.nodes[wpi].y;
+        new_anchors.push_back(bridge);
+        LOG_INFO("[STROKE-FIT]   bridge inserted at section [{}]: "
+                 "path_idx={} pos=({:.2f},{:.2f}) err={:.2f}",
+                 k, wpi, bridge.pos_x, bridge.pos_y, pending[pidx].err);
+        ++pidx;
+      }
+    }
+    anchors = std::move(new_anchors);
+  }
+
+  // ── Build the final output PathData ──
+  out.nodes.clear();
+  out.nodes.reserve(anchors.size());
+  for (const auto& a : anchors) {
+    BezierNode nd;
+    nd.x = a.pos_x; nd.y = a.pos_y;
+    nd.cx1 = a.pos_x; nd.cy1 = a.pos_y;
+    nd.cx2 = a.pos_x; nd.cy2 = a.pos_y;
+    nd.type = a.type;
+    out.nodes.push_back(nd);
+  }
+  int A = (int)anchors.size();
+  for (int k = 0; k < A; ++k) {
+    int j = (k + 1) % A;
+    const SectionHandles& sh = section_handles[k];
+    out.nodes[k].cx2 = sh.c1x; out.nodes[k].cy2 = sh.c1y;
+    out.nodes[j].cx1 = sh.c2x; out.nodes[j].cy1 = sh.c2y;
+  }
+
+  LOG_INFO("[STROKE-FIT] clipper[{}] built {} -> {} nodes (started {} keepers, "
+           "ended {} after bridges)",
+           clipper_idx, CN, (int)anchors.size(), K, (int)anchors.size());
+  return out;
+}
+
+// Driver: rebuild all loops one Clipper2 path at a time. Each candidate
+// can be assigned to AT MOST one path (whichever assigns it first wins).
+static std::vector<PathData>
+stroke_fit_drive(const std::vector<PathData>& clipper_results,
+                  const PathData& src, double half, LineCap cap_style) {
+  if (!src.closed) {
+    LOG_INFO("[STROKE-FIT] open source — deferred");
+    return {};
+  }
+  if (clipper_results.empty()) return {};
+
+  // Enumerate all candidate keepers once.
+  std::vector<StrokeCandidate> candidates =
+      stroke_fit_enumerate_candidates(src, half);
+  if (candidates.empty()) return {};
+
+  // Also detect Corner anchors that Clipper2 produced at self-crossings.
+  // For a closed source with K coincident-node pairs (K crossings), there
+  // are 4*K bowtie corners in the outer envelope. For non-crossing source,
+  // K=0 and detection produces zero extra candidates.
+  std::vector<bool> coincident = stroke_tr_find_coincident_source_nodes(src);
+  int coincident_count = 0;
+  for (bool b : coincident) if (b) ++coincident_count;
+  int total_crossings = coincident_count / 2;
+  if (total_crossings > 0) {
+    std::vector<StrokeCandidate> corner_cands =
+        stroke_fit_detect_clipper_corners(clipper_results, 4, total_crossings);
+    LOG_INFO("[STROKE-FIT] adding {} Clipper2-detected corner candidates",
+             (int)corner_cands.size());
+    for (const auto& c : corner_cands) candidates.push_back(c);
+  }
+
+  // Track which candidates have been claimed by some path (so a candidate
+  // can't end up in two output loops).
+  std::vector<bool> claimed(candidates.size(), false);
+  double tol2 = STROKE_FIT_KEEPER_TOL * STROKE_FIT_KEEPER_TOL;
+
+  std::vector<PathData> out;
+  out.reserve(clipper_results.size());
+
+  for (int pi = 0; pi < (int)clipper_results.size(); ++pi) {
+    // Build a filtered candidate list of un-claimed candidates that lie on
+    // this Clipper2 path.
+    std::vector<StrokeCandidate> path_candidates;
+    std::vector<int>             local_to_global; // index into `candidates`
+    for (int ci = 0; ci < (int)candidates.size(); ++ci) {
+      if (claimed[ci]) continue;
+      double d2;
+      int ai = stroke_fit_closest_in_path(clipper_results[pi],
+                                            candidates[ci].x,
+                                            candidates[ci].y, d2);
+      if (ai >= 0 && d2 <= tol2) {
+        path_candidates.push_back(candidates[ci]);
+        local_to_global.push_back(ci);
+      }
+    }
+    LOG_INFO("[STROKE-FIT] clipper[{}]: {} un-claimed candidates lie on it",
+             pi, (int)path_candidates.size());
+    PathData built = stroke_fit_build_from_path(clipper_results[pi],
+                                                  path_candidates, src,
+                                                  half, pi);
+    // Mark claimed: candidates that ended up in the output.
+    // (We don't have direct mapping back, but for un-self-crossing source
+    // each candidate naturally goes to at most one Clipper2 path because
+    // the paths are spatially disjoint by construction. For self-crossing
+    // source the outer envelope shares the crossing region with neither
+    // inner loop — so claim everything that was on this path.)
+    for (int li : local_to_global) claimed[li] = true;
+    out.push_back(std::move(built));
+  }
+
+  return out;
+}
+
+
+} // anonymous namespace
+
 // Closed paths → Compound with outer + inner (even-odd, stroke colour as fill).
 // Operation is undoable via BooleanOpCommand.
 void Canvas::expand_stroke_op() {
@@ -4935,6 +6226,19 @@ void Canvas::expand_stroke_op() {
 
     double half = obj->stroke.width * 0.5;
 
+    // ── s300 m4 piece 1 — Source-event enumeration (LOG-ONLY) ─────────────
+    // Logs the keeper positions and types derivable from the source path,
+    // for verification against visual reference. Does NOT change output.
+    // Grep [STROKE-EV] in the log to see the dump.
+    stroke_ev_enumerate(*obj->path, half, obj->stroke.cap);
+
+    // ── s300 m4 piece 2 — Band-traversal-order keepers (LOG-ONLY) ─────────
+    // Walks the source-event list and emits keepers in band-traversal order,
+    // applying coincident-pair Corner-forcing for snapped-crossing nodes.
+    // Closed source → two loops (outer + inner). Open source → one band
+    // loop with cap stitching. Does NOT change output. Grep [STROKE-TR].
+    stroke_tr_traverse(*obj->path, half, obj->stroke.cap);
+
     // s262 — Closed-path Expand Stroke is now ONE offset_path(half, Both)
     // call. Both passes all Clipper2 loops through without the envelope-
     // only filter, so the result includes outer envelope + inner hole
@@ -4958,6 +6262,62 @@ void Canvas::expand_stroke_op() {
     if (results.empty()) {
       ++skipped;
       continue;
+    }
+
+    // ── s300 m4 piece 4 — Build new band from keepers + Clipper2 guidance ─
+    // When the flag is on, replace Clipper2's noisy band loops with newly-
+    // constructed loops whose anchors are source-derived ideal keepers and
+    // whose handles are fitted using Clipper2's anchors as a guidance
+    // oracle. Source positions are truth for WHERE anchors go and WHAT
+    // TYPE they are; Clipper2 is truth for WHAT THE BAND ACTUALLY LOOKS
+    // LIKE in this region.
+    //
+    // Closed source only in piece 4 — open source with caps falls through
+    // to the simplify pump below.
+    constexpr bool EXPAND_STROKE_USE_KEEPER_FIT = true;
+    if (EXPAND_STROKE_USE_KEEPER_FIT) {
+      auto fitted = stroke_fit_drive(results, *obj->path, half,
+                                      obj->stroke.cap);
+      if (!fitted.empty()) {
+        results = std::move(fitted);
+        LOG_INFO("expand_stroke_op: keeper-fit produced {} loop(s)",
+                 (int)results.size());
+      } else {
+        LOG_INFO("expand_stroke_op: keeper-fit deferred — falling through "
+                 "to simplify pump");
+      }
+    }
+
+    // ── s300 m3 — shape-driven simplification of stroke band ──────────────
+    // The Clipper2-produced stroke band carries dense polyline noise — far
+    // more anchors than the band's geometry needs. m2's keeper-aware reduce
+    // attempt failed because synthesized translated-source-node positions
+    // don't land on Clipper2's polyline-derived vertices (Clipper2 puts
+    // vertices wherever its polyline turned, which may be 0+ doc units off
+    // any specific source-derived position).
+    //
+    // m3 sidesteps the matching problem entirely with shape-driven greedy
+    // deletion: for each interior node, trial-delete and measure how far
+    // the LSQ-refitted single segment deviates from the original two
+    // segments. Delete the most-removable one (smallest deviation) if
+    // under tolerance. Iterate to fixed point. Source-agnostic by design —
+    // works on any cubic path regardless of where it came from.
+    //
+    // Tolerance default 1.0 doc units = ~1px at 1:1 zoom = visually
+    // invisible simplification. The Corner-vs-Smooth distinction is
+    // preserved structurally (a node at a real corner has high trial-
+    // delete deviation because the two segments meet at an angle, so the
+    // gate rejects deletion; a node on a smooth arc has low deviation and
+    // gets deleted).
+    constexpr double STROKE_SIMPLIFY_TOL = 1.0;
+    for (size_t ri = 0; ri < results.size(); ++ri) {
+      int before = (int)results[ri].nodes.size();
+      int deleted =
+          Curvz::simplify_cubic_path(results[ri], STROKE_SIMPLIFY_TOL);
+      int after = (int)results[ri].nodes.size();
+      LOG_INFO("expand_stroke_op: result[{}] {} -> {} nodes "
+               "(simplify deleted {} at tol={})",
+               ri, before, after, deleted, STROKE_SIMPLIFY_TOL);
     }
 
     FillStyle result_fill = obj->stroke.paint;

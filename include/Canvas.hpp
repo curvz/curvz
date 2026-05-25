@@ -14,6 +14,7 @@
 #include "math/PathOffset.hpp"
 #include "math/PathNormalize.hpp"  // s299 m1 — false-Corner repair (pre-reduce)
 #include "math/PathReduce.hpp"     // s299 m2 — redundant-curve-node deletion
+#include "math/PathSimplify.hpp"   // s300 m3 — shape-driven minimal-node refit
 #include "tools/PenTool.hpp"
 #include "animation/SvgPerformer.hpp"  // s291 m2 — SvgEmitter consumer that
                                        // drives beat construction during an
@@ -42,6 +43,12 @@ class StyleLibrary;
 // Canvas.hpp. Full include lives in Canvas_ops.cpp (construction) and
 // Canvas_input.cpp (deref-heavy text-editing flow).
 namespace curvz::widgets { class Entry; }
+
+// s301 m1c — forward-declare TextCursor for the same reason. Full
+// include lives in Canvas.cpp (destructor) and Canvas_input.cpp +
+// Canvas_draw.cpp (creation, key routing, render). Keeps pango out of
+// every TU that just needs Canvas's signal surface.
+namespace Curvz { class TextCursor; }
 
 #include <cairomm/cairomm.h>
 #include <algorithm>
@@ -1907,7 +1914,95 @@ private:
   sigc::connection m_text_entry_conn_activate;
   sigc::connection m_text_entry_conn_changed;
 
-  void on_text_begin(double sx, double sy); // click handler
+  // ── s301 m1b — Text-tool boundary creation state ────────────────────────
+  // Text tool now uses press-drag-release. On press the tool first
+  // hit-tests for existing text; if hit, it enters legacy edit mode for
+  // that text (no marquee, no new boundary). If miss, it sets up the
+  // marquee drawing state. On release: click-without-drag creates an
+  // auto-sized default boundary at the press point; real drag creates a
+  // boundary sized to the marquee. Either way a paired text node is
+  // bound to the boundary via text_boundary_ids.
+  //
+  // m_text_boundary_editing tracks the paired boundary (if any) so
+  // commit_text_edit / cancel_text_edit can push a CompositeCommand of
+  // two AddNodeCommands (commit) or remove both nodes (cancel).
+  // Null = no paired boundary (legacy edit of existing unbound text, or
+  // existing-text edit entered via on_text_begin).
+  SceneNode* m_text_boundary_editing = nullptr;
+
+  // s301 m1c — On-canvas text editing primitive. When non-null, the user
+  // is editing a bound text node; the cursor holds the byte index, the
+  // canvas key controller routes keystrokes to it, and the renderer
+  // draws the caret (blinking) at its computed geometry. Replaces the
+  // legacy Gtk::Entry widget overlay for bound text. Created in
+  // begin_text_cursor_edit; reset in commit/cancel.
+  std::unique_ptr<TextCursor> m_text_cursor;
+  sigc::connection            m_text_cursor_blink_conn;
+
+  // s301 m1c — Begin/end the canvas-cursor edit. begin_* installs the
+  // TextCursor, kicks off the blink timer, and ensures the canvas has
+  // focus so keystrokes route through Canvas::handle_text_edit_key.
+  // end_* tears down the cursor + timer; called from commit_text_edit
+  // and cancel_text_edit. Both are idempotent.
+  void begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary);
+  void end_text_cursor_edit();
+
+  // s301 m1b — Draw the leading hairlines inside an actively-edited text
+  // boundary so the user can see how many lines the bbox will hold before
+  // typing. Default leading is 1.2 × font_size; default margin is 4 doc
+  // units on all four sides. Hairlines are computed from the boundary's
+  // bbox interior (after margins) and stride downward at leading distance.
+  // s301 m1c: also drawn when a bound text or its boundary is *selected*
+  // (not just edited) so the user can see the layout capacity.
+  void draw_text_baseline_guides(const Cairo::RefPtr<Cairo::Context>& cr);
+
+  // s301 m1c — Glyph painter for bound text. Routes from draw_text_node
+  // when text_boundary_ids is non-empty. Reads the boundary geometry,
+  // builds a TextLayout via compute_text_layout, and paints each
+  // baseline's chunk at its baseline's start point. Legacy unbound text
+  // continues to use the existing draw_text_node body (text_x/text_y).
+  void draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
+                              const SceneNode& text_obj,
+                              const SceneNode& boundary);
+
+  void on_text_begin(double sx, double sy); // legacy click-to-edit path,
+                                            // now only invoked on hit-test
+                                            // against existing UNBOUND text
+
+public:
+  // ── s301 m1b — Cross-TU helper used by TextCursor to resolve a bound
+  //    boundary by iid. Walks the doc tree once. Returns nullptr if
+  //    the iid isn't found (boundary deleted, dangling reference).
+  SceneNode* find_text_boundary(const std::string& iid);
+
+  // ── s301 m1g — CurrentColor-style caret contrast.
+  //    The caret should be visible against whatever the canvas
+  //    background is — black on light backgrounds, white on dark.
+  //    Reads the doc's artboard background (the same source the
+  //    renderer uses to fill the artboard) and returns (r, g, b)
+  //    for the caret line that has maximum contrast against it.
+  //    Lives on Canvas because TextCursor doesn't have access to
+  //    m_doc's artboard accessors.
+  void caret_contrast_color(double& r, double& g, double& b) const;
+
+  // ── s301 m1c — Canvas destructor declared (not defaulted in header)
+  //    so unique_ptr<TextCursor> destructor sees the full type in
+  //    Canvas.cpp where TextCursor.hpp is included. Keeps Canvas.hpp
+  //    light by forward-declaring TextCursor above.
+  ~Canvas();
+
+  // s301 m1c — Key dispatch from MainWindow_bindings.cpp. Returns true
+  // if the keystroke was consumed by an active text-cursor edit.
+  // MainWindow calls this BEFORE its shortcut cascade so editing
+  // keystrokes don't trigger Ctrl+Z-style shortcuts. Returns false
+  // when no edit is active.
+  bool handle_text_edit_key(guint keyval, Gdk::ModifierType mods);
+
+  // s301 m1c — Public query for the active text-edit state. MainWindow
+  // uses this to gate which shortcuts pass through.
+  bool text_cursor_active() const { return (bool)m_text_cursor; }
+
+private:
   void position_text_entry(); // move entry widget to node's screen pos
   void draw_text_on_path(const Cairo::RefPtr<Cairo::Context> &cr,
                          const SceneNode &text_obj,
