@@ -599,6 +599,20 @@ void MainWindow::refresh_inspector() {
     // (e.g. refpt picks). Sync here so any inspector refresh implies a
     // matched panel refresh.
     m_layers.set_canvas_selection(m_canvas.selection());
+    // s296 m1: toolbar fill/stroke wells are also a matched pair of the
+    // inspector Styling section. Same s178 m1 reasoning: pre-fix, toolbar
+    // sync happened only from signal_selection_changed's listener, which
+    // is one of many sites that refresh the inspector. Every other route
+    // (refresh_inspector callers in helpers / zones / bindings — refpt
+    // picks, tool switch, undo, doc reload, etc.) left the toolbar wells
+    // stale showing some earlier object's paint. Worse than display
+    // staleness: the wells are clickable and a click broadcasts their
+    // (stale) value to the current selection via signal_defaults_changed,
+    // stomping the selection's actual paint with whatever was last
+    // displayed. Syncing here at the seam closes both gaps — display
+    // and stomp — for every caller in one place.
+    m_toolbar.sync_from_selection(m_canvas.selection(),
+                                  m_canvas.selected_object());
     m_inspector_tool = m_active_tool;
   });
 }

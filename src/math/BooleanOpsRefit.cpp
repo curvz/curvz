@@ -625,10 +625,12 @@ void collect_pair_hits(
 // We use the two-pass approach.
 
 // Same compute_t pattern as enrich_subpath. Returns a small t value
-// for placing a guard close to one end of a segment.
+// for placing a guard close to one end of a segment. s296 m14: uses
+// ISECT_TRIPLET_OFFSET (smaller than ENRICH_OFFSET) so triplet guards
+// hug the intersection rather than spreading along the curve.
 inline double compute_guard_t(double chord_len) {
     if (chord_len <= 0.0) return ENRICH_OFFSET_FRAC_CAP;
-    double off = ENRICH_OFFSET;
+    double off = ISECT_TRIPLET_OFFSET;
     if (off > chord_len * ENRICH_OFFSET_FRAC_CAP) off = chord_len * ENRICH_OFFSET_FRAC_CAP;
     if (off < ENRICH_OFFSET_MIN) off = ENRICH_OFFSET_MIN;
     const double t = off / chord_len;
@@ -980,6 +982,29 @@ KeeperSet enrich_at_intersections_and_build_keepers(
              total_intersections, per_subpath_isect_total, total_guards,
              keepers.size(), (int)operands_in.size());
 
+    return keepers;
+}
+
+// ── s296 m11 — chunked-fold helper ─────────────────────────────────────
+//
+// Snapshot every operand's anchors as OriginalAnchor keepers. Used by
+// boolean_op's chunked-fold path to seed the master keeper set before
+// per-step intersection triplets accumulate.
+KeeperSet original_anchors_keepers(
+    const std::vector<std::vector<BezierPath>>& operands)
+{
+    KeeperSet keepers;
+    for (const auto& op_subpaths : operands) {
+        for (const auto& bp : op_subpaths) {
+            for (const auto& node : bp.nodes) {
+                KeeperPoint kp;
+                kp.pos = Vec2{node.x, node.y};
+                kp.origin = KeeperPoint::Origin::OriginalAnchor;
+                kp.source = &node;
+                keepers.push_back(kp);
+            }
+        }
+    }
     return keepers;
 }
 

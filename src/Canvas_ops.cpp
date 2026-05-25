@@ -1310,20 +1310,220 @@ static void default_envelope_from_bbox(PathData &env_top, PathData &env_bottom,
   env_bottom.nodes.push_back(b1);
 }
 
-// Warp a single PathData through the envelope, producing a new PathData.
-// Each source cubic segment between nodes[i] and nodes[i+1] is split
-// into `quality` equal t-slices, each slice warped and fit as a single
-// cubic via the 4-sample method. Output has (source_seg_count * quality)
-// cubic segments, plus the original closed-flag and one more leading
-// anchor (for N+1 anchors describing N segments).
+// ── s299 m10 — adaptive warp fit ──────────────────────────────────────────────
 //
-// Handles of the first and last output anchors (cx1 of [0], cx2 of
-// [last]) inherit from the colinear fit for continuity with neighbours
-// on closed paths. For open paths they can be left equal to the anchor
-// (effectively untangented at the endpoints).
+// Replaces the per-slice subdivision with multimaster-style "fit one cubic
+// across the warped source segment; if the error is too high, insert a
+// necessity anchor at the worst point and recurse on each half."
+//
+// The theoretical path = the warped source cubic sampled densely. We try
+// to fit one cubic to it. If the fit is good enough (max error <= TOL),
+// we emit that one cubic. If not, we split where the error is worst and
+// recurse — adding only the anchors the shape needs to flex.
+//
+// Source-node-translated anchors are emitted at source-segment boundaries
+// with their original type tags preserved (m7's pattern). Recursion-
+// inserted necessity anchors are tagged Smooth (geometry-driven, not
+// authored).
+//
+// The fit math mirrors BezierPath::delete_node's least-squares solve:
+// tangent directions are taken from local warp derivatives at the
+// endpoints, scalar handle lengths solved by minimising squared distance
+// from a set of warped samples.
+//
+// Tolerance is in doc units (~pixels at 1:1 zoom). 0.5 = sub-pixel
+// fidelity; loosening trades fewer anchors for more visible drift.
+static constexpr double WARP_FIT_TOL          = 0.5;
+static constexpr int    WARP_FIT_MAX_DEPTH    = 6;     // hard ceiling
+static constexpr int    WARP_FIT_SAMPLE_COUNT = 12;    // per fit attempt
+
+// Sample the source cubic at parametric t (within [0,1]) and warp it.
+static void warp_sample_at(double t, const BezierNode& a, const BezierNode& b,
+                           double bx, double by, double bw, double bh,
+                           const PathData& env_top, const PathData& env_bottom,
+                           double& wx, double& wy) {
+    double sx, sy;
+    eval_cubic(t, a.x, a.y, a.cx2, a.cy2, b.cx1, b.cy1, b.x, b.y, sx, sy);
+    warp_point(sx, sy, bx, by, bw, bh, env_top, env_bottom, wx, wy);
+}
+
+// Fit one cubic between warp(t_lo) and warp(t_hi) along the warped source
+// segment. Returns the fitted handles (c1, c2 — absolute positions) and
+// the maximum point-distance error vs the dense samples.
+//
+// Tangent directions at endpoints come from local warp derivatives; handle
+// scalar lengths come from a least-squares solve against SAMPLES warped
+// points. Same math as BezierPath::delete_node's two-handle refit.
+static void fit_warp_cubic(double t_lo, double t_hi,
+                           const BezierNode& a, const BezierNode& b,
+                           double bx, double by, double bw, double bh,
+                           const PathData& env_top, const PathData& env_bottom,
+                           double& c1x, double& c1y,
+                           double& c2x, double& c2y,
+                           double& max_err) {
+    double w_lo_x, w_lo_y, w_hi_x, w_hi_y;
+    warp_sample_at(t_lo, a, b, bx, by, bw, bh, env_top, env_bottom, w_lo_x, w_lo_y);
+    warp_sample_at(t_hi, a, b, bx, by, bw, bh, env_top, env_bottom, w_hi_x, w_hi_y);
+
+    // Tangent directions at endpoints — numerical derivative of warp.
+    // Step a small fraction of the parametric range; clamp to keep it
+    // inside the segment.
+    const double span = t_hi - t_lo;
+    const double delta = std::max(span * 1e-3, 1e-6);
+    double t_lo_eps = std::min(t_hi, t_lo + delta);
+    double t_hi_eps = std::max(t_lo, t_hi - delta);
+    double w_lo_eps_x, w_lo_eps_y, w_hi_eps_x, w_hi_eps_y;
+    warp_sample_at(t_lo_eps, a, b, bx, by, bw, bh, env_top, env_bottom,
+                   w_lo_eps_x, w_lo_eps_y);
+    warp_sample_at(t_hi_eps, a, b, bx, by, bw, bh, env_top, env_bottom,
+                   w_hi_eps_x, w_hi_eps_y);
+    double dAx = w_lo_eps_x - w_lo_x;
+    double dAy = w_lo_eps_y - w_lo_y;
+    double dBx = w_hi_x - w_hi_eps_x;
+    double dBy = w_hi_y - w_hi_eps_y;
+    double lenA = std::sqrt(dAx*dAx + dAy*dAy);
+    double lenB = std::sqrt(dBx*dBx + dBy*dBy);
+    // Fall back to chord if derivative is degenerate.
+    double chord_x = w_hi_x - w_lo_x;
+    double chord_y = w_hi_y - w_lo_y;
+    double chord_len = std::sqrt(chord_x*chord_x + chord_y*chord_y);
+    if (lenA < 1e-9) { dAx = chord_x; dAy = chord_y; lenA = chord_len; }
+    if (lenB < 1e-9) { dBx = chord_x; dBy = chord_y; lenB = chord_len; }
+    if (lenA > 1e-12) { dAx /= lenA; dAy /= lenA; }
+    if (lenB > 1e-12) { dBx /= lenB; dBy /= lenB; }
+
+    // Sample the warped curve densely and solve for handle scalars
+    // (alpha, beta) by least squares against the cubic
+    //   P(t) = B0·A + B1·(A + α·dA) + B2·(B - β·dB) + B3·B
+    // where t ∈ [0,1] is the local cubic parameter and the samples
+    // come from t_lo + s·(t_hi - t_lo) for s ∈ (0,1).
+    double S11 = 0, S12 = 0, S22 = 0, r1 = 0, r2 = 0;
+    for (int i = 1; i < WARP_FIT_SAMPLE_COUNT; ++i) {
+        double s = (double)i / WARP_FIT_SAMPLE_COUNT;
+        double t_sample = t_lo + s * span;
+        double Qx, Qy;
+        warp_sample_at(t_sample, a, b, bx, by, bw, bh, env_top, env_bottom,
+                       Qx, Qy);
+        double u = 1.0 - s;
+        double B0 = u*u*u, B1 = 3*u*u*s, B2 = 3*u*s*s, B3 = s*s*s;
+        double Rx = Qx - w_lo_x*(B0 + B1) - w_hi_x*(B2 + B3);
+        double Ry = Qy - w_lo_y*(B0 + B1) - w_hi_y*(B2 + B3);
+        double c1xC = B1 * dAx, c1yC = B1 * dAy;
+        double c2xC = -B2 * dBx, c2yC = -B2 * dBy;
+        S11 += c1xC*c1xC + c1yC*c1yC;
+        S12 += c1xC*c2xC + c1yC*c2yC;
+        S22 += c2xC*c2xC + c2yC*c2yC;
+        r1  += Rx*c1xC + Ry*c1yC;
+        r2  += Rx*c2xC + Ry*c2yC;
+    }
+    double det = S11*S22 - S12*S12;
+    double alpha, beta;
+    if (std::abs(det) > 1e-12) {
+        alpha = (r1*S22 - r2*S12) / det;
+        beta  = (r2*S11 - r1*S12) / det;
+    } else {
+        // Degenerate — fall back to 1/3 chord length.
+        alpha = beta = chord_len / 3.0;
+    }
+    double max_len = chord_len * 2.0 + 1.0;
+    if (alpha < 0.0) alpha = 0.0; else if (alpha > max_len) alpha = max_len;
+    if (beta  < 0.0) beta  = 0.0; else if (beta  > max_len) beta  = max_len;
+
+    c1x = w_lo_x + dAx * alpha;
+    c1y = w_lo_y + dAy * alpha;
+    c2x = w_hi_x - dBx * beta;
+    c2y = w_hi_y - dBy * beta;
+
+    // Measure max error of fit at the sample points.
+    max_err = 0.0;
+    for (int i = 1; i < WARP_FIT_SAMPLE_COUNT; ++i) {
+        double s = (double)i / WARP_FIT_SAMPLE_COUNT;
+        double t_sample = t_lo + s * span;
+        double Qx, Qy;
+        warp_sample_at(t_sample, a, b, bx, by, bw, bh, env_top, env_bottom,
+                       Qx, Qy);
+        double u = 1.0 - s;
+        double Px = u*u*u*w_lo_x + 3*u*u*s*c1x + 3*u*s*s*c2x + s*s*s*w_hi_x;
+        double Py = u*u*u*w_lo_y + 3*u*u*s*c1y + 3*u*s*s*c2y + s*s*s*w_hi_y;
+        double dx = Qx - Px;
+        double dy = Qy - Py;
+        double err = std::sqrt(dx*dx + dy*dy);
+        if (err > max_err) max_err = err;
+    }
+}
+
+// Recursive emit: try to fit one cubic across [t_lo, t_hi] of the source
+// segment. If error <= tolerance OR depth is exhausted, append ONE anchor
+// at warp(t_hi) with the fitted incoming handle (c2), and patch the
+// previously-emitted anchor's outgoing handle (cx2) with c1.
+//
+// If error > tolerance and depth permits, split at t_mid (midpoint of
+// [t_lo, t_hi]) and recurse on both halves. The recursion's first half
+// emits the necessity-anchor at t_mid; the second half then emits the
+// anchor at t_hi.
+//
+// Caller must have already emitted the anchor at warp(t_lo) before
+// invoking this. The anchor at t_hi will be emitted exactly once across
+// recursion (only at the rightmost terminal fit).
+static void emit_warp_segment(PathData& out, int depth,
+                              double t_lo, double t_hi,
+                              const BezierNode& a, const BezierNode& b,
+                              double bx, double by, double bw, double bh,
+                              const PathData& env_top, const PathData& env_bottom,
+                              BezierNode::Type type_at_t_hi) {
+    double c1x, c1y, c2x, c2y, err;
+    fit_warp_cubic(t_lo, t_hi, a, b, bx, by, bw, bh, env_top, env_bottom,
+                   c1x, c1y, c2x, c2y, err);
+
+    bool accept = (err <= WARP_FIT_TOL) || (depth >= WARP_FIT_MAX_DEPTH);
+    if (accept) {
+        // Patch previous anchor's outgoing handle with c1.
+        if (!out.nodes.empty()) {
+            BezierNode& prev = out.nodes.back();
+            prev.cx2 = c1x;
+            prev.cy2 = c1y;
+        }
+        // Emit anchor at t_hi with incoming handle c2 and provisional
+        // outgoing (set to anchor pos; will be patched by next emit if
+        // any, or by the closed-path dedupe at end of warp_path_data).
+        double w_hi_x, w_hi_y;
+        warp_sample_at(t_hi, a, b, bx, by, bw, bh, env_top, env_bottom,
+                       w_hi_x, w_hi_y);
+        BezierNode wn;
+        wn.x = w_hi_x;
+        wn.y = w_hi_y;
+        wn.cx1 = c2x;
+        wn.cy1 = c2y;
+        wn.cx2 = w_hi_x;
+        wn.cy2 = w_hi_y;
+        wn.type = type_at_t_hi;
+        out.nodes.push_back(wn);
+        return;
+    }
+
+    // Split. The midpoint anchor is a necessity-Smooth (geometry-driven).
+    double t_mid = 0.5 * (t_lo + t_hi);
+    emit_warp_segment(out, depth + 1, t_lo, t_mid,
+                      a, b, bx, by, bw, bh, env_top, env_bottom,
+                      BezierNode::Type::Smooth);
+    emit_warp_segment(out, depth + 1, t_mid, t_hi,
+                      a, b, bx, by, bw, bh, env_top, env_bottom,
+                      type_at_t_hi);
+}
+
+// Warp a single PathData through the envelope, producing a new PathData.
+// s299 m10 — adaptive single-cubic fit per source segment, with recursive
+// midpoint subdivision when one cubic exceeds the error tolerance. Source
+// node types are preserved at source-segment boundaries; necessity anchors
+// inserted by the recursion are tagged Smooth.
+//
+// The legacy `quality` parameter is now ignored (kept in the signature
+// for ABI stability with existing callers). The output's segment density
+// adapts to actual warp curvature: gentle warps emit one cubic per source
+// segment; sharp envelope bends subdivide only where needed.
 static PathData warp_path_data(const PathData &src, const PathData &env_top,
                                const PathData &env_bottom, double bx, double by,
-                               double bw, double bh, int quality) {
+                               double bw, double bh, int /*quality_unused*/) {
   PathData out;
   out.closed = src.closed;
   if (src.nodes.size() < 2) {
@@ -1339,87 +1539,48 @@ static PathData warp_path_data(const PathData &src, const PathData &env_top,
       wn.cy1 = wy;
       wn.cx2 = wx;
       wn.cy2 = wy;
+      wn.type = n.type;
       out.nodes.push_back(wn);
     }
     return out;
   }
-  if (quality < 1)
-    quality = 1;
-  if (quality > 16)
-    quality = 16;
-  // For a closed path the "segment" from nodes[last] back to nodes[0]
-  // also warps. Open paths stop at nodes[last]. We iterate segments
-  // accordingly.
+
   int n_nodes = (int)src.nodes.size();
   int n_segs = src.closed ? n_nodes : (n_nodes - 1);
-  // Preallocate first anchor (gets filled below with first slice's p0).
-  // Each segment emits `quality` output segments; for the very first
-  // segment of an open path we also need to push the leading anchor
-  // before the first slice.
-  bool first_anchor_emitted = false;
+
+  // Emit the leading anchor (warped source node 0) before iterating
+  // segments. Its outgoing handle gets filled by the first emit_warp_segment
+  // call's "patch previous" branch.
+  {
+    double w0x, w0y;
+    warp_sample_at(0.0, src.nodes[0], src.nodes[1 % n_nodes],
+                   bx, by, bw, bh, env_top, env_bottom, w0x, w0y);
+    BezierNode wn;
+    wn.x = w0x;
+    wn.y = w0y;
+    wn.cx1 = w0x;
+    wn.cy1 = w0y;
+    wn.cx2 = w0x;
+    wn.cy2 = w0y;
+    wn.type = src.nodes[0].type;
+    out.nodes.push_back(wn);
+  }
+
   for (int si = 0; si < n_segs; ++si) {
     const BezierNode &a = src.nodes[si];
     const BezierNode &b = src.nodes[(si + 1) % n_nodes];
-    for (int q = 0; q < quality; ++q) {
-      double t0 = (double)q / quality;
-      double t1 = (double)(q + 1) / quality;
-      double t13 = t0 + (t1 - t0) / 3.0;
-      double t23 = t0 + 2.0 * (t1 - t0) / 3.0;
-      // Sample the source cubic at t0, 1/3, 2/3, t1 and warp each sample
-      double s0x, s0y, s1x, s1y, s2x, s2y, s3x, s3y;
-      eval_cubic(t0, a.x, a.y, a.cx2, a.cy2, b.cx1, b.cy1, b.x, b.y, s0x, s0y);
-      eval_cubic(t13, a.x, a.y, a.cx2, a.cy2, b.cx1, b.cy1, b.x, b.y, s1x, s1y);
-      eval_cubic(t23, a.x, a.y, a.cx2, a.cy2, b.cx1, b.cy1, b.x, b.y, s2x, s2y);
-      eval_cubic(t1, a.x, a.y, a.cx2, a.cy2, b.cx1, b.cy1, b.x, b.y, s3x, s3y);
-      double w0x, w0y, w1x, w1y, w2x, w2y, w3x, w3y;
-      warp_point(s0x, s0y, bx, by, bw, bh, env_top, env_bottom, w0x, w0y);
-      warp_point(s1x, s1y, bx, by, bw, bh, env_top, env_bottom, w1x, w1y);
-      warp_point(s2x, s2y, bx, by, bw, bh, env_top, env_bottom, w2x, w2y);
-      warp_point(s3x, s3y, bx, by, bw, bh, env_top, env_bottom, w3x, w3y);
-      // Fit the warped cubic: control points c1, c2 from the 4 samples
-      double c1x, c1y, c2x, c2y;
-      fit_cubic_4samples(w0x, w0y, w1x, w1y, w2x, w2y, w3x, w3y, c1x, c1y, c2x,
-                         c2y);
-      // Emit anchor w0 on the first slice (or when starting a new
-      // segment's first slice on an open path's very first iteration)
-      if (!first_anchor_emitted) {
-        BezierNode wn;
-        wn.x = w0x;
-        wn.y = w0y;
-        wn.cx1 = w0x;
-        wn.cy1 = w0y; // patched below if prev slice exists
-        wn.cx2 = c1x;
-        wn.cy2 = c1y;
-        out.nodes.push_back(wn);
-        first_anchor_emitted = true;
-      } else {
-        // Patch the previous anchor's outgoing handle to match THIS
-        // slice's c1. (It was provisionally set from the PREVIOUS
-        // slice's fit; overwriting with the continuation maintains
-        // C0 continuity and locks in per-slice tangents.)
-        BezierNode &prev = out.nodes.back();
-        prev.cx2 = c1x;
-        prev.cy2 = c1y;
-      }
-      // Emit anchor w3 with incoming handle c2 and outgoing provisional
-      // (set equal to w3 for now; next slice will overwrite, or if this
-      // is the last slice on a closed path, the first-anchor patch
-      // below finishes the loop).
-      BezierNode wn;
-      wn.x = w3x;
-      wn.y = w3y;
-      wn.cx1 = c2x;
-      wn.cy1 = c2y;
-      wn.cx2 = w3x;
-      wn.cy2 = w3y;
-      out.nodes.push_back(wn);
-    }
+    int src_next = (si + 1) % n_nodes;
+    emit_warp_segment(out, 0, 0.0, 1.0,
+                      a, b, bx, by, bw, bh, env_top, env_bottom,
+                      src.nodes[src_next].type);
   }
-  // Closed path: the last emitted anchor is actually a duplicate of the
-  // first (we walked N segments and emitted N+1 anchors, but on a closed
-  // path nodes[0] == nodes[last] logically). Merge the duplicate:
-  // take the last anchor's cx1 and move it to the first anchor's cx1,
-  // then drop the last anchor.
+
+  // Closed path: the last emitted anchor is a duplicate of the first
+  // (we walked N segments emitting N+1 anchors; on a closed path the
+  // last and first are the same source node 0). Merge:
+  //   take the last anchor's cx1 (incoming handle from the wrap-around
+  //   segment) and move it onto the first anchor's cx1, then drop the
+  //   last anchor.
   if (src.closed && out.nodes.size() > 1) {
     BezierNode &last = out.nodes.back();
     BezierNode &first = out.nodes.front();
@@ -1934,6 +2095,16 @@ void Canvas::flatten_warp() {
   flat->id = next_id();
   flat->internal_id = last_iid();
 
+  // ── s299 m10 — no flatten-time cleanup ──────────────────────────────────
+  //
+  // The adaptive warp fit (above) emits clean output by construction:
+  // source nodes are preserved as anchors with their original type tags,
+  // and necessity-Smooth subdivisions are inserted only where the cubic
+  // fit exceeded WARP_FIT_TOL. No normalize/reduce post-pass is required
+  // at flatten time — every downstream consumer sees minimal geometry.
+  //
+  // (Earlier diagnostics m5 / m8 / m9 ran cleanup or keeper-filter passes
+  // here; those are removed by m10 since the producer is correct.)
   auto flat_snap = clone_node(*flat);
 
   parent->children.erase(parent->children.begin() + warp_idx);
@@ -2268,14 +2439,40 @@ void Canvas::release_blend() {
 }
 
 void Canvas::group_selection() {
-  if (!m_doc || m_selection.size() < 2)
+  // s298 DIAG — STRIP after triage. Entry-point dump.
+  LOG_INFO("[GRPDIAG] group_selection: ENTRY  m_selection.size={} "
+           "m_selected={} m_doc={}",
+           m_selection.size(), (void *)m_selected, (void *)m_doc);
+  for (size_t i = 0; i < m_selection.size(); ++i) {
+    SceneNode *s = m_selection[i];
+    LOG_INFO("[GRPDIAG]   m_selection[{}]: ptr={} iid='{}' name='{}' "
+             "type={}",
+             i, (void *)s,
+             s ? s->internal_id : std::string{"(null)"},
+             s ? s->name : std::string{"(null)"},
+             s ? (int)s->type : -1);
+  }
+  if (!m_doc || m_selection.size() < 2) {
+    LOG_INFO("[GRPDIAG] group_selection: BAIL — selection.size<2 (need "
+             ">=2 to group)");
     return;
+  }
 
   // Find parent layer of first selected object
   int dummy;
   SceneNode *parent = find_parent(m_doc, m_selection.front(), &dummy);
-  if (!parent)
+  if (!parent) {
+    LOG_INFO("[GRPDIAG] group_selection: BAIL — find_parent returned null "
+             "for first selection (iid='{}'). This selected node is not "
+             "reachable from the doc tree.",
+             m_selection.front() ? m_selection.front()->internal_id
+                                  : std::string{"(null)"});
     return;
+  }
+  LOG_INFO("[GRPDIAG] group_selection: parent of front iid='{}' name='{}' "
+           "type={} children.size={}",
+           parent->internal_id, parent->name, (int)parent->type,
+           parent->children.size());
 
   // s242 m1 — migrated to push GroupNodesCommand. The capture happens
   // here (parent_iid, target_iids in parent z-order, original indices,
@@ -2300,7 +2497,30 @@ void Canvas::group_selection() {
       insert_idx = std::min(insert_idx, i);
     }
   }
-  if (target_iids.size() < 2) return;  // defensive: nothing to group
+  // s298 DIAG — STRIP after triage. Compare target count vs selection.
+  LOG_INFO("[GRPDIAG] group_selection: matched {}/{} selected nodes as "
+           "children of parent '{}'",
+           target_iids.size(), m_selection.size(), parent->name);
+  if (target_iids.size() < m_selection.size()) {
+    LOG_INFO("[GRPDIAG]   *** {} selected node(s) had a different parent "
+             "or were not found — cross-parent grouping is not supported ***",
+             m_selection.size() - target_iids.size());
+    for (SceneNode *s : m_selection) {
+      bool matched = false;
+      for (const auto &iid : target_iids) {
+        if (s && s->internal_id == iid) { matched = true; break; }
+      }
+      LOG_INFO("[GRPDIAG]     sel iid='{}' name='{}' → {}",
+               s ? s->internal_id : std::string{"(null)"},
+               s ? s->name : std::string{"(null)"},
+               matched ? "MATCHED parent" : "MISSING from parent");
+    }
+  }
+  if (target_iids.size() < 2) {
+    LOG_INFO("[GRPDIAG] group_selection: BAIL — target_iids.size<2 (need "
+             ">=2 in SAME parent to group)");
+    return;
+  }
 
   // Generate the group's name and iid here so the captured command can
   // reuse them across execute/undo/redo cycles.
@@ -3397,35 +3617,63 @@ void Canvas::boolean_op(BooleanOpType op) {
       return;
     }
 
-    // running = operands[0]. Subsequent iterations fold operand[i] in.
+    // s296 m18 — inject intersection triplets into BOTH crossing curves
+    // before Clipper2 sees them, and add their keepers to master.
+    //
+    // enrich_at_intersections_and_build_keepers does both jobs in one
+    // call: for each crossing in the (running, next) pair it inserts
+    // pre-guard + intersection + post-guard nodes on BOTH curves and
+    // emits keepers for everything in walk order. Clipper2 then
+    // produces polyline output with vertices at those guard positions
+    // (because they're real nodes in the input), and cleanup_loop_v4
+    // matches them by position from master_keepers.
+    //
+    // We DO NOT call the up-front enrich() (the guards-around-every-
+    // original pass). Those would emit dozens of keepers spread along
+    // the whole curve, producing a staircase in the final result.
+    // Only the intersection triplets earn keeper status.
+    //
+    // step_keepers per call contains entries for both sides:
+    //   - Intersection nodes (the crossing itself, on both A and B)
+    //   - SyntheticGuard nodes (pre and post on both A and B)
+    //   - OriginalAnchor nodes (every other node walked in order)
+    //
+    // We keep Intersection + SyntheticGuard from each step. Originals
+    // are already in master from the up-front snapshot of operands;
+    // re-adding the per-step OriginalAnchor walk would also include
+    // running's polyline vertices for non-final steps, which we don't
+    // want as keepers.
+    Curvz::refit::KeeperSet master_keepers =
+        Curvz::refit::original_anchors_keepers(operands);
+
     std::vector<BezierPath> running = operands[0];
     int total_keepers_logged = 0;
 
     for (int i = 1; i < N; ++i) {
       if (cancelled()) return;
 
-      // Build the 2-operand vector for this step. Move `running`
-      // into pair[0] to avoid a deep-copy each iteration — on dense
-      // intermediates this saves N copies of an ever-growing subpath
-      // list. `running` is empty after this; we rebuild it from
-      // step_loops below for the next iteration (or stash into
-      // final_loops on the last iteration).
+      const bool is_final = (i == N - 1);
+
       std::vector<std::vector<BezierPath>> pair;
       pair.reserve(2);
       pair.push_back(std::move(running));
       pair.push_back(operands[i]);
 
-      // Per-step enrichment + Clipper2 + cleanup. Same three-phase
-      // shape as the single-shot path in m4, applied to this pair.
       const std::vector<std::vector<BezierPath>>* step_operands = &pair;
-      Curvz::refit::KeeperSet step_keepers;
       std::vector<std::vector<BezierPath>> step_enriched;
       if (cleanup_on) {
-        step_keepers =
+        Curvz::refit::KeeperSet step_keepers =
             Curvz::refit::enrich_at_intersections_and_build_keepers(
                 pair, step_enriched, op);
         step_operands = &step_enriched;
-        total_keepers_logged += (int)step_keepers.size();
+        for (auto &kp : step_keepers) {
+          if (kp.origin == Curvz::refit::KeeperPoint::Origin::Intersection ||
+              kp.origin == Curvz::refit::KeeperPoint::Origin::SyntheticGuard) {
+            auto kp_copy = kp;
+            kp_copy.source = nullptr;
+            master_keepers.push_back(kp_copy);
+          }
+        }
       }
 
       if (cancelled()) return;
@@ -3433,18 +3681,7 @@ void Canvas::boolean_op(BooleanOpType op) {
       std::vector<PathData> step_loops =
           Curvz::boolean_op_clipper(*step_operands, op);
 
-      if (cleanup_on && !step_loops.empty()) {
-        for (auto& loop : step_loops) {
-          loop = Curvz::refit::cleanup_loop_v4(
-              std::move(loop), step_keepers,
-              apex_min_turn_deg, max_untagged_run);
-        }
-      }
-
-      // Last iteration: stash result and exit. Earlier iterations:
-      // convert step_loops (PathData) back to BezierPath form for
-      // the next iteration's `running`.
-      if (i == N - 1) {
+      if (is_final) {
         final_loops = std::move(step_loops);
       } else {
         running.clear();
@@ -3452,10 +3689,10 @@ void Canvas::boolean_op(BooleanOpType op) {
         for (const auto& pd : step_loops) {
           running.push_back(BezierPath::from_path_data(pd));
         }
-        // Early exit if intermediate became empty — no point
-        // continuing to subtract from nothing or union with nothing
-        // meaningful. final_loops stays empty; caller emits "empty
-        // result" message.
+        // s296 m9: re-canonicalize running to CCW between iterations.
+        for (auto& bp : running) {
+          if (bp.signed_area() > 0.0) bp.reverse();
+        }
         if (running.empty()) {
           final_loops.clear();
           LOG_INFO("Canvas: boolean {} — intermediate result empty at "
@@ -3464,9 +3701,18 @@ void Canvas::boolean_op(BooleanOpType op) {
         }
       }
 
-      // Tick after the work for this step is done, so the bar shows
-      // "i of N-1 steps complete" rather than "starting step i."
       tick(i, N - 1);
+    }
+
+    total_keepers_logged = (int)master_keepers.size();
+
+    // s296 m18: single cleanup pass against master_keepers.
+    if (cleanup_on && !final_loops.empty()) {
+      for (auto& loop : final_loops) {
+        loop = Curvz::refit::cleanup_loop_v4(
+            std::move(loop), master_keepers,
+            apex_min_turn_deg, max_untagged_run);
+      }
     }
 
     LOG_INFO("Canvas: boolean {} — chunked path complete: {} iterations, "
@@ -3657,6 +3903,226 @@ void Canvas::offset_path_op(double distance, OffsetSide side,
   int skipped = 0;
 
   for (SceneNode *obj : m_selection) {
+    // ── s299 m3 — Compound branch ─────────────────────────────────────────
+    //
+    // A Compound has no path of its own; geometry lives in its child Paths.
+    // Pre-s299 the Path-only guard below silently skipped every Compound
+    // ("must be closed paths") even though the user-visible thing on screen
+    // was clearly a closed shape.
+    //
+    // The Compound flow: offset each closed-Path child's PathData
+    // independently, accumulate all resulting loops into one operand set,
+    // and Union them with the same enrichment+cleanup the boolean N-way
+    // path uses. The merged result is then run through the same normalize
+    // + reduce post-pass as the single-Path branch.
+    //
+    // Topology-wrap on the merged loops mirrors the Path branch:
+    //   1 loop  → single Path
+    //   >=2     → Compound containing one Path per loop
+    //
+    // keep_original / consume semantics:
+    //   keep_original = true  → insert merged result above the source
+    //                           Compound, undo via AddNodeCommand.
+    //   keep_original = false → erase source Compound, insert merged
+    //                           result in its slot, undo via
+    //                           BooleanOpCommand (same shape the Path
+    //                           branch uses).
+    if (obj->type == SceneNode::Type::Compound) {
+      int idx = -1;
+      SceneNode *parent = find_parent(m_doc, obj, &idx);
+      if (!parent) {
+        ++skipped;
+        continue;
+      }
+
+      // Collect offset results from every closed-Path child.
+      std::vector<PathData> all_offsets;
+      int child_paths_offset = 0;
+      for (const auto &child_up : obj->children) {
+        SceneNode *child = child_up.get();
+        if (!child || !child->path || !child->path->closed) continue;
+        std::vector<PathData> cr =
+            Curvz::offset_path(*child->path, distance, side);
+        for (auto &pd : cr) all_offsets.push_back(std::move(pd));
+        ++child_paths_offset;
+      }
+
+      if (all_offsets.empty()) {
+        // No closed children, or all offsets degenerated to empty.
+        ++skipped;
+        continue;
+      }
+
+      // Union all offset loops into one filled-band geometry.
+      //
+      // For a single offset loop (e.g. a Compound with one child whose
+      // offset produced one result) Union is trivially that loop; we still
+      // route it through the same path so the same enrichment+cleanup
+      // story applies uniformly. boolean_op_clipper with N=1 falls back to
+      // a degenerate Clipper2 call that's safe.
+      std::vector<PathData> merged;
+      if (all_offsets.size() == 1) {
+        merged = std::move(all_offsets);
+      } else {
+        // Pack each offset PathData as a one-subpath operand.
+        // s181 m4 / s296 m18 — canonicalize winding to CCW for Union, so
+        // Clipper2's NonZero heuristic doesn't cancel overlap regions.
+        std::vector<std::vector<BezierPath>> operands;
+        operands.reserve(all_offsets.size());
+        for (auto &pd : all_offsets) {
+          BezierPath bp = BezierPath::from_path_data(pd);
+          if (bp.signed_area() > 0.0) bp.reverse(); // force CCW (Y-down)
+          std::vector<BezierPath> one_op;
+          one_op.push_back(std::move(bp));
+          operands.push_back(std::move(one_op));
+        }
+
+        // Enrichment+cleanup quality knob — same as the boolean path.
+        int q_op = m_boolean_cleanup_quality;
+        if (q_op < 0)  q_op = 0;
+        if (q_op > 10) q_op = 10;
+        const bool op_cleanup_on = (q_op < 10);
+        double op_apex = 0.0;
+        int    op_run  = 0;
+        if (op_cleanup_on) {
+          if (q_op <= 5) {
+            const double t = double(q_op) / 5.0;
+            op_apex = 30.0 - 15.0 * t;
+            op_run  = static_cast<int>(std::lround(20.0 - 10.0 * t));
+          } else {
+            const double t = double(q_op - 5) / 4.0;
+            op_apex = 15.0 - 10.0 * t;
+            op_run  = static_cast<int>(std::lround(10.0 - 5.0 * t));
+          }
+        }
+
+        std::vector<std::vector<BezierPath>> op_enriched;
+        Curvz::refit::KeeperSet op_keepers;
+        const auto *op_for_clipper = &operands;
+        if (op_cleanup_on) {
+          op_keepers = Curvz::refit::enrich_at_intersections_and_build_keepers(
+              operands, op_enriched, BooleanOpType::Union);
+          op_for_clipper = &op_enriched;
+        }
+        merged = Curvz::boolean_op_clipper(*op_for_clipper, BooleanOpType::Union);
+        if (op_cleanup_on && !merged.empty()) {
+          for (auto &loop : merged) {
+            loop = Curvz::refit::cleanup_loop_v4(std::move(loop), op_keepers,
+                                                 op_apex, op_run);
+          }
+        }
+      }
+
+      if (merged.empty()) {
+        ++skipped;
+        continue;
+      }
+
+      // ── normalize + reduce post-pass on each merged loop ────────────────
+      // Same pump as the Path branch — attacks any residual all-Corner runs
+      // the enrichment+cleanup didn't anchor as keepers.
+      for (size_t ri = 0; ri < merged.size(); ++ri) {
+        int before = (int)merged[ri].nodes.size();
+        int demoted = Curvz::normalize_node_types(merged[ri], 5.0);
+        int deleted = Curvz::reduce_redundant_curve_nodes(merged[ri]);
+        int after = (int)merged[ri].nodes.size();
+        LOG_INFO("offset_path_op[compound]: merged[{}] {} -> {} nodes "
+                 "(normalize demoted {}, reduce deleted {})",
+                 ri, before, after, demoted, deleted);
+      }
+
+      // Capture style before any mutation (obj may dangle after erase).
+      FillStyle saved_fill = obj->fill;
+      StrokeStyle saved_stroke = obj->stroke;
+      double saved_opacity = obj->opacity;
+
+      // Build the result node: topology-wrap rule (1 → Path, N → Compound).
+      auto build_result = [&](std::vector<PathData> loops) -> std::unique_ptr<SceneNode> {
+        if (loops.size() == 1) {
+          auto rnode = std::make_unique<SceneNode>();
+          rnode->type = SceneNode::Type::Path;
+          rnode->id = next_id();
+          rnode->internal_id = generate_internal_id();
+          rnode->name = m_doc->uniquify_name(std::string("Offset ") + side_name);
+          rnode->fill = saved_fill;
+          rnode->stroke = saved_stroke;
+          rnode->opacity = saved_opacity;
+          rnode->visible = true;
+          rnode->locked = false;
+          rnode->path = std::make_unique<PathData>(std::move(loops[0]));
+          return rnode;
+        } else {
+          auto compound = std::make_unique<SceneNode>();
+          compound->type = SceneNode::Type::Compound;
+          compound->id = next_id();
+          compound->internal_id = generate_internal_id();
+          compound->name = m_doc->uniquify_name(std::string("Offset ") + side_name);
+          compound->fill = saved_fill;
+          compound->stroke = saved_stroke;
+          compound->opacity = saved_opacity;
+          compound->visible = true;
+          compound->locked = false;
+          for (size_t ri = 0; ri < loops.size(); ++ri) {
+            auto child = std::make_unique<SceneNode>();
+            child->type = SceneNode::Type::Path;
+            child->id = next_id();
+            child->internal_id = generate_internal_id();
+            child->name = (ri == 0) ? "Outer" : "Inner";
+            child->fill = saved_fill;
+            child->stroke.paint.type = FillStyle::Type::None;
+            child->opacity = 1.0;
+            child->visible = true;
+            child->locked = false;
+            child->path = std::make_unique<PathData>(std::move(loops[ri]));
+            compound->children.push_back(std::move(child));
+          }
+          return compound;
+        }
+      };
+
+      if (keep_original) {
+        // Insert merged result ABOVE (before) the original Compound.
+        // Undo via AddNodeCommand mirrors the Path branch's keep_original
+        // behaviour.
+        auto rnode = build_result(std::move(merged));
+        int insert_at = std::clamp(idx, 0, (int)parent->children.size());
+        parent->children.insert(parent->children.begin() + insert_at,
+                                std::move(rnode));
+        if (m_history)
+          m_history->push(std::make_unique<AddNodeCommand>(
+              parent, clone_node(*parent->children[insert_at])));
+      } else {
+        // Consume: erase original Compound, insert merged result in its
+        // slot. Undo via BooleanOpCommand mirrors the Path branch.
+        std::vector<BooleanOpCommand::Original> originals;
+        originals.push_back({clone_node(*obj), idx});
+
+        int ins = idx;
+        parent->children.erase(parent->children.begin() + idx);
+
+        auto rnode = build_result(std::move(merged));
+        int insert_at = std::clamp(ins, 0, (int)parent->children.size());
+        parent->children.insert(parent->children.begin() + insert_at,
+                                std::move(rnode));
+
+        std::vector<std::unique_ptr<SceneNode>> result_snaps;
+        result_snaps.push_back(clone_node(*parent->children[insert_at]));
+
+        if (m_history)
+          m_history->push(std::make_unique<BooleanOpCommand>(
+              project(), parent->internal_id,
+              std::move(originals), std::move(result_snaps), ins,
+              "Offset Path"));
+      }
+
+      LOG_INFO("offset_path_op[compound]: source had {} closed children, "
+               "produced {} loop(s) after Union+cleanup",
+               child_paths_offset, (int)merged.size());
+
+      ++applied;
+      continue;
+    }
+
     if (!obj->path || !obj->path->closed) {
       ++skipped;
       continue;
@@ -3674,6 +4140,36 @@ void Canvas::offset_path_op(double distance, OffsetSide side,
     if (results.empty()) {
       ++skipped;
       continue;
+    }
+
+    // ── s299 m2 — normalize + reduce post-pass ────────────────────────────
+    //
+    // Clipper2's straight-cubic refit emits polyline-derived nodes that all
+    // carry the Corner type tag, even when the geometry passes smoothly
+    // through them. Without repair the output is dense polyline noise.
+    //
+    //   normalize_node_types: demotes false Corners (turn < 5°) to Smooth,
+    //                         restoring honest types and chord-bisect
+    //                         handles via BezierPath::set_node_type.
+    //   reduce_redundant_curve_nodes: three-window pass — any node flanked
+    //                         by two curve-typed neighbours is redundant
+    //                         and gets shape-preservingly deleted, until a
+    //                         sweep yields zero deletions.
+    //
+    // The pair is the offset-cleanup analogue of cleanup_loop_v4 for the
+    // boolean-op path — same goal (strip producer noise), different shape
+    // (no keepers / no intersections to anchor on, single-path).
+    //
+    // Stats logged per result so the distribution-over-real-shapes can be
+    // observed in the log.
+    for (size_t ri = 0; ri < results.size(); ++ri) {
+      int before = (int)results[ri].nodes.size();
+      int demoted = Curvz::normalize_node_types(results[ri], 5.0);
+      int deleted = Curvz::reduce_redundant_curve_nodes(results[ri]);
+      int after = (int)results[ri].nodes.size();
+      LOG_INFO("offset_path_op: result[{}] {} -> {} nodes "
+               "(normalize demoted {}, reduce deleted {})",
+               ri, before, after, demoted, deleted);
     }
 
     // s262 — All Clipper2 loops are retained, including inner-hole

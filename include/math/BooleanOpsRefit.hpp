@@ -164,6 +164,16 @@ constexpr double ENRICH_OFFSET_FRAC_CAP = 0.25;
 // produce zero-length guards.
 constexpr double ENRICH_OFFSET_MIN = 1e-3;
 
+// s296 m14 — separate, smaller offset for intersection-triplet guards.
+// Triplet guards (pre, intersection, post) should hug the crossing so
+// the cleanup walk reads them as a tight cluster rather than three
+// spread-out keepers. ENRICH_OFFSET (20) was too far for this role —
+// guards drifted from the intersection and the cleanup couldn't pin
+// the curve shape at crossings. Same cap + floor semantics as
+// ENRICH_OFFSET. Used by inject_intersection_triplets_on_subpath via
+// the file-static compute_guard_t.
+constexpr double ISECT_TRIPLET_OFFSET = 4.0;
+
 // ── API ──────────────────────────────────────────────────────────────────────
 
 // Enrich operand subpaths for boolean processing (pre-Clipper2).
@@ -275,6 +285,15 @@ KeeperSet enrich_at_intersections_and_build_keepers(
     std::vector<std::vector<BezierPath>>&       operands_out,
     BooleanOpType op);
 // ── End m3/m4 API ────────────────────────────────────────────────────────────
+
+// s296 m11 — snapshot every BezierNode from every subpath across every
+// operand as an OriginalAnchor keeper. Used by the chunked-fold path
+// (boolean_op chain) to seed the master keeper set with originals up
+// front, before per-step intersection triplets accumulate on top.
+// Caller MUST keep `operands` alive across the eventual cleanup_loop
+// call — source pointers refer into operands' storage.
+KeeperSet original_anchors_keepers(
+    const std::vector<std::vector<BezierPath>>& operands);
 
 // Apply the per-keeper claim-and-restore walk to a single refitted
 // result loop.

@@ -309,12 +309,38 @@ struct TextEditCommand : CurvzCommand {
     bool        before_bold = false, before_italic = false;
     FillStyle   before_fill;
     StrokeStyle before_stroke;
+    // s298 m3 (A2): text-on-path triple + baseline_shift + letter_spacing.
+    // Previously snapshot_before/record_after/apply walked only the
+    // typographic basics (content/family/anchor/align/x/y/size/bold/
+    // italic/fill/stroke). text_path_id, text_path_offset, text_path_flip,
+    // text_baseline_shift, text_letter_spacing were all silently
+    // unobserved — meaning a content edit that ran during text-on-path
+    // mode (or after a slide-along-path) would roll back the typographic
+    // basics on undo while leaving the path attachment / offset in their
+    // post-edit state, producing the "history desync" symptom logged
+    // against B1 in text_on_path_redesign.md (recon finding 1). Adding
+    // them here makes TextEditCommand a faithful round-trip across the
+    // full text-node state surface. Default-init values are the
+    // "unlinked text" baseline — empty id, zero offset, no flip, zero
+    // shift, zero spacing — so a snapshot of a plain text node looks
+    // the same as before this change and the field additions are a
+    // pure superset.
+    std::string before_text_path_id;
+    double      before_text_path_offset = 0.0;
+    bool        before_text_path_flip = false;
+    double      before_baseline_shift = 0.0;
+    double      before_letter_spacing = 0.0;
     // after state
     std::string after_content, after_family, after_anchor, after_align;
     double      after_x = 0, after_y = 0, after_size = 0;
     bool        after_bold = false, after_italic = false;
     FillStyle   after_fill;
     StrokeStyle after_stroke;
+    std::string after_text_path_id;
+    double      after_text_path_offset = 0.0;
+    bool        after_text_path_flip = false;
+    double      after_baseline_shift = 0.0;
+    double      after_letter_spacing = 0.0;
 
     static TextEditCommand snapshot_before(CurvzProject* proj, SceneNode* o) {
         TextEditCommand c;
@@ -332,6 +358,12 @@ struct TextEditCommand : CurvzCommand {
         c.before_italic  = o->text_italic;
         c.before_fill    = o->fill;
         c.before_stroke  = o->stroke;
+        // s298 m3 (A2)
+        c.before_text_path_id     = o->text_path_id;
+        c.before_text_path_offset = o->text_path_offset;
+        c.before_text_path_flip   = o->text_path_flip;
+        c.before_baseline_shift   = o->text_baseline_shift;
+        c.before_letter_spacing   = o->text_letter_spacing;
         return c;
     }
     void record_after(SceneNode* o) {
@@ -347,6 +379,12 @@ struct TextEditCommand : CurvzCommand {
         after_italic  = o->text_italic;
         after_fill    = o->fill;
         after_stroke  = o->stroke;
+        // s298 m3 (A2)
+        after_text_path_id     = o->text_path_id;
+        after_text_path_offset = o->text_path_offset;
+        after_text_path_flip   = o->text_path_flip;
+        after_baseline_shift   = o->text_baseline_shift;
+        after_letter_spacing   = o->text_letter_spacing;
     }
     void apply(SceneNode* o, bool after) const {
         if (!o) return;
@@ -361,6 +399,12 @@ struct TextEditCommand : CurvzCommand {
         o->text_italic     = after ? after_italic  : before_italic;
         o->fill            = after ? after_fill    : before_fill;
         o->stroke          = after ? after_stroke  : before_stroke;
+        // s298 m3 (A2)
+        o->text_path_id       = after ? after_text_path_id     : before_text_path_id;
+        o->text_path_offset   = after ? after_text_path_offset : before_text_path_offset;
+        o->text_path_flip     = after ? after_text_path_flip   : before_text_path_flip;
+        o->text_baseline_shift= after ? after_baseline_shift   : before_baseline_shift;
+        o->text_letter_spacing= after ? after_letter_spacing   : before_letter_spacing;
     }
     void execute() override;  // see CommandHistory.cpp
     void undo()    override;  // see CommandHistory.cpp

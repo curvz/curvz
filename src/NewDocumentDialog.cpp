@@ -879,7 +879,16 @@ void NewDocumentDialog::maybe_autofill_name(const std::string &label) {
 // ── Built-in seed builders ───────────────────────────────────────────────────
 std::unique_ptr<CurvzDocument> NewDocumentDialog::build_blank_seed() {
   auto doc = std::make_unique<CurvzDocument>();
-  doc->canvas = CanvasModel::from_ratio(1.0, 1.0, 100);
+  // s298: quality=1000 (was 100). The design intent — see the comment
+  // block above show() and resources/help/1-4-how-curvz-thinks-about-size.md
+  // — is that the working plane is always generous (1000) regardless of
+  // the user's delivery Size. The pre-s298 value of 100 made the working
+  // plane snap to the canvas dimension on Blank docs, which caused
+  // doc-unit hit-test tolerances (designed for a 1000-unit plane) to act
+  // 10× larger relative to canvas. Symptoms: click hits multiple shapes
+  // at once → group/duplicate operate on the wrong set. Matched against
+  // build_default_seed (1000) which was correct.
+  doc->canvas = CanvasModel::from_ratio(1.0, 1.0, 1000);
   return doc;
 }
 

@@ -1293,11 +1293,12 @@ void MainWindow::connect_signals() {
       LOG_DEBUG("selection_changed idle: rebuilding for obj={} tool={} size={}",
                 (void *)obj, (int)m_active_tool, sel_size_now2);
       refresh_inspector();
-      // S58n: give the toolbar the whole selection so it can detect mixed
-      // fill/stroke and render diagonal-stripe swatches. Previously passed
-      // only the primary's paint, which left the toolbar unable to tell a
-      // uniform selection from a mixed one.
-      m_toolbar.sync_from_selection(m_canvas.selection(), obj);
+      // s296 m1: toolbar sync moved into refresh_inspector() as the matched
+      // pair of the inspector Styling section — same s178 m1 reasoning as
+      // the layers panel. The redundant call here was removed because it
+      // routed only this single listener path through to the toolbar;
+      // many other refresh_inspector callers (tool switch, doc reload,
+      // undo, refpt picks, etc.) bypassed it and left wells stale.
       // s178 m1: panel sync now lives inside refresh_inspector() — same
       // event, two consumers, matched pair. The redundant call here was
       // removed because it routed only this single listener path through

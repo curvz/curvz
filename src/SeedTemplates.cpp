@@ -320,6 +320,18 @@ static std::unique_ptr<CurvzDocument> build_seed_doc(const SeedDescriptor& sd) {
                                                  sd.phys_unit, sd.dpi);
         break;
     }
+    // s298: enforce quality≥1000 minimum. The Pixel/Physical factories
+    // (and old Ratio descriptors with quality<1000) compute quality from
+    // input dimensions, which leaves seeded templates at low working-plane
+    // precision. Doc-unit hit-test tolerances are tuned for a 1000-unit
+    // plane; at quality=100 they act 10× larger relative to canvas →
+    // click hits multiple shapes at once → group/duplicate operate on
+    // wrong set. Symmetric with the s298 build_blank_seed fix.
+    if (doc->canvas.quality < 1000) {
+        LOG_INFO("SeedTemplates: bumping quality {}→1000 for seed '{}' "
+                 "(kind={})", doc->canvas.quality, sd.name, (int)sd.kind);
+        doc->canvas.quality = 1000;
+    }
     return doc;
 }
 

@@ -2896,6 +2896,21 @@ std::vector<SelectionEntry>
 collect_selection_entries(CurvzDocument *doc,
                           const std::vector<SceneNode *> &selection) {
   std::vector<SelectionEntry> result;
+  // s298 DIAG — log every input pointer and whether it matched a direct
+  // child of any layer. This walk is ONE LEVEL DEEP only — selected nodes
+  // nested inside Group/Compound/ClipGroup will NOT match and get silently
+  // dropped. Suspected root cause of duplicate/group misbehavior reported
+  // s297. STRIP after triage.
+  LOG_INFO("[GRPDIAG] collect_selection_entries: selection.size={}",
+           selection.size());
+  for (SceneNode *sel : selection) {
+    LOG_INFO("[GRPDIAG]   selection entry: ptr={} iid='{}' name='{}' "
+             "type={}",
+             (void *)sel,
+             sel ? sel->internal_id : std::string{"(null)"},
+             sel ? sel->name : std::string{"(null)"},
+             sel ? (int)sel->type : -1);
+  }
   for (auto &layer : doc->layers) {
     for (int i = 0; i < (int)layer->children.size(); ++i) {
       SceneNode *child = layer->children[i].get();
@@ -2903,6 +2918,25 @@ collect_selection_entries(CurvzDocument *doc,
         if (sel == child)
           result.push_back({layer.get(), child, i});
       }
+    }
+  }
+  // s298 DIAG — log what we found and what we lost.
+  LOG_INFO("[GRPDIAG] collect_selection_entries: result.size={} (input={})",
+           result.size(), selection.size());
+  if (result.size() < selection.size()) {
+    LOG_INFO("[GRPDIAG]   *** {} selected node(s) were NOT found as direct "
+             "layer children — likely nested inside a container ***",
+             selection.size() - result.size());
+    // For each selection pointer, report whether it landed.
+    for (SceneNode *sel : selection) {
+      bool found = false;
+      for (const auto &e : result) {
+        if (e.node == sel) { found = true; break; }
+      }
+      LOG_INFO("[GRPDIAG]     sel iid='{}' name='{}' → {}",
+               sel ? sel->internal_id : std::string{"(null)"},
+               sel ? sel->name : std::string{"(null)"},
+               found ? "FOUND" : "MISSING");
     }
   }
   return result;
@@ -2949,7 +2983,20 @@ static std::string generate_unique_name(const std::string &base_name,
 }
 
 // Recursively assign fresh ids and unique names to a cloned subtree.
+// s298: also regenerate internal_id (the stable UUID). Pre-s298 this
+// function refreshed id (SVG id) and name but inherited internal_id
+// verbatim from the source, leaving the clone with the SAME iid as
+// the original. That violated the invariant that internal_id is
+// globally unique (per SceneNode.hpp line 248: "Stable UUID — unique
+// across all docs, used for cross-node links") and caused iid-based
+// command resolution (s167+ migration) to ambiguously match either
+// the original or the clone depending on tree-walk order. Symptom:
+// after cloning a group, an operation on the clone (group, edit,
+// scale) silently targeted the original instead. Confirmed by
+// GRPDIAG log evidence in s298 m1 — clone produced new ptr + new
+// name but identical iid.
 void freshen_ids(SceneNode *node, CurvzDocument *doc, int &counter) {
+  node->internal_id = generate_internal_id();
   node->id = "obj" + std::to_string(counter++);
   node->name = generate_unique_name(node->name, doc);
   for (auto &child : node->children)
@@ -3167,12 +3214,22 @@ void Canvas::cut_selected() {
 // ── paste_clipboard
 // ───────────────────────────────────────────────────────────
 void Canvas::paste_clipboard() {
-  if (m_clipboard.empty() || !m_doc)
+  // s298 DIAG — STRIP after triage. Entry-point dump.
+  LOG_INFO("[GRPDIAG] paste_clipboard: ENTRY  clipboard.size={} was_cut={} "
+           "m_doc={}",
+           m_clipboard.size(), m_clipboard_was_cut, (void *)m_doc);
+  if (m_clipboard.empty() || !m_doc) {
+    LOG_INFO("[GRPDIAG] paste_clipboard: BAIL — clipboard empty or no doc");
     return;
+  }
 
   SceneNode *target_layer = m_doc->active_layer();
-  if (!target_layer)
+  if (!target_layer) {
+    LOG_INFO("[GRPDIAG] paste_clipboard: BAIL — no active layer");
     return;
+  }
+  LOG_INFO("[GRPDIAG] paste_clipboard: target_layer iid='{}' name='{}'",
+           target_layer->internal_id, target_layer->name);
 
   // Build pasted nodes: copy from clipboard, freshen ids/names unless cut
   std::vector<std::unique_ptr<SceneNode>> pasted;
@@ -3259,17 +3316,44 @@ void Canvas::paste_clipboard() {
   m_sig_doc_changed.emit();
   queue_draw();
   LOG_INFO("Canvas: pasted {} object(s)", new_selection.size());
+  // s298 DIAG — STRIP after triage. Exit dump.
+  LOG_INFO("[GRPDIAG] paste_clipboard: EXIT  new_selection.size={}",
+           new_selection.size());
+  for (size_t i = 0; i < new_selection.size(); ++i) {
+    SceneNode *n = new_selection[i];
+    LOG_INFO("[GRPDIAG]   new_selection[{}]: ptr={} iid='{}' name='{}'",
+             i, (void *)n,
+             n ? n->internal_id : std::string{"(null)"},
+             n ? n->name : std::string{"(null)"});
+  }
 }
 
 // ── duplicate_selected
 // ────────────────────────────────────────────────────────
 void Canvas::duplicate_selected() {
-  if (m_selection.empty() || !m_doc)
+  // s298 DIAG — STRIP after triage. Entry-point dump.
+  LOG_INFO("[GRPDIAG] duplicate_selected: ENTRY  m_selection.size={} "
+           "m_selected={} m_doc={}",
+           m_selection.size(), (void *)m_selected, (void *)m_doc);
+  for (size_t i = 0; i < m_selection.size(); ++i) {
+    SceneNode *s = m_selection[i];
+    LOG_INFO("[GRPDIAG]   m_selection[{}]: ptr={} iid='{}' name='{}'",
+             i, (void *)s,
+             s ? s->internal_id : std::string{"(null)"},
+             s ? s->name : std::string{"(null)"});
+  }
+  if (m_selection.empty() || !m_doc) {
+    LOG_INFO("[GRPDIAG] duplicate_selected: BAIL — selection empty or no doc");
     return;
+  }
 
   auto entries = collect_selection_entries(m_doc, m_selection);
-  if (entries.empty())
+  if (entries.empty()) {
+    LOG_INFO("[GRPDIAG] duplicate_selected: BAIL — entries empty after "
+             "collect_selection_entries (all selected nodes are likely "
+             "nested inside containers, which this verb doesn't handle)");
     return;
+  }
 
   constexpr double OFFSET = 10.0; // doc-space nudge so duplicate is visible
 
@@ -3334,6 +3418,16 @@ void Canvas::duplicate_selected() {
   m_sig_doc_changed.emit();
   queue_draw();
   LOG_INFO("Canvas: duplicated {} object(s)", new_selection.size());
+  // s298 DIAG — STRIP after triage. Exit dump.
+  LOG_INFO("[GRPDIAG] duplicate_selected: EXIT  new_selection.size={}",
+           new_selection.size());
+  for (size_t i = 0; i < new_selection.size(); ++i) {
+    SceneNode *n = new_selection[i];
+    LOG_INFO("[GRPDIAG]   new_selection[{}]: ptr={} iid='{}' name='{}'",
+             i, (void *)n,
+             n ? n->internal_id : std::string{"(null)"},
+             n ? n->name : std::string{"(null)"});
+  }
 }
 
 // ── duplicate_in_place_selected
@@ -3345,12 +3439,28 @@ void Canvas::duplicate_selected() {
 // instance link, no propagation, no live binding to the original. It is
 // a duplicate that does not offset.
 void Canvas::duplicate_in_place_selected() {
-  if (m_selection.empty() || !m_doc)
+  // s298 DIAG — STRIP after triage. Entry-point dump.
+  LOG_INFO("[GRPDIAG] duplicate_in_place_selected: ENTRY  "
+           "m_selection.size={} m_selected={} m_doc={}",
+           m_selection.size(), (void *)m_selected, (void *)m_doc);
+  for (size_t i = 0; i < m_selection.size(); ++i) {
+    SceneNode *s = m_selection[i];
+    LOG_INFO("[GRPDIAG]   m_selection[{}]: ptr={} iid='{}' name='{}'",
+             i, (void *)s,
+             s ? s->internal_id : std::string{"(null)"},
+             s ? s->name : std::string{"(null)"});
+  }
+  if (m_selection.empty() || !m_doc) {
+    LOG_INFO("[GRPDIAG] duplicate_in_place_selected: BAIL — selection "
+             "empty or no doc");
     return;
+  }
 
   auto entries = collect_selection_entries(m_doc, m_selection);
-  if (entries.empty())
+  if (entries.empty()) {
+    LOG_INFO("[GRPDIAG] duplicate_in_place_selected: BAIL — entries empty");
     return;
+  }
 
   // s170 m3 — iid-based capture: same migration as duplicate_selected.
   std::vector<DuplicateCommand::Entry> cmd_entries;
@@ -3389,6 +3499,16 @@ void Canvas::duplicate_in_place_selected() {
   m_sig_doc_changed.emit();
   queue_draw();
   LOG_INFO("Canvas: duplicated-in-place {} object(s)", new_selection.size());
+  // s298 DIAG — STRIP after triage.
+  LOG_INFO("[GRPDIAG] duplicate_in_place_selected: EXIT  "
+           "new_selection.size={}", new_selection.size());
+  for (size_t i = 0; i < new_selection.size(); ++i) {
+    SceneNode *n = new_selection[i];
+    LOG_INFO("[GRPDIAG]   new_selection[{}]: ptr={} iid='{}' name='{}'",
+             i, (void *)n,
+             n ? n->internal_id : std::string{"(null)"},
+             n ? n->name : std::string{"(null)"});
+  }
 }
 
 void Canvas::select_object(SceneNode *obj) {
@@ -3615,6 +3735,58 @@ bool Canvas::is_node_alive(const SceneNode *target) const {
 // Coverage list — extend as new pointer-holders appear. The compile-time
 // rule: any new "SceneNode * m_…" member should be triaged against this
 // pump and added if it can persist across destructive ops.
+// s298 m2 (A1) — recursive walk that clears any text node's text-on-path
+// fields (text_path_id, text_path_offset, text_path_flip) when they point
+// at the target node's internal_id. Called from scrub_node_refs below to
+// close the silent-dangling class described in s297's text-on-path recon
+// (text_on_path_redesign.md, finding 3 / bug B2): deleting a guide path
+// previously left attached text with a stale text_path_id; the renderer
+// fell back to straight text on next paint, the SVG round-trip preserved
+// the dead iid on save, and the link became impossible to repair without
+// hand-editing the file.
+//
+// Descent rules mirror CurvzDocument::index_walk: children, plus the
+// authoritative non-children slots (clip_shape, blend_source_a/_b,
+// warp_source). Derived caches (blend_cache, warp_glyph_cache,
+// warp_cache) are deliberately skipped — same reasoning as the iid
+// walker, those rebuild on next paint and their iids aren't stable.
+//
+// Why fields are zeroed but text_x/text_y is left alone: when scrub
+// fires, the path is about to be destroyed and we don't have a sensible
+// new anchor position. The text node stays where it was; the renderer
+// falls through to draw_text_node's straight-text path on the next
+// paint. Compare release_text_from_path, which DOES reposition (via
+// top_compute_detach_position) because there the path is still alive
+// at detach time and we can compute a position along it.
+//
+// Not undoable on its own — scrub_node_refs is the destructive-op seam,
+// and the caller (delete command, etc.) owns the undo for what's being
+// destroyed. Open question deferred: if a future delete-path command
+// captures the partner text's link state and restores it on undo, the
+// pair could come back as a unit. For now, undoing a delete that took
+// a guide path with it leaves any partner text as straight text — a
+// known limitation, smaller than the silent-dangling original.
+static void scrub_text_path_refs(const SceneNode *n, const std::string &dead_iid) {
+  if (!n)
+    return;
+  for (const auto &c : n->children) {
+    if (c->is_text() && c->text_path_id == dead_iid) {
+      c->text_path_id = "";
+      c->text_path_offset = 0.0;
+      c->text_path_flip = false;
+    }
+    scrub_text_path_refs(c.get(), dead_iid);
+  }
+  if (n->clip_shape)
+    scrub_text_path_refs(n->clip_shape.get(), dead_iid);
+  if (n->blend_source_a)
+    scrub_text_path_refs(n->blend_source_a.get(), dead_iid);
+  if (n->blend_source_b)
+    scrub_text_path_refs(n->blend_source_b.get(), dead_iid);
+  if (n->warp_source)
+    scrub_text_path_refs(n->warp_source.get(), dead_iid);
+}
+
 void Canvas::scrub_node_refs(const SceneNode *target) {
   if (!target)
     return;
@@ -3693,6 +3865,16 @@ void Canvas::scrub_node_refs(const SceneNode *target) {
   // commands without raw-pointer captures aren't affected.
   if (m_history)
     m_history->scrub_command_history(target);
+
+  // s298 m2 (A1) — clear any dangling text-on-path back-references in
+  // the live document tree. See scrub_text_path_refs above for descent
+  // rules and rationale. Walks every layer subtree; cost is O(n) on
+  // document node count per destructive op, which matches the existing
+  // index-invalidate-then-rebuild cost shape on the next find_by_iid.
+  if (m_doc && !target->internal_id.empty()) {
+    for (const auto &l : m_doc->layers)
+      scrub_text_path_refs(l.get(), target->internal_id);
+  }
 
   // s167 m1 — invalidate the iid → SceneNode* index on the active
   // document. scrub_node_refs is the canonical "node about to be

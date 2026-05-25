@@ -12,6 +12,8 @@
 #include "math/BooleanOpsRefit.hpp"  // s139 m2 — keeper-set + cleanup_loop post-pass
 #include "math/CornerTreatment.hpp"
 #include "math/PathOffset.hpp"
+#include "math/PathNormalize.hpp"  // s299 m1 — false-Corner repair (pre-reduce)
+#include "math/PathReduce.hpp"     // s299 m2 — redundant-curve-node deletion
 #include "tools/PenTool.hpp"
 #include "animation/SvgPerformer.hpp"  // s291 m2 — SvgEmitter consumer that
                                        // drives beat construction during an

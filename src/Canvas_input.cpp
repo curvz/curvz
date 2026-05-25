@@ -4920,46 +4920,172 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
       const bool consumes_all = ((int)indices.size() >= orig_n);
 
       if (consumes_all) {
-        // All of this path's nodes are slated for delete → erase the
-        // whole object. Mirrors the historical n==1 branch but generalised
-        // to multi-node-consume-all. Snapshot before the erase so undo
-        // can re-insert at the original index.
-        SceneNode *parent_layer = nullptr;
+        // ── s296 m3: cascade-aware consume-all ─────────────────────────────
+        //
+        // All of this path's nodes are slated for delete → erase the whole
+        // object. Earlier this branch only handled top-level paths (direct
+        // layer children) and silently skipped nested paths with a log
+        // line. That left the user unable to delete the last node of a
+        // path inside a Compound or Group — the press did nothing.
+        //
+        // Now we use find_parent (which walks layers + one level into
+        // Group/Compound) to locate the immediate container, then apply
+        // a container-aware cascade:
+        //
+        //   parent is a layer  → erase obj. (Original behavior.)
+        //
+        //   parent is a Group  → erase obj. If the Group becomes empty,
+        //                        erase the Group too.
+        //
+        //   parent is a Compound → erase obj. Then count remaining:
+        //                          ≥2 → keep Compound.
+        //                           1 → release Compound: promote the
+        //                               surviving child to the Compound's
+        //                               slot in the grandparent, copy the
+        //                               Compound's fill/stroke/opacity
+        //                               onto the survivor (Compound was
+        //                               the canonical style holder; per-
+        //                               user spec the released path
+        //                               inherits the Compound's
+        //                               appearance), erase the Compound.
+        //                           0 → erase Compound (defensive; the
+        //                               Compound shouldn't have had only
+        //                               1 child to begin with, but handle
+        //                               it).
+        //
+        // All cascade steps are pushed as separate undoable commands
+        // inside the existing CompositeCommand so one Ctrl+Z reverses
+        // the entire press.
         int orig_index = -1;
-        for (auto &layer : m_doc->layers) {
-          for (int i = 0; i < (int)layer->children.size(); ++i) {
-            if (layer->children[i].get() == obj) {
-              parent_layer = layer.get();
-              orig_index = i;
-              break;
-            }
-          }
-          if (parent_layer)
-            break;
+        SceneNode *parent = find_parent(m_doc, obj, &orig_index);
+        if (!parent || orig_index < 0) {
+          // Couldn't locate — defensively skip rather than corrupt state.
+          // Same fallback as the original code's nested-skip, but should
+          // be unreachable for any path the user can actually select.
+          LOG_WARN("NodeTool: consume-all delete — could not find parent "
+                   "for path '{}'; skipping.", obj->id);
+          continue;
         }
-        if (parent_layer && orig_index >= 0) {
+
+        // Snapshot + erase the path itself.
+        {
           auto snap = clone_node(*obj);
           composite->add(std::make_unique<DeleteObjectCommand>(
-              parent_layer, std::move(snap), orig_index));
-          // Mutate now so subsequent groups see consistent state. Match
-          // the existing single-node-erase pattern: scrub Canvas state
-          // pointing at the about-to-be-freed object before the erase.
+              parent, std::move(snap), orig_index));
           scrub_node_refs(obj);
           if (m_selected == obj)
             primary_erased = true;
-          parent_layer->children.erase(parent_layer->children.begin() +
-                                        orig_index);
-        } else {
-          // Object not at a top-level layer — nested in a Group/Compound.
-          // Leave it intact; falling through to the per-node path would
-          // empty the path's nodes vector and produce a degenerate node-
-          // less Path, which other code may not handle. Safer to skip
-          // this group with a log line. The user can ungroup/release-
-          // compound first if they want to delete the contained path.
-          LOG_INFO("NodeTool: skipping consume-all delete on nested path "
-                   "'{}' — not at top-level layer; ungroup first.",
-                   obj->id);
+          parent->children.erase(parent->children.begin() + orig_index);
         }
+
+        // Cascade decision based on parent's type and post-erase count.
+        const bool parent_is_compound =
+            (parent->type == SceneNode::Type::Compound);
+        const bool parent_is_group =
+            (parent->type == SceneNode::Type::Group);
+        const int remaining = (int)parent->children.size();
+
+        if (parent_is_compound) {
+          if (remaining >= 2) {
+            // Compound still has 2+ children — leave as Compound.
+          } else if (remaining == 1) {
+            // Release the Compound: promote the survivor to grandparent.
+            // Find the Compound's slot in its grandparent.
+            int compound_idx = -1;
+            SceneNode *grand = find_parent(m_doc, parent, &compound_idx);
+            if (!grand || compound_idx < 0) {
+              LOG_WARN("NodeTool: consume-all delete — Compound has 1 child "
+                       "but grandparent not found; leaving Compound intact.");
+            } else {
+              // Build the promoted survivor: clone the child, overwrite
+              // its style with the Compound's. The Compound is the
+              // canonical style holder for Compound-typed objects, so
+              // when it dissolves, its appearance propagates onto the
+              // released path (per s296 m3 spec).
+              SceneNode *survivor_ptr = parent->children[0].get();
+              auto promoted = clone_node(*survivor_ptr);
+              promoted->fill = parent->fill;
+              promoted->stroke = parent->stroke;
+              promoted->opacity = parent->opacity;
+              promoted->fill_swatch_id = parent->fill_swatch_id;
+              promoted->stroke_swatch_id = parent->stroke_swatch_id;
+              promoted->bound_style = parent->bound_style;
+              promoted->visible = parent->visible;
+              promoted->locked = parent->locked;
+
+              // Undoable steps, in execute order:
+              //   1. Delete survivor from Compound (so the snapshot of
+              //      the Compound for step 2 captures the empty-Compound
+              //      state, NOT the with-survivor state — preserves
+              //      invariant that snapshot reflects the about-to-be-
+              //      erased object's actual state at erase time).
+              //   2. Delete Compound from grandparent.
+              //   3. Insert promoted survivor into grandparent at the
+              //      Compound's old slot.
+              auto survivor_snap = clone_node(*survivor_ptr);
+              composite->add(std::make_unique<DeleteObjectCommand>(
+                  parent, std::move(survivor_snap), 0));
+              scrub_node_refs(survivor_ptr);
+              parent->children.erase(parent->children.begin());
+
+              auto compound_snap = clone_node(*parent);
+              composite->add(std::make_unique<DeleteObjectCommand>(
+                  grand, std::move(compound_snap), compound_idx));
+              scrub_node_refs(parent);
+              if (m_selected == parent)
+                primary_erased = true;
+              // Capture the to-be-inserted node for the InsertObjectCommand
+              // BEFORE moving `promoted` into the live tree, so undo's
+              // re-insert clones from a stable snapshot.
+              auto insert_snap = clone_node(*promoted);
+              grand->children.erase(grand->children.begin() + compound_idx);
+              grand->children.insert(grand->children.begin() + compound_idx,
+                                     std::move(promoted));
+              composite->add(std::make_unique<InsertObjectCommand>(
+                  grand, std::move(insert_snap), compound_idx));
+              LOG_INFO("NodeTool: released Compound '{}' (1 child remaining) "
+                       "→ promoted path with Compound's style.", parent->id);
+            }
+          } else {
+            // remaining == 0 — Compound is empty, erase it. Should be rare
+            // (means Compound only had 1 child, which is a degenerate
+            // Compound, but defend against it).
+            int compound_idx = -1;
+            SceneNode *grand = find_parent(m_doc, parent, &compound_idx);
+            if (grand && compound_idx >= 0) {
+              auto compound_snap = clone_node(*parent);
+              composite->add(std::make_unique<DeleteObjectCommand>(
+                  grand, std::move(compound_snap), compound_idx));
+              scrub_node_refs(parent);
+              if (m_selected == parent)
+                primary_erased = true;
+              grand->children.erase(grand->children.begin() + compound_idx);
+              LOG_INFO("NodeTool: erased empty Compound '{}' after "
+                       "consume-all of its last child.", parent->id);
+            }
+          }
+        } else if (parent_is_group) {
+          if (remaining == 0) {
+            int group_idx = -1;
+            SceneNode *grand = find_parent(m_doc, parent, &group_idx);
+            if (grand && group_idx >= 0) {
+              auto group_snap = clone_node(*parent);
+              composite->add(std::make_unique<DeleteObjectCommand>(
+                  grand, std::move(group_snap), group_idx));
+              scrub_node_refs(parent);
+              if (m_selected == parent)
+                primary_erased = true;
+              grand->children.erase(grand->children.begin() + group_idx);
+              LOG_INFO("NodeTool: erased empty Group '{}' after consume-all "
+                       "of its last child.", parent->id);
+            }
+          }
+          // remaining ≥ 1 — Groups keep their identity regardless of count;
+          // user controls grouping deliberately via the Group/Ungroup verbs.
+        }
+        // parent is a layer → nothing further to do; the erase above was
+        // the whole operation. Matches the original top-level behavior.
+
         continue;
       }
 
@@ -6983,94 +7109,13 @@ void Canvas::on_top_begin(double x, double y) {
     return;
   }
 
-  // Phase 0: also check if user clicked a bare path (no pre-selected text)
-  // → create a new text node linked to that path and enter edit mode.
-  if (m_top_phase == 0) {
-    for (auto &layer : m_doc->layers) {
-      if (!layer->visible || layer->locked || layer->is_special_layer())
-        continue;
-      for (auto &obj_uptr : layer->children) {
-        SceneNode *obj = obj_uptr.get();
-        if (!obj->is_path() || !obj->path)
-          continue;
-        BezierPath bp = BezierPath::from_path_data(*obj->path);
-        HitResult hr = bp.hit_test({dx, dy}, m_zoom, 8.0);
-        if (hr.kind != HitResult::Kind::None) {
-          // Ensure path has stable internal_id
-          if (obj->internal_id.empty())
-            obj->internal_id = generate_internal_id();
-          // Find path start in doc space to position text anchor
-          Vec2 path_start{obj->path->nodes.front().x,
-                          obj->path->nodes.front().y};
-          // Create new text node
-          auto tn = std::make_unique<SceneNode>();
-          tn->type = SceneNode::Type::Text;
-          tn->internal_id = generate_internal_id();
-          tn->id =
-              "text_" + std::to_string(reinterpret_cast<uintptr_t>(tn.get()));
-          tn->name = m_doc->next_default_name(CurvzDocument::NameKind::Text);
-          tn->text_content = "";
-          tn->text_x = path_start.x;
-          tn->text_y = path_start.y;
-          tn->text_font_family = "Sans";
-          tn->text_font_size = 24.0;
-          style::mutate_appearance(*tn, [](SceneNode& n) {
-            n.fill.type = FillStyle::Type::CurrentColor;
-            n.stroke.paint.type = FillStyle::Type::None;
-          });
-          tn->text_path_id = obj->internal_id;
-          tn->text_path_offset = 0.0;
-          tn->text_path_flip = false;
-          SceneNode *tn_ptr = tn.get();
-          // Place in active layer
-          SceneNode *al = m_doc->active_layer();
-          if (al)
-            al->children.push_back(std::move(tn));
-          // Enter text editing mode
-          m_top_text = tn_ptr;
-          m_top_path_node = obj;
-          m_top_phase = 2;
-          // Enter text editing mode (same as Text tool activation)
-          m_text_editing = tn_ptr;
-          m_text_is_new = true;
-          if (m_text_entry) {
-            m_text_entry_conn_activate.disconnect();
-            m_text_entry_conn_changed.disconnect();
-            m_text_entry->set_text("");
-            m_text_entry->set_visible(true);
-            m_text_entry->grab_focus();
-            position_text_entry();
-            m_text_entry_conn_changed =
-                m_text_entry->signal_changed().connect([this]() {
-                  if (m_text_editing)
-                    m_text_editing->text_content = m_text_entry->get_text();
-                  queue_draw();
-                });
-            m_text_entry_conn_activate =
-                m_text_entry->signal_activate().connect([this, tn_ptr, obj]() {
-                  // Save TOP state before commit_text_edit, which
-                  // emits request_tool(Selection) internally and
-                  // will cause set_active_tool(TextOnPath) to reset.
-                  SceneNode *saved_text = tn_ptr;
-                  SceneNode *saved_path_node = obj;
-                  commit_text_edit();
-                  // Return to TextOnPath tool, then immediately
-                  // restore phase 2 so inspector sees the text node.
-                  set_active_tool(ActiveTool::TextOnPath);
-                  m_top_text = saved_text;
-                  m_top_path_node = saved_path_node;
-                  m_top_phase = 2;
-                  m_selected = saved_text;
-                  notify_object_selection_changed();
-                  queue_draw();
-                });
-          }
-          queue_draw();
-          return;
-        }
-      }
-    }
-  }
+  // s298 m1 (A4): removed unreachable "phase 0 bare-path → new linked text"
+  // branch that previously lived here. Two consecutive `if (m_top_phase == 0)`
+  // blocks existed; the first (text hit-test, just above) always returns —
+  // hit returns at notify_object_selection_changed(); miss returns at the
+  // "Missed — reset" branch. Nothing could ever reach the second block.
+  // Cleanup-only, no behavior change. Captured in s297's text-on-path
+  // redesign recon (text_on_path_redesign.md, code recon finding 4).
 
   // Phase 1: pick a path node to link
   if (m_top_phase == 1 && m_top_text) {
@@ -7178,8 +7223,56 @@ void Canvas::on_top_motion(double x, double y) {
 }
 
 void Canvas::on_top_end(double /*x*/, double /*y*/) {
-  if (m_top_dragging)
+  if (m_top_dragging) {
+    // s298 m4 (A3): make the slide-along-path drag undoable. Previously
+    // this was a live mutation with no command record — the drag updated
+    // text_path_offset directly in on_top_motion and on_top_end only
+    // emitted doc_changed to persist. That left no undo entry, and any
+    // subsequent TextEditCommand would snapshot the post-slide offset
+    // as its `before`, so undoing the edit would NOT revert the slide.
+    // Contributes to B1's "history fell off a cliff" symptom class
+    // (text_on_path_redesign.md, recon findings 1+2).
+    //
+    // Reuses LinkTextToPathCommand — it already swaps the full
+    // (text_path_id, offset, flip, x, y) tuple, which is a strict
+    // superset of what a slide changes (only offset). before/after
+    // for the unchanged fields are equal, so undo/redo of a pure
+    // slide is a no-op on those fields and a flip on offset. Cheaper
+    // than minting a new command class; description() reads "Link
+    // text to path" which is slightly imprecise for a slide but
+    // tolerable — the undo menu rarely surfaces this string and the
+    // class can grow a slide-detecting description() later if needed.
+    //
+    // Guards:
+    //   - m_top_text must be a real attached text node (text_path_id
+    //     non-empty). If the user clicked without dragging onto a
+    //     fresh path, the drag may have started in phase 1; defensive.
+    //   - Skip the push if the offset didn't actually move — clicks
+    //     and zero-delta drags shouldn't pollute history. Exact equality
+    //     is fine here: on_top_motion writes the offset by direct
+    //     assignment from arc-table sampling, so identical samples
+    //     produce identical doubles.
+    //   - obj_iid must be non-empty for the captured-iid command to
+    //     resolve at undo time. The text node should already have a
+    //     stable iid from creation, but defensive ensure mirrors the
+    //     pattern at the phase-1 link push site above.
+    if (m_history && m_top_text && !m_top_text->text_path_id.empty() &&
+        m_top_text->text_path_offset != m_top_drag_start_off) {
+      if (m_top_text->internal_id.empty())
+        m_top_text->internal_id = generate_internal_id();
+      m_history->push(std::make_unique<LinkTextToPathCommand>(
+          project(), m_top_text->internal_id,
+          m_top_text->text_path_id,       // before path_id (unchanged)
+          m_top_drag_start_off,           // before offset (captured at begin)
+          m_top_text->text_path_flip,     // before flip (unchanged)
+          m_top_text->text_x, m_top_text->text_y, // before x/y (unchanged)
+          m_top_text->text_path_id,       // after path_id (same)
+          m_top_text->text_path_offset,   // after offset (current live)
+          m_top_text->text_path_flip,     // after flip (same)
+          m_top_text->text_x, m_top_text->text_y)); // after x/y (same)
+    }
     m_sig_doc_changed.emit(); // persist the new offset
+  }
   m_top_dragging = false;
 }
 

@@ -399,6 +399,11 @@ set(SOURCES
     src/math/CornerTreatment.cpp
     src/math/HitTest.cpp
     src/math/PathOffset.cpp
+    # s299 m1+m2 — offset-cleanup pumps: normalize false-Corner types, then
+    # delete redundant curve nodes. Pre-step honest-types + Huffman-style
+    # uniformity strip. See include/math/PathNormalize.hpp and PathReduce.hpp.
+    src/math/PathNormalize.cpp
+    src/math/PathReduce.cpp
 
     # Color system. See ARCHITECTURE.md "Color System".
     # Phase 1: atoms + interop with existing FillStyle. No renderers migrate
