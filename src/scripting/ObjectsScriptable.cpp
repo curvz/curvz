@@ -619,6 +619,7 @@ bool is_scene_object(const Curvz::SceneNode* n) {
         case T::Blend:
         case T::Warp:
         case T::Text:
+        case T::TextBox:
         case T::Image:
         case T::Ref:
         case T::Measurement:
@@ -648,6 +649,7 @@ std::string type_to_string(Curvz::SceneNode::Type t) {
         case T::Blend:       return "blend";
         case T::Warp:        return "warp";
         case T::Text:        return "text";
+        case T::TextBox:     return "textbox";
         case T::Image:       return "image";
         case T::Ref:         return "ref";
         case T::Measurement: return "measurement";
@@ -1102,6 +1104,7 @@ bool is_container_type(Curvz::SceneNode::Type t) {
             return true;
         case T::Path:
         case T::Text:
+        case T::TextBox:
         case T::Image:
         case T::Ref:
         case T::Measurement:
@@ -1113,8 +1116,12 @@ bool is_container_type(Curvz::SceneNode::Type t) {
             // Refused as reparent destinations — reparenting into a
             // structural slot is a separate operation than reparenting
             // into a children list, and the verb's contract is the
-            // latter. Guide is a leaf typed like a marker, no
-            // children. All return false.
+            // latter. TextBox is in the same family: even though its
+            // parts live in `children`, the slots are structurally
+            // assigned (boundary at [0], text at [1]) and not a user-
+            // controlled list — accepting reparents would break the
+            // container's invariants. Guide is a leaf typed like a
+            // marker, no children. All return false.
             return false;
     }
     return false;

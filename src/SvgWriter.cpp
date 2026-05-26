@@ -1,6 +1,7 @@
 #include "SvgWriter.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"
+#include "TextCursor.hpp"  // compute_text_layout — for TextBox per-baseline emit
 #include <sstream>
 #include <iomanip>
 #include <fstream>
@@ -587,6 +588,152 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         return;
     }
 
+    // ── TextBox ────────────────────────────────────────────────────────────
+    // A typed container holding a text frame as one user-visible atom.
+    // The on-disk format is composable SVG that any viewer renders
+    // correctly without knowing the data-curvz-textbox marker:
+    //
+    //   <g data-curvz-textbox="1" iid name [opacity] [display]>
+    //     <path ... boundary path with margins as data-curvz-margin-*>
+    //     <!-- For each laid-out baseline: -->
+    //     <path id="baseline_<iid>_<N>" d="M xs y L xe y"
+    //           fill="none" stroke="none" data-curvz-baseline="1"/>
+    //     <text font-family=... font-size=... fill=...>
+    //       <textPath href="#baseline_<iid>_<N>">slice</textPath>
+    //     </text>
+    //   </g>
+    //
+    // The boundary's fill/stroke/path-d round-trip through the normal
+    // Path branch. Margins ride as data-curvz-margin-* attributes on the
+    // boundary's <path> tag (the existing text emit's margin attrs,
+    // relocated to their structural owner per the stage-3d refactor).
+    //
+    // Baseline paths are SVG-output-only: Curvz regenerates them on load
+    // via compute_text_layout, so the parser discards them. They exist
+    // in the file because external SVG viewers need real paths for the
+    // <textPath href="#..."> binding to work. Without them, Inkscape /
+    // Firefox / preview tools would render the text as a single
+    // overflowing line at the text's x/y, ignoring the boundary.
+    //
+    // The full buffer is also emitted as data-curvz-content on the <g>
+    // so the parser has a single round-trip-safe source for the buffer.
+    // The textPath slices are for external rendering fidelity; the
+    // attribute is for parse correctness. Same redundancy idiom the
+    // existing text emit uses (split_tags discards inter-tag char data,
+    // so attribute is the safe path).
+    if (obj.type == GlyphObject::Type::TextBox) {
+        // Safety: malformed TextBox (wrong child count or types) emits
+        // a degraded form — the marker group with nothing inside, so the
+        // file still validates and the parser doesn't crash on load.
+        // Should never happen if construction follows the contract.
+        if (obj.children.size() < 2 ||
+            !obj.children[0] || !obj.children[1] ||
+            !obj.children[0]->is_text() ||
+            obj.children[1]->type != GlyphObject::Type::Path) {
+            out << pad << "<g data-curvz-textbox=\"1\"";
+            if (!obj.internal_id.empty())
+                out << " data-curvz-iid=\"" << obj.internal_id << "\"";
+            out << "></g>\n";
+            LOG_WARN("SvgWriter: TextBox '{}' has malformed children — "
+                     "emitting empty marker", obj.id);
+            return;
+        }
+        const SceneNode& text     = *obj.children[0];
+        const SceneNode& boundary = *obj.children[1];
+
+        // Inline XML escape (local to this branch — matches the text
+        // emit's helper a few lines below).
+        auto xml_escape = [](const std::string& s) {
+            std::string r;
+            for (char c : s) {
+                if      (c == '&') r += "&amp;";
+                else if (c == '<') r += "&lt;";
+                else if (c == '>') r += "&gt;";
+                else if (c == '"') r += "&quot;";
+                else               r += c;
+            }
+            return r;
+        };
+
+        // ── Open the group with identity + container attributes. ─────────
+        out << pad << "<g data-curvz-textbox=\"1\"";
+        if (role_hint)                  out << " " << role_hint;
+        out << id_attr_str(obj);
+        if (!obj.internal_id.empty())   out << " data-curvz-iid=\"" << obj.internal_id << "\"";
+        if (!obj.name.empty())          out << " data-curvz-name=\"" << xml_escape(obj.name) << "\"";
+        if (!obj.visible)               out << " display=\"none\"";
+        if (obj.opacity < 0.999)        out << " opacity=\"" << fmt2(obj.opacity) << "\"";
+        // Full buffer as the round-trip-safe source of truth.
+        out << " data-curvz-content=\"" << xml_escape(text.text_content) << "\"";
+        out << shadow_attr_str(obj);
+        out << ">\n";
+
+        // ── Boundary child — emit via the normal Path branch so the
+        //    boundary's fill, stroke, path data, and margins (now owned
+        //    by the boundary per stage 3d) all serialise through the
+        //    same code path any other Path uses. Recursion via
+        //    write_object keeps the boundary's representation uniform
+        //    with the rest of the document.
+        write_object(out, boundary, indent + 1);
+
+        // ── Per-baseline path + textPath pairs. compute_text_layout
+        //    runs Pango against the current boundary + text to find
+        //    where each visual line sits in doc space. For empty
+        //    buffers the baseline list is empty, and we emit nothing —
+        //    the textbox loads back as an empty frame the user can
+        //    type into. Same behaviour as a freshly-created textbox.
+        TextLayout layout = compute_text_layout(&boundary, &text);
+        const std::string ipad((indent + 1) * 2, ' ');
+        for (size_t bi = 0; bi < layout.baselines.size(); ++bi) {
+            const auto& bl = layout.baselines[bi];
+            // Stable id from the textbox iid + baseline index. Re-savable
+            // (same textbox produces same ids on re-emit, which lets diff
+            // tools compare versions cleanly).
+            const std::string bid = "baseline_" + obj.internal_id + "_" +
+                                    std::to_string(bi);
+            // Transparent line for the textPath reference. fill="none"
+            // and stroke="none" make it invisible in external viewers;
+            // the marker data-curvz-baseline lets the parser identify
+            // and discard these on load (regenerated from compute_text_layout).
+            out << ipad << "<path id=\"" << bid << "\""
+                << " d=\"M " << fmt2(bl.x_start) << " " << fmt2(bl.y)
+                << " L "    << fmt2(bl.x_end)   << " " << fmt2(bl.y) << "\""
+                << " fill=\"none\" stroke=\"none\""
+                << " data-curvz-baseline=\"1\"/>\n";
+
+            // Slice of the buffer for this baseline. Guard against
+            // out-of-range byte ranges (defensive — compute_text_layout
+            // should produce coherent ranges).
+            const std::string& buf = text.text_content;
+            size_t bs = std::min(bl.byte_start, buf.size());
+            size_t be = std::min(bl.byte_end,   buf.size());
+            if (be < bs) be = bs;
+            std::string slice = buf.substr(bs, be - bs);
+
+            // <text><textPath href="#baseline_iid_N">slice</textPath></text>.
+            // Font + fill attrs ride on the <text> so the textPath
+            // renders correctly in external viewers — same attribute
+            // set as the normal text emit, minus the position attrs
+            // (textPath positions itself along its href target).
+            out << ipad << "<text"
+                << " font-family=\"" << text.text_font_family << "\""
+                << " font-size=\""   << fmt2(text.text_font_size) << "\"";
+            if (text.text_bold)   out << " font-weight=\"bold\"";
+            if (text.text_italic) out << " font-style=\"italic\"";
+            out << " fill=\"" << fill_attr(text.fill) << "\"";
+            if (text.stroke.paint.type != FillStyle::Type::None)
+                out << stroke_attrs(text.stroke);
+            out << ">"
+                << "<textPath href=\"#" << bid << "\">"
+                << xml_escape(slice)
+                << "</textPath>"
+                << "</text>\n";
+        }
+
+        out << pad << "</g>\n";
+        return;
+    }
+
     // ── Compound ───────────────────────────────────────────────────────────
     if (obj.type == GlyphObject::Type::Compound) {
         // Emit as a single <path> with all child subpaths concatenated.
@@ -860,8 +1007,18 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
             << " data-curvz-types=\"" << types_str << "\""
             << (obj.name.empty() ? "" : " data-curvz-name=\"" + obj.name + "\"")
             << fill << stroke << swatch_bind << style_bind << opacity_attr
-            << shadow_attr_str(obj)  // S97 m1
-            << "/>\n";
+            << shadow_attr_str(obj);  // S97 m1
+        // Margins ride on the Path when it's owned by a TextBox as the
+        // boundary child — the stage-3d ownership move put them here.
+        // Plain Paths have zero on all four sides; the conditional emit
+        // keeps non-textbox files clean. Same data-curvz-margin-*
+        // attribute names the legacy text emit used; parser routes them
+        // to the boundary's fields rather than the text's now.
+        if (obj.text_margin_top    != 0.0) out << " data-curvz-margin-top=\""    << fmt2(obj.text_margin_top)    << "\"";
+        if (obj.text_margin_bottom != 0.0) out << " data-curvz-margin-bottom=\"" << fmt2(obj.text_margin_bottom) << "\"";
+        if (obj.text_margin_left   != 0.0) out << " data-curvz-margin-left=\""   << fmt2(obj.text_margin_left)   << "\"";
+        if (obj.text_margin_right  != 0.0) out << " data-curvz-margin-right=\""  << fmt2(obj.text_margin_right)  << "\"";
+        out << "/>\n";
     }
 }
 

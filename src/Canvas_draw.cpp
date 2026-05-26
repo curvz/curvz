@@ -2499,6 +2499,73 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
     return;
   }
 
+  // ── TextBox: a typed container that renders a text frame as one
+  //   user-visible atom. Owns its parts as `children` with a fixed
+  //   role-to-index mapping:
+  //
+  //     children[0]  text node — what the user reads, drawn over
+  //                  the boundary.
+  //     children[1]  boundary path — the frame, fill/stroke like any
+  //                  other Path. Default style is transparent, but
+  //                  the user can set fill or stroke and they render
+  //                  through the boundary's normal Path branch.
+  //
+  //   Render order is bottom-up: boundary first (so its fill/stroke
+  //   land underneath), then text on top. We don't iterate via the
+  //   generic children loop because the text child needs to lay out
+  //   against its sibling boundary — calling draw_object on the text
+  //   directly would route through draw_text_node's legacy
+  //   text_boundary_ids lookup, which is empty for TextBox-owned text
+  //   (the link is structural now, not field-based). draw_text_in_-
+  //   boundary takes the boundary by reference and does the right
+  //   layout — same function the legacy paired-sibling path uses,
+  //   just called with the boundary in hand rather than looked up by
+  //   iid.
+  //
+  //   The TextBox has no paint of its own — it's a container. Opacity
+  //   composites the whole textbox as a unit (begin_alpha/end_alpha
+  //   wrap the two paints), so children's individual opacities don't
+  //   compound against the parent's — matching Group / ClipGroup /
+  //   Blend / Warp SVG semantics.
+  //
+  //   Falls back gracefully if the container is malformed: missing
+  //   text or boundary child → render nothing for that role rather
+  //   than crash. A reader of the live code can see the invariant
+  //   in the size/type checks.
+  if (obj.type == SceneNode::Type::TextBox) {
+    if (!obj.visible) {
+      cr->restore();
+      return;
+    }
+    if (obj.children.size() < 2 || !obj.children[0] || !obj.children[1]) {
+      cr->restore();
+      return;
+    }
+    const SceneNode &text     = *obj.children[0];
+    const SceneNode &boundary = *obj.children[1];
+    if (!text.is_text() || boundary.type != SceneNode::Type::Path) {
+      cr->restore();
+      return;
+    }
+    begin_alpha();
+    // 1) Boundary first (underneath). Recurses via draw_object so
+    //    the boundary's fill/stroke/opacity/transform all apply via
+    //    the normal Path branch — same code path the user gets when
+    //    selecting and styling the boundary later.
+    draw_object(cr, boundary, layer_r, layer_g, layer_b);
+    // 2) Text on top, laid out against the boundary. Bypasses
+    //    draw_text_node (which expects text_boundary_ids to do its
+    //    lookup) and goes straight to draw_text_in_boundary with the
+    //    boundary in hand — the structural sibling link replaces the
+    //    iid lookup.
+    if (text.visible) {
+      draw_text_in_boundary(cr, text, boundary);
+    }
+    end_alpha();
+    cr->restore();
+    return;
+  }
+
   // ── ClipGroup: children drawn inside a Cairo clip region ──────────────
   // Normal mode:
   //   - Build a Cairo path from clip_shape's geometry (Path or Compound).
@@ -3896,12 +3963,16 @@ void Canvas::draw_text_baseline_guides(
     const Cairo::RefPtr<Cairo::Context> &cr) {
   if (!m_doc) return;
 
-  // Identify which text+boundary pair to render guides for. Three sources,
-  // in priority order:
+  // Identify which text+boundary pair to render guides for. Four
+  // sources, in priority order:
   //   1. Active edit (m_text_editing + m_text_boundary_editing).
-  //   2. A selected boundary whose iid is referenced by some text node's
-  //      text_boundary_ids (select the boundary → show its guides).
-  //   3. A selected bound text node whose first boundary resolves.
+  //   2. A selected TextBox container — text is children[0],
+  //      boundary is children[1] (structural sibling lookup).
+  //   3. A selected boundary whose iid is referenced by some text
+  //      node's text_boundary_ids (legacy paired-sibling: select the
+  //      boundary → show its guides).
+  //   4. A selected bound text node whose first boundary resolves
+  //      (legacy paired-sibling: select the text → show its guides).
   SceneNode* text_for_guides = nullptr;
   SceneNode* boundary_for_guides = nullptr;
 
@@ -3909,7 +3980,13 @@ void Canvas::draw_text_baseline_guides(
     text_for_guides = m_text_editing;
     boundary_for_guides = m_text_boundary_editing;
   } else if (m_selected) {
-    if (m_selected->is_text() && !m_selected->text_boundary_ids.empty()) {
+    if (m_selected->is_text_box() && m_selected->children.size() >= 2 &&
+        m_selected->children[0] && m_selected->children[1] &&
+        m_selected->children[0]->is_text() &&
+        m_selected->children[1]->is_path()) {
+      text_for_guides     = m_selected->children[0].get();
+      boundary_for_guides = m_selected->children[1].get();
+    } else if (m_selected->is_text() && !m_selected->text_boundary_ids.empty()) {
       text_for_guides = m_selected;
       boundary_for_guides = find_text_boundary(
           m_selected->text_boundary_ids.front());
@@ -3956,10 +4033,14 @@ void Canvas::draw_text_baseline_guides(
       if (n.x < bx0) bx0 = n.x; if (n.x > bx1) bx1 = n.x;
       if (n.y < by0) by0 = n.y; if (n.y > by1) by1 = n.y;
     }
-    double ix0 = bx0 + text_for_guides->text_margin_left;
-    double iy0 = by0 + text_for_guides->text_margin_top;
-    double ix1 = bx1 - text_for_guides->text_margin_right;
-    double iy1 = by1 - text_for_guides->text_margin_bottom;
+    // Margins owned by the boundary for TextBox-owned text; legacy
+    // paired-sibling text owns them on the text node. The helper
+    // returns whichever side actually carries them.
+    auto m = effective_text_margins(text_for_guides, boundary_for_guides);
+    double ix0 = bx0 + m.left;
+    double iy0 = by0 + m.top;
+    double ix1 = bx1 - m.right;
+    double iy1 = by1 - m.bottom;
     if (ix1 > ix0 && iy1 > iy0) {
       double sx0, sy0, sx1, sy1;
       doc_to_screen(ix0, iy0, sx0, sy0);

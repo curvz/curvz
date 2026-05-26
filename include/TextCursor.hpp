@@ -111,7 +111,18 @@ public:
     // The Canvas pointer gives access to the doc tree for resolving the
     // bound boundary by iid; nothing is captured longer than the cursor
     // lifetime.
-    TextCursor(Canvas* canvas, SceneNode* text_node);
+    //
+    // The optional `boundary` parameter lets the caller pass the
+    // boundary directly. This is the path used by TextBox-owned text
+    // — the boundary is a structural sibling (parent->children[1]),
+    // not an iid-linked peer, so the cursor stores the pointer rather
+    // than looking it up via text_boundary_ids each frame. When
+    // omitted (legacy paired-sibling text), position_on_canvas falls
+    // back to the iid lookup on text_boundary_ids the way it always
+    // did. The two paths coexist so files loaded from before the
+    // TextBox migration continue to edit correctly.
+    TextCursor(Canvas* canvas, SceneNode* text_node,
+               SceneNode* boundary = nullptr);
 
     SceneNode* text_node() const { return m_text; }
     size_t     byte_index() const { return m_byte_index; }
@@ -179,6 +190,10 @@ public:
 private:
     Canvas*    m_canvas = nullptr;
     SceneNode* m_text   = nullptr;
+    // Optional direct boundary pointer — used when the cursor is
+    // operating on TextBox-owned text. nullptr means "fall back to
+    // iid lookup on m_text->text_boundary_ids," the legacy path.
+    SceneNode* m_boundary = nullptr;
     size_t     m_byte_index = 0;
     bool       m_visible = true;
 };

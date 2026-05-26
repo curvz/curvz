@@ -229,7 +229,18 @@ struct SceneNode {
     MarginLayer,
     ClipGroup,
     Blend,
-    Warp
+    Warp,
+    // TextBox — typed container that owns a text frame as one user-
+    // visible atom. Sibling to ClipGroup / Blend / Warp in the "typed
+    // container" family: same kind of node, different rules about what
+    // its children mean. The first-class type exists so "is this a
+    // textbox?" is a compile-time-checkable type query, not a flag-
+    // sniffing pattern over Group children. Construction, rendering,
+    // and serialisation are added in later stages; introducing the
+    // type by itself is a no-op at runtime (nothing constructs one
+    // yet) and additive at compile time (every existing exhaustive
+    // switch on Type has a default: clause; TextBox falls through).
+    TextBox
   };
 
   Type type = Type::Path;
@@ -615,8 +626,25 @@ struct SceneNode {
   std::string text_line_path_id;
   // Inset margins from the boundary edge inward (doc units). Text flows in
   // the inset region, not the raw boundary. Zero on all four sides = boundary
-  // edge IS the text edge (matches today's "no margin" expectation for newly
-  // created frames).
+  // edge IS the text edge.
+  //
+  // Ownership rule (post-TextBox-migration):
+  //
+  //   For TextBox-owned text, margins live on the BOUNDARY child
+  //   (children[1]). The boundary defines the shape; the margin is an
+  //   inset operation on the shape. The text child does not carry
+  //   margins. Readers go through `effective_text_margins` below, which
+  //   makes the rule structural rather than something each call site
+  //   has to remember.
+  //
+  //   For legacy paired-sibling text (loaded from before the migration),
+  //   margins live on the TEXT node. The boundary has zero. The same
+  //   helper reads from whichever side is non-zero, so legacy files
+  //   continue to lay out correctly without changing the readers.
+  //
+  //   The four values are independent — top/bottom/left/right can each
+  //   take any non-negative value. Current UI sets them uniformly; a
+  //   future UI exposes them per side without any structural change.
   double text_margin_top    = 0.0;
   double text_margin_bottom = 0.0;
   double text_margin_left   = 0.0;
@@ -678,6 +706,7 @@ struct SceneNode {
   bool is_ref_layer()    const { return type == Type::RefLayer; }
   bool is_ref()          const { return type == Type::Ref; }
   bool is_text()         const { return type == Type::Text; }
+  bool is_text_box()     const { return type == Type::TextBox; }
   bool is_image()        const { return type == Type::Image; }
   bool is_measure_layer()  const { return type == Type::MeasureLayer; }
   bool is_measurement()    const { return type == Type::Measurement; }
@@ -728,6 +757,7 @@ struct SceneNode {
       case Type::ClipGroup:
       case Type::Blend:
       case Type::Warp:
+      case Type::TextBox:
         return true;
       default:
         return false;
@@ -1313,6 +1343,58 @@ inline PathData spiral_to_path(double cx, double cy, double outer_r,
   return pd;
 }
 
+
+// ── effective_text_margins ──────────────────────────────────────────────────
+// Returns the four margin values that should be applied when laying text
+// into a boundary, accounting for the ownership rule documented next to
+// `text_margin_*` above. The rule:
+//
+//   1. If the boundary has any non-zero margin → boundary owns them all.
+//      Read all four from the boundary; ignore the text's.
+//
+//   2. Otherwise (boundary is zero on all four) → fall back to the
+//      text's margins. This handles legacy paired-sibling text from
+//      before the TextBox migration.
+//
+// Both sides default to zero, which is also the "edge is the text edge"
+// state — so a fully-zero pair correctly returns all zeros from either
+// branch.
+//
+// Pass either side null safely — a null is treated as "no margins on
+// that side." Callers in TextCursor and Canvas_draw always have both
+// pointers, but the defensive shape protects against unexpected nullptr
+// without bringing the layout function down.
+struct EffectiveTextMargins {
+  double top = 0.0;
+  double bottom = 0.0;
+  double left = 0.0;
+  double right = 0.0;
+};
+
+inline EffectiveTextMargins effective_text_margins(const SceneNode* text,
+                                                   const SceneNode* boundary) {
+  EffectiveTextMargins m;
+  if (boundary) {
+    bool boundary_owns = boundary->text_margin_top    != 0.0 ||
+                         boundary->text_margin_bottom != 0.0 ||
+                         boundary->text_margin_left   != 0.0 ||
+                         boundary->text_margin_right  != 0.0;
+    if (boundary_owns) {
+      m.top    = boundary->text_margin_top;
+      m.bottom = boundary->text_margin_bottom;
+      m.left   = boundary->text_margin_left;
+      m.right  = boundary->text_margin_right;
+      return m;
+    }
+  }
+  if (text) {
+    m.top    = text->text_margin_top;
+    m.bottom = text->text_margin_bottom;
+    m.left   = text->text_margin_left;
+    m.right  = text->text_margin_right;
+  }
+  return m;
+}
 
 // Legacy compat — GlyphObject alias so old code compiles during transition
 // Remove once all call sites are updated.

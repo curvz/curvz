@@ -1975,6 +1975,34 @@ public:
   //    the iid isn't found (boundary deleted, dangling reference).
   SceneNode* find_text_boundary(const std::string& iid);
 
+  // Walks the doc tree to find the TextBox container whose children[0]
+  // is `text`. The text-tool edit machinery holds a raw pointer to the
+  // text node being edited (m_text_editing) — at undo-push time and at
+  // post-commit selection time the commit / cancel paths need to
+  // address the TextBox parent rather than the text child, since the
+  // TextBox is the user-visible atom. Returns nullptr if no such
+  // TextBox is found (legacy unbound text, corrupted state, or the
+  // textbox was deleted out from under us during edit).
+  SceneNode* find_text_box_for_text(const SceneNode* text);
+
+  // Enter text-edit mode on an existing TextBox container. Sets the
+  // edit-state members (m_text_editing, m_text_boundary_editing),
+  // takes the before-state snapshot for undo, selects the TextBox
+  // as the user-visible atom (handles draw around its frame during
+  // edit), and starts the canvas text cursor. Called from the
+  // double-click handlers in Selection and Text tools — both routes
+  // share the same edit-entry contract so the cursor wiring lives in
+  // exactly one place.
+  //
+  // The caller is responsible for any tool-switching (e.g. Selection
+  // tool's double-click emits ActiveTool::Text before scheduling this
+  // call via signal_idle). The helper itself is tool-agnostic — it
+  // does not touch m_tool or emit signal_request_tool.
+  //
+  // Returns silently if the TextBox is malformed (missing or wrong-
+  // typed children). The user sees no edit start, but no crash.
+  void begin_textbox_edit(SceneNode* text_box);
+
   // ── s301 m1g — CurrentColor-style caret contrast.
   //    The caret should be visible against whatever the canvas
   //    background is — black on light backgrounds, white on dark.

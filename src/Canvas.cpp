@@ -577,12 +577,50 @@ Canvas::Canvas() {
                                                         double y) {
     if (n_press != 2)
       return;
-    if (m_tool != ActiveTool::Selection)
+    // Selection and Text tools both honour double-click → edit on a
+    // textbox. Selection promotes to Text first; Text is already
+    // there. Other tools ignore double-clicks (their own gestures
+    // own the double-click vocabulary).
+    if (m_tool != ActiveTool::Selection && m_tool != ActiveTool::Text)
       return;
     double dx, dy;
     screen_to_doc(x, y, dx, dy);
     SceneNode *hit = hit_test(dx, dy);
     if (!hit) return;
+
+    // ── TextBox: double-click → edit, regardless of which of the
+    //   two honouring tools we're in. The user model: muscle memory
+    //   says "double-click a thing to drill in." For a textbox,
+    //   drilling in means editing its text.
+    //
+    //   Selection tool: emit a tool switch to Text (text editing
+    //     lives in the Text tool), then schedule begin_textbox_edit
+    //     via signal_idle so the tool flip settles before edit
+    //     state is set up. Same async pattern Case A below uses
+    //     for legacy text re-entry.
+    //
+    //   Text tool: already in the right tool. Call the helper
+    //     directly — no scheduling needed.
+    if (hit->type == SceneNode::Type::TextBox) {
+      SceneNode* tb = hit;
+      if (m_tool == ActiveTool::Selection) {
+        m_sig_request_tool.emit(ActiveTool::Text);
+        Glib::signal_idle().connect_once([this, tb]() {
+          begin_textbox_edit(tb);
+        });
+      } else {
+        begin_textbox_edit(tb);
+      }
+      return;
+    }
+
+    // The remaining cases handle legacy paired-sibling text (bare
+    // Text node or boundary Path at the layer level) and only fire
+    // in Selection tool. Text tool's own press path already handles
+    // legacy paired-sibling re-entry directly; doing it here too
+    // would double-fire.
+    if (m_tool != ActiveTool::Selection)
+      return;
 
     // Case A: double-clicked the text node itself (legacy unbound or
     // bound). Enter edit via Text tool's on_text_begin.
@@ -3614,6 +3652,18 @@ void collect_paths(SceneNode *obj, std::vector<SceneNode *> &out) {
       collect_paths(obj->clip_shape.get(), out);
     return;
   }
+  // TextBox: descend into children. children[1] is the boundary
+  // (a Path) and gets collected; children[0] is the text node and
+  // is handled by collect_text_image_leaves. Drag-move walks the
+  // returned list and translates each Path's nodes — translating
+  // the boundary moves the visible frame; the text inside reflows
+  // automatically because its layout is computed from the boundary
+  // geometry. Same shape as ClipGroup's descent.
+  if (obj->type == SceneNode::Type::TextBox) {
+    for (auto &child : obj->children)
+      collect_paths(child.get(), out);
+    return;
+  }
   // Blend: A and B live in dedicated slots (not in `children`), and
   // blend_cache holds the generated intermediates. Transforms driven
   // off the returned list (drag, nudge, scale, rotate, skew) then
@@ -3675,6 +3725,18 @@ void collect_text_image_leaves(SceneNode *obj,
       collect_text_image_leaves(child.get(), out);
     if (obj->type == SceneNode::Type::ClipGroup && obj->clip_shape)
       collect_text_image_leaves(obj->clip_shape.get(), out);
+  }
+  // TextBox: descend into children. children[0] is the text node and
+  // gets collected here; children[1] is the boundary Path and is
+  // handled by collect_paths. Drag-move uses both lists so the
+  // boundary's anchors AND the text's text_x/text_y translate
+  // together (text_x/text_y is largely cosmetic inside a textbox —
+  // layout reflows from the boundary — but moving it in lock-step
+  // with the boundary keeps the field meaningful for any consumer
+  // that reads it). Same shape as the ClipGroup descent above.
+  if (obj->type == SceneNode::Type::TextBox) {
+    for (auto &child : obj->children)
+      collect_text_image_leaves(child.get(), out);
   }
   // Blend: descend into A, B, and cache. In v1 sources are required to
   // be Paths so this always produces empty out, but we descend
@@ -3862,10 +3924,85 @@ SceneNode* Canvas::find_text_boundary(const std::string& iid) {
   for (auto& layer : m_doc->layers) {
     if (!layer) continue;
     for (auto& c : layer->children) {
-      if (c && c->internal_id == iid) return c.get();
+      if (!c) continue;
+      // Direct layer-child match — covers legacy paired-sibling text
+      // (loaded from pre-TextBox files) where boundaries live at the
+      // layer level.
+      if (c->internal_id == iid) return c.get();
+      // TextBox-nested match — the boundary is children[1] of a
+      // TextBox container. One extra level of descent; matches the
+      // construction site's invariant.
+      if (c->type == SceneNode::Type::TextBox) {
+        for (auto& gc : c->children) {
+          if (gc && gc->internal_id == iid) return gc.get();
+        }
+      }
     }
   }
   return nullptr;
+}
+
+// Find the TextBox container that owns `text` as its children[0].
+// Scans layer children only — the construction site inserts TextBoxes
+// at the layer level, never nested deeper. Returns nullptr if no such
+// container exists (legacy unbound text, corrupted state, or the
+// textbox has been deleted).
+SceneNode* Canvas::find_text_box_for_text(const SceneNode* text) {
+  if (!m_doc || !text) return nullptr;
+  for (auto& layer : m_doc->layers) {
+    if (!layer) continue;
+    for (auto& c : layer->children) {
+      if (c && c->type == SceneNode::Type::TextBox &&
+          !c->children.empty() && c->children[0].get() == text) {
+        return c.get();
+      }
+    }
+  }
+  return nullptr;
+}
+
+// One place that defines what "enter editing on this TextBox" means.
+// Called from the double-click handlers in Selection and Text tools,
+// and (potentially) from any future menu / scripting verb that wants
+// to drop the user straight into editing a textbox.
+//
+// Tool-agnostic. The caller decides whether a tool switch is needed
+// (Selection tool's double-click emits ActiveTool::Text before
+// scheduling this call); the helper sets up edit state and starts
+// the cursor regardless of which tool is active.
+//
+// Malformed TextBox → silent return. Caller's contract is "pass a
+// real TextBox with a Text at [0] and a Path at [1]"; defensive
+// shape-check here protects against corrupted state without crashing.
+void Canvas::begin_textbox_edit(SceneNode* text_box) {
+  if (!text_box || text_box->type != SceneNode::Type::TextBox) return;
+  if (text_box->children.size() < 2) return;
+  if (!text_box->children[0] || !text_box->children[1]) return;
+  if (!text_box->children[0]->is_text()) return;
+  if (text_box->children[1]->type != SceneNode::Type::Path) return;
+
+  SceneNode* text_node = text_box->children[0].get();
+  SceneNode* boundary  = text_box->children[1].get();
+
+  m_text_editing = text_node;
+  m_text_boundary_editing = boundary;
+  m_text_is_new = false;
+  m_text_snapshot = TextEditCommand::snapshot_before(project(), text_node);
+  m_text_has_snapshot = true;
+
+  // The TextBox stays selected as the user-visible atom — handles
+  // continue to draw around its frame during edit, matching the
+  // post-construction selection behaviour.
+  m_selected = text_box;
+  m_selection = {text_box};
+  notify_object_selection_changed();
+
+  // (The legacy Gtk::Entry is only ever shown for legacy unbound
+  //  text. A TextBox edit never overlaps it, so we don't need to
+  //  hide it here — and avoiding the call keeps widgets/Entry.hpp
+  //  out of this TU. Same reasoning as the Case B legacy-bound-
+  //  path branch in the double-click handler.)
+  begin_text_cursor_edit(text_node, boundary);
 }
 
 // ── s301 m1g — Caret contrast color ─────────────────────────────────────────
@@ -3921,10 +4058,14 @@ void Canvas::begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary) {
   // boundary may be null if a legacy unbound text somehow routes here —
   // TextCursor's position_on_canvas returns invalid in that case and the
   // caret simply doesn't render, but the buffer mutation still works.
-  (void)boundary;
+  // When set (paired-sibling re-entry, TextBox edit, fresh construction
+  // marquee), it's passed through to the cursor so it can lay out
+  // geometry without needing to look the boundary up by iid — which
+  // matters specifically for TextBox-owned text where the boundary is
+  // a structural sibling, not an iid-linked peer.
 
   end_text_cursor_edit();  // idempotent: clear any prior cursor first
-  m_text_cursor = std::make_unique<TextCursor>(this, text_node);
+  m_text_cursor = std::make_unique<TextCursor>(this, text_node, boundary);
 
   // Blink timer. 530ms is the visual cadence; we toggle visibility and
   // queue_draw each tick. Capturing `this` is safe because Canvas owns
@@ -4524,6 +4665,23 @@ std::optional<Canvas::BBox> Canvas::object_bbox(const SceneNode &obj,
     return result;
   }
 
+  // ── TextBox: bbox is the boundary's extent. The boundary
+  //   (children[1]) defines the user-facing frame; selecting the
+  //   TextBox draws handles around that frame. The text child
+  //   (children[0])'s glyph extent isn't included because the
+  //   text-as-rendered always sits inside the boundary's interior,
+  //   and the user thinks of the textbox's selectable rectangle as
+  //   the frame, not the glyph cluster.
+  //
+  //   Falls back gracefully if the container is malformed: missing
+  //   boundary child → std::nullopt, same shape as Image with zero
+  //   dimensions.
+  if (obj.type == SceneNode::Type::TextBox) {
+    if (obj.children.size() < 2 || !obj.children[1])
+      return std::nullopt;
+    return object_bbox(*obj.children[1], include_stroke);
+  }
+
   // ── ClipGroup: bbox is the clip shape's own physical extent.
   //   The clip shape defines the region; clipped children that lie
   //   outside it aren't visible, so the ClipGroup's selection bbox
@@ -4915,6 +5073,24 @@ SceneNode *Canvas::hit_test(double doc_x, double doc_y) {
         if (child_hit)
           return &obj;
         continue;
+      }
+
+      // ── TextBox: a sealed container. Any click inside its bbox
+      //   (which is the boundary's extent) selects the TextBox as a
+      //   whole. We do NOT descend into children — the user can't
+      //   independently select the boundary or text from outside the
+      //   edit mode. The boundary's fill being None by default means
+      //   the click won't land on a stroked outline; treating the
+      //   bbox interior as a hit is what makes the textbox feel like
+      //   a tangible object the user can grab.
+      if (obj.type == SceneNode::Type::TextBox) {
+        auto bb = object_bbox(obj);
+        if (!bb)
+          continue;
+        if (doc_x < bb->x || doc_x > bb->x + bb->w || doc_y < bb->y ||
+            doc_y > bb->y + bb->h)
+          continue;
+        return &obj;
       }
 
       // ── Blend: bbox gate on A/B/cache. A/B live in slots, not

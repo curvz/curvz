@@ -699,26 +699,43 @@ void Canvas::commit_text_edit() {
           std::make_unique<TextEditCommand>(std::move(m_text_snapshot)));
       m_text_has_snapshot = false;
     } else if (m_text_is_new) {
-      // s301 m1b: paired-add for marquee-created text+boundary.
-      for (auto &layer : m_doc->layers) {
-        bool found_text = false;
-        for (auto &child : layer->children) {
-          if (child.get() == m_text_editing) { found_text = true; break; }
+      // Push undo state for a newly-created text. Two shapes:
+      //
+      //  TextBox-style (m_text_boundary_editing != nullptr) — the
+      //    text and boundary live inside a TextBox container that
+      //    sits at the layer level. One AddNodeCommand for the
+      //    TextBox covers the whole subtree; clone_node deep-copies
+      //    children so the snapshot is complete.
+      //
+      //  Legacy unbound (m_text_boundary_editing == nullptr) — a
+      //    bare Text node at the layer level, no container. Survives
+      //    here for files loaded from before the TextBox migration.
+      //    New text-tool construction never lands here.
+      if (m_text_boundary_editing) {
+        SceneNode* text_box = find_text_box_for_text(m_text_editing);
+        if (text_box) {
+          for (auto &layer : m_doc->layers) {
+            bool owns_text_box = false;
+            for (auto &child : layer->children) {
+              if (child.get() == text_box) { owns_text_box = true; break; }
+            }
+            if (!owns_text_box) continue;
+            m_history->push(std::make_unique<AddNodeCommand>(
+                layer.get(), clone_node(*text_box)));
+            break;
+          }
         }
-        if (!found_text) continue;
-
-        if (m_text_boundary_editing) {
-          auto composite = std::make_unique<CompositeCommand>("Add text frame");
-          composite->add(std::make_unique<AddNodeCommand>(
-              layer.get(), clone_node(*m_text_editing)));
-          composite->add(std::make_unique<AddNodeCommand>(
-              layer.get(), clone_node(*m_text_boundary_editing)));
-          m_history->push(std::move(composite));
-        } else {
+      } else {
+        for (auto &layer : m_doc->layers) {
+          bool found_text = false;
+          for (auto &child : layer->children) {
+            if (child.get() == m_text_editing) { found_text = true; break; }
+          }
+          if (!found_text) continue;
           m_history->push(std::make_unique<AddNodeCommand>(
               layer.get(), clone_node(*m_text_editing)));
+          break;
         }
-        break;
       }
     }
   }
@@ -729,16 +746,18 @@ void Canvas::commit_text_edit() {
   m_text_entry_conn_changed.disconnect();
   end_text_cursor_edit();  // s301 m1c: tear down canvas cursor + blink timer
 
-  // s301 m1d — Post-commit selection. The boundary is the user-facing
-  // primitive ("the bbox") and selecting it makes the 8 handles draw
-  // around the full bbox extent. Selecting the text node instead would
-  // show handles only around the rendered glyphs, which is unhelpful
-  // for a frame-based text model. If there's no paired boundary
-  // (legacy unbound edit), fall back to the text node so the user
-  // still has a selection target.
-  SceneNode *to_select = m_text_boundary_editing
-                             ? m_text_boundary_editing
-                             : m_text_editing;
+  // Post-commit selection. For a TextBox-style edit, select the
+  // TextBox container so handles draw around its bbox (the boundary's
+  // extent — the user-facing frame). For legacy unbound text, fall
+  // back to the text node itself. If the TextBox lookup fails
+  // (corrupted state or the textbox has been deleted during edit),
+  // also fall back to m_text_editing so we never leave the user with
+  // an empty selection.
+  SceneNode *to_select = m_text_editing;
+  if (m_text_boundary_editing) {
+    SceneNode* text_box = find_text_box_for_text(m_text_editing);
+    if (text_box) to_select = text_box;
+  }
   m_selected = to_select;
   m_selection = {to_select};
 
@@ -787,28 +806,33 @@ void Canvas::cancel_text_edit() {
     m_selection.clear();
     notify_object_selection_changed();
   } else if (is_new_bound) {
-    // Empty new bound frame → push an AddNodeCommand pair so undo can
-    // erase the just-created frame. The frame becomes a real persistent
-    // object the user can grab and use.
+    // Empty new bound frame → push an AddNodeCommand for the TextBox
+    // container so undo can erase the just-created frame. The frame
+    // becomes a real persistent object the user can grab, resize,
+    // re-enter via double-click, etc. One command for the whole
+    // subtree: clone_node deep-copies children.
     if (m_history && m_doc) {
-      for (auto &layer : m_doc->layers) {
-        bool found_text = false;
-        for (auto &child : layer->children) {
-          if (child.get() == m_text_editing) { found_text = true; break; }
+      SceneNode* text_box = find_text_box_for_text(m_text_editing);
+      if (text_box) {
+        for (auto &layer : m_doc->layers) {
+          bool owns_text_box = false;
+          for (auto &child : layer->children) {
+            if (child.get() == text_box) { owns_text_box = true; break; }
+          }
+          if (!owns_text_box) continue;
+          m_history->push(std::make_unique<AddNodeCommand>(
+              layer.get(), clone_node(*text_box)));
+          break;
         }
-        if (!found_text) continue;
-        auto composite = std::make_unique<CompositeCommand>("Add text frame");
-        composite->add(std::make_unique<AddNodeCommand>(
-            layer.get(), clone_node(*m_text_editing)));
-        composite->add(std::make_unique<AddNodeCommand>(
-            layer.get(), clone_node(*m_text_boundary_editing)));
-        m_history->push(std::move(composite));
-        break;
       }
     }
-    // Keep the boundary selected so handles render — user can drag it.
-    m_selected = m_text_boundary_editing;
-    m_selection = {m_text_boundary_editing};
+    // Select the TextBox as a whole so handles render around its bbox
+    // (the boundary's extent). User can drag the frame, resize it,
+    // double-click to re-enter editing.
+    SceneNode* text_box = find_text_box_for_text(m_text_editing);
+    SceneNode* sel_target = text_box ? text_box : m_text_boundary_editing;
+    m_selected = sel_target;
+    m_selection = {sel_target};
     notify_object_selection_changed();
   }
   // Editing an existing text with no changes: nothing to do, just exit.
@@ -1305,12 +1329,12 @@ void Canvas::on_draw_begin(double x, double y) {
     m_sig_request_tool.emit(m_prev_tool);
   } else if (m_tool == ActiveTool::Text) {
     // s301 m1b — Text tool press semantics:
-    //   1. Hit-test for existing text. If hit, enter legacy edit mode
-    //      for it via on_text_begin (which handles existing-text editing
+    //   1. Hit-test for existing text. If hit, enter edit mode for
+    //      it via on_text_begin (which handles existing-text editing
     //      uniformly with creation when called from this seam).
     //   2. Otherwise, set up marquee drawing state. Release decides
     //      between auto-default bbox (no drag) and marquee-sized bbox
-    //      (real drag); either way a boundary + bound text are created.
+    //      (real drag); either way a TextBox container is created.
     //
     // s301 m1e — If an edit is already in progress, commit it first.
     // Pressing in Text tool with an active edit is the user's signal
@@ -1319,11 +1343,39 @@ void Canvas::on_draw_begin(double x, double y) {
     if (m_text_editing) {
       commit_text_edit();
     }
+    // Hit-test for an existing textbox to re-enter editing rather
+    // than create a new one. Two shapes the hit-test recognises:
+    //
+    //   TextBox container (post-stage-3 construction): the user-
+    //     visible atom is the container; clicking anywhere inside
+    //     its bbox is "edit this textbox." The text and boundary
+    //     children are addressed structurally (children[0] is the
+    //     text the cursor edits; children[1] is the boundary the
+    //     cursor lays baselines against).
+    //
+    //   Legacy bare Text at the layer level (loaded from pre-
+    //     migration files): hit-tested by the text's approximate
+    //     glyph bbox. Same shape as the pre-migration code.
+    //
+    // Order matters: TextBoxes are tested first because their
+    // boundary bbox is the user-visible frame the user is aiming
+    // at; legacy text-glyph hit-test is the fallback for files
+    // that haven't been re-saved through the new format.
     SceneNode *existing_hit = nullptr;
     for (auto &layer : m_doc->layers) {
       if (!layer->visible || layer->locked) continue;
       for (int i = (int)layer->children.size() - 1; i >= 0; --i) {
         SceneNode *obj = layer->children[i].get();
+        if (obj->type == SceneNode::Type::TextBox) {
+          auto bb = object_bbox(*obj);
+          if (!bb) continue;
+          if (dx >= bb->x && dx <= bb->x + bb->w &&
+              dy >= bb->y && dy <= bb->y + bb->h) {
+            existing_hit = obj;
+            break;
+          }
+          continue;
+        }
         if (!obj->is_text()) continue;
         double approx_w = obj->text_content.size() * obj->text_font_size * 0.6;
         double approx_h = obj->text_font_size * 1.4;
@@ -1341,7 +1393,30 @@ void Canvas::on_draw_begin(double x, double y) {
     }
 
     if (existing_hit) {
-      on_text_begin(x, y);
+      // Two re-entry shapes, distinguished by the hit's type:
+      //
+      //   TextBox: single-click selects only. The textbox becomes
+      //     the active selection (handles draw around its frame),
+      //     but editing is gated to the double-click gesture —
+      //     matches the muscle-memory rule "double-click a thing
+      //     to drill in." Same rule the Selection tool follows;
+      //     keeping it consistent across both tools means the
+      //     user doesn't have to remember which one is which.
+      //
+      //   Bare Text (legacy): route through on_text_begin which
+      //     handles the legacy paired-sibling resolution via the
+      //     text's text_boundary_ids. Legacy text predates the
+      //     "single-click selects, double-click edits" rule and
+      //     keeps its pre-migration behaviour to avoid breaking
+      //     existing-file workflows.
+      if (existing_hit->type == SceneNode::Type::TextBox) {
+        m_selected = existing_hit;
+        m_selection = {existing_hit};
+        notify_object_selection_changed();
+        queue_draw();
+      } else {
+        on_text_begin(x, y);
+      }
     } else {
       m_drawing = true;
       m_draw_start_dx = dx;
@@ -1972,21 +2047,40 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
       SceneNode *layer = m_doc->active_layer();
       if (!layer) layer = m_doc->layers[0].get();
 
+      // Build the boundary as a plain Path. No user-facing name —
+      // the boundary is internal to the TextBox container that owns
+      // it; the user addresses the TextBox as a whole, not its
+      // structural parts. Same convention as ClipGroup's clip_shape
+      // and Blend's source slots.
+      //
+      // Margins live on the boundary (the shape that defines the
+      // inset). The current UI sets all four to the same value
+      // (uniform-margin convenience); a future UI exposes them
+      // independently and writes to the same four fields.
       auto boundary = std::make_unique<SceneNode>();
       boundary->type = SceneNode::Type::Path;
       boundary->internal_id = generate_internal_id();
-      boundary->name =
-          m_doc->next_default_name(CurvzDocument::NameKind::TextBoundary);
       boundary->path = std::make_unique<PathData>(rect_to_path(x1, y1, w, h));
       style::mutate_appearance(*boundary, [](SceneNode &n) {
         n.fill.type   = FillStyle::Type::None;
         n.stroke.paint.type = FillStyle::Type::None;
       });
+      boundary->text_margin_top    = TEXT_DEFAULT_MARGIN;
+      boundary->text_margin_bottom = TEXT_DEFAULT_MARGIN;
+      boundary->text_margin_left   = TEXT_DEFAULT_MARGIN;
+      boundary->text_margin_right  = TEXT_DEFAULT_MARGIN;
 
+      // Build the text as a plain Text node. Internal to the TextBox
+      // for the same reason as the boundary — no doc-wide name.
+      // text_boundary_ids stays empty: the TextBox owns the boundary
+      // structurally now, so the iid-link is redundant. (Legacy text
+      // loaded from pre-migration files still uses text_boundary_ids
+      // and renders via the paired-sibling path; new construction
+      // doesn't need it.) Margins stay zero on the text — the
+      // boundary owns them.
       auto txt = std::make_unique<SceneNode>();
       txt->type = SceneNode::Type::Text;
       txt->internal_id = generate_internal_id();
-      txt->name = m_doc->next_default_name(CurvzDocument::NameKind::Text);
       style::mutate_appearance(*txt, [this](SceneNode &n) {
         n.fill = m_def_fill;
         n.stroke = m_def_stroke;
@@ -1998,20 +2092,40 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
       txt->text_font_size = TEXT_DEFAULT_FONT_SIZE;
       txt->text_anchor = "start";
       txt->text_align  = "left";
-      txt->text_margin_top    = TEXT_DEFAULT_MARGIN;
-      txt->text_margin_bottom = TEXT_DEFAULT_MARGIN;
-      txt->text_margin_left   = TEXT_DEFAULT_MARGIN;
-      txt->text_margin_right  = TEXT_DEFAULT_MARGIN;
-      txt->text_boundary_ids.push_back(boundary->internal_id);
 
-      layer->children.insert(layer->children.begin(), std::move(boundary));
-      SceneNode *boundary_ptr = layer->children.front().get();
-      layer->children.insert(layer->children.begin(), std::move(txt));
-      SceneNode *text_ptr = layer->children.front().get();
+      // Build the TextBox container. This is the user-visible atom —
+      // selection, drag, copy, z-order all operate on it. The name
+      // comes from NameKind::Text (the user thinks of the textbox as
+      // "the text frame," not as a container around text). Children
+      // follow Canvas's universal convention: index 0 = top of local
+      // z-order. Text at [0] paints over boundary at [1], so the
+      // glyphs sit on top of whatever fill the boundary has.
+      auto text_box = std::make_unique<SceneNode>();
+      text_box->type = SceneNode::Type::TextBox;
+      text_box->internal_id = generate_internal_id();
+      text_box->name = m_doc->next_default_name(CurvzDocument::NameKind::Text);
+      text_box->children.push_back(std::move(txt));       // children[0] = text
+      text_box->children.push_back(std::move(boundary));  // children[1] = boundary
 
-      // Select the boundary — selection handles appear on the bbox.
-      m_selected = boundary_ptr;
-      m_selection = {boundary_ptr};
+      // Stash raw pointers to the parts before move — m_text_editing
+      // and m_text_boundary_editing point into the TextBox's children
+      // for the duration of the edit. Stable across the move because
+      // unique_ptr move preserves the pointee.
+      SceneNode *text_ptr     = text_box->children[0].get();
+      SceneNode *boundary_ptr = text_box->children[1].get();
+
+      // Insert the TextBox into the layer. One node at the layer
+      // level, not two — the previous paired-sibling layout is gone.
+      layer->children.insert(layer->children.begin(), std::move(text_box));
+      SceneNode *text_box_ptr = layer->children.front().get();
+
+      // Select the TextBox as a whole — handles draw around its bbox
+      // (which is the boundary's extent, since the boundary defines
+      // the frame). This is the s301 m1d "boundary is the user-facing
+      // primitive" rule restated for the container world: the
+      // container is even more user-facing than the boundary alone.
+      m_selected = text_box_ptr;
+      m_selection = {text_box_ptr};
       notify_object_selection_changed();
 
       m_text_editing = text_ptr;
@@ -2807,12 +2921,14 @@ void Canvas::on_select_begin(double x, double y) {
         if (!leaf->path->nodes.empty())
           m_move_snaps.push_back({leaf, leaf->path->nodes, *leaf->path});
       }
-      // Nested Text/Image inside containers (Group/Compound/ClipGroup) —
-      // collect_paths skips them by design (no Path geometry), so collect
-      // them separately and snapshot their position fields for drag-move.
+      // Nested Text/Image inside containers (Group/Compound/ClipGroup
+      // /TextBox) — collect_paths skips them by design (no Path
+      // geometry), so collect them separately and snapshot their
+      // position fields for drag-move.
       if (obj->type == SceneNode::Type::Group ||
           obj->type == SceneNode::Type::Compound ||
-          obj->type == SceneNode::Type::ClipGroup) {
+          obj->type == SceneNode::Type::ClipGroup ||
+          obj->type == SceneNode::Type::TextBox) {
         std::vector<SceneNode *> ti_leaves;
         collect_text_image_leaves(obj, ti_leaves);
         for (SceneNode *leaf : ti_leaves) {

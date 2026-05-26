@@ -33,8 +33,9 @@
 namespace Curvz {
 
 // ── Construction ────────────────────────────────────────────────────────────
-TextCursor::TextCursor(Canvas* canvas, SceneNode* text_node)
-    : m_canvas(canvas), m_text(text_node) {
+TextCursor::TextCursor(Canvas* canvas, SceneNode* text_node,
+                       SceneNode* boundary)
+    : m_canvas(canvas), m_text(text_node), m_boundary(boundary) {
     if (m_text) m_byte_index = m_text->text_content.size();
 }
 
@@ -265,10 +266,14 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         if (n.x < bx0) bx0 = n.x; if (n.x > bx1) bx1 = n.x;
         if (n.y < by0) by0 = n.y; if (n.y > by1) by1 = n.y;
     }
-    double ix0 = bx0 + text->text_margin_left;
-    double iy0 = by0 + text->text_margin_top;
-    double ix1 = bx1 - text->text_margin_right;
-    double iy1 = by1 - text->text_margin_bottom;
+    // Margins live on the boundary for TextBox-owned text; fall back
+    // to the text node for legacy paired-sibling files. See
+    // effective_text_margins doc in SceneNode.hpp.
+    auto m = effective_text_margins(text, boundary);
+    double ix0 = bx0 + m.left;
+    double iy0 = by0 + m.top;
+    double ix1 = bx1 - m.right;
+    double iy1 = by1 - m.bottom;
     if (ix1 <= ix0 || iy1 <= iy0) return out;
 
     const double font_size = text->text_font_size > 0.0
@@ -425,11 +430,20 @@ TextLayout compute_text_layout(const SceneNode* boundary,
 TextCursor::Geometry TextCursor::position_on_canvas() const {
     Geometry g;
     if (!m_text || !m_canvas) return g;
-    if (m_text->text_boundary_ids.empty()) return g;
 
-    SceneNode* boundary = m_canvas->find_text_boundary(
-        m_text->text_boundary_ids.front());
-    if (!boundary) return g;
+    // Boundary resolution — two paths in priority order:
+    //   1. m_boundary set: TextBox-owned text passes its sibling
+    //      boundary into the ctor. Direct pointer, no lookup.
+    //   2. Legacy paired-sibling: read text_boundary_ids.front() and
+    //      look the boundary up by iid through Canvas. Works for
+    //      files loaded from before the TextBox migration.
+    SceneNode* boundary = m_boundary;
+    if (!boundary) {
+        if (m_text->text_boundary_ids.empty()) return g;
+        boundary = m_canvas->find_text_boundary(
+            m_text->text_boundary_ids.front());
+        if (!boundary) return g;
+    }
 
     TextLayout tl = compute_text_layout(boundary, m_text);
     if (tl.baselines.empty()) return g;
