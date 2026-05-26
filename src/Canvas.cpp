@@ -4083,6 +4083,20 @@ void Canvas::begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary) {
 }
 
 void Canvas::end_text_cursor_edit() {
+  // s305 m1 — Write the cursor's byte position back to the text node
+  //   before tearing down. The next entry to the same text (via
+  //   double-click in either tool) restores from text_caret_byte in
+  //   TextCursor's ctor. Both commit and cancel paths route through
+  //   here, so the byte persists regardless of whether the user
+  //   confirms or aborts the edit — the byte is a UI position, not
+  //   a content edit.
+  if (m_text_cursor && m_text_editing) {
+    size_t b = m_text_cursor->byte_index();
+    // Clamp into int32_t — buffers don't approach 2GB but defensive.
+    if (b > (size_t)std::numeric_limits<int32_t>::max())
+      b = (size_t)std::numeric_limits<int32_t>::max();
+    m_text_editing->text_caret_byte = (int32_t)b;
+  }
   if (m_text_cursor_blink_conn.connected()) {
     m_text_cursor_blink_conn.disconnect();
   }
@@ -4122,53 +4136,269 @@ void Canvas::end_text_cursor_edit() {
 bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
   if (!m_text_cursor) return false;
 
-  bool ctrl = (mods & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
-  bool alt  = (mods & Gdk::ModifierType::ALT_MASK)     != Gdk::ModifierType{};
-  if (ctrl || alt) return false;  // shortcuts pass through
+  bool ctrl  = (mods & Gdk::ModifierType::CONTROL_MASK) != Gdk::ModifierType{};
+  bool alt   = (mods & Gdk::ModifierType::ALT_MASK)     != Gdk::ModifierType{};
+  bool shift = (mods & Gdk::ModifierType::SHIFT_MASK)   != Gdk::ModifierType{};
+
+  // s305 m4 — Ctrl+A: select-all inside the active edit. Intercepted
+  //   ABOVE the ctrl-passthrough gate so the global Select All shortcut
+  //   doesn't fire on the canvas selection — during a text edit the
+  //   user means "select all the text," not "select all the objects."
+  //   Ctrl+C/X/V are still passed through here (they hit the global
+  //   handler in m5 which will know about text-edit context).
+  if (ctrl && !alt && !shift &&
+      (keyval == GDK_KEY_a || keyval == GDK_KEY_A)) {
+    m_text_cursor->select_all();
+    m_text_cursor->set_visible(true);
+    queue_draw();
+    return true;
+  }
+
+  // s305 m4 — Ctrl+Home / Ctrl+End: caret to start / end of buffer.
+  //   Shift variants extend the selection. These need to intercept
+  //   above the ctrl-passthrough gate for the same reason as Ctrl+A:
+  //   without it, the global handler eats the chord and the
+  //   text-edit caret never sees it. (On Apple keyboards Ctrl+Home
+  //   is Fn+Ctrl+Left and Ctrl+End is Fn+Ctrl+Right — the kernel
+  //   translates Fn+arrow to the Home/End keysyms before GTK sees
+  //   the event, so this code is keyboard-agnostic.)
+  //
+  //   Shift-extend uses the same snapshot-and-restore pattern as
+  //   the other Shift+navigation keys below. Inlined here rather
+  //   than reusing the extend_with lambda because the lambda is
+  //   declared after this block (extends only the plain-Arrow /
+  //   Home / End paths). Refactoring to share would mean moving
+  //   extend_with up; the duplication is small enough to be
+  //   tolerable.
+  if (ctrl && !alt && keyval == GDK_KEY_Home) {
+    if (shift) {
+      size_t saved_anchor = m_text_cursor->anchor_byte();
+      m_text_cursor->move_buffer_start();
+      m_text_cursor->set_anchor_byte(saved_anchor);
+    } else {
+      m_text_cursor->move_buffer_start();
+    }
+    m_text_cursor->set_visible(true);
+    queue_draw();
+    return true;
+  }
+  if (ctrl && !alt && keyval == GDK_KEY_End) {
+    if (shift) {
+      size_t saved_anchor = m_text_cursor->anchor_byte();
+      m_text_cursor->move_buffer_end();
+      m_text_cursor->set_anchor_byte(saved_anchor);
+    } else {
+      m_text_cursor->move_buffer_end();
+    }
+    m_text_cursor->set_visible(true);
+    queue_draw();
+    return true;
+  }
+
+  // ── s306 m5 — Clipboard inside the text edit ─────────────────────────────
+  //
+  //   Ctrl+C / Ctrl+X / Ctrl+V intercept above the ctrl-passthrough gate
+  //   (same as Ctrl+A and Ctrl+Home/End) so the global object-clipboard
+  //   handler in MainWindow_bindings doesn't fire during a text edit.
+  //   The global handler runs copy_selected / cut_selected /
+  //   paste_clipboard on the object selection; during a text edit the
+  //   user means "copy the highlighted bytes," not "copy the TextBox."
+  //
+  //   System clipboard (Gdk::Clipboard) via the display, matching the
+  //   pattern used elsewhere in the codebase (Ruler labels copy,
+  //   ClipboardViewWindow async-read). The model side is all done:
+  //   selection_text() returns the UTF-8 slice, delete_selection()
+  //   collapses the range, insert_string() splices arbitrary UTF-8.
+  //
+  //   - Ctrl+C: write selection_text to clipboard. No buffer mutation
+  //     (no doc_changed emit). Silently no-ops if no selection — same
+  //     as every text editor.
+  //   - Ctrl+X: write selection_text to clipboard, then delete_selection.
+  //     One doc_changed emit at the end. Silently no-ops if no selection.
+  //   - Ctrl+V: async read_text_async; on callback, delete_selection if
+  //     selection active, then insert_string. The async read means the
+  //     cursor could be torn down before the callback fires (user hits
+  //     Escape mid-read). Guard the callback with text_cursor_active()
+  //     and a re-grab of m_text_cursor.get() — if either fails we
+  //     silently drop the paste. The captured this is safe because
+  //     Canvas outlives any plausible async read; clipboard async ops
+  //     are single-shot and complete within a few ms in practice.
+  if (ctrl && !alt && !shift &&
+      (keyval == GDK_KEY_c || keyval == GDK_KEY_C)) {
+    if (m_text_cursor->has_selection()) {
+      std::string sel = m_text_cursor->selection_text();
+      auto disp = get_display();
+      if (disp) {
+        auto clip = disp->get_clipboard();
+        if (clip) {
+          Glib::Value<Glib::ustring> val;
+          val.init(Glib::Value<Glib::ustring>::value_type());
+          val.set(Glib::ustring(sel));
+          clip->set_content(Gdk::ContentProvider::create(val));
+        }
+      }
+    }
+    m_text_cursor->set_visible(true);
+    return true;
+  }
+  if (ctrl && !alt && !shift &&
+      (keyval == GDK_KEY_x || keyval == GDK_KEY_X)) {
+    if (m_text_cursor->has_selection()) {
+      std::string sel = m_text_cursor->selection_text();
+      auto disp = get_display();
+      if (disp) {
+        auto clip = disp->get_clipboard();
+        if (clip) {
+          Glib::Value<Glib::ustring> val;
+          val.init(Glib::Value<Glib::ustring>::value_type());
+          val.set(Glib::ustring(sel));
+          clip->set_content(Gdk::ContentProvider::create(val));
+        }
+      }
+      m_text_cursor->delete_selection();
+      m_sig_doc_changed.emit();
+      queue_draw();
+    }
+    m_text_cursor->set_visible(true);
+    return true;
+  }
+  if (ctrl && !alt && !shift &&
+      (keyval == GDK_KEY_v || keyval == GDK_KEY_V)) {
+    auto disp = get_display();
+    if (disp) {
+      auto clip = disp->get_clipboard();
+      if (clip) {
+        // Capture the text-node pointer we're editing so we can verify
+        // the same edit session is still live when the async callback
+        // fires. If the user committed/cancelled and started editing a
+        // different node, or no edit is active at all, drop the paste.
+        SceneNode* edit_node = m_text_cursor->text_node();
+        clip->read_text_async(
+            [this, edit_node, clip](Glib::RefPtr<Gio::AsyncResult>& res) {
+              if (!m_text_cursor) return;
+              if (m_text_cursor->text_node() != edit_node) return;
+              try {
+                Glib::ustring text = clip->read_text_finish(res);
+                if (text.empty()) return;
+                std::string utf8(text.c_str());
+                if (m_text_cursor->has_selection()) {
+                  m_text_cursor->delete_selection();
+                }
+                if (m_text_cursor->insert_string(utf8)) {
+                  m_text_cursor->set_visible(true);
+                  m_sig_doc_changed.emit();
+                  queue_draw();
+                }
+              } catch (const Glib::Error&) {
+                // Clipboard had no text representation, or read failed.
+                // Silently drop — every text editor does the same.
+              }
+            });
+      }
+    }
+    m_text_cursor->set_visible(true);
+    return true;
+  }
+
+  if (ctrl || alt) return false;  // other shortcuts pass through
 
   // Reset blink to visible on any user input so the cursor doesn't
   // disappear mid-keystroke. Brief but noticeable polish.
   if (m_text_cursor) m_text_cursor->set_visible(true);
 
+  // s305 m4 — Shift-extend helper. The base move_* methods always
+  //   collapse anchor=caret (m2's default for callers that don't
+  //   know about selection). To extend, snapshot the anchor before
+  //   the move and restore it after. The caret end is whatever the
+  //   move method computed; the anchor end stays at the press point.
+  //   Closure captures m_text_cursor by reference so it's always
+  //   the current cursor.
+  auto extend_with = [this](auto&& mover) {
+    size_t saved_anchor = m_text_cursor->anchor_byte();
+    mover();
+    m_text_cursor->set_anchor_byte(saved_anchor);
+  };
+
   switch (keyval) {
     case GDK_KEY_Return:
     case GDK_KEY_KP_Enter:
+      // s305 m4 — Enter while selection active: replace the range
+      //   with a newline. delete_selection runs first; then the
+      //   newline inserts at the collapsed caret. Matches every
+      //   text editor.
+      if (m_text_cursor->has_selection()) {
+        m_text_cursor->delete_selection();
+      }
       m_text_cursor->insert_newline();
       m_sig_doc_changed.emit();
       queue_draw();
       return true;
 
     case GDK_KEY_BackSpace:
-      if (m_text_cursor->backspace()) {
+      // s305 m4 — Backspace with selection: delete the range,
+      //   leave the caret at the range start. No further char
+      //   delete (the selection IS the deletion).
+      if (m_text_cursor->has_selection()) {
+        m_text_cursor->delete_selection();
+        m_sig_doc_changed.emit();
+        queue_draw();
+      } else if (m_text_cursor->backspace()) {
         m_sig_doc_changed.emit();
         queue_draw();
       }
       return true;
 
     case GDK_KEY_Delete:
-      if (m_text_cursor->delete_forward()) {
+      // s305 m4 — Delete with selection: same shape as Backspace
+      //   above. The selection IS the deletion; forward-delete
+      //   would otherwise eat one extra codepoint past the
+      //   selection's end, which no text editor does.
+      if (m_text_cursor->has_selection()) {
+        m_text_cursor->delete_selection();
+        m_sig_doc_changed.emit();
+        queue_draw();
+      } else if (m_text_cursor->delete_forward()) {
         m_sig_doc_changed.emit();
         queue_draw();
       }
       return true;
 
     case GDK_KEY_Left:
-      m_text_cursor->move_left();
+      // s305 m4 — Shift+Left extends; plain Left collapses (m2
+      //   behaviour preserved by calling the base move which
+      //   already collapses).
+      if (shift) {
+        extend_with([this]() { m_text_cursor->move_left(); });
+      } else {
+        m_text_cursor->move_left();
+      }
       queue_draw();
       return true;
 
     case GDK_KEY_Right:
-      m_text_cursor->move_right();
+      if (shift) {
+        extend_with([this]() { m_text_cursor->move_right(); });
+      } else {
+        m_text_cursor->move_right();
+      }
       queue_draw();
       return true;
 
     case GDK_KEY_Home:
-      m_text_cursor->move_line_start();
+      if (shift) {
+        extend_with([this]() { m_text_cursor->move_line_start(); });
+      } else {
+        m_text_cursor->move_line_start();
+      }
       queue_draw();
       return true;
 
     case GDK_KEY_End:
-      m_text_cursor->move_line_end();
+      if (shift) {
+        extend_with([this]() { m_text_cursor->move_line_end(); });
+      } else {
+        m_text_cursor->move_line_end();
+      }
       queue_draw();
       return true;
 
@@ -4177,11 +4407,29 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       return false;
 
     case GDK_KEY_Up:
+      // s306 m6 — Vertical caret nav. move_up returns true when the
+      //   caret actually moved (so queue_draw is only gated on a real
+      //   visual change). Shift+Up extends the selection via the same
+      //   snapshot-and-restore pattern as the other arrow keys: the
+      //   base move_up collapses anchor=caret, extend_with restores
+      //   the press-point anchor afterward. preferred_x is preserved
+      //   across the chain so a column-march through short
+      //   intermediate lines doesn't collapse.
+      if (shift) {
+        extend_with([this]() { m_text_cursor->move_up(); });
+      } else {
+        m_text_cursor->move_up();
+      }
+      queue_draw();
+      return true;
+
     case GDK_KEY_Down:
-      // Vertical caret nav is stubbed in 1c — Pango layout introspection
-      // for "move to same x on the next/prev visual line" is doable but
-      // beyond 1c scope. Consume the key so it doesn't trigger any
-      // global shortcut.
+      if (shift) {
+        extend_with([this]() { m_text_cursor->move_down(); });
+      } else {
+        m_text_cursor->move_down();
+      }
+      queue_draw();
       return true;
 
     default: {
@@ -4189,6 +4437,12 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       // non-printable keys (function keys, modifiers alone, etc.).
       guint32 uc = gdk_keyval_to_unicode(keyval);
       if (uc != 0 && uc >= 0x20 && uc != 0x7f) {
+        // s305 m4 — Typing-with-selection replaces. delete_selection
+        //   runs first (collapses anchor=caret at range start);
+        //   insert_char then runs at the collapsed caret.
+        if (m_text_cursor->has_selection()) {
+          m_text_cursor->delete_selection();
+        }
         if (m_text_cursor->insert_char((gunichar)uc)) {
           m_sig_doc_changed.emit();
           queue_draw();

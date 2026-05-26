@@ -41,8 +41,10 @@
 #include <glib.h>     // gunichar
 #include <pango/pangocairo.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <cstddef>
+#include <utility>    // std::pair (s305 m2 — selection_range return type)
 #include <vector>
 
 namespace Curvz {
@@ -153,6 +155,137 @@ public:
     void move_buffer_start();
     void move_buffer_end();
 
+    // s306 m6 — Vertical caret navigation.
+    //
+    //   Up/Down move the caret to the previous/next visual baseline,
+    //   trying to preserve the caret's horizontal position (doc-x)
+    //   across multiple presses. The preferred-x snapshot lets the
+    //   caret thread through short lines without "collapsing" inward:
+    //     ┌────────────────────────────────────────────────────────┐
+    //     │ A long first line that goes most of the way across     │
+    //     │ short                                                  │
+    //     │ another long line resumed                              │
+    //     └────────────────────────────────────────────────────────┘
+    //   Down from the end of line 1 lands at the end of "short"
+    //   (clamped by available width); a second Down lands BACK at
+    //   the preserved column on line 3, not at the collapsed end-of-
+    //   "short" column. The preferred_x is captured the first time
+    //   Up/Down is pressed (sentinel < 0 = unset) and cleared by
+    //   every horizontal action (move_left/right/line_start/line_end/
+    //   buffer_start/buffer_end, every insert/delete, place_caret_at)
+    //   so the next Up/Down rediscovers it from the caret's new x.
+    //
+    //   Bounds:
+    //     - Up at baseline index 0 → no-op (returns false).
+    //     - Down at the last CONTENT baseline → no-op. Empty
+    //       baselines below content (m4f's capacity-display
+    //       hairlines) are visual-only; Down does not walk into
+    //       them. Clicks into them remain explicit and route
+    //       naturally through byte_index_at.
+    //
+    //   Selection semantics match the other movers: plain Up/Down
+    //   collapse anchor=caret; the Canvas-layer Shift-extend
+    //   snapshot-and-restore pattern (handle_text_edit_key's
+    //   extend_with lambda) handles Shift+Up/Down by saving the
+    //   anchor before the call and restoring it after, leaving the
+    //   selection growing from the original press point.
+    //
+    //   Returns true when the caret actually moved (so callers can
+    //   gate queue_draw).
+    bool move_up();
+    bool move_down();
+
+    // s305 m1 — Click-to-position. Map a doc-space (x, y) to a byte
+    //   offset inside the current buffer using the same TextLayout
+    //   that position_on_canvas inverts the other direction. The
+    //   mapping algorithm:
+    //     1. Find the baseline whose vertical band [y - ascent,
+    //        y + descent] contains doc_y. Above the first → snap to
+    //        first; below the last → snap to last. Outside the
+    //        boundary's horizontal extent on a chosen line clamps to
+    //        the line's [byte_start, byte_end] range.
+    //     2. Within that baseline, compute the local x in doc units,
+    //        ask Pango's xy_to_index for the byte (with trailing flag
+    //        for caret-affinity: trailing past the glyph midpoint
+    //        snaps to the NEXT byte, matching every text editor).
+    //     3. Return the absolute byte = baseline.byte_start + relative.
+    //   Returns nullopt when the layout can't resolve (no boundary,
+    //   no baselines, empty buffer). For an empty buffer the only
+    //   sensible caret position is 0, so an empty buffer returns 0
+    //   rather than nullopt.
+    std::optional<size_t> byte_index_at(double doc_x, double doc_y) const;
+
+    // Move the caret to (doc_x, doc_y). Thin wrapper around
+    // byte_index_at — assigns m_byte_index when resolution succeeds.
+    // Returns true when the index actually changed (caller may
+    // queue_draw); returns false when geometry didn't resolve OR
+    // the click landed exactly where the caret already was.
+    bool place_caret_at(double doc_x, double doc_y);
+
+    // ── s305 m2 — Selection range model.
+    //
+    //   The selection is the byte span between an "anchor" and the
+    //   caret (m_byte_index). The anchor is the OTHER end of the
+    //   selection: a click sets anchor = caret (collapsed); a
+    //   shift+click or a drag moves the caret but leaves the anchor;
+    //   typing while a selection is active replaces the range. When
+    //   anchor == caret there is no selection — just an insertion
+    //   point. selection_range() returns the sorted [start, end)
+    //   pair so callers never have to know which end is which.
+    //
+    //   For m2 the model is added pure-additively: every existing
+    //   mutation (insert_*, backspace, delete_forward, move_*,
+    //   place_caret_at) collapses the anchor to the caret after it
+    //   runs, preserving "no selection ever active" behaviour from
+    //   m1 and earlier. m3 wires drag-to-select (which calls
+    //   set_byte_index without collapsing); m4 flips the existing
+    //   mutations to extend/collapse/replace based on whether shift
+    //   is held; m5 hooks copy/cut/paste through selection_text and
+    //   delete_selection. The split keeps m2 a no-op for users while
+    //   making the model available for the next milestones.
+
+    size_t anchor_byte() const { return m_anchor_byte; }
+
+    // True when anchor != caret, i.e. some bytes are selected.
+    bool has_selection() const { return m_anchor_byte != m_byte_index; }
+
+    // Sorted [start, end) byte span. When there is no selection,
+    // returns (caret, caret) — both halves equal — so callers that
+    // unconditionally call this still behave sensibly (the empty
+    // range produces an empty slice, no rendered highlight).
+    std::pair<size_t, size_t> selection_range() const;
+
+    // UTF-8 slice of the buffer between anchor and caret. Empty
+    // string when has_selection() is false. Used by clipboard
+    // copy/cut in m5.
+    std::string selection_text() const;
+
+    // Set the caret WITHOUT touching the anchor. Used by drag-update
+    // in m3 — the press already set anchor = caret at the click, and
+    // motion-while-dragging extends the selection by moving only the
+    // caret end. Clamped against text_content.size().
+    void set_byte_index(size_t b);
+
+    // Set the anchor WITHOUT touching the caret. Used by select-all
+    // (anchor = 0, then caret = size via set_byte_index) and by any
+    // future "Shift+click to extend" gesture (move caret to click,
+    // leave anchor alone — but the anchor needs to have been seeded
+    // somewhere). Clamped against text_content.size().
+    void set_anchor_byte(size_t b);
+
+    // Collapse the selection to the caret. After this, has_selection()
+    // is false. Idempotent.
+    void collapse_selection();
+
+    // Anchor = 0, caret = text_content.size(). Triggered by Ctrl+A.
+    void select_all();
+
+    // Erase [start, end) if non-empty, set caret = start, collapse
+    // anchor. Returns true when the buffer actually changed. Used
+    // by m4 "typing-while-selected replaces" and m5 "Ctrl+X" /
+    // "Delete with selection."
+    bool delete_selection();
+
     // ── Geometry. Compute the caret's (x, y, angle) in doc space.
     //    For 1b the calculation is: build a Pango layout for
     //    text_content into the boundary interior width, ask Pango for
@@ -195,7 +328,42 @@ private:
     // iid lookup on m_text->text_boundary_ids," the legacy path.
     SceneNode* m_boundary = nullptr;
     size_t     m_byte_index = 0;
+    // s305 m2 — Selection anchor. The OTHER end of the selection;
+    //   the caret (m_byte_index) is one end and m_anchor_byte is the
+    //   other. Initialised equal to m_byte_index (in the ctor, after
+    //   the caret's restore-from-text_caret_byte logic runs) so the
+    //   default state is "no selection." Existing mutations sync
+    //   m_anchor_byte = m_byte_index at the end of their run to
+    //   keep the m1-and-earlier behaviour of "no selection ever
+    //   active" until m3/m4 wire the extend semantics.
+    size_t     m_anchor_byte = 0;
+    // s306 m6 — Vertical-nav column anchor. Sentinel < 0 means "unset
+    //   — the next Up/Down should snapshot it from the caret's current
+    //   doc-x." Every horizontal action (move_left, move_right,
+    //   move_line_start, move_line_end, move_buffer_start,
+    //   move_buffer_end, place_caret_at, insert_char, insert_string,
+    //   insert_newline, backspace, delete_forward, delete_selection)
+    //   resets it; Up/Down read it (snapshotting if unset) but never
+    //   reset it. Result: a chain of Up/Down presses preserves the
+    //   horizontal column across short intermediate lines; any
+    //   horizontal motion drops the anchor and the next Up/Down
+    //   re-snapshots.
+    double     m_preferred_caret_x = -1.0;
     bool       m_visible = true;
+
+    // s306 m6 — Horizontal-action bookkeeping. Every method that
+    //   moves the caret horizontally or mutates the buffer at the
+    //   caret position calls this at the end: collapse anchor to
+    //   caret (m2 default) AND drop the preferred-x column anchor
+    //   so the next Up/Down rediscovers it from the caret's new
+    //   doc-x. The two effects always travel together — separating
+    //   them invites a forgotten-reset bug where typing-then-Down
+    //   uses a stale column from before the typing. Inline so the
+    //   compiler can fold it into existing hot paths.
+    void on_horizontal_motion() {
+        m_anchor_byte = m_byte_index;
+        m_preferred_caret_x = -1.0;
+    }
 };
 
 } // namespace Curvz

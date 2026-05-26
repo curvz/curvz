@@ -1159,6 +1159,12 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                                          // baselines don't overwrite (they're
                                          // identical, but the guard makes
                                          // intent explicit)
+        int32_t     caret_byte  = 0;     // s305 m1 — data-curvz-caret-byte on
+                                         // the TextBox <g>. Default 0 = "no
+                                         // saved position" so the cursor
+                                         // falls back to end-of-buffer on
+                                         // entry, matching fresh-construction
+                                         // behaviour.
     };
     std::map<SceneNode*, TextBoxPending> textbox_pending;
     // Parse-time marker set: pointers to <path> nodes that were tagged
@@ -1515,6 +1521,18 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                             txt->text_x = boundary->path->nodes[0].x;
                             txt->text_y = boundary->path->nodes[0].y +
                                           pending.font_size;
+                        }
+                        // s305 m1 — Restore the persisted caret position
+                        //   onto the synthetic Text child. Clamped against
+                        //   the actual buffer length at TextCursor ctor
+                        //   time, so a stale index from a content edit
+                        //   between sessions doesn't crash; defensive
+                        //   clamp here too.
+                        if (pending.caret_byte > 0) {
+                            size_t cb = (size_t)pending.caret_byte;
+                            if (cb > pending.content.size())
+                                cb = pending.content.size();
+                            txt->text_caret_byte = (int32_t)cb;
                         }
                         // children = [text, boundary] — the construction
                         // contract the renderer and edit machinery
@@ -2029,6 +2047,16 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 // Stash the round-trip-safe buffer.
                 TextBoxPending pending;
                 pending.content = attr(tag, "data-curvz-content");
+                // s305 m1 — caret persistence. Missing attr → 0 (the
+                //   "no saved position" default that lets the cursor
+                //   fall back to end-of-buffer on entry).
+                {
+                    auto cb = attr(tag, "data-curvz-caret-byte");
+                    if (!cb.empty()) {
+                        try { pending.caret_byte = (int32_t)std::stol(cb); }
+                        catch (...) { pending.caret_byte = 0; }
+                    }
+                }
                 SceneNode* tbptr = tb.get();
                 textbox_pending[tbptr] = pending;
                 stack.back().node->children.push_back(std::move(tb));

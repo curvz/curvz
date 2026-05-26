@@ -650,6 +650,22 @@ struct SceneNode {
   double text_margin_left   = 0.0;
   double text_margin_right  = 0.0;
 
+  // s305 m1 — Caret persistence. Lives on the Text child of a TextBox
+  //   (the structural owner of the buffer). Written at end_text_cursor_edit
+  //   time, read at TextCursor construction time. Persisted via
+  //   data-curvz-caret-byte on the TextBox group's <g> tag so the value
+  //   survives save/quit/reload. For a freshly-created textbox or any
+  //   text node that was never edited, the field stays at 0 and the
+  //   cursor falls back to "end of buffer" (the right default — typing
+  //   into a fresh frame should append, not insert at the start).
+  //
+  //   Why an int32_t and not size_t: the field has to be persisted
+  //   through SVG, and SVG attributes are textual. A signed integer
+  //   parses cleanly and the buffer never exceeds 2GB in practice;
+  //   if it ever does, "stuck at INT32_MAX" still means "end of
+  //   buffer" thanks to the read-side clamp.
+  int32_t text_caret_byte = 0;
+
   // Image data — meaningful on Image only
   std::string image_path; // absolute path to the image file
   double image_x = 0.0;   // top-left x in doc space (Y-down)
@@ -843,6 +859,7 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->text_margin_bottom = src.text_margin_bottom;
   dst->text_margin_left   = src.text_margin_left;
   dst->text_margin_right  = src.text_margin_right;
+  dst->text_caret_byte    = src.text_caret_byte;  // s305 m1
   dst->image_path = src.image_path;
   dst->image_x = src.image_x;
   dst->image_y = src.image_y;

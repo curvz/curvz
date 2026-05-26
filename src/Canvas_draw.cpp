@@ -332,6 +332,83 @@ void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
 
   if (tl.baselines.empty()) return;
 
+  // ── s305 m3 — Selection highlight ────────────────────────────────────────
+  // When this text node is the active edit and the cursor has a
+  // selection, paint a translucent rectangle on each baseline whose
+  // byte range overlaps the selection. Drawn BEFORE glyphs so text
+  // reads cleanly through the highlight.
+  //
+  // Per-baseline geometry:
+  //   - Clip the selection to the baseline's [byte_start, byte_end)
+  //     range. If the clipped range is empty, skip the baseline.
+  //   - pango_layout_index_to_pos at each clipped byte (relative to
+  //     byte_start) gives the doc-x of that position within the
+  //     baseline's Pango layout.
+  //   - Rect spans (x_left .. x_right) horizontally and
+  //     (y - ascent .. y + descent) vertically — full glyph cell
+  //     height so wrapped lines show a connected highlight column.
+  //
+  // Special case: when the selection ends exactly at byte_end of a
+  // baseline (i.e. the selection spans a wrap or newline), extend
+  // the rect to the baseline's x_end so the highlight visually
+  // includes the line break (matches every text editor's behavior).
+  if (&text_obj == m_text_editing && m_text_cursor &&
+      m_text_cursor->has_selection()) {
+    auto [sel_start, sel_end] = m_text_cursor->selection_range();
+    cr->save();
+    // Translucent blue; same family as selection chrome elsewhere
+    // in the app. Alpha low enough that glyphs remain legible.
+    cr->set_source_rgba(0.30, 0.55, 0.95, 0.30);
+    for (const auto& bl : tl.baselines) {
+      if (!bl.pango) continue;
+      // Clip selection to this baseline's byte range.
+      size_t bs = bl.byte_start;
+      size_t be = bl.byte_end;
+      size_t ov_s = std::max(sel_start, bs);
+      size_t ov_e = std::min(sel_end,   be);
+      if (ov_e <= ov_s && !(sel_start <= bs && sel_end > be)) {
+        // No overlap on this line — unless the selection fully spans
+        // it (in which case ov_s == ov_e == bs and we still want the
+        // line highlighted because the wrap/newline is part of the
+        // selection). The compound test catches the "fully contained"
+        // case where the selection straddles this whole baseline.
+        if (!(sel_start <= bs && sel_end >= be)) continue;
+        ov_s = bs;
+        ov_e = be;
+      }
+
+      // Local (relative-to-byte_start) byte offsets for Pango.
+      int rel_s = (int)(ov_s - bs);
+      int rel_e = (int)(ov_e - bs);
+      // pango_layout_index_to_pos for the start and end byte. For an
+      // empty span on this line (ov_s == ov_e), pos.width is 0; we
+      // skip in that case unless the selection visually extends past
+      // the line's end (extend-to-x_end case).
+      PangoRectangle p_s, p_e;
+      pango_layout_index_to_pos(bl.pango.get(), rel_s, &p_s);
+      pango_layout_index_to_pos(bl.pango.get(), rel_e, &p_e);
+      double x_left  = bl.x_start + (double)p_s.x / (double)PANGO_SCALE;
+      double x_right = bl.x_start + (double)p_e.x / (double)PANGO_SCALE;
+
+      // If the selection extends past this baseline's last byte
+      // (wrap-or-newline continues into the next line), extend the
+      // highlight to the baseline's right edge so the line-break
+      // gap is included.
+      if (sel_end > be) {
+        x_right = bl.x_end;
+      }
+
+      // Sanity: nothing to draw if zero width and no extend case.
+      if (x_right <= x_left) continue;
+
+      double y_top = bl.y - bl.ascent;
+      double y_bot = bl.y + bl.descent;
+      cr->rectangle(x_left, y_top, x_right - x_left, y_bot - y_top);
+    }
+    cr->fill();
+    cr->restore();
+  }
+
   cr->save();
   apply_fill(cr, text_obj.fill);
 

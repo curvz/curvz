@@ -1336,11 +1336,53 @@ void Canvas::on_draw_begin(double x, double y) {
     //      between auto-default bbox (no drag) and marquee-sized bbox
     //      (real drag); either way a TextBox container is created.
     //
-    // s301 m1e — If an edit is already in progress, commit it first.
-    // Pressing in Text tool with an active edit is the user's signal
-    // "I'm done with this frame; start something new." Without this
-    // we'd stack two edits.
+    // s301 m1e / s305 m1 — If an edit is already in progress, decide
+    // between caret reposition and commit-then-new based on WHERE
+    // the click lands. Two cases:
+    //
+    //   Click INSIDE the editing TextBox's bbox → reposition caret.
+    //     The Text tool is the editor; clicking inside the editor
+    //     should move the cursor, not start a new frame.
+    //
+    //   Click OUTSIDE the editing TextBox → commit current edit
+    //     (user is done with this frame; the click then proceeds
+    //     to its normal Text-tool semantics: hit another textbox
+    //     to re-enter editing, or empty canvas to set up a new
+    //     marquee).
+    //
+    // The reposition path consumes the click; the commit path falls
+    // through to the existing hit-test + marquee setup below.
     if (m_text_editing) {
+      SceneNode *editing_textbox = find_text_box_for_text(m_text_editing);
+      bool inside_edit = false;
+      if (editing_textbox) {
+        auto bb = object_bbox(*editing_textbox);
+        if (bb && dx >= bb->x && dx <= bb->x + bb->w &&
+            dy >= bb->y && dy <= bb->y + bb->h) {
+          inside_edit = true;
+        }
+      } else {
+        // Legacy paired-sibling or bare-text edit — fall back to
+        // bbox of the text/boundary directly.
+        SceneNode *probe = m_text_boundary_editing
+            ? m_text_boundary_editing : m_text_editing;
+        if (probe) {
+          auto bb = object_bbox(*probe);
+          if (bb && dx >= bb->x && dx <= bb->x + bb->w &&
+              dy >= bb->y && dy <= bb->y + bb->h) {
+            inside_edit = true;
+          }
+        }
+      }
+      if (inside_edit && m_text_cursor) {
+        if (m_text_cursor->place_caret_at(dx, dy)) {
+          m_text_cursor->set_visible(true);
+          queue_draw();
+        }
+        // s305 m3 — Arm drag-to-select (see Selection-tool branch).
+        m_text_select_dragging = true;
+        return;
+      }
       commit_text_edit();
     }
     // Hit-test for an existing textbox to re-enter editing rather
@@ -1433,6 +1475,30 @@ void Canvas::on_draw_begin(double x, double y) {
 void Canvas::on_draw_update(double delta_x, double delta_y) {
   if (!m_doc)
     return;
+
+  // s305 m3 — Text-cursor drag-to-select. When the press landed inside
+  //   an active text edit, motion extends the caret end of the
+  //   selection while the anchor stays at the press byte. set_byte_index
+  //   moves only the caret; the anchor was seeded by place_caret_at at
+  //   press time. on_draw_end clears the flag.
+  //
+  //   This branch runs BEFORE the marquee/m_drawing path because a
+  //   text-select drag and a new-textbox marquee are mutually
+  //   exclusive (the m1 press handler arms one OR the other, never
+  //   both), but a defensive check on m_text_cursor + m_text_editing
+  //   keeps the branch dormant if the edit was torn down between
+  //   press and motion (e.g. a programmatic commit fired in between).
+  if (m_text_select_dragging && m_text_cursor && m_text_editing) {
+    double mx_doc, my_doc;
+    screen_to_doc(m_mouse_x, m_mouse_y, mx_doc, my_doc);
+    auto byte = m_text_cursor->byte_index_at(mx_doc, my_doc);
+    if (byte) {
+      m_text_cursor->set_byte_index(*byte);
+      m_text_cursor->set_visible(true);
+      queue_draw();
+    }
+    return;
+  }
 
   // Space pan — intercept before tool routing.
   if (m_space_panning) {
@@ -1779,6 +1845,13 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
 void Canvas::on_draw_end(double delta_x, double delta_y) {
   if (!m_doc)
     return;
+
+  // s305 m3 — Text-cursor drag-to-select: clear the flag. The selection
+  //   stays in place (anchor + caret are the model state); the user can
+  //   now copy, replace by typing, or click elsewhere to collapse.
+  //   Clearing unconditionally at the top of release is safe: the flag
+  //   is false in the normal no-text-drag case, so this is a no-op.
+  m_text_select_dragging = false;
 
   // Space pan — finish without any tool action.
   if (m_space_panning) {
@@ -2395,19 +2468,29 @@ void Canvas::on_select_begin(double x, double y) {
     return;
   }
 
-  // ── s301 m1f — Selection-tool click commits an active canvas text
-  //    edit if the click doesn't land on the currently-editing nodes.
-  //    Behavior mirrors InDesign: clicking outside an active text edit
-  //    exits edit mode (the click then proceeds to its normal target,
-  //    which may be empty canvas → deselect, another object → select,
-  //    or the bbox itself → select-without-edit). If the click DOES
-  //    land on the editing text or its boundary, we let the edit
-  //    continue uninterrupted — caret placement / repositioning lives
-  //    in the cursor flow, not here. For 1f only the commit-on-miss is
-  //    implemented; caret repositioning by click is a later milestone.
+  // ── s301 m1f / s305 m1 — Selection-tool click in active text edit.
+  //    Behavior mirrors InDesign / every text editor:
+  //
+  //    Click OUTSIDE the active edit's TextBox → commit the edit;
+  //    fall through to normal selection logic (deselect on empty,
+  //    select on other object, etc.).
+  //
+  //    Click INSIDE the active edit's TextBox → reposition the
+  //    caret to the clicked byte position and consume the click.
+  //    The cursor stays active and the user can continue typing
+  //    from the new position. This is what every text editor does
+  //    when you click inside the field you're already editing.
+  //
+  //    "Inside" is defined as hit_test returning the TextBox the
+  //    edit lives inside (for the post-migration container model)
+  //    OR returning the text/boundary directly (legacy paired-
+  //    sibling files). find_text_box_for_text walks up once to
+  //    map the m_text_editing pointer to its container.
   if (m_text_cursor && m_text_editing) {
     SceneNode *click_hit = hit_test(dx, dy);
+    SceneNode *editing_textbox = find_text_box_for_text(m_text_editing);
     bool click_is_on_edit =
+        (click_hit && editing_textbox && click_hit == editing_textbox) ||
         (click_hit == m_text_editing) ||
         (click_hit && click_hit == m_text_boundary_editing);
     if (!click_is_on_edit) {
@@ -2415,8 +2498,18 @@ void Canvas::on_select_begin(double x, double y) {
       // Fall through — the click still does whatever it would normally
       // do (select something else, etc.).
     } else {
-      // Click is on the editing target. Eat it for now (1f); the cursor
-      // stays active and the user can continue typing.
+      // s305 m1 — click is on the editing target; reposition caret.
+      if (m_text_cursor->place_caret_at(dx, dy)) {
+        // Reset blink so the caret pops to visible right away —
+        // matches the keystroke reset in handle_text_edit_key.
+        m_text_cursor->set_visible(true);
+        queue_draw();
+      }
+      // s305 m3 — Arm drag-to-select. place_caret_at collapsed the
+      //   anchor to the caret at the click byte; motion now extends
+      //   the caret end while the anchor stays put. on_draw_update
+      //   does the per-motion update; on_draw_end clears the flag.
+      m_text_select_dragging = true;
       return;
     }
   }

@@ -665,6 +665,15 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         if (obj.opacity < 0.999)        out << " opacity=\"" << fmt2(obj.opacity) << "\"";
         // Full buffer as the round-trip-safe source of truth.
         out << " data-curvz-content=\"" << xml_escape(text.text_content) << "\"";
+        // s305 m1 — Caret persistence. The byte lives on the Text child
+        //   at runtime; rides on the TextBox group at rest because
+        //   that's the round-trip vehicle for the whole textbox.
+        //   Omitted when 0 (the default "no saved position" state) to
+        //   keep the SVG clean — most files have textboxes whose caret
+        //   was never moved off zero, and emitting the attr on every
+        //   one is noise.
+        if (text.text_caret_byte > 0)
+            out << " data-curvz-caret-byte=\"" << text.text_caret_byte << "\"";
         out << shadow_attr_str(obj);
         out << ">\n";
 

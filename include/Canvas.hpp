@@ -1939,6 +1939,15 @@ private:
   std::unique_ptr<TextCursor> m_text_cursor;
   sigc::connection            m_text_cursor_blink_conn;
 
+  // s305 m3 — Drag-to-select state. Set true at press-inside-active-edit
+  //   (after place_caret_at seeds anchor=caret at the click byte);
+  //   on_draw_update reads it to extend the caret end of the selection
+  //   on each motion; on_draw_end clears it. The anchor stays put for
+  //   the whole drag, so motion grows the selection from the press
+  //   point. Cleared defensively at the start of every press handler
+  //   too, so a missed release doesn't leave the flag stuck.
+  bool m_text_select_dragging = false;
+
   // s301 m1c — Begin/end the canvas-cursor edit. begin_* installs the
   // TextCursor, kicks off the blink timer, and ensures the canvas has
   // focus so keystrokes route through Canvas::handle_text_edit_key.
