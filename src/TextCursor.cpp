@@ -24,6 +24,7 @@
 #include "TextCursor.hpp"
 #include "Canvas.hpp"
 #include "SceneNode.hpp"
+#include "CurvzLog.hpp"
 
 #include <pango/pangocairo.h>
 #include <glib.h>
@@ -69,16 +70,39 @@ static size_t last_content_index(const TextLayout& tl) {
 //   rule), with last_content_index as the end-of-buffer fallback
 //   (m4f). Returns size_t(-1) only when the baseline list is
 //   empty; callers should have early-returned in that case.
-static size_t baseline_index_for(const TextLayout& tl, size_t byte_index) {
+// s307 (newline fix v2) — The caret tracks the insertion point.
+//   After typing N chars the caret is at byte N; after typing a
+//   newline the caret crosses ONTO the next baseline (the empty
+//   one immediately after the consumed \n). The "did the caret
+//   cross a newline" discriminator is buf[B-1] == '\n':
+//     - "first" + B=5 → buf[4]='t', no \n. Caret on baseline 0
+//       (end of "first" content), not on the empty hairline below.
+//     - "first\n" + B=6 → buf[5]='\n'. Caret on baseline 1 (the
+//       empty baseline that owns byte 6, post-newline).
+//     - "first\nsecond" + B=12 → buf[11]='d'. Caret on baseline 1
+//       at end of "second" content.
+//   Empty-baseline ownership applies ONLY when the byte was
+//   reached by crossing a \n; otherwise the caret stays on the
+//   content baseline that ends at B (resolved via the m4f
+//   last_content_baseline fallback).
+static size_t baseline_index_for(const TextLayout& tl, size_t byte_index,
+                                  const std::string& buf) {
+    bool crossed_newline = (byte_index > 0 && byte_index <= buf.size() &&
+                            buf[byte_index - 1] == '\n');
+    bool buffer_empty = buf.empty();
     for (size_t i = 0; i < tl.baselines.size(); ++i) {
         const BaselineLayout& bl = tl.baselines[i];
-        if (byte_index >= bl.byte_start && byte_index < bl.byte_end) {
+        bool in_range = (byte_index >= bl.byte_start && byte_index < bl.byte_end);
+        bool empty_owns = (bl.byte_start == bl.byte_end &&
+                           byte_index == bl.byte_start &&
+                           (crossed_newline || buffer_empty));
+        if (in_range || empty_owns) {
             return i;
         }
     }
-    // End-of-buffer / unmatched (e.g. caret on a consumed hard-newline
-    // byte): fall back to the last content baseline, mirroring the
-    // m4f fix everywhere else in this file.
+    // End-of-buffer / unmatched: fall back to the last content
+    // baseline (caret renders at end of content, not on a bottom
+    // capacity hairline).
     return tl.baselines.empty() ? size_t(-1) : last_content_index(tl);
 }
 
@@ -112,6 +136,11 @@ TextCursor::TextCursor(Canvas* canvas, SceneNode* text_node,
 // ── Buffer mutation ─────────────────────────────────────────────────────────
 bool TextCursor::insert_char(gunichar codepoint) {
     if (!m_text) return false;
+    // s307 m5+ — Defensive clamp; see backspace for the rationale.
+    if (m_byte_index > m_text->text_content.size()) {
+        m_byte_index = m_text->text_content.size();
+        m_anchor_byte = m_byte_index;
+    }
     char buf[8];
     int n = g_unichar_to_utf8(codepoint, buf);
     if (n <= 0) return false;
@@ -125,6 +154,11 @@ bool TextCursor::insert_string(const std::string& utf8) {
     if (!m_text || utf8.empty()) return false;
     if (!g_utf8_validate(utf8.c_str(), (gssize)utf8.size(), nullptr))
         return false;
+    // s307 m5+ — Defensive clamp.
+    if (m_byte_index > m_text->text_content.size()) {
+        m_byte_index = m_text->text_content.size();
+        m_anchor_byte = m_byte_index;
+    }
     m_text->text_content.insert(m_byte_index, utf8);
     m_byte_index += utf8.size();
     on_horizontal_motion();  // s306 m6 — collapse anchor + drop preferred_x
@@ -137,6 +171,11 @@ bool TextCursor::insert_newline() {
     // as a hard paragraph break on next layout. This is the user's
     // explicit "new paragraph" — distinct from word-wrap line breaks
     // which are visual-only and never enter the buffer.
+    // s307 m5+ — Defensive clamp.
+    if (m_byte_index > m_text->text_content.size()) {
+        m_byte_index = m_text->text_content.size();
+        m_anchor_byte = m_byte_index;
+    }
     m_text->text_content.insert(m_byte_index, "\n");
     m_byte_index += 1;
     on_horizontal_motion();  // s306 m6 — collapse anchor + drop preferred_x
@@ -145,6 +184,22 @@ bool TextCursor::insert_newline() {
 
 bool TextCursor::backspace() {
     if (!m_text || m_byte_index == 0) return false;
+    // s307 m5+ — Defensive clamp. m_byte_index can lag the buffer when
+    //   the buffer is mutated from outside the cursor's view: a global
+    //   Ctrl+Z mid-edit applies TextEditCommand::before_content to the
+    //   buffer (shrinking it), and the cursor's caret index is now
+    //   past the end. Without this clamp, g_utf8_prev_char walks off
+    //   the end of the heap-allocated string and the subsequent
+    //   string::erase throws std::out_of_range. delete_selection
+    //   already had this guard; backspace and delete_forward didn't.
+    //   Proper fix lives in m6 (mid-edit Ctrl+Z intercept restores
+    //   caret position from the command's before_caret); this is
+    //   belt-and-braces so a stale-index crash can't surface.
+    if (m_byte_index > m_text->text_content.size()) {
+        m_byte_index = m_text->text_content.size();
+        m_anchor_byte = m_byte_index;
+        if (m_byte_index == 0) return false;
+    }
     const char* base = m_text->text_content.c_str();
     const char* here = base + m_byte_index;
     const char* prev = g_utf8_prev_char(here);
@@ -157,6 +212,17 @@ bool TextCursor::backspace() {
 
 bool TextCursor::delete_forward() {
     if (!m_text || m_byte_index >= m_text->text_content.size()) return false;
+    // s307 m5+ — Same defensive clamp as backspace above. The guard at
+    //   the top already early-returns when caret >= size, so a stale
+    //   caret PAST size makes the comparison hit the >= branch and
+    //   we return false — no crash. This belt-and-braces clamp brings
+    //   the post-state into a sane condition before the rest of the
+    //   function runs, matching delete_selection's defensive shape.
+    if (m_byte_index > m_text->text_content.size()) {
+        m_byte_index = m_text->text_content.size();
+        m_anchor_byte = m_byte_index;
+        return false;  // post-clamp, nothing forward to delete
+    }
     const char* base = m_text->text_content.c_str();
     const char* here = base + m_byte_index;
     const char* next = g_utf8_next_char(here);
@@ -213,9 +279,20 @@ void TextCursor::move_line_start() {
             //   position_on_canvas for the rationale. Strict `<` on
             //   upper bound; fallback to last baseline catches the
             //   end-of-buffer case.
+            // s307 (newline fix v2) — Empty-baseline ownership gated
+            //   on crossed_newline. See baseline_index_for.
+            const std::string& buf = m_text->text_content;
+            bool crossed_newline = (m_byte_index > 0 &&
+                                    m_byte_index <= buf.size() &&
+                                    buf[m_byte_index - 1] == '\n');
+            bool buffer_empty = buf.empty();
             for (const auto& bl : tl.baselines) {
-                if (m_byte_index >= bl.byte_start &&
-                    m_byte_index < bl.byte_end) {
+                bool in_range = (m_byte_index >= bl.byte_start &&
+                                 m_byte_index < bl.byte_end);
+                bool empty_owns = (bl.byte_start == bl.byte_end &&
+                                   m_byte_index == bl.byte_start &&
+                                   (crossed_newline || buffer_empty));
+                if (in_range || empty_owns) {
                     m_byte_index = bl.byte_start;
                     on_horizontal_motion();  // s306 m6
                     return;
@@ -253,10 +330,20 @@ void TextCursor::move_line_end() {
         TextLayout tl = compute_text_layout(boundary, m_text);
         if (!tl.baselines.empty()) {
             // s305 m4d — Later-baseline-wins (see move_line_start).
+            // s307 (newline fix v2) — Empty-baseline ownership gated.
+            const std::string& buf = m_text->text_content;
+            bool crossed_newline = (m_byte_index > 0 &&
+                                    m_byte_index <= buf.size() &&
+                                    buf[m_byte_index - 1] == '\n');
+            bool buffer_empty = buf.empty();
             const BaselineLayout* target = nullptr;
             for (const auto& bl : tl.baselines) {
-                if (m_byte_index >= bl.byte_start &&
-                    m_byte_index < bl.byte_end) {
+                bool in_range = (m_byte_index >= bl.byte_start &&
+                                 m_byte_index < bl.byte_end);
+                bool empty_owns = (bl.byte_start == bl.byte_end &&
+                                   m_byte_index == bl.byte_start &&
+                                   (crossed_newline || buffer_empty));
+                if (in_range || empty_owns) {
                     target = &bl;
                     break;
                 }
@@ -351,7 +438,7 @@ bool TextCursor::move_up() {
     TextLayout tl = compute_text_layout(boundary, m_text);
     if (tl.baselines.empty()) return false;
 
-    size_t cur_idx = baseline_index_for(tl, m_byte_index);
+    size_t cur_idx = baseline_index_for(tl, m_byte_index, m_text->text_content);
     if (cur_idx == size_t(-1)) return false;
     if (cur_idx == 0) return false;  // top of list, nothing above
 
@@ -439,7 +526,7 @@ bool TextCursor::move_down() {
     TextLayout tl = compute_text_layout(boundary, m_text);
     if (tl.baselines.empty()) return false;
 
-    size_t cur_idx = baseline_index_for(tl, m_byte_index);
+    size_t cur_idx = baseline_index_for(tl, m_byte_index, m_text->text_content);
     if (cur_idx == size_t(-1)) return false;
 
     size_t last_idx = last_content_index(tl);
@@ -869,9 +956,25 @@ TextCursor::Geometry TextCursor::position_on_canvas() const {
     //   byte_end equals the buffer size and the strict `<` would
     //   miss it). Same convention as move_line_start/end and the
     //   click handler's byte_index_at.
+    // s307 (newline fix v2) — Empty-baseline ownership ONLY when
+    //   the caret crossed a \n to get here (buf[B-1] == '\n') or
+    //   the buffer is completely empty. See baseline_index_for
+    //   for the full rationale. Without the gate, end-of-content
+    //   carets (e.g. after typing "first") would jump onto the
+    //   empty hairline below.
+    const std::string& buf = m_text->text_content;
+    bool crossed_newline = (m_byte_index > 0 &&
+                            m_byte_index <= buf.size() &&
+                            buf[m_byte_index - 1] == '\n');
+    bool buffer_empty = buf.empty();
     const BaselineLayout* target = nullptr;
     for (const auto& bl : tl.baselines) {
-        if (m_byte_index >= bl.byte_start && m_byte_index < bl.byte_end) {
+        bool in_range = (m_byte_index >= bl.byte_start &&
+                         m_byte_index < bl.byte_end);
+        bool empty_owns = (bl.byte_start == bl.byte_end &&
+                           m_byte_index == bl.byte_start &&
+                           (crossed_newline || buffer_empty));
+        if (in_range || empty_owns) {
             target = &bl;
             break;
         }

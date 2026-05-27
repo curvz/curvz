@@ -20,14 +20,18 @@
 #include <gdkmm/clipboard.h>
 #include <gdkmm/contentprovider.h>
 #include <gdkmm/pixbuf.h>
+#include <gdkmm/pixbufloader.h>  // s308 m1 — overflow glyph load + recolor
 #include <gdkmm/rectangle.h>
 #include <gtkmm/alertdialog.h>
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
 #include <gtkmm/grid.h>
+#include <gtkmm/label.h>
 #include <gtkmm/popover.h>
+#include <gtkmm/scrolledwindow.h>
 #include <gtkmm/separator.h>
 #include <gtkmm/spinbutton.h>
+#include <gtkmm/textview.h>
 #include <gtkmm/window.h>
 #include <pango/pangocairo.h>
 #include <pango/pangofc-font.h>
@@ -662,6 +666,382 @@ void Canvas::on_text_begin(double sx, double sy) {
   queue_draw();
 }
 
+// ── s307 m1 — Flush the in-flight text-edit segment ─────────────────────────
+// See the header comment on Canvas::flush_text_segment for the full contract.
+//
+// m1 is the fixture milestone. The body lives in one place so that s307
+// m2-m6 only have to add call sites (paste, cut, selection-delete, newline,
+// caret motion, word boundary, pause timer) — they never reproduce the
+// record_after + push + re-snapshot dance.
+//
+// Re-snapshotting after a successful push is what makes the next mutation
+// start a fresh segment cleanly: snapshot_before captures the current
+// (post-flush) state as the new before_content, so the next typed
+// character extends after_content from a known baseline. Without this
+// re-snapshot, a mid-session flush would leave the in-flight segment
+// stale and the next flush would push a delta-from-old-baseline that
+// double-counts everything since the original begin.
+//
+// The "no buffer change since segment opened" early-return is the
+// guard that keeps trivial passes (e.g. caret motion with no typing
+// between flushes — m3) from polluting the history stack with empty
+// no-op commands. The comparison is on text_content only, which is
+// the right granularity for now — TextEditCommand captures other
+// typographic fields too (font, fill, stroke, margins, path
+// attachment) but none of those mutate during a TextCursor session.
+// They could in principle change via inspector edits while the text
+// edit is also active, but those flow through PropertiesPanel's own
+// commands, not through this path. If that assumption ever breaks,
+// the early-return will need to widen.
+bool Canvas::flush_text_segment() {
+  // s307 m5 — Cancel any pending typing-pause timer unconditionally.
+  //   Every flush (whether it pushes a command or no-ops on zero
+  //   delta) ends the current typing-run's pause armament. Restart
+  //   happens only at the no-selection typing sites; if we get here
+  //   from any non-typing trigger, the timer must not survive past
+  //   the flush.
+  if (m_text_typing_pause_conn.connected()) {
+    m_text_typing_pause_conn.disconnect();
+  }
+
+  if (!m_text_editing) return false;
+  if (!m_text_has_snapshot) return false;
+  if (!m_history) return false;
+
+  // Empty delta? Don't push. Activate-and-deactivate-without-typing
+  // produces no history entry — Ctrl+Z won't roll back to an unrelated
+  // earlier state of this textbox.
+  if (m_text_snapshot.before_content == m_text_editing->text_content) {
+    return false;
+  }
+
+  // s307 m6 — Sync the cursor's live caret position into text_caret_byte
+  //   BEFORE record_after reads it. TextEditCommand reads caret from
+  //   the SceneNode field, so the node must be current at this moment.
+  //   Same pattern used at end_text_cursor_edit for persistence; here
+  //   we're using it as the bridge between cursor state (Canvas owns
+  //   m_text_cursor) and command state (TextEditCommand reads off
+  //   the node).
+  if (m_text_cursor) {
+    size_t b = m_text_cursor->byte_index();
+    if (b > (size_t)std::numeric_limits<int32_t>::max())
+      b = (size_t)std::numeric_limits<int32_t>::max();
+    m_text_editing->text_caret_byte = (int32_t)b;
+  }
+
+  m_text_snapshot.record_after(m_text_editing);
+  LOG_INFO("[s307] TextEdit::flush_segment iid='{}' before='{}' after='{}' "
+           "before_caret={} after_caret={}",
+           m_text_snapshot.obj_iid,
+           m_text_snapshot.before_content,
+           m_text_snapshot.after_content,
+           m_text_snapshot.before_caret_byte,
+           m_text_snapshot.after_caret_byte);
+  m_history->push(
+      std::make_unique<TextEditCommand>(std::move(m_text_snapshot)));
+
+  // Re-snapshot from the current state so the NEXT mutation starts a
+  // fresh segment. snapshot_before re-reads internal_id and all the
+  // typographic fields off the node, which is exactly what we want —
+  // the just-pushed segment is closed, this opens the next.
+  // text_caret_byte was written above so the new before_caret_byte
+  // matches the live cursor — exactly the right state for any future
+  // undo/redo to restore caret to.
+  m_text_snapshot = TextEditCommand::snapshot_before(project(), m_text_editing);
+  // m_text_has_snapshot stays true: the new in-flight segment is open.
+
+  return true;
+}
+
+// ── s307 m5 — Typing-pause flush timer ──────────────────────────────────────
+// See the header comment on Canvas::restart_text_typing_pause_timer for the
+// full contract. The 600ms constant is the fixed-heuristic baseline used by
+// VS Code, browsers, Word at default — predictability beats optimality.
+// Promotes to a doc/app preference in s308+.
+//
+// The callback is one-shot (returns false) so a single flush per pause.
+// If the user resumes typing inside the same edit, the next typing
+// keystroke calls this function again and a fresh 600ms timer is armed.
+// flush_text_segment cancels the timer at every call, so a paste/cut/
+// motion that flushes mid-pause cleanly terminates the armament; the next
+// typing keystroke after that restarts from scratch.
+//
+// Capturing `this` is safe — Canvas owns the connection and disconnects
+// it in end_text_cursor_edit and in flush_text_segment. If the cursor
+// gets torn down between arming and firing, the disconnect happens
+// before the callback runs.
+void Canvas::restart_text_typing_pause_timer() {
+  static constexpr int kTypingPauseMs = 600;
+  if (m_text_typing_pause_conn.connected()) {
+    m_text_typing_pause_conn.disconnect();
+  }
+  m_text_typing_pause_conn = Glib::signal_timeout().connect(
+      [this]() -> bool {
+        // Defensive: a teardown between arm and fire would have
+        // disconnected this already, but check m_text_cursor in case
+        // the timer is somehow still connected but the cursor is gone.
+        if (!m_text_cursor) return false;
+        flush_text_segment();
+        return false;  // one-shot
+      },
+      kTypingPauseMs);
+}
+
+// ── s308 m1 — Overflow indicator pixbuf loader ──────────────────────────────
+// Lazy-load the symbolic SVG from the gresource bundle, recoloring
+// currentColor to --badge-error red BEFORE PixbufLoader parses it (Cairo
+// doesn't read CSS the way symbolic widgets do — recolor has to happen
+// in the source bytes). Cached for the lifetime of the Canvas instance.
+//
+// Substitution strategy: SVG currentColor cascades from the `color` CSS
+// property on any ancestor element. Injecting style="color: #e85050"
+// onto the root <svg> tag is the minimal-edit way to bind every
+// currentColor reference inside to that color.
+//
+// On any failure (missing resource, parse error), m_overflow_glyph_pixbuf
+// stays null and the draw path falls back to a solid red square.
+void Canvas::ensure_overflow_glyph_pixbuf() {
+  if (m_overflow_glyph_pixbuf) return;
+
+  GError* err = nullptr;
+  GBytes* bytes = g_resources_lookup_data(
+      "/com/curvz/app/icons/scalable/apps/curvz-overflow-symbolic.svg",
+      G_RESOURCE_LOOKUP_FLAGS_NONE, &err);
+  if (!bytes) {
+    LOG_WARN("Canvas: failed to load overflow glyph resource: {}",
+             err ? err->message : "?");
+    if (err) g_error_free(err);
+    return;
+  }
+  gsize sz = 0;
+  const char* p = static_cast<const char*>(g_bytes_get_data(bytes, &sz));
+  std::string svg(p, sz);
+  g_bytes_unref(bytes);
+
+  // Inject style="color: ..." into the root <svg> tag. The badge color
+  // is the --badge-error dark-motif value for now; a future Phase C
+  // (theme-aware Canvas chrome) would read this from style_context.
+  constexpr const char* kBadgeRed = "#e85050";
+  const std::string needle = "<svg";
+  size_t pos = svg.find(needle);
+  if (pos != std::string::npos) {
+    std::string injection = std::string("<svg style=\"color: ") +
+                            kBadgeRed + "\"";
+    svg.replace(pos, needle.size(), injection);
+  }
+
+  try {
+    auto loader = Gdk::PixbufLoader::create();
+    loader->write(reinterpret_cast<const guint8*>(svg.data()), svg.size());
+    loader->close();
+    m_overflow_glyph_pixbuf = loader->get_pixbuf();
+  } catch (const Glib::Error& e) {
+    LOG_WARN("Canvas: failed to parse overflow glyph SVG: {}",
+             std::string(e.what()));
+    m_overflow_glyph_pixbuf.reset();
+  }
+}
+
+// ── s308 m1 — Overflow indicator hit-test (screen space) ────────────────────
+// Walks the document for textboxes whose content exceeds boundary capacity;
+// for each, computes the indicator's screen-space rect (16×16 px centered
+// at the inset corner — same geometry as draw_text_in_boundary's paint
+// block) and tests whether (screen_x, screen_y) is inside. On hit, fills
+// out_text and out_boundary with the textbox's text and boundary pointers
+// and returns true. The caller (GestureClick in Canvas.cpp constructor)
+// claims the sequence and dispatches show_overflow_popover.
+//
+// Iteration cost is O(N) over scene nodes per click — text nodes are rare
+// so this is cheap. Constants here MUST match draw_text_in_boundary.
+bool Canvas::check_overflow_hit(double screen_x, double screen_y,
+                                SceneNode** out_text,
+                                SceneNode** out_boundary) {
+  if (!m_doc || !out_text || !out_boundary) return false;
+  *out_text = nullptr;
+  *out_boundary = nullptr;
+
+  constexpr double INDICATOR_SIZE_PX = 16.0;   // matches Canvas_draw.cpp
+  constexpr double INDICATOR_INSET_PX = 14.0;  // ditto
+  constexpr double HIT_SLACK_PX = 2.0;
+  const double half = INDICATOR_SIZE_PX * 0.5 + HIT_SLACK_PX;
+
+  std::function<bool(SceneNode*)> walk = [&](SceneNode* n) -> bool {
+    if (!n) return false;
+    if (n->type == SceneNode::Type::TextBox && n->children.size() == 2) {
+      SceneNode* text = n->children[0].get();
+      SceneNode* boundary = n->children[1].get();
+      if (text && text->is_text() && boundary && boundary->path &&
+          boundary->path->nodes.size() >= 3) {
+        TextLayout tl = compute_text_layout(boundary, text);
+        if (tl.bytes_consumed < text->text_content.size()) {
+          // Compute bbox bottom-right in doc coords → screen coords.
+          const auto& bp = boundary->path->nodes;
+          double bx0 = bp[0].x, by0 = bp[0].y;
+          double bx1 = bx0, by1 = by0;
+          for (const auto& pn : bp) {
+            if (pn.x < bx0) bx0 = pn.x;
+            if (pn.x > bx1) bx1 = pn.x;
+            if (pn.y < by0) by0 = pn.y;
+            if (pn.y > by1) by1 = pn.y;
+          }
+          double inset_doc = INDICATOR_INSET_PX / std::max(m_zoom, 0.001);
+          double cx_doc = bx1 - inset_doc;
+          double cy_doc = by1 - inset_doc;
+          double cx_scr, cy_scr;
+          doc_to_screen(cx_doc, cy_doc, cx_scr, cy_scr);
+          if (std::abs(screen_x - cx_scr) <= half &&
+              std::abs(screen_y - cy_scr) <= half) {
+            *out_text = text;
+            *out_boundary = boundary;
+            return true;
+          }
+        }
+      }
+    }
+    for (auto& c : n->children) {
+      if (walk(c.get())) return true;
+    }
+    return false;
+  };
+  for (auto& layer : m_doc->layers) {
+    if (walk(layer.get())) return true;
+  }
+  return false;
+}
+
+// ── s308 m1 — Overflow popover ──────────────────────────────────────────────
+// Builds a transient popover anchored to the overflow indicator's screen
+// position. Contents:
+//   1. Stats label — "N words total, M overflowed (B bytes)"
+//   2. Scrollable text view with the overflowed bytes
+//   3. Two disabled action buttons (placeholders for the text-threading arc)
+//
+// Lifetime is transient — created fresh on each click, dismissed on
+// click-outside / Escape (autohide), unparented on idle after signal_closed.
+// Same shape the right-click context menu uses (Canvas.cpp:680).
+//
+// Word counting walks the buffer counting runs of non-whitespace-non-punct
+// characters bounded by whitespace or punctuation. g_unichar_isspace /
+// g_unichar_ispunct are Unicode-aware so non-Latin scripts count correctly.
+void Canvas::show_overflow_popover(SceneNode* text_node, SceneNode* boundary) {
+  if (!text_node || !text_node->is_text() || !m_doc || !boundary ||
+      !boundary->path || boundary->path->nodes.size() < 3) {
+    return;
+  }
+
+  TextLayout tl = compute_text_layout(boundary, text_node);
+  if (tl.bytes_consumed >= text_node->text_content.size()) return;
+
+  const std::string& buf = text_node->text_content;
+  const size_t consumed = tl.bytes_consumed;
+  const std::string overflow_text = buf.substr(consumed);
+
+  auto count_words = [](const std::string& s) -> size_t {
+    size_t n = 0;
+    bool in_word = false;
+    const char* p = s.c_str();
+    const char* end = p + s.size();
+    while (p < end) {
+      gunichar c = g_utf8_get_char(p);
+      bool is_boundary = g_unichar_isspace(c) || g_unichar_ispunct(c);
+      if (is_boundary) {
+        if (in_word) n++;
+        in_word = false;
+      } else {
+        in_word = true;
+      }
+      p = g_utf8_next_char(p);
+    }
+    if (in_word) n++;
+    return n;
+  };
+  const size_t total_words = count_words(buf);
+  const size_t overflow_words = count_words(overflow_text);
+
+  // ── Build the popover ─────────────────────────────────────────────────────
+  auto* popover = Gtk::make_managed<Gtk::Popover>();
+  popover->set_parent(*this);
+  popover->set_has_arrow(true);
+  popover->set_autohide(true);
+
+  auto* vbox = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+  vbox->set_margin(8);
+  vbox->set_size_request(280, 220);
+
+  // s308 m1 — Top row: stats label (left) + link-to verb button
+  // (right). One-row layout consolidates vertical space and reads as
+  // "here's what's overflowing, here's what to do about it" in a
+  // single glance. Same icon will serve "link to existing" and
+  // "create new linked" verbs when text threading lands. Button has
+  // a dummy click handler (logs only) so it renders enabled — full
+  // wiring lands in s309.
+  auto* top_row = Gtk::make_managed<Gtk::Box>(
+      Gtk::Orientation::HORIZONTAL, 6);
+
+  std::ostringstream stats;
+  stats << total_words << " words total, "
+        << overflow_words << " overflowed ("
+        << overflow_text.size() << " bytes)";
+  auto* stats_label = Gtk::make_managed<Gtk::Label>(stats.str());
+  stats_label->set_halign(Gtk::Align::START);
+  stats_label->set_hexpand(true);
+  stats_label->add_css_class("dim-label");
+  top_row->append(*stats_label);
+
+  auto* link_btn = Gtk::make_managed<Gtk::Button>();
+  link_btn->set_icon_name("curvz-link-to-symbolic");
+  link_btn->set_has_frame(false);
+  link_btn->set_tooltip_text("Link overflow to another textbox (coming soon)");
+  link_btn->signal_clicked().connect([]() {
+    LOG_INFO("[s308 m1] link-to button clicked (placeholder — text "
+             "threading lands in s309)");
+  });
+  top_row->append(*link_btn);
+
+  vbox->append(*top_row);
+
+  auto* scrolled = Gtk::make_managed<Gtk::ScrolledWindow>();
+  scrolled->set_policy(Gtk::PolicyType::AUTOMATIC,
+                       Gtk::PolicyType::AUTOMATIC);
+  scrolled->set_vexpand(true);
+  scrolled->set_hexpand(true);
+  scrolled->set_min_content_height(140);
+
+  auto* text_view = Gtk::make_managed<Gtk::TextView>();
+  text_view->set_editable(false);
+  text_view->set_cursor_visible(false);
+  text_view->set_wrap_mode(Gtk::WrapMode::WORD_CHAR);
+  text_view->get_buffer()->set_text(overflow_text);
+  scrolled->set_child(*text_view);
+  vbox->append(*scrolled);
+
+  popover->set_child(*vbox);
+  popover->set_child(*vbox);
+
+  // Point at the indicator's screen position (bbox bottom-right inset).
+  const auto& bp = boundary->path->nodes;
+  double bx0 = bp[0].x, by0 = bp[0].y;
+  double bx1 = bx0, by1 = by0;
+  for (const auto& pn : bp) {
+    if (pn.x < bx0) bx0 = pn.x;
+    if (pn.x > bx1) bx1 = pn.x;
+    if (pn.y < by0) by0 = pn.y;
+    if (pn.y > by1) by1 = pn.y;
+  }
+  const double inset_doc = 14.0 / std::max(m_zoom, 0.001);
+  double sx, sy;
+  doc_to_screen(bx1 - inset_doc, by1 - inset_doc, sx, sy);
+  Gdk::Rectangle rect((int)sx, (int)sy, 1, 1);
+  popover->set_pointing_to(rect);
+
+  popover->signal_closed().connect([popover]() {
+    Glib::signal_idle().connect_once(
+        [popover]() { popover->unparent(); });
+  });
+
+  popover->popup();
+}
+
 void Canvas::commit_text_edit() {
   if (!m_text_editing)
     return;
@@ -687,16 +1067,12 @@ void Canvas::commit_text_edit() {
 
   if (m_history) {
     if (!m_text_is_new && m_text_has_snapshot) {
-      m_text_snapshot.record_after(m_text_editing);
-      LOG_INFO("[IIDDIAG] TextEdit::push  capturing iid='{}' "
-               "obj_name='{}' obj_type={}  before='{}' after='{}'",
-               m_text_snapshot.obj_iid,
-               m_text_editing ? m_text_editing->name : std::string{"(null)"},
-               m_text_editing ? (int)m_text_editing->type : -1,
-               m_text_snapshot.before_content,
-               m_text_snapshot.after_content);
-      m_history->push(
-          std::make_unique<TextEditCommand>(std::move(m_text_snapshot)));
+      // s307 m1 — Existing-text edit. Route through flush_text_segment:
+      //   it does the record_after + push + re-snapshot dance. After
+      //   flush, m_text_has_snapshot is still true (a fresh empty
+      //   segment is now open), so we clear it explicitly here since
+      //   the cursor is about to be torn down by end_text_cursor_edit.
+      flush_text_segment();
       m_text_has_snapshot = false;
     } else if (m_text_is_new) {
       // Push undo state for a newly-created text. Two shapes:
@@ -784,9 +1160,11 @@ void Canvas::cancel_text_edit() {
   //   - If this is a NEW LEGACY unbound text (no boundary), the prior
   //     "discard on cancel-with-empty" behavior still applies: a bare
   //     text with no content and no frame is just noise; remove it.
-  //   - If editing an EXISTING text, never delete on cancel — revert
-  //     to snapshot is the right behavior, and the existing
-  //     m_text_is_new == false path naturally skips removal.
+  //   - If editing an EXISTING text: s307 m1 — deactivate. There is no
+  //     cancel-revert in this UI; the only rewind is Ctrl+Z. Flush the
+  //     in-flight segment to history (early-returns on zero delta) and
+  //     exit. Esc, click-outside, and tool-switch are all the same
+  //     deactivate semantic.
   bool is_new_bound = m_text_is_new && (m_text_boundary_editing != nullptr);
   bool is_new_unbound_empty =
       m_text_is_new && !m_text_boundary_editing &&
@@ -834,8 +1212,22 @@ void Canvas::cancel_text_edit() {
     m_selected = sel_target;
     m_selection = {sel_target};
     notify_object_selection_changed();
+  } else {
+    // s307 m1 — Existing-text deactivate. "Cancel" is a misnomer here;
+    //   the only rewind in this UI is Ctrl+Z. Esc, click-outside, and
+    //   tool-switch all share one semantic: stop editing, push the
+    //   segment to history if there's a real delta, exit. This branch
+    //   covers Esc; click-outside and tool-switch route through
+    //   commit_text_edit, which calls the same flush. The early-return
+    //   inside flush_text_segment ("before_content == live_content")
+    //   handles the activate-and-immediately-deactivate case: no
+    //   history entry created when no typing happened.
+    if (m_history && m_text_has_snapshot) {
+      flush_text_segment();
+      m_text_has_snapshot = false;
+    }
   }
-  // Editing an existing text with no changes: nothing to do, just exit.
+  // (No else; everything above covers the three deactivate scenarios.)
 
   if (m_text_entry)
     m_text_entry->set_visible(false);
@@ -847,6 +1239,13 @@ void Canvas::cancel_text_edit() {
   m_text_boundary_editing = nullptr;
   m_text_is_new = false;
   m_sig_doc_changed.emit();
+  // s307 m1 — Deactivate routes (Esc, click-outside, tool-switch) all
+  //   land in Selection tool afterwards. commit_text_edit already
+  //   emits this signal at its tail; this brings cancel into parity.
+  //   Under the activate/deactivate model, Esc and click-outside are
+  //   semantically equivalent — both should leave the user in Selection
+  //   so they can immediately grab/move/re-enter the textbox.
+  m_sig_request_tool.emit(ActiveTool::Selection);
   queue_draw();
 }
 
@@ -1375,6 +1774,14 @@ void Canvas::on_draw_begin(double x, double y) {
         }
       }
       if (inside_edit && m_text_cursor) {
+        // s307 m3 — Click-to-position-caret is caret motion that
+        //   leaves the current typing run. Flush any in-flight
+        //   typing so the post-click run becomes its own segment.
+        //   The flush happens unconditionally; place_caret_at can
+        //   no-op if the click lands exactly where the caret
+        //   already is, but a zero-delta flush is also a no-op
+        //   so the double-no-op case is harmless.
+        flush_text_segment();
         if (m_text_cursor->place_caret_at(dx, dy)) {
           m_text_cursor->set_visible(true);
           queue_draw();
@@ -2499,6 +2906,11 @@ void Canvas::on_select_begin(double x, double y) {
       // do (select something else, etc.).
     } else {
       // s305 m1 — click is on the editing target; reposition caret.
+      // s307 m3 — Click is caret motion that leaves the current
+      //   typing run. Flush before place_caret_at so the post-click
+      //   typing run becomes its own segment. Same shape as the
+      //   Text-tool path above.
+      flush_text_segment();
       if (m_text_cursor->place_caret_at(dx, dy)) {
         // Reset blink so the caret pops to visible right away —
         // matches the keystroke reset in handle_text_edit_key.

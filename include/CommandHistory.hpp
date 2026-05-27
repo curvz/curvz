@@ -339,6 +339,20 @@ struct TextEditCommand : CurvzCommand {
     double      before_margin_bottom = 0.0;
     double      before_margin_left   = 0.0;
     double      before_margin_right  = 0.0;
+    // s307 m6 — Caret position captured alongside the content snapshot.
+    //   Mid-edit Ctrl+Z and Ctrl+Shift+Z need to restore the cursor's
+    //   caret to where it was at segment open / segment close,
+    //   otherwise undo lands the caret in a stale post-typing
+    //   position. The fields default to 0 so a TextEditCommand for a
+    //   pre-s307 SVG load (no cursor active) snapshots a sensible
+    //   start-of-buffer position. snapshot_before and record_after
+    //   take the live caret byte as an additional argument now;
+    //   apply() does NOT touch the caret because the live cursor
+    //   lives on Canvas, not on the SceneNode — the caller in
+    //   handle_text_edit_key restores the caret explicitly after
+    //   apply() runs.
+    size_t      before_caret_byte = 0;
+    size_t      after_caret_byte  = 0;
     // after state
     std::string after_content, after_family, after_anchor, after_align;
     double      after_x = 0, after_y = 0, after_size = 0;
@@ -387,6 +401,15 @@ struct TextEditCommand : CurvzCommand {
         c.before_margin_bottom = o->text_margin_bottom;
         c.before_margin_left   = o->text_margin_left;
         c.before_margin_right  = o->text_margin_right;
+        // s307 m6 — Caret position. Reads off text_caret_byte, which
+        //   the caller is responsible for keeping current: at edit
+        //   entry the persisted byte is correct (last edit's caret);
+        //   at flush time the caller writes m_text_cursor->byte_index()
+        //   into text_caret_byte before calling snapshot_before so
+        //   this read picks up the live cursor position.
+        c.before_caret_byte = (o->text_caret_byte > 0)
+                                  ? (size_t)o->text_caret_byte
+                                  : 0;
         return c;
     }
     void record_after(SceneNode* o) {
@@ -415,6 +438,12 @@ struct TextEditCommand : CurvzCommand {
         after_margin_bottom = o->text_margin_bottom;
         after_margin_left   = o->text_margin_left;
         after_margin_right  = o->text_margin_right;
+        // s307 m6 — Caret position; same convention as snapshot_before.
+        //   Caller writes m_text_cursor->byte_index() into
+        //   text_caret_byte before calling record_after.
+        after_caret_byte = (o->text_caret_byte > 0)
+                                ? (size_t)o->text_caret_byte
+                                : 0;
     }
     void apply(SceneNode* o, bool after) const {
         if (!o) return;

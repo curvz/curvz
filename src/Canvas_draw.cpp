@@ -296,7 +296,7 @@ void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
                                     const SceneNode& boundary) {
   TextLayout tl = compute_text_layout(&boundary, &text_obj);
 
-  // ── s301 m1k — Overflow indicator (drawn before baselines-empty
+  // ── s308 m1 — Overflow indicator (drawn before baselines-empty
   // early-return) ───────────────────────────────────────────────────────
   // When the bbox is too short to hold ANY baseline (interior height
   // < ascent), compute_text_layout produces zero baselines and
@@ -308,6 +308,13 @@ void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
   // Drawing this first (regardless of baselines) is the correct fix:
   // the indicator exists to signal "your content isn't all visible",
   // and the most extreme version of that is "none of it is visible".
+  //
+  // Geometry: 16 screen px glyph, centered 14 screen px inside the
+  // bottom-right corner of the bbox so it sits ABOVE the bottom-right
+  // resize handle (rendered separately by the selection-handles pass).
+  // Sizer-pattern affordance — Canvas paints it, Canvas hit-tests it
+  // (check_overflow_hit), Canvas dispatches the click (GestureClick
+  // wired in Canvas.cpp). Constants here MUST match check_overflow_hit.
   if (tl.bytes_consumed < text_obj.text_content.size() &&
       boundary.path && boundary.path->nodes.size() >= 3) {
     const auto& bp = boundary.path->nodes;
@@ -317,17 +324,42 @@ void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
       if (n.x < bx0) bx0 = n.x; if (n.x > bx1) bx1 = n.x;
       if (n.y < by0) by0 = n.y; if (n.y > by1) by1 = n.y;
     }
-    constexpr double SQ_SCREEN_PX = 10.0;
-    double sq_doc = SQ_SCREEN_PX / std::max(m_zoom, 0.001);
-    cr->save();
-    cr->set_source_rgba(0.85, 0.15, 0.15, 1.0);  // solid red
-    cr->rectangle(bx1 - sq_doc, by1 - sq_doc, sq_doc, sq_doc);
-    cr->fill();
-    cr->set_source_rgba(1.0, 1.0, 1.0, 0.9);
-    cr->set_line_width(1.0 / std::max(m_zoom, 0.001));
-    cr->rectangle(bx1 - sq_doc, by1 - sq_doc, sq_doc, sq_doc);
-    cr->stroke();
-    cr->restore();
+    constexpr double INDICATOR_SIZE_PX = 16.0;   // matches Canvas_input.cpp hit-test
+    constexpr double INDICATOR_INSET_PX = 14.0;  // ditto
+    double size_doc = INDICATOR_SIZE_PX / std::max(m_zoom, 0.001);
+    double inset_doc = INDICATOR_INSET_PX / std::max(m_zoom, 0.001);
+    double cx = bx1 - inset_doc;
+    double cy = by1 - inset_doc;
+
+    // Lazy-load the pixbuf on first use, recolored from currentColor
+    // to --badge-error red at load time (Cairo doesn't read CSS the
+    // way symbolic icons do).
+    ensure_overflow_glyph_pixbuf();
+
+    if (m_overflow_glyph_pixbuf) {
+      cr->save();
+      // Center the pixbuf on (cx, cy) in doc coords, scaled to size_doc.
+      double pw = m_overflow_glyph_pixbuf->get_width();
+      double ph = m_overflow_glyph_pixbuf->get_height();
+      double scale = size_doc / std::max(pw, ph);
+      cr->translate(cx, cy);
+      cr->scale(scale, scale);
+      curvz::utils::cairo_set_source_pixbuf(cr,
+                                            m_overflow_glyph_pixbuf,
+                                            -pw * 0.5, -ph * 0.5);
+      cr->paint();
+      cr->restore();
+    } else {
+      // Pixbuf load failed (resource missing) — fallback to a solid
+      // red square so the user still sees something. Won't be clickable
+      // because check_overflow_hit independently computes the same rect.
+      cr->save();
+      cr->set_source_rgba(0.91, 0.31, 0.31, 1.0);  // --badge-error dark
+      cr->rectangle(cx - size_doc * 0.5, cy - size_doc * 0.5,
+                    size_doc, size_doc);
+      cr->fill();
+      cr->restore();
+    }
   }
 
   if (tl.baselines.empty()) return;

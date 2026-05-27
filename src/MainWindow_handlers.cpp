@@ -1393,6 +1393,10 @@ void MainWindow::on_open_image() {
 // ─────────────────────────────────────────────────────────────────────
 
 void MainWindow::on_undo() {
+  // s307diag — note whether text edit is active when undo fires
+  LOG_INFO("[s307diag] on_undo ENTER  text_cursor_active={} can_undo={}",
+           m_canvas.text_cursor_active(),
+           m_history.can_undo());
   // s165 m3 — chrono trap. If a previous undo/redo fired within the
   // throttle window, drop this press. Protects against keyboard auto-repeat
   // and frantic Ctrl+Z spam outpacing the post-undo refresh pipeline; also

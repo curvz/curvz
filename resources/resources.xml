@@ -80,6 +80,17 @@
     <file preprocess="xml-stripblanks" alias="curvz-align-bottom-symbolic.svg">icons/curvz-align-bottom-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-distribute-h-symbolic.svg">icons/curvz-distribute-h-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-distribute-v-symbolic.svg">icons/curvz-distribute-v-symbolic.svg</file>
+    <!-- s308 m1: overflow badge for textbox capacity-exceeded indicator.
+         Octagon-frame exclamation mark, currentColor fill so the canvas
+         paint pump can recolor it at load time (it gets baked red for
+         the overflow indicator; future canvas-painted symbolic icons
+         can use the same pump with different colors). -->
+    <file preprocess="xml-stripblanks" alias="curvz-overflow-symbolic.svg">icons/curvz-overflow-symbolic.svg</file>
+    <!-- s308 m1: link-to icon for the overflow popover. Single verb
+         button (functionality lands in the text-threading arc) — same
+         icon will serve "link to existing textbox" and "create new
+         linked textbox" later. Symbolic, currentColor fill. -->
+    <file preprocess="xml-stripblanks" alias="curvz-link-to-symbolic.svg">icons/curvz-link-to-symbolic.svg</file>
   </gresource>
 
   <!-- ── Bundled non-icon data ────────────────────────────────────────────

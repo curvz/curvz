@@ -1939,6 +1939,35 @@ private:
   std::unique_ptr<TextCursor> m_text_cursor;
   sigc::connection            m_text_cursor_blink_conn;
 
+  // s307 m5 — Typing-pause flush timer. Restarted on every plain
+  //   typing keystroke (no-selection insert_char, no-selection
+  //   backspace, no-selection delete_forward). On 600ms timeout,
+  //   flushes the in-flight segment so a thinking pause becomes a
+  //   natural undo boundary. Every other flush trigger (atomic
+  //   events, motion, deactivate) cancels the timer via
+  //   flush_text_segment, which always stops it — guarantees the
+  //   timer never outlives its segment. Disconnected in
+  //   end_text_cursor_edit alongside the blink timer.
+  sigc::connection            m_text_typing_pause_conn;
+
+  // s308 m1 — Overflow indicator pixbuf. Loaded once on first paint
+  //   from the curvz-overflow-symbolic.svg resource, with currentColor
+  //   substituted to --badge-error red at load time so Cairo paint
+  //   produces a red glyph (Cairo doesn't read CSS the way symbolic
+  //   widgets do — the recolor has to happen in the source bytes
+  //   before PixbufLoader sees them).
+  //
+  //   Painted in draw_text_in_boundary at an inset position above the
+  //   bottom-right resize handle of every overflowing textbox boundary.
+  //   Hit-tested in check_overflow_hit (called from a GestureClick on
+  //   Canvas) — sizer pattern: Canvas draws the glyph, Canvas hit-tests
+  //   it, Canvas dispatches the click. No widget overlay, no Fixed, no
+  //   Overlay-child plumbing. The popover is created transient on each
+  //   click and lifetime-managed via signal_closed + idle-unparent,
+  //   same shape as the other Canvas popovers (e.g. rclick context
+  //   menu in Canvas.cpp:680).
+  Glib::RefPtr<Gdk::Pixbuf>   m_overflow_glyph_pixbuf;
+
   // s305 m3 — Drag-to-select state. Set true at press-inside-active-edit
   //   (after place_caret_at seeds anchor=caret at the click byte);
   //   on_draw_update reads it to extend the caret end of the selection
@@ -1955,6 +1984,90 @@ private:
   // and cancel_text_edit. Both are idempotent.
   void begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary);
   void end_text_cursor_edit();
+
+  // s307 m1 — Flush the in-flight text-edit segment to history.
+  //
+  //   The text-edit session is now composed of one or more "segments,"
+  //   each of which is a TextEditCommand pushed at a flush trigger. m1
+  //   establishes the plumbing without yet adding any new trigger sites:
+  //   commit_text_edit calls flush_text_segment() once at session end,
+  //   producing exactly one TextEditCommand per edit session — same
+  //   observable behaviour as s305-s306.
+  //
+  //   Subsequent milestones (s307 m2-m6) will add mid-edit flush
+  //   triggers — paste, cut, selection-delete, newline, caret motion,
+  //   word boundary, pause timer — each calling flush_text_segment()
+  //   at the appropriate site to push the in-flight segment and start
+  //   a fresh one. The flush helper itself stays the same.
+  //
+  //   Contract:
+  //     1. If no edit is active (m_text_editing == nullptr) or there
+  //        is no in-flight snapshot (m_text_has_snapshot == false),
+  //        no-op.
+  //     2. If the in-flight segment's before_content equals the live
+  //        text_content (no buffer change since the segment opened),
+  //        no-op — never push an empty-delta command.
+  //     3. Otherwise: stamp record_after on the in-flight snapshot,
+  //        push it as a TextEditCommand, and re-snapshot from the
+  //        current node state so the NEXT mutation starts a fresh
+  //        segment. m_text_has_snapshot stays true after a successful
+  //        flush (the new in-flight segment is open for business).
+  //
+  //   Returns true when a command was actually pushed. Callers don't
+  //   need this for m1 (commit just calls flush and proceeds); future
+  //   triggers may want it for logging or to gate other side effects.
+  bool flush_text_segment();
+
+  // s307 m5 — Restart the typing-pause flush timer.
+  //
+  //   Called from the no-selection typing sites in handle_text_edit_key
+  //   (plain insert_char, plain backspace, plain delete_forward). Each
+  //   call disconnects any existing connection and starts a fresh
+  //   600ms one-shot timeout. If the user keeps typing within 600ms
+  //   of the last keystroke, the timer keeps getting reset and never
+  //   fires. If they pause for 600ms+, the timer fires and flushes
+  //   the in-flight segment, opening a fresh one for the next typing
+  //   burst.
+  //
+  //   The 600ms threshold is hardcoded for s307 per the handoff plan;
+  //   it becomes a doc/app preference in s308+. The constant lives
+  //   in the .cpp body. Default chosen for the fixed-heuristic
+  //   baseline that every major editor uses (VS Code, browsers, Word
+  //   at default) — predictability beats optimality. Adaptive
+  //   per-user timing is deferred to Folio (the Scrivener-like
+  //   long-form writing app) where it pays off; Curvz textbox edits
+  //   are short enough that fixed feels fine.
+  //
+  //   flush_text_segment unconditionally cancels this timer so any
+  //   non-typing flush trigger (atomic event, motion, deactivate)
+  //   ends the current pause-flush armament cleanly. The timer
+  //   connection is also disconnected in end_text_cursor_edit
+  //   alongside the blink timer — guarantees no stale timer can
+  //   fire after a cursor teardown.
+  void restart_text_typing_pause_timer();
+
+  // s308 m1 — Overflow indicator hit-test + popover.
+  //
+  //   ensure_overflow_glyph_pixbuf lazily loads the symbolic SVG from
+  //   the gresource bundle and recolors currentColor to --badge-error.
+  //   Called from draw_text_in_boundary on first use.
+  //
+  //   check_overflow_hit is the screen-space hit-test the GestureClick
+  //   on Canvas calls before any other tool dispatch. Walks textboxes;
+  //   for each that overflows, computes the indicator's screen rect and
+  //   tests against (screen_x, screen_y). On hit: writes the text node
+  //   and boundary into out_text/out_boundary, returns true. The caller
+  //   claims the gesture sequence and dispatches show_overflow_popover.
+  //
+  //   show_overflow_popover builds a transient popover anchored to the
+  //   indicator's screen rect (same pointing-rect idiom the right-click
+  //   menu uses) — stats bar + scrolled overflowed text + two disabled
+  //   placeholder buttons for the text-threading arc. Lifetime: managed
+  //   via signal_closed + idle-unparent.
+  void ensure_overflow_glyph_pixbuf();
+  bool check_overflow_hit(double screen_x, double screen_y,
+                          SceneNode** out_text, SceneNode** out_boundary);
+  void show_overflow_popover(SceneNode* text_node, SceneNode* boundary);
 
   // s301 m1b — Draw the leading hairlines inside an actively-edited text
   // boundary so the user can see how many lines the bbox will hold before

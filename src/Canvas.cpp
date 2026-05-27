@@ -663,6 +663,36 @@ Canvas::Canvas() {
   });
   add_controller(dbl_click);
 
+  // s308 m1 — Overflow indicator click. Sizer-pattern affordance: Canvas
+  // paints a small symbolic glyph at the bottom-right of every
+  // overflowing textbox boundary (see Canvas_draw.cpp), and this
+  // GestureClick hit-tests it BEFORE any tool dispatch. On hit:
+  // claim the sequence (so the underlying GestureDrag doesn't also
+  // fire and start a marquee/move) and pop up the overflow inspector.
+  //
+  // capture-phase routing isn't required — GestureClick fires on press,
+  // GestureDrag's drag_begin only fires once pointer crosses the drag
+  // threshold AFTER a press. Claiming here defuses the drag for the
+  // current sequence.
+  //
+  // Skipped during active text-cursor edit because the edit-mode click
+  // path owns those events and would conflict with the popover's
+  // autohide.
+  auto overflow_click = Gtk::GestureClick::create();
+  overflow_click->set_button(1);
+  overflow_click->signal_pressed().connect(
+      [this, overflow_click](int n_press, double x, double y) {
+        if (n_press != 1) return;
+        if (!m_doc || m_text_cursor) return;
+        SceneNode* hit_text = nullptr;
+        SceneNode* hit_boundary = nullptr;
+        if (check_overflow_hit(x, y, &hit_text, &hit_boundary)) {
+          overflow_click->set_state(Gtk::EventSequenceState::CLAIMED);
+          show_overflow_popover(hit_text, hit_boundary);
+        }
+      });
+  add_controller(overflow_click);
+
   // Right-click context menu. Two branches by hit type:
   //   • Image → modal "Image Info" dialog with file/pixel/size details
   //     (the s124-era branch).
@@ -4100,6 +4130,14 @@ void Canvas::end_text_cursor_edit() {
   if (m_text_cursor_blink_conn.connected()) {
     m_text_cursor_blink_conn.disconnect();
   }
+  // s307 m5 — Disconnect the typing-pause timer alongside the blink
+  //   timer. Without this, a pause timer armed in the last 600ms
+  //   before teardown could fire after the cursor is gone. The
+  //   callback already checks m_text_cursor as a defensive guard,
+  //   but explicit disconnect at teardown is the cleaner contract.
+  if (m_text_typing_pause_conn.connected()) {
+    m_text_typing_pause_conn.disconnect();
+  }
   m_text_cursor.reset();
   queue_draw();
 }
@@ -4176,6 +4214,12 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       m_text_cursor->move_buffer_start();
       m_text_cursor->set_anchor_byte(saved_anchor);
     } else {
+      // s307 m3 — Caret motion that leaves the current typing run.
+      //   Flush any in-flight typing before moving so subsequent typing
+      //   at the new caret position becomes its own segment. No post-
+      //   flush — motion doesn't mutate the buffer. Shift-extend is
+      //   selection growth, not navigation away — no flush.
+      flush_text_segment();
       m_text_cursor->move_buffer_start();
     }
     m_text_cursor->set_visible(true);
@@ -4188,10 +4232,138 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       m_text_cursor->move_buffer_end();
       m_text_cursor->set_anchor_byte(saved_anchor);
     } else {
+      flush_text_segment();  // s307 m3
       m_text_cursor->move_buffer_end();
     }
     m_text_cursor->set_visible(true);
     queue_draw();
+    return true;
+  }
+
+  // ── s307 m6 — Mid-edit Ctrl+Z / Ctrl+Shift+Z ─────────────────────────────
+  //
+  //   Without these intercepts, Ctrl+Z mid-edit falls through to the
+  //   global MainWindow::on_undo handler, which applies the top
+  //   TextEditCommand's before_content to the buffer directly —
+  //   bypassing the cursor entirely. The cursor's m_byte_index becomes
+  //   stale (pointing past the new buffer size), and the in-flight
+  //   segment's before_content also becomes stale (snapshot taken
+  //   before the global undo ran). m5b's defensive clamps in
+  //   TextCursor prevent the crash from a stale byte_index, but the
+  //   in-flight stale snapshot causes a different bug: the next flush
+  //   pushes a TextEditCommand with a desynced before_content, AND
+  //   clears the redo stack of legitimately-queued redo commands.
+  //
+  //   The fix: intercept Ctrl+Z (and Ctrl+Shift+Z) above the
+  //   ctrl-passthrough gate, do the right thing manually, and don't
+  //   let the global handler see the keystroke.
+  //
+  //   Mid-edit Ctrl+Z:
+  //     1. Flush the in-flight segment so it lands on history as a
+  //        real command. After this, m_text_snapshot is a fresh empty
+  //        segment.
+  //     2. Peek the top of the undo stack. If it's a TextEditCommand
+  //        for THIS textbox, proceed; otherwise no-op (the user's
+  //        Ctrl+Z in textbox edit mode means "undo my text edit," not
+  //        "undo some unrelated prior operation").
+  //     3. Read the command's before_caret_byte for caret restore.
+  //     4. Call m_history->undo() — applies before_content to the
+  //        buffer and moves the command to redo.
+  //     5. Restore the cursor's caret to before_caret_byte (with
+  //        anchor collapse).
+  //     6. Re-snapshot the in-flight segment from the now-current
+  //        node state so subsequent typing has an accurate baseline.
+  //
+  //   Mid-edit Ctrl+Shift+Z (redo): symmetric.
+  //     1. Flush in-flight (so the redo-stack-clear in push doesn't
+  //        wipe the redo branch — but actually flush ALSO clears
+  //        redo via push's contract, so we have to choose: either
+  //        we flush BEFORE peeking redo (which wipes the redo we
+  //        wanted), or we DON'T flush and accept that a non-empty
+  //        in-flight segment is lost. Better choice: don't flush;
+  //        if there's an in-flight delta, the user pressed redo
+  //        with un-committed typing, which is unusual, but the
+  //        right semantic is "their typing was uncommitted, redo
+  //        of a prior segment now happens, the un-typed buffer
+  //        state is what it is." If we DID flush, the user would
+  //        see two distinct undo steps land on the stack (their
+  //        new typing + the redone segment) with the redo branch
+  //        gone, which is worse.)
+  //     2. Peek the top of the redo stack. If TextEditCommand for
+  //        this textbox, proceed.
+  //     3. Read after_caret_byte for caret restore.
+  //     4. Call m_history->redo() — applies after_content, moves
+  //        command back to undo.
+  //     5. Restore cursor caret to after_caret_byte.
+  //     6. Re-snapshot.
+  if (ctrl && !alt && !shift &&
+      (keyval == GDK_KEY_z || keyval == GDK_KEY_Z)) {
+    flush_text_segment();
+    auto* peek = dynamic_cast<const TextEditCommand*>(m_history->peek_undo());
+    if (peek && peek->obj_iid == m_text_editing->internal_id) {
+      size_t target_caret = peek->before_caret_byte;
+      m_history->undo();
+      // Clamp the restored caret against the post-undo buffer in
+      // case before_caret_byte was captured before m6 landed (legacy
+      // commands have 0) or is somehow past the new size.
+      size_t bsize = m_text_editing->text_content.size();
+      if (target_caret > bsize) target_caret = bsize;
+      m_text_cursor->set_byte_index(target_caret);
+      m_text_cursor->set_anchor_byte(target_caret);
+      // Re-snapshot so the in-flight segment matches the new buffer.
+      m_text_editing->text_caret_byte = (int32_t)target_caret;
+      m_text_snapshot = TextEditCommand::snapshot_before(project(),
+                                                         m_text_editing);
+      m_text_has_snapshot = true;
+      m_text_cursor->set_visible(true);
+      m_sig_doc_changed.emit();
+      queue_draw();
+    }
+    // If the top isn't a TextEditCommand for this textbox, silently
+    // no-op. Don't fall through to global undo — that would touch
+    // unrelated state while the user is mid-edit, which is the
+    // bug we just fixed.
+    return true;
+  }
+  if (ctrl && !alt && shift &&
+      (keyval == GDK_KEY_z || keyval == GDK_KEY_Z)) {
+    auto* peek = dynamic_cast<const TextEditCommand*>(m_history->peek_redo());
+    if (peek && peek->obj_iid == m_text_editing->internal_id) {
+      size_t target_caret = peek->after_caret_byte;
+      m_history->redo();
+      size_t bsize = m_text_editing->text_content.size();
+      if (target_caret > bsize) target_caret = bsize;
+      m_text_cursor->set_byte_index(target_caret);
+      m_text_cursor->set_anchor_byte(target_caret);
+      m_text_editing->text_caret_byte = (int32_t)target_caret;
+      m_text_snapshot = TextEditCommand::snapshot_before(project(),
+                                                         m_text_editing);
+      m_text_has_snapshot = true;
+      m_text_cursor->set_visible(true);
+      m_sig_doc_changed.emit();
+      queue_draw();
+    }
+    return true;
+  }
+  // Ctrl+Y as alt-redo binding — mirror the symmetry from MainWindow.
+  if (ctrl && !alt && !shift &&
+      (keyval == GDK_KEY_y || keyval == GDK_KEY_Y)) {
+    auto* peek = dynamic_cast<const TextEditCommand*>(m_history->peek_redo());
+    if (peek && peek->obj_iid == m_text_editing->internal_id) {
+      size_t target_caret = peek->after_caret_byte;
+      m_history->redo();
+      size_t bsize = m_text_editing->text_content.size();
+      if (target_caret > bsize) target_caret = bsize;
+      m_text_cursor->set_byte_index(target_caret);
+      m_text_cursor->set_anchor_byte(target_caret);
+      m_text_editing->text_caret_byte = (int32_t)target_caret;
+      m_text_snapshot = TextEditCommand::snapshot_before(project(),
+                                                         m_text_editing);
+      m_text_has_snapshot = true;
+      m_text_cursor->set_visible(true);
+      m_sig_doc_changed.emit();
+      queue_draw();
+    }
     return true;
   }
 
@@ -4244,6 +4416,12 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
   if (ctrl && !alt && !shift &&
       (keyval == GDK_KEY_x || keyval == GDK_KEY_X)) {
     if (m_text_cursor->has_selection()) {
+      // s307 m2 — Cut is an atomic event. Flush any in-flight typing
+      //   first so the cut doesn't get fused with what came before,
+      //   then perform the cut, then flush the cut itself as its own
+      //   segment. Ctrl+Z after cut restores the cut content; Ctrl+Z
+      //   again rewinds any pre-cut typing.
+      flush_text_segment();
       std::string sel = m_text_cursor->selection_text();
       auto disp = get_display();
       if (disp) {
@@ -4256,6 +4434,7 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
         }
       }
       m_text_cursor->delete_selection();
+      flush_text_segment();  // cut becomes its own segment
       m_sig_doc_changed.emit();
       queue_draw();
     }
@@ -4268,6 +4447,15 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
     if (disp) {
       auto clip = disp->get_clipboard();
       if (clip) {
+        // s307 m2 — Paste is an atomic event. Flush any in-flight
+        //   typing BEFORE dispatching the async clipboard read so the
+        //   paste doesn't get fused with what came before. The
+        //   post-paste flush has to live inside the async callback —
+        //   placing it synchronously here would fire before insert_string
+        //   has run, see zero delta, and no-op. The two flushes bracket
+        //   the paste mutation so it becomes its own segment.
+        flush_text_segment();
+
         // Capture the text-node pointer we're editing so we can verify
         // the same edit session is still live when the async callback
         // fires. If the user committed/cancelled and started editing a
@@ -4285,6 +4473,14 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
                   m_text_cursor->delete_selection();
                 }
                 if (m_text_cursor->insert_string(utf8)) {
+                  // s307 m2 — Post-paste flush. The paste mutation is
+                  //   now in the buffer; flush_text_segment captures it
+                  //   as its own segment and opens a fresh one for any
+                  //   subsequent typing. If insert_string somehow
+                  //   no-op'd (shouldn't, but defensive), flush sees
+                  //   zero delta and does nothing — same shape as a
+                  //   no-typing deactivate.
+                  flush_text_segment();
                   m_text_cursor->set_visible(true);
                   m_sig_doc_changed.emit();
                   queue_draw();
@@ -4326,10 +4522,18 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       //   with a newline. delete_selection runs first; then the
       //   newline inserts at the collapsed caret. Matches every
       //   text editor.
+      // s307 m2 — Enter declares a thought boundary. Flush any
+      //   in-flight typing first, perform the newline (with
+      //   selection-replace if applicable, as one user gesture),
+      //   then flush the newline itself as its own segment. Ctrl+Z
+      //   peels back exactly the Enter press; the typing before it
+      //   stays.
+      flush_text_segment();
       if (m_text_cursor->has_selection()) {
         m_text_cursor->delete_selection();
       }
       m_text_cursor->insert_newline();
+      flush_text_segment();
       m_sig_doc_changed.emit();
       queue_draw();
       return true;
@@ -4338,11 +4542,22 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       // s305 m4 — Backspace with selection: delete the range,
       //   leave the caret at the range start. No further char
       //   delete (the selection IS the deletion).
+      // s307 m2 — Selection-delete is an atomic event regardless
+      //   of which key triggered it (Backspace, Delete, or any
+      //   printable). Flush before, delete, flush the deletion as
+      //   its own segment. Plain Backspace (no selection) folds
+      //   into the typing run — no flush.
       if (m_text_cursor->has_selection()) {
+        flush_text_segment();
         m_text_cursor->delete_selection();
+        flush_text_segment();
         m_sig_doc_changed.emit();
         queue_draw();
       } else if (m_text_cursor->backspace()) {
+        // s307 m5 — Backspace is correction-mode typing; re-arm the
+        //   pause timer so a thinking pause after deletions also
+        //   becomes an undo boundary.
+        restart_text_typing_pause_timer();
         m_sig_doc_changed.emit();
         queue_draw();
       }
@@ -4353,11 +4568,17 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       //   above. The selection IS the deletion; forward-delete
       //   would otherwise eat one extra codepoint past the
       //   selection's end, which no text editor does.
+      // s307 m2 — Same flush bracket as Backspace-with-selection.
+      //   Plain Delete (no selection) folds into the typing run.
       if (m_text_cursor->has_selection()) {
+        flush_text_segment();
         m_text_cursor->delete_selection();
+        flush_text_segment();
         m_sig_doc_changed.emit();
         queue_draw();
       } else if (m_text_cursor->delete_forward()) {
+        // s307 m5 — Same as Backspace: re-arm pause timer.
+        restart_text_typing_pause_timer();
         m_sig_doc_changed.emit();
         queue_draw();
       }
@@ -4367,9 +4588,13 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       // s305 m4 — Shift+Left extends; plain Left collapses (m2
       //   behaviour preserved by calling the base move which
       //   already collapses).
+      // s307 m3 — Plain Left flushes the in-flight typing (motion
+      //   leaves the current run). Shift+Left extends selection
+      //   without flushing — still inside the current work context.
       if (shift) {
         extend_with([this]() { m_text_cursor->move_left(); });
       } else {
+        flush_text_segment();
         m_text_cursor->move_left();
       }
       queue_draw();
@@ -4379,6 +4604,7 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       if (shift) {
         extend_with([this]() { m_text_cursor->move_right(); });
       } else {
+        flush_text_segment();  // s307 m3
         m_text_cursor->move_right();
       }
       queue_draw();
@@ -4388,6 +4614,7 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       if (shift) {
         extend_with([this]() { m_text_cursor->move_line_start(); });
       } else {
+        flush_text_segment();  // s307 m3
         m_text_cursor->move_line_start();
       }
       queue_draw();
@@ -4397,6 +4624,7 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       if (shift) {
         extend_with([this]() { m_text_cursor->move_line_end(); });
       } else {
+        flush_text_segment();  // s307 m3
         m_text_cursor->move_line_end();
       }
       queue_draw();
@@ -4415,9 +4643,16 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       //   the press-point anchor afterward. preferred_x is preserved
       //   across the chain so a column-march through short
       //   intermediate lines doesn't collapse.
+      // s307 m3 — Plain Up flushes. Note: a chain of Up presses
+      //   each flushes — but after the first, the in-flight segment
+      //   is empty (no typing happened between Up presses), so each
+      //   subsequent flush is a zero-delta no-op. preferred_x lives
+      //   on TextCursor across the chain regardless of flush; the
+      //   column-march behaviour from m6 is preserved.
       if (shift) {
         extend_with([this]() { m_text_cursor->move_up(); });
       } else {
+        flush_text_segment();
         m_text_cursor->move_up();
       }
       queue_draw();
@@ -4427,6 +4662,7 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       if (shift) {
         extend_with([this]() { m_text_cursor->move_down(); });
       } else {
+        flush_text_segment();  // s307 m3
         m_text_cursor->move_down();
       }
       queue_draw();
@@ -4440,10 +4676,45 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
         // s305 m4 — Typing-with-selection replaces. delete_selection
         //   runs first (collapses anchor=caret at range start);
         //   insert_char then runs at the collapsed caret.
+        // s307 m2 — Selection-replacement is one user gesture
+        //   (single keystroke that conceptually means "replace this
+        //   range with this character"). Flush in-flight typing
+        //   before, do the delete + insert as a fused mutation, then
+        //   flush the replacement as its own segment. The new
+        //   character does NOT start a fresh typing run from the
+        //   user's perspective — it IS the replacement payload.
+        //   Subsequent typed characters extend the freshly-opened
+        //   segment via the no-selection branch below.
         if (m_text_cursor->has_selection()) {
+          flush_text_segment();
           m_text_cursor->delete_selection();
-        }
-        if (m_text_cursor->insert_char((gunichar)uc)) {
+          if (m_text_cursor->insert_char((gunichar)uc)) {
+            flush_text_segment();
+            m_sig_doc_changed.emit();
+            queue_draw();
+          }
+        } else if (m_text_cursor->insert_char((gunichar)uc)) {
+          // s307 m4 — Word-boundary flush. After inserting a printable
+          //   character, if that character is whitespace or punctuation,
+          //   flush the segment. The boundary char itself belongs to the
+          //   run that preceded it: Ctrl+Z rewinds to before the word
+          //   AND its trailing space/punct in one step, which is what
+          //   every text editor does. g_unichar_isspace and
+          //   g_unichar_ispunct give Unicode-aware definitions — works
+          //   for foreign-script content as well as ASCII. Non-boundary
+          //   chars (letters, digits) build the in-flight segment
+          //   without flushing; word-by-word granularity falls out of
+          //   the natural rhythm of typing.
+          if (g_unichar_isspace((gunichar)uc) ||
+              g_unichar_ispunct((gunichar)uc)) {
+            flush_text_segment();
+          } else {
+            // s307 m5 — Non-boundary typing arms/re-arms the pause
+            //   timer. Word-boundary chars don't need to arm because
+            //   they just flushed; the post-flush segment will arm
+            //   on the next non-boundary char typed into it.
+            restart_text_typing_pause_timer();
+          }
           m_sig_doc_changed.emit();
           queue_draw();
         }

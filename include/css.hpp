@@ -84,6 +84,7 @@ window {
     --warn-fg:       #e8a838;
     --error-fg:      #f5b5b5;
     --error-bg:      #6a2a2a;
+    --badge-error:   #e85050;   /* s308: warning glyph color (saturated red, dark motif); referenced by Canvas overflow-indicator Cairo paint */
 
     --white-pure:    #ffffff;
 }
@@ -159,6 +160,7 @@ window.curvz-light {
     --warn-fg:       #b87000;   /* warning text — darker amber */
     --error-fg:      #8a1a1a;   /* error text — dark red on light ground */
     --error-bg:      #f5d0d0;   /* error background — soft pink */
+    --badge-error:   #cc2020;   /* s308: warning glyph color (saturated red, light motif); referenced by Canvas overflow-indicator Cairo paint */
 
     --white-pure:    #ffffff;   /* explicit pure white, motif-independent */
 }
