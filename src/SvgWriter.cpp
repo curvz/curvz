@@ -743,6 +743,150 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         return;
     }
 
+    // ── TextBoxMgr (s310 m1bc) ────────────────────────────────────────────
+    // The Mgr-with-views shape. The Mgr owns the buffer
+    // (obj.text_content) and the flow-level state (font defaults, caret,
+    // fill, stroke). Children are an ordered list of TextBoxViews; in m1
+    // the canvas views each have one Path child (the boundary), and the
+    // popover view has no children (its boundary geometry comes from the
+    // widget allocation at runtime and is reconstructed on load).
+    //
+    // On disk:
+    //   <g data-curvz-textbox-mgr="1"
+    //      data-curvz-content="..."
+    //      data-curvz-caret-byte="...">
+    //     <g data-curvz-textbox-view="1" data-curvz-view-kind="canvas">
+    //       <path ... boundary .../>
+    //       <path id="baseline_..." data-curvz-baseline="1" .../>
+    //       <text><textPath href="#baseline_...">slice</textPath></text>
+    //       ...
+    //     </g>
+    //     <!-- popover view: NOT emitted; reconstructed on load -->
+    //   </g>
+    //
+    // Compute layout per-view from the Mgr (as the text-bearing node)
+    // and the view's boundary Path. byte_start cascades down the view
+    // list; in m1 the runtime tree typically has one canvas view, so
+    // byte_start=0 covers the common case. compute_text_layout will
+    // grow a byte_start parameter when m3 lands multi-view support.
+    if (obj.type == GlyphObject::Type::TextBoxMgr) {
+        auto xml_escape = [](const std::string& s) {
+            std::string r;
+            for (char c : s) {
+                if      (c == '&') r += "&amp;";
+                else if (c == '<') r += "&lt;";
+                else if (c == '>') r += "&gt;";
+                else if (c == '"') r += "&quot;";
+                else               r += c;
+            }
+            return r;
+        };
+
+        // Open the Mgr group with identity + container attributes.
+        out << pad << "<g data-curvz-textbox-mgr=\"1\"";
+        if (role_hint)                  out << " " << role_hint;
+        out << id_attr_str(obj);
+        if (!obj.internal_id.empty())   out << " data-curvz-iid=\"" << obj.internal_id << "\"";
+        if (!obj.name.empty())          out << " data-curvz-name=\"" << xml_escape(obj.name) << "\"";
+        if (!obj.visible)               out << " display=\"none\"";
+        if (obj.opacity < 0.999)        out << " opacity=\"" << fmt2(obj.opacity) << "\"";
+        out << " data-curvz-content=\"" << xml_escape(obj.text_content) << "\"";
+        // s305 m1 — caret persistence. The byte lives on the Mgr (it
+        //   owns the buffer); omitted when 0 to keep clean SVG.
+        if (obj.text_caret_byte > 0)
+            out << " data-curvz-caret-byte=\"" << obj.text_caret_byte << "\"";
+        out << shadow_attr_str(obj);
+        out << ">\n";
+
+        // Walk views in order. For each canvas view: emit a
+        // <g data-curvz-textbox-view="1"> nesting the boundary + the
+        // per-view baseline paths + per-view textPath slices. Popover
+        // views are skipped (they don't persist; reconstructed on
+        // load).
+        const std::string vpad((indent + 1) * 2, ' ');
+        const std::string vipad((indent + 2) * 2, ' ');
+        for (size_t vi = 0; vi < obj.children.size(); ++vi) {
+            const auto& view_ptr = obj.children[vi];
+            if (!view_ptr) continue;
+            const SceneNode& view = *view_ptr;
+            if (view.type != GlyphObject::Type::TextBoxView) continue;
+            // Popover view: skip — reconstructed on load.
+            if (view.view_kind == SceneNode::ViewKind::Popover) continue;
+            // Canvas view must have a Path child as its boundary.
+            // Malformed → emit empty view group so the file still loads
+            // back as the right structural shape (just no boundary).
+            if (view.children.empty() || !view.children[0] ||
+                view.children[0]->type != GlyphObject::Type::Path) {
+                out << vpad << "<g data-curvz-textbox-view=\"1\""
+                    << " data-curvz-view-kind=\"canvas\"";
+                if (!view.internal_id.empty())
+                    out << " data-curvz-iid=\"" << view.internal_id << "\"";
+                out << "></g>\n";
+                LOG_WARN("SvgWriter: TextBoxMgr '{}' view[{}] has no "
+                         "boundary Path — emitting empty view marker",
+                         obj.id, vi);
+                continue;
+            }
+            const SceneNode& boundary = *view.children[0];
+
+            // Open the view group.
+            out << vpad << "<g data-curvz-textbox-view=\"1\""
+                << " data-curvz-view-kind=\"canvas\"";
+            if (!view.internal_id.empty())
+                out << " data-curvz-iid=\"" << view.internal_id << "\"";
+            if (!view.name.empty())
+                out << " data-curvz-name=\"" << xml_escape(view.name) << "\"";
+            if (!view.visible) out << " display=\"none\"";
+            if (view.opacity < 0.999)
+                out << " opacity=\"" << fmt2(view.opacity) << "\"";
+            out << ">\n";
+
+            // Boundary child — emit via the normal Path branch so the
+            // boundary's fill, stroke, path data, and margins all
+            // serialise through the same code path any other Path uses.
+            write_object(out, boundary, indent + 2);
+
+            // Per-baseline path + textPath pairs for THIS view. The
+            // Mgr plays the role of the "text node" (carries buffer +
+            // font defaults).
+            TextLayout layout = compute_text_layout(&boundary, &obj);
+            for (size_t bi = 0; bi < layout.baselines.size(); ++bi) {
+                const auto& bl = layout.baselines[bi];
+                const std::string bid = "baseline_" + view.internal_id + "_" +
+                                        std::to_string(bi);
+                out << vipad << "<path id=\"" << bid << "\""
+                    << " d=\"M " << fmt2(bl.x_start) << " " << fmt2(bl.y)
+                    << " L "    << fmt2(bl.x_end)   << " " << fmt2(bl.y) << "\""
+                    << " fill=\"none\" stroke=\"none\""
+                    << " data-curvz-baseline=\"1\"/>\n";
+
+                const std::string& buf = obj.text_content;
+                size_t bs = std::min(bl.byte_start, buf.size());
+                size_t be = std::min(bl.byte_end,   buf.size());
+                if (be < bs) be = bs;
+                std::string slice = buf.substr(bs, be - bs);
+
+                out << vipad << "<text"
+                    << " font-family=\"" << obj.text_font_family << "\""
+                    << " font-size=\""   << fmt2(obj.text_font_size) << "\"";
+                if (obj.text_bold)   out << " font-weight=\"bold\"";
+                if (obj.text_italic) out << " font-style=\"italic\"";
+                out << " fill=\"" << fill_attr(obj.fill) << "\"";
+                if (obj.stroke.paint.type != FillStyle::Type::None)
+                    out << stroke_attrs(obj.stroke);
+                out << ">"
+                    << "<textPath href=\"#" << bid << "\">"
+                    << xml_escape(slice)
+                    << "</textPath>"
+                    << "</text>\n";
+            }
+            out << vpad << "</g>\n";
+        }
+
+        out << pad << "</g>\n";
+        return;
+    }
+
     // ── Compound ───────────────────────────────────────────────────────────
     if (obj.type == GlyphObject::Type::Compound) {
         // Emit as a single <path> with all child subpaths concatenated.

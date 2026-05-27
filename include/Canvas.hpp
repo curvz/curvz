@@ -1907,7 +1907,20 @@ private:
   Gtk::Fixed *m_text_fixed = nullptr; // overlay container (owned by parent)
   curvz::widgets::Entry *m_text_entry =
       nullptr; // floating inline editor (owned by m_text_fixed)
-  SceneNode *m_text_editing = nullptr; // node being edited (nullptr = none)
+  SceneNode *m_text_editing = nullptr; // node being edited (nullptr = none).
+                                       // s310 m1bc — under the Mgr-with-views
+                                       // shape this points to the TextBoxMgr
+                                       // itself (not a Text child). The Mgr
+                                       // carries the text_* fields, so every
+                                       // consumer (compute_text_layout,
+                                       // TextCursor, TextEditCommand) reads
+                                       // off the Mgr the same way it used to
+                                       // read off a Type::Text node. May also
+                                       // be a Type::Text node for legacy
+                                       // unbound text loaded from pre-s301
+                                       // files; consumers can distinguish via
+                                       // is_text_box_mgr() / is_text() when
+                                       // needed.
   bool m_text_is_new = false; // true = node was just created; cancel → delete
   bool m_text_has_snapshot = false; // true = m_text_snapshot is valid
   TextEditCommand m_text_snapshot;  // before-state for undo

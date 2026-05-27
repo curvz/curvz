@@ -1139,16 +1139,18 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
     // the Warp's close-tag handler plucks it into warp_source.
     std::map<SceneNode*, char> warp_role_pending;
 
-    // While parsing inside a TextBox's <g>, the group's
-    // data-curvz-content attribute carries the round-trip-safe buffer
-    // (the per-baseline textPath slices in the SVG are external-viewer
-    // fodder; they're discarded on close). Stash it here keyed by the
-    // TextBox node so the close-tag handler can build a Text child with
-    // the correct content. Also tracks the font attributes harvested
-    // from the first non-baseline <text> child encountered (the writer
-    // emits them on every per-baseline <text>, but one suffices).
+    // While parsing inside a TextBoxMgr's <g>, the group's
+    // data-curvz-content attribute (and caret-byte attribute) are
+    // hoisted onto the Mgr SceneNode itself at open-time — the Mgr
+    // owns those fields directly, no transient stash needed. What
+    // does need transient storage is the font attrs harvested from
+    // the first non-baseline <text> child encountered: those <text>
+    // elements get discarded after the close-handler runs, but their
+    // font_family / font_size / bold / italic / fill attributes
+    // become the Mgr's text defaults. The writer emits the same
+    // attrs on every per-baseline <text>, but one suffices, so the
+    // font_seen guard locks the harvest after the first hit.
     struct TextBoxPending {
-        std::string content;            // buffer from data-curvz-content
         std::string font_family = "Sans";
         double      font_size   = 24.0;
         bool        bold        = false;
@@ -1159,12 +1161,6 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                                          // baselines don't overwrite (they're
                                          // identical, but the guard makes
                                          // intent explicit)
-        int32_t     caret_byte  = 0;     // s305 m1 — data-curvz-caret-byte on
-                                         // the TextBox <g>. Default 0 = "no
-                                         // saved position" so the cursor
-                                         // falls back to end-of-buffer on
-                                         // entry, matching fresh-construction
-                                         // behaviour.
     };
     std::map<SceneNode*, TextBoxPending> textbox_pending;
     // Parse-time marker set: pointers to <path> nodes that were tagged
@@ -1412,44 +1408,42 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                                  entry.node->name);
                     }
                 }
-                // TextBox: rebuild the in-memory shape from the on-disk
-                // shape. The disk has:
+                // TextBoxView: rebuild the view's in-memory shape from
+                // the on-disk shape. s310 m1c — the view's <g> on disk
+                // holds:
                 //   children = [boundary-path,
                 //               baseline-marker-path, <text>, repeat...]
                 //
-                // The in-memory shape is exactly:
-                //   children[0] = synthetic Text node (content from
-                //                 textbox_pending[tb].content; font from
-                //                 first non-marker <text> child)
-                //   children[1] = the boundary path
+                // The in-memory shape:
+                //   view (this node; Type::TextBoxView)
+                //   └── children[0] = boundary Path
                 //
                 // Steps:
-                //   1. Find the boundary (the one Path child whose pointer
-                //      is NOT in baseline_markers). Other Paths are
-                //      baseline markers → discarded.
-                //   2. Find the first Text child and harvest font attrs.
-                //      All <text> elements are discarded.
-                //   3. Build a synthetic Text child from textbox_pending
-                //      content + harvested font attrs.
-                //   4. Replace children with [synthetic_text, boundary].
+                //   1. Find the boundary (the one Path child whose
+                //      pointer is NOT in baseline_markers). Other Paths
+                //      are baseline markers → discarded.
+                //   2. Find the first Text child and harvest font attrs
+                //      into the ancestor Mgr's pending entry. All
+                //      <text> elements are discarded.
+                //   3. Replace view->children with [boundary].
                 //
-                // Round-trip-safe even when textbox_pending has no entry
-                // (foreign tool wrote the marker without the buffer attr):
-                // text_content stays empty, the textbox loads as an empty
-                // frame ready for the user to type into.
-                if (entry.node->type == SceneNode::Type::TextBox) {
-                    SceneNode* tb = entry.node;
+                // The ancestor Mgr is at stack[size-2] when this fires
+                // (the view's </g> closes before the Mgr's </g>). We
+                // can hoist font attrs straight into the Mgr's pending
+                // entry; the Mgr's close-handler will apply them.
+                if (entry.node->type == SceneNode::Type::TextBoxView) {
+                    SceneNode* view = entry.node;
                     std::unique_ptr<SceneNode> boundary;
-                    auto pit = textbox_pending.find(tb);
-                    TextBoxPending pending = (pit != textbox_pending.end())
-                                             ? pit->second
-                                             : TextBoxPending{};
-                    // Single pass over children: route into boundary,
-                    // harvest font attrs from first non-marker Text,
-                    // erase baseline markers from the set as we go (so
-                    // the map doesn't accumulate stale entries across
-                    // multiple TextBoxes in one file).
-                    for (auto &child : tb->children) {
+                    // Find the Mgr ancestor for font-attr hoisting.
+                    SceneNode* mgr_ancestor = nullptr;
+                    if (stack.size() >= 2) {
+                        SceneNode* parent = stack[stack.size()-2].node;
+                        if (parent && parent->type ==
+                                SceneNode::Type::TextBoxMgr) {
+                            mgr_ancestor = parent;
+                        }
+                    }
+                    for (auto &child : view->children) {
                         if (!child) continue;
                         if (child->type == SceneNode::Type::Path) {
                             auto bm = baseline_markers.find(child.get());
@@ -1458,92 +1452,231 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                                 // child goes out of scope at clear() below.
                                 continue;
                             }
-                            // Real boundary path. Should only be one;
-                            // first one wins if a malformed file has
-                            // multiples.
+                            // Real boundary path. First one wins if a
+                            // malformed file has multiples.
                             if (!boundary) {
                                 boundary = std::move(child);
                             } else {
-                                LOG_WARN("SvgParser: TextBox '{}' has "
-                                         "multiple boundary paths — "
+                                LOG_WARN("SvgParser: TextBoxView '{}' "
+                                         "has multiple boundary paths — "
                                          "keeping the first",
-                                         tb->name);
+                                         view->internal_id);
                             }
                         } else if (child->type == SceneNode::Type::Text) {
-                            if (!pending.font_seen) {
-                                pending.font_family = child->text_font_family;
-                                pending.font_size   = child->text_font_size;
-                                pending.bold        = child->text_bold;
-                                pending.italic      = child->text_italic;
-                                pending.fill        = child->fill;
-                                pending.fill_set    = true;
-                                pending.font_seen   = true;
+                            // Harvest font attrs into the Mgr ancestor's
+                            // pending entry (first hit wins). Only
+                            // matters for canvas views — popover views
+                            // shouldn't carry <text> children on disk.
+                            if (mgr_ancestor) {
+                                auto pit = textbox_pending.find(mgr_ancestor);
+                                if (pit != textbox_pending.end() &&
+                                        !pit->second.font_seen) {
+                                    pit->second.font_family =
+                                        child->text_font_family;
+                                    pit->second.font_size =
+                                        child->text_font_size;
+                                    pit->second.bold = child->text_bold;
+                                    pit->second.italic = child->text_italic;
+                                    pit->second.fill = child->fill;
+                                    pit->second.fill_set = true;
+                                    pit->second.font_seen = true;
+                                }
                             }
                             // Discard the <text> wrapper either way.
                         }
                         // Any other child type is ignored.
                     }
-                    tb->children.clear();
+                    view->children.clear();
+                    if (boundary) {
+                        view->children.push_back(std::move(boundary));
+                    } else if (view->view_kind ==
+                               SceneNode::ViewKind::Canvas) {
+                        LOG_WARN("SvgParser: TextBoxView '{}' (canvas) "
+                                 "missing boundary child — emitting "
+                                 "empty view",
+                                 view->internal_id);
+                        // Popover views legitimately have no boundary;
+                        // canvas views without one are degenerate but
+                        // we keep the empty view so the Mgr's view
+                        // count stays consistent with what was on disk.
+                    }
+                    LOG_INFO("SvgParser: TextBoxView '{}' (kind={}) "
+                             "restored — children={}",
+                             view->internal_id,
+                             view->view_kind == SceneNode::ViewKind::Canvas
+                                 ? "canvas" : "popover",
+                             view->children.size());
+                }
+                // TextBoxMgr: by the time we get here, each view child
+                // has been processed by its own TextBoxView close arm
+                // above, and font attrs have been hoisted into pending.
+                // s310 m1c — the close arm now applies pending font
+                // attrs to the Mgr and appends a synthesized Popover
+                // view if none was present on disk (the m1bc writer
+                // intentionally skips popover views; they're
+                // structural fixtures regenerated on load).
+                //
+                // The in-memory shape (s310 m1bc):
+                //   mgr (the entry node itself; carries the buffer +
+                //        font defaults + caret + fill/stroke)
+                //   ├── children[0..N-1] = Canvas TextBoxView(s)
+                //   │       └── children[0] = boundary Path
+                //   └── children[N]   = Popover TextBoxView (synthesized
+                //                       here if not on disk; no Path
+                //                       child; boundary geometry comes
+                //                       from the widget allocation at
+                //                       runtime in m2)
+                //
+                // Round-trip-safe even when textbox_pending has no
+                // entry (foreign tool wrote the marker with no <text>
+                // children): the Mgr's font defaults stay at the
+                // SceneNode defaults set in the open-handler.
+                if (entry.node->type == SceneNode::Type::TextBoxMgr) {
+                    SceneNode* mgr = entry.node;
+                    auto pit = textbox_pending.find(mgr);
+                    TextBoxPending pending = (pit != textbox_pending.end())
+                                             ? pit->second
+                                             : TextBoxPending{};
                     if (pit != textbox_pending.end()) {
                         textbox_pending.erase(pit);
                     }
-                    if (!boundary) {
-                        LOG_WARN("SvgParser: TextBox '{}' missing boundary "
-                                 "child — emitting empty container",
-                                 tb->name);
-                        // Leave tb->children empty; renderer's malformed-
-                        // textbox guard bails gracefully.
-                    } else {
-                        // Build the synthetic Text child. text_x/text_y
-                        // come from the boundary's bbox top-left so any
-                        // legacy reader that ignores text_boundary_ids
-                        // still places it sensibly. The actual rendering
-                        // ignores text_x/y for TextBox-owned text — the
-                        // boundary determines layout — but the fields are
-                        // populated for defensive symmetry.
-                        auto txt = std::make_unique<SceneNode>();
-                        txt->type = SceneNode::Type::Text;
-                        txt->internal_id = generate_internal_id();
-                        txt->text_content = pending.content;
-                        txt->text_font_family = pending.font_family;
-                        txt->text_font_size   = pending.font_size;
-                        txt->text_bold        = pending.bold;
-                        txt->text_italic      = pending.italic;
-                        txt->text_anchor      = "start";
-                        txt->text_align       = "left";
-                        if (pending.fill_set) {
-                            txt->fill = pending.fill;
+                    // s310 m1c — Two on-disk shapes to handle:
+                    //
+                    //   (a) Legacy (pre-s310 or m1a-only files):
+                    //       data-curvz-textbox="1" with direct
+                    //       children [boundary-path,
+                    //       baseline-marker-path, <text>, ...]. No
+                    //       TextBoxView <g> wrappers. We walk the
+                    //       direct children, sweep baselines, harvest
+                    //       font attrs, route boundary into a
+                    //       synthesized CanvasView.
+                    //
+                    //   (b) New (m1bc emit): TextBoxView children are
+                    //       already correctly populated by the view's
+                    //       own close-arm above; this Mgr close-arm
+                    //       just appends a Popover view at the end.
+                    //
+                    // Distinguish by inspecting the Mgr's children: if
+                    // any are TextBoxView, shape (b); otherwise (a).
+                    bool has_views = false;
+                    for (auto& c : mgr->children) {
+                        if (c && c->is_text_box_view()) {
+                            has_views = true;
+                            break;
                         }
-                        // Position fields — use boundary's first node as
-                        // a fallback origin. Best-effort; ignored at
-                        // render time for TextBox-owned text.
-                        if (boundary->path && !boundary->path->nodes.empty()) {
-                            txt->text_x = boundary->path->nodes[0].x;
-                            txt->text_y = boundary->path->nodes[0].y +
-                                          pending.font_size;
-                        }
-                        // s305 m1 — Restore the persisted caret position
-                        //   onto the synthetic Text child. Clamped against
-                        //   the actual buffer length at TextCursor ctor
-                        //   time, so a stale index from a content edit
-                        //   between sessions doesn't crash; defensive
-                        //   clamp here too.
-                        if (pending.caret_byte > 0) {
-                            size_t cb = (size_t)pending.caret_byte;
-                            if (cb > pending.content.size())
-                                cb = pending.content.size();
-                            txt->text_caret_byte = (int32_t)cb;
-                        }
-                        // children = [text, boundary] — the construction
-                        // contract the renderer and edit machinery
-                        // expect.
-                        tb->children.push_back(std::move(txt));
-                        tb->children.push_back(std::move(boundary));
-                        LOG_INFO("SvgParser: TextBox '{}' restored — "
-                                 "content_len={} font='{}' size={:.1f}",
-                                 tb->name, pending.content.size(),
-                                 pending.font_family, pending.font_size);
                     }
+                    if (!has_views) {
+                        // Shape (a) — legacy direct-children walk.
+                        std::unique_ptr<SceneNode> boundary;
+                        for (auto &child : mgr->children) {
+                            if (!child) continue;
+                            if (child->type == SceneNode::Type::Path) {
+                                auto bm = baseline_markers.find(child.get());
+                                if (bm != baseline_markers.end()) {
+                                    baseline_markers.erase(bm);
+                                    continue;
+                                }
+                                if (!boundary) {
+                                    boundary = std::move(child);
+                                } else {
+                                    LOG_WARN("SvgParser: TextBoxMgr '{}' "
+                                             "(legacy shape) has "
+                                             "multiple boundary paths "
+                                             "— keeping the first",
+                                             mgr->name);
+                                }
+                            } else if (child->type ==
+                                       SceneNode::Type::Text) {
+                                if (!pending.font_seen) {
+                                    pending.font_family =
+                                        child->text_font_family;
+                                    pending.font_size =
+                                        child->text_font_size;
+                                    pending.bold = child->text_bold;
+                                    pending.italic = child->text_italic;
+                                    pending.fill = child->fill;
+                                    pending.fill_set = true;
+                                    pending.font_seen = true;
+                                }
+                            }
+                        }
+                        mgr->children.clear();
+                        if (boundary) {
+                            // Synthesize the CanvasView wrapping the
+                            // boundary.
+                            auto canvas_view = std::make_unique<SceneNode>();
+                            canvas_view->type = SceneNode::Type::TextBoxView;
+                            canvas_view->internal_id = generate_internal_id();
+                            canvas_view->view_kind = SceneNode::ViewKind::Canvas;
+                            canvas_view->view_byte_start = 0;
+                            canvas_view->view_bytes_consumed = 0;
+                            canvas_view->children.push_back(std::move(boundary));
+                            mgr->children.push_back(std::move(canvas_view));
+                        } else {
+                            LOG_WARN("SvgParser: TextBoxMgr '{}' "
+                                     "(legacy shape) missing boundary "
+                                     "child — emitting empty container",
+                                     mgr->name);
+                        }
+                    }
+                    // Hoist the harvested font attrs onto the Mgr. For
+                    // shape (a) this happens here; for shape (b) the
+                    // view close-arm already pushed attrs into pending.
+                    // pending.font_seen=false means no <text> child was
+                    // present (foreign-tool or freshly-empty case);
+                    // leave the Mgr's defaults untouched in that case.
+                    if (pending.font_seen) {
+                        mgr->text_font_family = pending.font_family;
+                        mgr->text_font_size   = pending.font_size;
+                        mgr->text_bold        = pending.bold;
+                        mgr->text_italic      = pending.italic;
+                        if (pending.fill_set) {
+                            mgr->fill = pending.fill;
+                        }
+                    }
+                    // s310 m1bc — Anchor/align are not user-tunable for
+                    // Mgr-owned text (the boundary determines layout);
+                    // set the canonical "start"/"left" values explicitly
+                    // so any downstream consumer sees consistent state.
+                    mgr->text_anchor = "start";
+                    mgr->text_align  = "left";
+                    // Count canvas views and check whether a popover
+                    // view is already present.
+                    int canvas_count = 0;
+                    bool has_popover = false;
+                    for (auto& c : mgr->children) {
+                        if (!c || !c->is_text_box_view()) continue;
+                        if (c->view_kind == SceneNode::ViewKind::Popover) {
+                            has_popover = true;
+                        } else {
+                            ++canvas_count;
+                        }
+                    }
+                    if (canvas_count == 0) {
+                        LOG_WARN("SvgParser: TextBoxMgr '{}' has no "
+                                 "canvas views — emitting Mgr with "
+                                 "popover only", mgr->name);
+                    }
+                    // Synthesize the Popover view if not on disk. It's
+                    // always the last child of the Mgr; m2 wires the
+                    // widget that brings it to life.
+                    if (!has_popover) {
+                        auto popover_view = std::make_unique<SceneNode>();
+                        popover_view->type = SceneNode::Type::TextBoxView;
+                        popover_view->internal_id = generate_internal_id();
+                        popover_view->view_kind = SceneNode::ViewKind::Popover;
+                        popover_view->view_byte_start = 0;
+                        popover_view->view_bytes_consumed = 0;
+                        mgr->children.push_back(std::move(popover_view));
+                    }
+                    LOG_INFO("SvgParser: TextBoxMgr '{}' restored — "
+                             "content_len={} font='{}' size={:.1f} "
+                             "canvas_views={} shape={}",
+                             mgr->name, mgr->text_content.size(),
+                             mgr->text_font_family,
+                             mgr->text_font_size,
+                             canvas_count,
+                             has_views ? "new" : "legacy");
                 }
                 stack.pop_back();
                 current_layer = nullptr;
@@ -1850,17 +1983,37 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             bool is_warp          = !is_guide_layer && !is_ref_layer && !is_measure_layer && !is_clipgroup && !is_blend &&
                                     (attr(tag, "data-curvz-warp") == "1");
             bool is_compound      = !is_guide_layer && !is_ref_layer && !is_measure_layer && !is_clipgroup && !is_blend && !is_warp && (attr(tag, "data-curvz-compound") == "1");
-            // TextBox — a typed container holding a text frame as one
-            // user-visible atom. Marker is data-curvz-textbox="1" on
-            // the wrapping <g>. The close-tag handler does the work of
-            // reconstructing the in-memory shape (children = [text,
-            // boundary]) from the on-disk shape (boundary path +
-            // baseline-marker paths + <text><textPath> pairs).
+            // TextBoxMgr — s310 m1bc — the user-visible text-flow
+            // container. On-disk marker is `data-curvz-textbox-mgr="1"`
+            // for new-format files; the legacy `data-curvz-textbox="1"`
+            // is still recognised so pre-s310 files load through the
+            // same branch and end up in the new shape. The close-tag
+            // handler builds the in-memory tree:
+            //     Mgr (Type::TextBoxMgr, owns the buffer)
+            //     ├── children[0] Canvas TextBoxView
+            //     │       └── children[0] Path (the boundary)
+            //     └── children[1] Popover TextBoxView (no Path)
+            // from the on-disk shape (boundary path + baseline-marker
+            // paths + <text><textPath> pairs). See
+            // docs/text_flow_architecture.md for the rationale.
             bool is_textbox       = !is_guide_layer && !is_ref_layer && !is_measure_layer && !is_clipgroup && !is_blend && !is_warp && !is_compound &&
-                                    (attr(tag, "data-curvz-textbox") == "1");
+                                    (attr(tag, "data-curvz-textbox")     == "1" ||
+                                     attr(tag, "data-curvz-textbox-mgr") == "1");
+            // TextBoxView — s310 m1c — the on-canvas (or in-popover)
+            // window onto a TextBoxMgr's buffer. Marker is
+            // data-curvz-textbox-view="1". Always nested inside a
+            // <g data-curvz-textbox-mgr="1"> at the current open shape
+            // (m1c reads the nested-on-disk format m1bc shipped; a
+            // future m1d-redux moves to flat-with-mgr-iid emit, at
+            // which point the nesting requirement goes away — but the
+            // open-handler is the same either way: see a textbox-view
+            // marker, construct a Type::TextBoxView, push onto the
+            // stack, accumulate children, close-handler sweeps).
+            bool is_textbox_view  = !is_guide_layer && !is_ref_layer && !is_measure_layer && !is_clipgroup && !is_blend && !is_warp && !is_compound && !is_textbox &&
+                                    (attr(tag, "data-curvz-textbox-view") == "1");
             // Foreign SVG <g> without Curvz markers is treated as a Group when
             // already inside a layer (stack non-empty), not a new top-level Layer.
-            bool is_group         = !is_guide_layer && !is_ref_layer && !is_measure_layer && !is_clipgroup && !is_blend && !is_warp && !is_compound && !is_textbox &&
+            bool is_group         = !is_guide_layer && !is_ref_layer && !is_measure_layer && !is_clipgroup && !is_blend && !is_warp && !is_compound && !is_textbox && !is_textbox_view &&
                                     (attr(tag, "data-curvz-group") == "1" || !stack.empty());
 
             if (is_clipgroup && !stack.empty()) {
@@ -2022,48 +2175,120 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             }
 
             if (is_textbox && !stack.empty()) {
-                // ── TextBox: child of current parent ──────────────────────
-                // Build the wrapper node. children accumulate during the
-                // open span: the boundary <path>, the baseline-marker
-                // <path data-curvz-baseline="1"> entries (will be
-                // discarded), and any <text> elements (the close-handler
-                // harvests font attrs from one and discards them all).
-                // The text content is read from data-curvz-content on the
-                // group itself (round-trip-safe source) and stashed in
-                // textbox_pending until the close-handler builds the
-                // synthetic Text child.
-                auto tb = std::make_unique<SceneNode>();
-                tb->type = SceneNode::Type::TextBox;
+                // ── TextBoxMgr: child of current parent ───────────────────
+                // s310 m1bc — construct the Mgr directly (no transient
+                // Type::TextBox stop). The buffer (text_content) and the
+                // caret byte hoist straight onto the Mgr — the Mgr fills
+                // the role the synthetic Text child used to fill, so any
+                // reader that expected text_*/fill/stroke fields on the
+                // "text node" now reads them off the Mgr.
+                //
+                // TextBoxPending still exists but is now slimmed to font
+                // attrs only: those are harvested from the first <text>
+                // child encountered during the inner parse (the writer
+                // emits them on every per-baseline <text>, but one
+                // suffices), then hoisted to the Mgr in the close-handler.
+                // The boundary Path child accumulates here too and gets
+                // wrapped into a Canvas TextBoxView in the close-handler.
+                auto mgr = std::make_unique<SceneNode>();
+                mgr->type = SceneNode::Type::TextBoxMgr;
                 auto id = attr(tag, "id");
-                if (!id.empty()) tb->id = id;
+                if (!id.empty()) mgr->id = id;
                 auto iid = attr(tag, "data-curvz-iid");
-                tb->internal_id = iid.empty() ? generate_internal_id() : iid;
+                mgr->internal_id = iid.empty() ? generate_internal_id() : iid;
                 auto nm = attr(tag, "data-curvz-name");
-                tb->name = nm.empty() ? (id.empty() ? "Text" : id) : nm;
-                if (attr(tag, "display") == "none") tb->visible = false;
+                mgr->name = nm.empty() ? (id.empty() ? "Text" : id) : nm;
+                if (attr(tag, "display") == "none") mgr->visible = false;
                 auto op = attr(tag, "opacity");
-                if (!op.empty()) tb->opacity = dbl(op, 1.0);
-                apply_shadow_attrs(*tb, tag);
-                // Stash the round-trip-safe buffer.
-                TextBoxPending pending;
-                pending.content = attr(tag, "data-curvz-content");
+                if (!op.empty()) mgr->opacity = dbl(op, 1.0);
+                apply_shadow_attrs(*mgr, tag);
+                // Buffer hoists straight onto the Mgr. Round-trip-safe
+                // because emit reads the buffer off the Mgr too (writer
+                // m1d).
+                mgr->text_content = attr(tag, "data-curvz-content");
                 // s305 m1 — caret persistence. Missing attr → 0 (the
                 //   "no saved position" default that lets the cursor
-                //   fall back to end-of-buffer on entry).
+                //   fall back to end-of-buffer on entry). The Mgr is
+                //   the new home for the caret byte, mirroring its
+                //   ownership of the buffer.
                 {
                     auto cb = attr(tag, "data-curvz-caret-byte");
                     if (!cb.empty()) {
-                        try { pending.caret_byte = (int32_t)std::stol(cb); }
-                        catch (...) { pending.caret_byte = 0; }
+                        try {
+                            int64_t v = std::stol(cb);
+                            if (v < 0) v = 0;
+                            if (v > (int64_t)mgr->text_content.size())
+                                v = (int64_t)mgr->text_content.size();
+                            mgr->text_caret_byte = (int32_t)v;
+                        } catch (...) {
+                            mgr->text_caret_byte = 0;
+                        }
                     }
                 }
-                SceneNode* tbptr = tb.get();
-                textbox_pending[tbptr] = pending;
-                stack.back().node->children.push_back(std::move(tb));
-                AffineMatrix tb_xfm = parse_transform(attr(tag, "transform"));
-                stack.push_back({tbptr, tb_xfm, /*is_curvz=*/true});
-                LOG_INFO("SvgParser: <g> textbox '{}' created in '{}'",
-                         tbptr->name, stack[stack.size()-2].node->name);
+                // Font defaults — start at the SceneNode-default values
+                // (Sans 24.0, not bold, not italic). If the file carries
+                // a per-baseline <text> child, the close-handler will
+                // overwrite these with the harvested attrs before the
+                // pending entry is erased. Files written by older Curvz
+                // versions always carry such children, so this fallback
+                // path is only exercised by foreign tools that wrote
+                // the marker without the text children.
+                TextBoxPending pending;
+                SceneNode* mgrptr = mgr.get();
+                textbox_pending[mgrptr] = pending;
+                stack.back().node->children.push_back(std::move(mgr));
+                AffineMatrix mgr_xfm = parse_transform(attr(tag, "transform"));
+                stack.push_back({mgrptr, mgr_xfm, /*is_curvz=*/true});
+                LOG_INFO("SvgParser: <g> textbox-mgr '{}' created in '{}'",
+                         mgrptr->name, stack[stack.size()-2].node->name);
+            } else if (is_textbox_view && !stack.empty()) {
+                // ── TextBoxView: child of current parent ──────────────────
+                // s310 m1c — Construct the view node and push onto the
+                // stack. Inner parse accumulates the boundary <path>,
+                // any baseline-marker <path data-curvz-baseline="1">
+                // entries (discarded by the close-handler), and any
+                // <text> children (font attrs harvested up to the Mgr
+                // ancestor by the close-handler, the <text> wrappers
+                // discarded). The close-handler reorganizes children
+                // into the canonical [boundary] shape.
+                //
+                // view_kind defaults to Canvas; the on-disk
+                // data-curvz-view-kind attribute overrides for
+                // popover-kind views. (m1's writer doesn't emit
+                // popover views, but the parser handles them
+                // defensively — a foreign tool or future format
+                // could carry one.)
+                auto view = std::make_unique<SceneNode>();
+                view->type = SceneNode::Type::TextBoxView;
+                auto id = attr(tag, "id");
+                if (!id.empty()) view->id = id;
+                auto iid = attr(tag, "data-curvz-iid");
+                view->internal_id = iid.empty() ? generate_internal_id() : iid;
+                auto nm = attr(tag, "data-curvz-name");
+                if (!nm.empty()) view->name = nm;
+                if (attr(tag, "display") == "none") view->visible = false;
+                auto op = attr(tag, "opacity");
+                if (!op.empty()) view->opacity = dbl(op, 1.0);
+                {
+                    auto vk = attr(tag, "data-curvz-view-kind");
+                    if (vk == "popover") {
+                        view->view_kind = SceneNode::ViewKind::Popover;
+                    } else {
+                        view->view_kind = SceneNode::ViewKind::Canvas;
+                    }
+                }
+                view->view_byte_start = 0;
+                view->view_bytes_consumed = 0;
+                SceneNode* vptr = view.get();
+                stack.back().node->children.push_back(std::move(view));
+                AffineMatrix v_xfm = parse_transform(attr(tag, "transform"));
+                stack.push_back({vptr, v_xfm, /*is_curvz=*/true});
+                LOG_INFO("SvgParser: <g> textbox-view '{}' (kind={}) "
+                         "created in '{}'",
+                         vptr->internal_id,
+                         vptr->view_kind == SceneNode::ViewKind::Canvas
+                             ? "canvas" : "popover",
+                         stack[stack.size()-2].node->name);
             } else if ((is_group || is_compound) && !stack.empty()) {
                 // ── Group or Compound: child of current parent ─────────────
                 auto g = std::make_unique<SceneNode>();

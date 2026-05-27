@@ -620,6 +620,11 @@ bool is_scene_object(const Curvz::SceneNode* n) {
         case T::Warp:
         case T::Text:
         case T::TextBox:
+        // s309 m1a — Mgr-with-views shape. Both are scriptable scene
+        // objects, same as TextBox. Construction lands in m1b; the
+        // enum value is reachable as soon as that ships.
+        case T::TextBoxMgr:
+        case T::TextBoxView:
         case T::Image:
         case T::Ref:
         case T::Measurement:
@@ -650,6 +655,11 @@ std::string type_to_string(Curvz::SceneNode::Type t) {
         case T::Warp:        return "warp";
         case T::Text:        return "text";
         case T::TextBox:     return "textbox";
+        // s309 m1a — Mgr-with-views shape. Tokens lowercased to match
+        // the existing convention; the scripting API exposes these
+        // strings as the type vocabulary.
+        case T::TextBoxMgr:  return "textboxmgr";
+        case T::TextBoxView: return "textboxview";
         case T::Image:       return "image";
         case T::Ref:         return "ref";
         case T::Measurement: return "measurement";
@@ -1105,6 +1115,14 @@ bool is_container_type(Curvz::SceneNode::Type t) {
         case T::Path:
         case T::Text:
         case T::TextBox:
+        // s309 m1a — Mgr-with-views shape. Both refused as reparent
+        // destinations, same reasoning as TextBox: their `children`
+        // slots are structurally assigned (Mgr holds an ordered list
+        // of views; View holds a boundary at [0]), not a user-
+        // controlled list. Accepting reparents would break the
+        // container's invariants.
+        case T::TextBoxMgr:
+        case T::TextBoxView:
         case T::Image:
         case T::Ref:
         case T::Measurement:

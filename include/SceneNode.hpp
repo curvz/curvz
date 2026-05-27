@@ -240,7 +240,73 @@ struct SceneNode {
     // type by itself is a no-op at runtime (nothing constructs one
     // yet) and additive at compile time (every existing exhaustive
     // switch on Type has a default: clause; TextBox falls through).
-    TextBox
+    //
+    // s309 status: the data model is migrating from the "TextBox
+    // container with [Text, Path] children" shape to the
+    // "TextBoxMgr container with [TextBoxView, ..., TextBoxView]
+    // children" shape (see docs/text_flow_architecture.md). During
+    // the migration, Type::TextBox remains the only constructed
+    // type — every existing site reads from it and writes to it as
+    // before. Type::TextBoxMgr and Type::TextBoxView (below) are
+    // declared so the migration can wire up new construction paths
+    // incrementally without a flag-day rename. m1a adds the enum
+    // values; m1b adds the load-side compat shim that constructs
+    // them; m1c migrates readers; m1d migrates emit; m1e retires
+    // Type::TextBox.
+    TextBox,
+
+    // TextBoxMgr — s309 m1a. Replacement for Type::TextBox in the
+    // Mgr-with-views model: the SceneNode that owns the text buffer
+    // and holds a list of TextBoxView children. The buffer (text_content
+    // and related per-flow fields) lives on this node; views are
+    // structural children that render slices of the buffer through
+    // their own boundary geometry. See docs/text_flow_architecture.md
+    // for the full model.
+    //
+    // m1a is enum-only: no construction site, no SvgParser path, no
+    // SvgWriter emit, nothing branches on this value. Adding the enum
+    // value compiles cleanly because every exhaustive switch on Type
+    // has a default: clause (TextBoxMgr falls through to default the
+    // same way TextBox did when first introduced).
+    TextBoxMgr,
+
+    // TextBoxView — s309 m1a. The on-canvas (or in-popover) window
+    // onto a TextBoxMgr's buffer. Holds a boundary (as a Path child),
+    // a byte_start into the parent Mgr's buffer, and a cached
+    // bytes_consumed result. View kind (Canvas or Popover, see
+    // ViewKind below) determines where the boundary geometry comes
+    // from: Canvas views have a user-drawn Path child; Popover views
+    // have a boundary derived from the popover widget's allocation
+    // at render time and no Path child.
+    //
+    // m1a is enum-only: same compile-clean addition as TextBoxMgr
+    // above. Construction lands in m1b's compat shim.
+    TextBoxView
+  };
+
+  // ── ViewKind — s309 m1a ──────────────────────────────────────────────
+  // Distinguishes Canvas-rendered views from Popover-hosted views on a
+  // TextBoxView node. Meaningful only when type == Type::TextBoxView;
+  // ignored on every other Type.
+  //
+  //   Canvas  — user-drawn boundary (a Path child), persists to SVG,
+  //             selectable like any other SceneNode child, renders
+  //             onto the document canvas.
+  //   Popover — boundary derived from a Gtk::Popover widget's content
+  //             allocation at materialization time, does NOT persist
+  //             to SVG (reconstructed on load as the always-last
+  //             child of every TextBoxMgr), renders only when the
+  //             popover widget is visible. Every TextBoxMgr has
+  //             exactly one Popover view as its last child.
+  //
+  // Default Canvas: a freshly-constructed TextBoxView is a Canvas view
+  // unless explicitly marked otherwise, matching the common case
+  // (canvas views are created by user actions; the popover view is
+  // a structural fixture added by SvgParser and TextBoxMgr factory
+  // code, both of which set the kind explicitly).
+  enum class ViewKind {
+    Canvas,
+    Popover
   };
 
   Type type = Type::Path;
@@ -666,6 +732,39 @@ struct SceneNode {
   //   buffer" thanks to the read-side clamp.
   int32_t text_caret_byte = 0;
 
+  // ── s309 m1a — TextBoxView fields ────────────────────────────────────
+  // Meaningful only on TextBoxView nodes; ignored on every other Type.
+  // See docs/text_flow_architecture.md for the model.
+  //
+  //   view_kind       — Canvas (user-drawn boundary, persists) or
+  //                     Popover (widget-allocation boundary, transient).
+  //                     Default Canvas.
+  //   view_byte_start — Byte offset into the parent TextBoxMgr's
+  //                     buffer (text_content) where this view's
+  //                     rendered slice begins. Maintained by the
+  //                     recompute_views walk; not authoritative
+  //                     (re-derived from previous view's
+  //                     view_bytes_consumed). Saved as a hint, not
+  //                     trusted on load.
+  //   view_bytes_consumed — Number of bytes this view's boundary
+  //                     consumed in the most recent layout. Populated
+  //                     by compute_text_layout(byte_start). Cached so
+  //                     paint and indicator-gating read without
+  //                     re-running layout. Invalidated by anything
+  //                     that triggers a recompute (buffer mutation,
+  //                     boundary geometry change, font/size change,
+  //                     view list change).
+  //
+  // The two byte_* fields are caches. Authoritative state is the
+  // buffer (on the parent Mgr), the boundary geometry (on this
+  // view's Path child), and the view's position in the parent's
+  // children list. The caches are recomputed by `recompute_views`
+  // — the single seam for view-byte-state consistency, analogous
+  // to scrub_node_refs and invalidate_iid_index in earlier arcs.
+  ViewKind view_kind          = ViewKind::Canvas;
+  size_t   view_byte_start    = 0;
+  size_t   view_bytes_consumed = 0;
+
   // Image data — meaningful on Image only
   std::string image_path; // absolute path to the image file
   double image_x = 0.0;   // top-left x in doc space (Y-down)
@@ -723,6 +822,20 @@ struct SceneNode {
   bool is_ref()          const { return type == Type::Ref; }
   bool is_text()         const { return type == Type::Text; }
   bool is_text_box()     const { return type == Type::TextBox; }
+  // s309 m1a — Mgr-with-views shape. Both helpers return false in m1a
+  // because no construction site exists yet. They light up as
+  // construction is wired in m1b/m1c. See docs/text_flow_architecture.md.
+  bool is_text_box_mgr()  const { return type == Type::TextBoxMgr; }
+  bool is_text_box_view() const { return type == Type::TextBoxView; }
+  // Convenience for "is this a TextBoxView and specifically the popover
+  // one." Used by recompute_views and indicator-gating to find the
+  // always-present last child. Returns false for non-View types.
+  bool is_popover_view()  const {
+    return type == Type::TextBoxView && view_kind == ViewKind::Popover;
+  }
+  bool is_canvas_view()   const {
+    return type == Type::TextBoxView && view_kind == ViewKind::Canvas;
+  }
   bool is_image()        const { return type == Type::Image; }
   bool is_measure_layer()  const { return type == Type::MeasureLayer; }
   bool is_measurement()    const { return type == Type::Measurement; }
@@ -774,6 +887,14 @@ struct SceneNode {
       case Type::Blend:
       case Type::Warp:
       case Type::TextBox:
+      // s309 m1a — Mgr-with-views shape. Both can carry the textbox's
+      //   drop shadow as the Mgr inherits TextBox's shadow semantics;
+      //   views on their own don't carry shadow in the current design
+      //   (shadow is flow-wide, lives on the Mgr) but the View type is
+      //   listed here so a future per-view shadow opt-in doesn't need
+      //   to come back and add this case.
+      case Type::TextBoxMgr:
+      case Type::TextBoxView:
         return true;
       default:
         return false;
@@ -860,6 +981,16 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->text_margin_left   = src.text_margin_left;
   dst->text_margin_right  = src.text_margin_right;
   dst->text_caret_byte    = src.text_caret_byte;  // s305 m1
+  // s309 m1a — TextBoxView fields. Copied for completeness; the caches
+  //   (view_byte_start, view_bytes_consumed) are derived state and will
+  //   be overwritten by the next recompute_views walk on the cloned
+  //   tree. Copying them anyway avoids a transient "freshly-cloned but
+  //   not yet recomputed" state where the cache is stale-zero and the
+  //   indicator-gating logic asks the wrong question. view_kind is
+  //   authoritative state, not a cache.
+  dst->view_kind          = src.view_kind;
+  dst->view_byte_start    = src.view_byte_start;
+  dst->view_bytes_consumed = src.view_bytes_consumed;
   dst->image_path = src.image_path;
   dst->image_x = src.image_x;
   dst->image_y = src.image_y;

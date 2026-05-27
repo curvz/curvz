@@ -2641,34 +2641,39 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
   //   text or boundary child → render nothing for that role rather
   //   than crash. A reader of the live code can see the invariant
   //   in the size/type checks.
-  if (obj.type == SceneNode::Type::TextBox) {
+  // s310 m1bc — TextBoxMgr render. The Mgr is the text-bearing node
+  // (carries text_content / font defaults / fill / stroke / caret).
+  // Walk children: each Canvas TextBoxView holds a Path child as its
+  // boundary; paint that boundary, then paint text laid out against
+  // it. Popover views have no Path child and don't render in m1
+  // (m2 will wire the Gtk popover widget).
+  //
+  // Falls back gracefully if the Mgr is malformed: a view with no
+  // valid boundary skips silently rather than crashing. A reader of
+  // the live code can see the invariant in the size/type checks.
+  if (obj.is_text_box_mgr()) {
     if (!obj.visible) {
       cr->restore();
       return;
     }
-    if (obj.children.size() < 2 || !obj.children[0] || !obj.children[1]) {
-      cr->restore();
-      return;
-    }
-    const SceneNode &text     = *obj.children[0];
-    const SceneNode &boundary = *obj.children[1];
-    if (!text.is_text() || boundary.type != SceneNode::Type::Path) {
-      cr->restore();
-      return;
-    }
     begin_alpha();
-    // 1) Boundary first (underneath). Recurses via draw_object so
-    //    the boundary's fill/stroke/opacity/transform all apply via
-    //    the normal Path branch — same code path the user gets when
-    //    selecting and styling the boundary later.
-    draw_object(cr, boundary, layer_r, layer_g, layer_b);
-    // 2) Text on top, laid out against the boundary. Bypasses
-    //    draw_text_node (which expects text_boundary_ids to do its
-    //    lookup) and goes straight to draw_text_in_boundary with the
-    //    boundary in hand — the structural sibling link replaces the
-    //    iid lookup.
-    if (text.visible) {
-      draw_text_in_boundary(cr, text, boundary);
+    for (const auto& view_ptr : obj.children) {
+      if (!view_ptr) continue;
+      const SceneNode& view = *view_ptr;
+      if (!view.is_canvas_view()) continue;
+      if (!view.visible) continue;
+      if (view.children.empty() || !view.children[0]) continue;
+      const SceneNode& boundary = *view.children[0];
+      if (boundary.type != SceneNode::Type::Path) continue;
+      // Boundary first (underneath). Recurses via draw_object so the
+      // boundary's fill/stroke/opacity/transform all apply via the
+      // normal Path branch.
+      draw_object(cr, boundary, layer_r, layer_g, layer_b);
+      // Text on top, laid out against this view's boundary. The Mgr
+      // plays the text-node role — compute_text_layout reads
+      // text_content / text_font_* / etc. off whatever node it gets
+      // passed.
+      draw_text_in_boundary(cr, obj, boundary);
     }
     end_alpha();
     cr->restore();
@@ -4089,12 +4094,20 @@ void Canvas::draw_text_baseline_guides(
     text_for_guides = m_text_editing;
     boundary_for_guides = m_text_boundary_editing;
   } else if (m_selected) {
-    if (m_selected->is_text_box() && m_selected->children.size() >= 2 &&
-        m_selected->children[0] && m_selected->children[1] &&
-        m_selected->children[0]->is_text() &&
-        m_selected->children[1]->is_path()) {
-      text_for_guides     = m_selected->children[0].get();
-      boundary_for_guides = m_selected->children[1].get();
+    // s310 m1bc — Selected Mgr: text-bearing node IS the Mgr;
+    // boundary lives at mgr → first canvas view → children[0].
+    // Same structure as begin_textbox_edit + object_bbox use.
+    if (m_selected->is_text_box_mgr()) {
+      SceneNode* canvas_view = nullptr;
+      for (auto& v : m_selected->children) {
+        if (v && v->is_canvas_view()) { canvas_view = v.get(); break; }
+      }
+      if (canvas_view && !canvas_view->children.empty() &&
+          canvas_view->children[0] &&
+          canvas_view->children[0]->is_path()) {
+        text_for_guides     = m_selected;
+        boundary_for_guides = canvas_view->children[0].get();
+      }
     } else if (m_selected->is_text() && !m_selected->text_boundary_ids.empty()) {
       text_for_guides = m_selected;
       boundary_for_guides = find_text_boundary(

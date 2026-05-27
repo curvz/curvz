@@ -867,14 +867,30 @@ bool Canvas::check_overflow_hit(double screen_x, double screen_y,
 
   std::function<bool(SceneNode*)> walk = [&](SceneNode* n) -> bool {
     if (!n) return false;
-    if (n->type == SceneNode::Type::TextBox && n->children.size() == 2) {
-      SceneNode* text = n->children[0].get();
-      SceneNode* boundary = n->children[1].get();
-      if (text && text->is_text() && boundary && boundary->path &&
-          boundary->path->nodes.size() >= 3) {
-        TextLayout tl = compute_text_layout(boundary, text);
-        if (tl.bytes_consumed < text->text_content.size()) {
-          // Compute bbox bottom-right in doc coords → screen coords.
+    // s310 m1bc — overflow indicator lives on the LAST canvas view of
+    // a TextBoxMgr (the view whose tail spills into the popover view).
+    // For m1 with a single canvas view per Mgr that's just children[0];
+    // a multi-view Mgr would put the indicator on the last Canvas view
+    // before the Popover view. Walk all views and test the one whose
+    // bytes_consumed runs short of the remaining buffer past its
+    // byte_start.
+    if (n->is_text_box_mgr()) {
+      // Find the last canvas view (skipping any popover that comes
+      // after it). In m1 the structure is [Canvas, Popover] so this
+      // resolves to children[0].
+      SceneNode* last_canvas = nullptr;
+      for (auto& c : n->children) {
+        if (c && c->is_canvas_view()) last_canvas = c.get();
+      }
+      if (last_canvas && !last_canvas->children.empty() &&
+          last_canvas->children[0] &&
+          last_canvas->children[0]->is_path() &&
+          last_canvas->children[0]->path &&
+          last_canvas->children[0]->path->nodes.size() >= 3) {
+        SceneNode* boundary = last_canvas->children[0].get();
+        // Mgr plays the text-node role.
+        TextLayout tl = compute_text_layout(boundary, n);
+        if (tl.bytes_consumed < n->text_content.size()) {
           const auto& bp = boundary->path->nodes;
           double bx0 = bp[0].x, by0 = bp[0].y;
           double bx1 = bx0, by1 = by0;
@@ -891,7 +907,7 @@ bool Canvas::check_overflow_hit(double screen_x, double screen_y,
           doc_to_screen(cx_doc, cy_doc, cx_scr, cy_scr);
           if (std::abs(screen_x - cx_scr) <= half &&
               std::abs(screen_y - cy_scr) <= half) {
-            *out_text = text;
+            *out_text = n;            // Mgr is the text-bearing node
             *out_boundary = boundary;
             return true;
           }
@@ -924,7 +940,13 @@ bool Canvas::check_overflow_hit(double screen_x, double screen_y,
 // characters bounded by whitespace or punctuation. g_unichar_isspace /
 // g_unichar_ispunct are Unicode-aware so non-Latin scripts count correctly.
 void Canvas::show_overflow_popover(SceneNode* text_node, SceneNode* boundary) {
-  if (!text_node || !text_node->is_text() || !m_doc || !boundary ||
+  // s310 m1bc — `text_node` may be a TextBoxMgr (new shape) or a
+  // Type::Text node (legacy unbound text). Both carry the text_*
+  // fields compute_text_layout consumes, so the work below is
+  // shape-agnostic once we let either pass the guard.
+  if (!text_node ||
+      !(text_node->is_text_box_mgr() || text_node->is_text()) ||
+      !m_doc || !boundary ||
       !boundary->path || boundary->path->nodes.size() < 3) {
     return;
   }
@@ -1077,11 +1099,11 @@ void Canvas::commit_text_edit() {
     } else if (m_text_is_new) {
       // Push undo state for a newly-created text. Two shapes:
       //
-      //  TextBox-style (m_text_boundary_editing != nullptr) — the
-      //    text and boundary live inside a TextBox container that
-      //    sits at the layer level. One AddNodeCommand for the
-      //    TextBox covers the whole subtree; clone_node deep-copies
-      //    children so the snapshot is complete.
+      //  Mgr-style (m_text_boundary_editing != nullptr) — s310 m1bc.
+      //    m_text_editing IS the TextBoxMgr; find_text_box_for_text
+      //    returns the Mgr itself. clone_node deep-copies the Mgr
+      //    (including its TextBoxView children + boundary), so one
+      //    AddNodeCommand covers the whole subtree.
       //
       //  Legacy unbound (m_text_boundary_editing == nullptr) — a
       //    bare Text node at the layer level, no container. Survives
@@ -1815,7 +1837,7 @@ void Canvas::on_draw_begin(double x, double y) {
       if (!layer->visible || layer->locked) continue;
       for (int i = (int)layer->children.size() - 1; i >= 0; --i) {
         SceneNode *obj = layer->children[i].get();
-        if (obj->type == SceneNode::Type::TextBox) {
+        if (obj->is_text_box_mgr()) {
           auto bb = object_bbox(*obj);
           if (!bb) continue;
           if (dx >= bb->x && dx <= bb->x + bb->w &&
@@ -1844,7 +1866,7 @@ void Canvas::on_draw_begin(double x, double y) {
     if (existing_hit) {
       // Two re-entry shapes, distinguished by the hit's type:
       //
-      //   TextBox: single-click selects only. The textbox becomes
+      //   TextBoxMgr: single-click selects only. The Mgr becomes
       //     the active selection (handles draw around its frame),
       //     but editing is gated to the double-click gesture —
       //     matches the muscle-memory rule "double-click a thing
@@ -1858,7 +1880,7 @@ void Canvas::on_draw_begin(double x, double y) {
       //     "single-click selects, double-click edits" rule and
       //     keeps its pre-migration behaviour to avoid breaking
       //     existing-file workflows.
-      if (existing_hit->type == SceneNode::Type::TextBox) {
+      if (existing_hit->is_text_box_mgr()) {
         m_selected = existing_hit;
         m_selection = {existing_hit};
         notify_object_selection_changed();
@@ -2528,15 +2550,18 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
       if (!layer) layer = m_doc->layers[0].get();
 
       // Build the boundary as a plain Path. No user-facing name —
-      // the boundary is internal to the TextBox container that owns
-      // it; the user addresses the TextBox as a whole, not its
-      // structural parts. Same convention as ClipGroup's clip_shape
-      // and Blend's source slots.
+      // the boundary is internal to the Canvas TextBoxView that wraps
+      // it, and that view is internal to the TextBoxMgr the user
+      // addresses as a whole. Same convention as ClipGroup's
+      // clip_shape and Blend's source slots.
       //
       // Margins live on the boundary (the shape that defines the
       // inset). The current UI sets all four to the same value
       // (uniform-margin convenience); a future UI exposes them
-      // independently and writes to the same four fields.
+      // independently and writes to the same four fields. Margins
+      // stay structurally on the boundary path under the s310 m1bc
+      // shape — just one level deeper than before (Mgr → CanvasView →
+      // boundary Path), no migration needed.
       auto boundary = std::make_unique<SceneNode>();
       boundary->type = SceneNode::Type::Path;
       boundary->internal_id = generate_internal_id();
@@ -2550,65 +2575,76 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
       boundary->text_margin_left   = TEXT_DEFAULT_MARGIN;
       boundary->text_margin_right  = TEXT_DEFAULT_MARGIN;
 
-      // Build the text as a plain Text node. Internal to the TextBox
-      // for the same reason as the boundary — no doc-wide name.
-      // text_boundary_ids stays empty: the TextBox owns the boundary
-      // structurally now, so the iid-link is redundant. (Legacy text
-      // loaded from pre-migration files still uses text_boundary_ids
-      // and renders via the paired-sibling path; new construction
-      // doesn't need it.) Margins stay zero on the text — the
-      // boundary owns them.
-      auto txt = std::make_unique<SceneNode>();
-      txt->type = SceneNode::Type::Text;
-      txt->internal_id = generate_internal_id();
-      style::mutate_appearance(*txt, [this](SceneNode &n) {
+      // s310 m1bc — Build the TextBoxMgr. The Mgr fills the role the
+      // synthetic Text child used to fill: it carries the buffer
+      // (text_content, empty here for a fresh box), the font defaults,
+      // the caret byte, and the fill/stroke. compute_text_layout and
+      // TextCursor consume these fields off whatever node they're
+      // handed — under the new shape that node is the Mgr.
+      auto mgr = std::make_unique<SceneNode>();
+      mgr->type = SceneNode::Type::TextBoxMgr;
+      mgr->internal_id = generate_internal_id();
+      mgr->name = m_doc->next_default_name(CurvzDocument::NameKind::Text);
+      // Text/font defaults — same values the synthetic Text used to
+      // carry. text_x/text_y are cosmetic-only for Mgr-owned text
+      // (boundary determines layout); populated to the bbox top-left
+      // for defensive symmetry, matching the legacy emit.
+      style::mutate_appearance(*mgr, [this](SceneNode &n) {
         n.fill = m_def_fill;
         n.stroke = m_def_stroke;
         n.stroke.paint.type = FillStyle::Type::None;
       });
-      txt->text_x = x1;
-      txt->text_y = y1 + TEXT_DEFAULT_FONT_SIZE;
-      txt->text_font_family = "Sans";
-      txt->text_font_size = TEXT_DEFAULT_FONT_SIZE;
-      txt->text_anchor = "start";
-      txt->text_align  = "left";
+      mgr->text_x = x1;
+      mgr->text_y = y1 + TEXT_DEFAULT_FONT_SIZE;
+      mgr->text_font_family = "Sans";
+      mgr->text_font_size = TEXT_DEFAULT_FONT_SIZE;
+      mgr->text_anchor = "start";
+      mgr->text_align  = "left";
 
-      // Build the TextBox container. This is the user-visible atom —
-      // selection, drag, copy, z-order all operate on it. The name
-      // comes from NameKind::Text (the user thinks of the textbox as
-      // "the text frame," not as a container around text). Children
-      // follow Canvas's universal convention: index 0 = top of local
-      // z-order. Text at [0] paints over boundary at [1], so the
-      // glyphs sit on top of whatever fill the boundary has.
-      auto text_box = std::make_unique<SceneNode>();
-      text_box->type = SceneNode::Type::TextBox;
-      text_box->internal_id = generate_internal_id();
-      text_box->name = m_doc->next_default_name(CurvzDocument::NameKind::Text);
-      text_box->children.push_back(std::move(txt));       // children[0] = text
-      text_box->children.push_back(std::move(boundary));  // children[1] = boundary
+      // Canvas TextBoxView wrapping the boundary as its only child.
+      auto canvas_view = std::make_unique<SceneNode>();
+      canvas_view->type = SceneNode::Type::TextBoxView;
+      canvas_view->internal_id = generate_internal_id();
+      canvas_view->view_kind = SceneNode::ViewKind::Canvas;
+      canvas_view->view_byte_start = 0;
+      canvas_view->view_bytes_consumed = 0;
+      canvas_view->children.push_back(std::move(boundary));
 
-      // Stash raw pointers to the parts before move — m_text_editing
-      // and m_text_boundary_editing point into the TextBox's children
-      // for the duration of the edit. Stable across the move because
-      // unique_ptr move preserves the pointee.
-      SceneNode *text_ptr     = text_box->children[0].get();
-      SceneNode *boundary_ptr = text_box->children[1].get();
+      // Popover TextBoxView — always-last child of every Mgr. No
+      // Path child (boundary comes from popover widget allocation
+      // at runtime, m2). Present in the tree for structural
+      // consistency; m1 doesn't render it.
+      auto popover_view = std::make_unique<SceneNode>();
+      popover_view->type = SceneNode::Type::TextBoxView;
+      popover_view->internal_id = generate_internal_id();
+      popover_view->view_kind = SceneNode::ViewKind::Popover;
+      popover_view->view_byte_start = 0;
+      popover_view->view_bytes_consumed = 0;
 
-      // Insert the TextBox into the layer. One node at the layer
-      // level, not two — the previous paired-sibling layout is gone.
-      layer->children.insert(layer->children.begin(), std::move(text_box));
+      mgr->children.push_back(std::move(canvas_view));   // [0] canvas
+      mgr->children.push_back(std::move(popover_view));  // [1] popover
+
+      // Stash raw pointers to the parts before move. m_text_editing
+      // points to the Mgr (which is now the text-bearing node);
+      // m_text_boundary_editing points to the canvas view's boundary
+      // Path. Stable across the move because unique_ptr move
+      // preserves the pointee.
+      SceneNode *mgr_ptr      = mgr.get();
+      SceneNode *boundary_ptr = mgr->children[0]->children[0].get();
+
+      // Insert the Mgr into the layer. One node at the layer level,
+      // matching the legacy TextBox insertion shape.
+      layer->children.insert(layer->children.begin(), std::move(mgr));
       SceneNode *text_box_ptr = layer->children.front().get();
 
-      // Select the TextBox as a whole — handles draw around its bbox
-      // (which is the boundary's extent, since the boundary defines
-      // the frame). This is the s301 m1d "boundary is the user-facing
-      // primitive" rule restated for the container world: the
-      // container is even more user-facing than the boundary alone.
+      // Select the Mgr as a whole — handles draw around its bbox
+      // (which is the canvas view's boundary extent, since that's
+      // what the renderer treats as the user-visible frame in m1).
       m_selected = text_box_ptr;
       m_selection = {text_box_ptr};
       notify_object_selection_changed();
 
-      m_text_editing = text_ptr;
+      m_text_editing = mgr_ptr;
       m_text_boundary_editing = boundary_ptr;
       m_text_is_new = true;
       m_text_has_snapshot = false;
@@ -2624,13 +2660,13 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
         m_text_entry_conn_changed.disconnect();
         m_text_entry->set_visible(false);
       }
-      begin_text_cursor_edit(text_ptr, boundary_ptr);
+      begin_text_cursor_edit(mgr_ptr, boundary_ptr);
 
       LOG_INFO("Text {}: bbox ({:.1f},{:.1f}) {:.1f}x{:.1f} "
-               "boundary_iid='{}' text_iid='{}'",
+               "boundary_iid='{}' mgr_iid='{}'",
                real_drag ? "marquee" : "click",
                x1, y1, w, h,
-               boundary_ptr->internal_id, text_ptr->internal_id);
+               boundary_ptr->internal_id, mgr_ptr->internal_id);
       m_sig_doc_changed.emit();
       queue_draw();
       return;
@@ -3427,13 +3463,24 @@ void Canvas::on_select_begin(double x, double y) {
           m_move_snaps.push_back({leaf, leaf->path->nodes, *leaf->path});
       }
       // Nested Text/Image inside containers (Group/Compound/ClipGroup
-      // /TextBox) — collect_paths skips them by design (no Path
+      // /TextBoxMgr) — collect_paths skips them by design (no Path
       // geometry), so collect them separately and snapshot their
       // position fields for drag-move.
+      //
+      // s310 m1bc: TextBoxMgr is in this list because collect_paths
+      // descends through Mgr → CanvasView → boundary Path; the
+      // collect_text_image_leaves traversal under Mgr currently
+      // returns nothing (views aren't Text/Image), so the
+      // m_text_move_snaps for a Mgr stays empty. Drag-move of a Mgr
+      // therefore moves only the boundary path (which is the only
+      // thing that needs moving — text_x/text_y on the Mgr are
+      // cosmetic and ignored at render). Keeping the Mgr in this
+      // type-check leaves the door open for future leaf types under
+      // views without re-architecting the call site.
       if (obj->type == SceneNode::Type::Group ||
           obj->type == SceneNode::Type::Compound ||
           obj->type == SceneNode::Type::ClipGroup ||
-          obj->type == SceneNode::Type::TextBox) {
+          obj->is_text_box_mgr()) {
         std::vector<SceneNode *> ti_leaves;
         collect_text_image_leaves(obj, ti_leaves);
         for (SceneNode *leaf : ti_leaves) {
