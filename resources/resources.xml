@@ -91,6 +91,11 @@
          icon will serve "link to existing textbox" and "create new
          linked textbox" later. Symbolic, currentColor fill. -->
     <file preprocess="xml-stripblanks" alias="curvz-link-to-symbolic.svg">icons/curvz-link-to-symbolic.svg</file>
+    <!-- s312 m2.1.fix2: drag-to-resize grip for the overflow popover.
+         Diagonal-stripes glyph at the popover's bottom-right corner;
+         user drags to grow / shrink the popover surface. Symbolic,
+         currentColor fill. -->
+    <file preprocess="xml-stripblanks" alias="curvz-grip-symbolic.svg">icons/curvz-grip-symbolic.svg</file>
   </gresource>
 
   <!-- ── Bundled non-icon data ────────────────────────────────────────────

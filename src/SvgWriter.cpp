@@ -442,6 +442,115 @@ static std::string style_binding_attr(const GlyphObject& o) {
     return " data-curvz-style=\"" + o.bound_style + "\"";
 }
 
+// ── TextBoxMgrCollector — s311 m1c-redux ─────────────────────────────────
+// Dual-block disk format. Every TextBoxMgr in the document is emitted
+// into <defs> as a non-rendering blob carrying the buffer, caret, font
+// defaults, fill/stroke and (later) sub-manager state. The Mgr's canvas
+// TextBoxView children emit into the layer body at the Mgr's layer
+// position, each as a standalone <g data-curvz-textbox-view> carrying
+// only identity (view-iid + mgr-iid back-pointer + view-index/count),
+// boundary path, and the per-baseline render snapshot for foreign tools.
+//
+// m1c-redux keeps the in-memory shape unchanged: views remain children
+// of the Mgr SceneNode. The writer walks the Mgr's children to find its
+// views, and emits them at the Mgr's slot in the layer (no z-order
+// interleaving with other layer children yet — that's a future
+// in-memory refactor). What changes on disk: the Mgr's <g> wrapper
+// goes away from the layer body and reappears in <defs>; the views
+// emit as bare siblings, each tagged with the Mgr's iid.
+//
+// Collector mechanism mirrors GradientCollector / ShadowCollector. The
+// file-scope pointer g_mgr_collector lets write_object's TextBoxMgr
+// branch consult the collector for the dual-block defs lookup; in
+// practice every Mgr in the tree gets collected, so the check is just
+// defensive.
+struct MgrCollector {
+    std::vector<const SceneNode*> entries;
+    std::map<std::string, const SceneNode*> by_iid;
+
+    void add(const SceneNode* n) {
+        if (!n || n->type != SceneNode::Type::TextBoxMgr) return;
+        if (n->internal_id.empty()) return;
+        if (by_iid.count(n->internal_id)) return;
+        by_iid[n->internal_id] = n;
+        entries.push_back(n);
+    }
+};
+
+static const MgrCollector* g_mgr_collector = nullptr;
+
+static void collect_mgrs(const SceneNode& n, MgrCollector& mc) {
+    mc.add(&n);
+    for (const auto& c : n.children)
+        if (c) collect_mgrs(*c, mc);
+    if (n.clip_shape)     collect_mgrs(*n.clip_shape, mc);
+    if (n.blend_source_a) collect_mgrs(*n.blend_source_a, mc);
+    if (n.blend_source_b) collect_mgrs(*n.blend_source_b, mc);
+    if (n.warp_source)    collect_mgrs(*n.warp_source, mc);
+}
+
+// Emit one Mgr blob into <defs>. Buffer goes in CDATA so future Pango
+// markup ("<span foreground='red'>word</span>") rides through cleanly
+// without per-byte attribute escaping. Always emit CDATA even when the
+// buffer is empty — its presence on disk says "this Mgr has a buffer
+// slot", which is structural truth regardless of content.
+static void write_textbox_mgr_def(std::ostringstream& out,
+                                  const SceneNode& mgr,
+                                  int indent) {
+    std::string pad(indent * 2, ' ');
+    auto xml_escape = [](const std::string& s) {
+        std::string r;
+        for (char c : s) {
+            if      (c == '&') r += "&amp;";
+            else if (c == '<') r += "&lt;";
+            else if (c == '>') r += "&gt;";
+            else if (c == '"') r += "&quot;";
+            else               r += c;
+        }
+        return r;
+    };
+    // CDATA escape: split any "]]>" so the section terminator can't
+    // appear inside. Rare in real text but cheap insurance.
+    auto cdata_escape = [](const std::string& s) {
+        std::string r;
+        size_t i = 0;
+        while (i < s.size()) {
+            if (i + 2 < s.size() && s[i] == ']' && s[i+1] == ']' && s[i+2] == '>') {
+                r += "]]]]><![CDATA[>";
+                i += 3;
+            } else {
+                r += s[i++];
+            }
+        }
+        return r;
+    };
+
+    out << pad << "<g data-curvz-textbox-mgr=\"1\"";
+    out << id_attr_str(mgr);
+    if (!mgr.internal_id.empty())
+        out << " data-curvz-iid=\"" << mgr.internal_id << "\"";
+    if (!mgr.name.empty())
+        out << " data-curvz-name=\"" << xml_escape(mgr.name) << "\"";
+    if (!mgr.visible) out << " display=\"none\"";
+    if (mgr.opacity < 0.999)
+        out << " opacity=\"" << fmt2(mgr.opacity) << "\"";
+    if (mgr.text_caret_byte > 0)
+        out << " data-curvz-caret-byte=\"" << mgr.text_caret_byte << "\"";
+    out << " data-curvz-font-family=\"" << xml_escape(mgr.text_font_family) << "\"";
+    out << " data-curvz-font-size=\""   << fmt2(mgr.text_font_size) << "\"";
+    if (mgr.text_bold)   out << " data-curvz-font-bold=\"1\"";
+    if (mgr.text_italic) out << " data-curvz-font-italic=\"1\"";
+    out << " fill=\"" << fill_attr(mgr.fill) << "\"";
+    if (mgr.stroke.paint.type != FillStyle::Type::None)
+        out << stroke_attrs(mgr.stroke);
+    out << shadow_attr_str(mgr);
+    out << ">\n";
+    out << pad << "  <![CDATA[" << cdata_escape(mgr.text_content) << "]]>\n";
+    // Future sub-manager element children (TabMgr, StyleMgr, etc.)
+    // land here.
+    out << pad << "</g>\n";
+}
+
 // ── write_object ─────────────────────────────────────────────────────────────
 // Recursive SVG element emitter.
 //
@@ -743,32 +852,45 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         return;
     }
 
-    // ── TextBoxMgr (s310 m1bc) ────────────────────────────────────────────
-    // The Mgr-with-views shape. The Mgr owns the buffer
-    // (obj.text_content) and the flow-level state (font defaults, caret,
-    // fill, stroke). Children are an ordered list of TextBoxViews; in m1
-    // the canvas views each have one Path child (the boundary), and the
-    // popover view has no children (its boundary geometry comes from the
-    // widget allocation at runtime and is reconstructed on load).
+    // ── TextBoxMgr (s311 m1c-redux dual-block) ────────────────────────────
+    // The Mgr itself emits nothing in the layer body — it's already in
+    // <defs> as a non-rendering blob via the write_svg pre-pass (see
+    // MgrCollector and write_textbox_mgr_def). What we emit here, at the
+    // Mgr's slot in the layer, is each of its canvas TextBoxView children
+    // as a sibling-style <g data-curvz-textbox-view>. Each view carries
+    // identity (view-iid + mgr-iid back-pointer + view-index/count) plus
+    // its boundary path and a per-baseline render snapshot so foreign SVG
+    // readers (browsers, Inkscape) see actual text-on-path glyphs.
+    //
+    // m1c-redux keeps the in-memory tree unchanged: views remain children
+    // of the Mgr SceneNode, and we walk obj.children here to find them.
+    // A future refactor (in-memory views-as-layer-children) will let views
+    // interleave with other layer children at their own z-order positions;
+    // until then they group at the Mgr's slot, matching today's behavior.
     //
     // On disk:
-    //   <g data-curvz-textbox-mgr="1"
-    //      data-curvz-content="..."
-    //      data-curvz-caret-byte="...">
-    //     <g data-curvz-textbox-view="1" data-curvz-view-kind="canvas">
-    //       <path ... boundary .../>
-    //       <path id="baseline_..." data-curvz-baseline="1" .../>
-    //       <text><textPath href="#baseline_...">slice</textPath></text>
-    //       ...
-    //     </g>
-    //     <!-- popover view: NOT emitted; reconstructed on load -->
+    //   <!-- in <defs>: -->
+    //   <g data-curvz-textbox-mgr="1" data-curvz-iid="mgr-A" ...>
+    //     <![CDATA[buffer]]>
     //   </g>
+    //   <!-- in layer body at the Mgr's slot: -->
+    //   <g data-curvz-textbox-view="1"
+    //      data-curvz-iid="view-0-iid"
+    //      data-curvz-mgr-iid="mgr-A"
+    //      data-curvz-view-index="0"
+    //      data-curvz-view-count="N">
+    //     <path ... boundary .../>
+    //     <path id="baseline_..." data-curvz-baseline="1" .../>
+    //     <text><textPath href="#baseline_...">slice</textPath></text>
+    //     ...
+    //   </g>
+    //   <!-- one such <g> per canvas view; popover skipped (regenerated). -->
     //
-    // Compute layout per-view from the Mgr (as the text-bearing node)
-    // and the view's boundary Path. byte_start cascades down the view
-    // list; in m1 the runtime tree typically has one canvas view, so
-    // byte_start=0 covers the common case. compute_text_layout will
-    // grow a byte_start parameter when m3 lands multi-view support.
+    // Compute layout per-view from the Mgr (as the text-bearing node) and
+    // the view's boundary Path. byte_start cascades down the view list;
+    // in m1 the runtime tree typically has one canvas view, so byte_start=0
+    // covers the common case. compute_text_layout will grow a byte_start
+    // parameter when m3 lands multi-view support.
     if (obj.type == GlyphObject::Type::TextBoxMgr) {
         auto xml_escape = [](const std::string& s) {
             std::string r;
@@ -782,73 +904,91 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
             return r;
         };
 
-        // Open the Mgr group with identity + container attributes.
-        out << pad << "<g data-curvz-textbox-mgr=\"1\"";
-        if (role_hint)                  out << " " << role_hint;
-        out << id_attr_str(obj);
-        if (!obj.internal_id.empty())   out << " data-curvz-iid=\"" << obj.internal_id << "\"";
-        if (!obj.name.empty())          out << " data-curvz-name=\"" << xml_escape(obj.name) << "\"";
-        if (!obj.visible)               out << " display=\"none\"";
-        if (obj.opacity < 0.999)        out << " opacity=\"" << fmt2(obj.opacity) << "\"";
-        out << " data-curvz-content=\"" << xml_escape(obj.text_content) << "\"";
-        // s305 m1 — caret persistence. The byte lives on the Mgr (it
-        //   owns the buffer); omitted when 0 to keep clean SVG.
-        if (obj.text_caret_byte > 0)
-            out << " data-curvz-caret-byte=\"" << obj.text_caret_byte << "\"";
-        out << shadow_attr_str(obj);
-        out << ">\n";
+        // Defensive: confirm the Mgr was collected for defs emission.
+        // If not (Mgr without iid, or fresh Mgr appearing mid-write
+        // somehow), the Mgr's flow-state won't survive round-trip and
+        // we log a warning. Emission proceeds either way so the views
+        // still hit disk and a human reader sees what's there.
+        if (!g_mgr_collector ||
+            (!obj.internal_id.empty() &&
+             !g_mgr_collector->by_iid.count(obj.internal_id))) {
+            LOG_WARN("SvgWriter: TextBoxMgr '{}' (iid='{}') not in defs "
+                     "collector — buffer/caret will not round-trip",
+                     obj.name, obj.internal_id);
+        }
 
-        // Walk views in order. For each canvas view: emit a
-        // <g data-curvz-textbox-view="1"> nesting the boundary + the
-        // per-view baseline paths + per-view textPath slices. Popover
-        // views are skipped (they don't persist; reconstructed on
-        // load).
-        const std::string vpad((indent + 1) * 2, ' ');
-        const std::string vipad((indent + 2) * 2, ' ');
+        // Count canvas views up front so each emitted view can carry
+        // an accurate view-count. Popover views excluded — they don't
+        // persist on disk.
+        size_t canvas_total = 0;
+        for (size_t vi = 0; vi < obj.children.size(); ++vi) {
+            const auto& cv = obj.children[vi];
+            if (!cv) continue;
+            if (cv->type != GlyphObject::Type::TextBoxView) continue;
+            if (cv->view_kind == SceneNode::ViewKind::Popover) continue;
+            ++canvas_total;
+        }
+
+        // Walk views in order, emitting canvas views at this indent
+        // (the Mgr's slot in the layer). Each view's index counts only
+        // canvas views — the popover doesn't participate in the index.
+        size_t canvas_index = 0;
         for (size_t vi = 0; vi < obj.children.size(); ++vi) {
             const auto& view_ptr = obj.children[vi];
             if (!view_ptr) continue;
             const SceneNode& view = *view_ptr;
             if (view.type != GlyphObject::Type::TextBoxView) continue;
-            // Popover view: skip — reconstructed on load.
             if (view.view_kind == SceneNode::ViewKind::Popover) continue;
+
+            // Helper to emit the view's identity attributes consistently
+            // for both the boundary-present and the malformed-empty
+            // cases below.
+            auto emit_view_open_attrs = [&](void) {
+                out << " data-curvz-view-kind=\"canvas\"";
+                if (!view.internal_id.empty())
+                    out << " data-curvz-iid=\"" << view.internal_id << "\"";
+                if (!obj.internal_id.empty())
+                    out << " data-curvz-mgr-iid=\"" << obj.internal_id << "\"";
+                out << " data-curvz-view-index=\"" << canvas_index << "\""
+                    << " data-curvz-view-count=\"" << canvas_total << "\"";
+                if (!view.name.empty())
+                    out << " data-curvz-name=\"" << xml_escape(view.name) << "\"";
+                if (!view.visible) out << " display=\"none\"";
+                if (view.opacity < 0.999)
+                    out << " opacity=\"" << fmt2(view.opacity) << "\"";
+            };
+
             // Canvas view must have a Path child as its boundary.
-            // Malformed → emit empty view group so the file still loads
+            // Malformed → emit empty view marker so the file still loads
             // back as the right structural shape (just no boundary).
             if (view.children.empty() || !view.children[0] ||
                 view.children[0]->type != GlyphObject::Type::Path) {
-                out << vpad << "<g data-curvz-textbox-view=\"1\""
-                    << " data-curvz-view-kind=\"canvas\"";
-                if (!view.internal_id.empty())
-                    out << " data-curvz-iid=\"" << view.internal_id << "\"";
+                out << pad << "<g data-curvz-textbox-view=\"1\"";
+                emit_view_open_attrs();
                 out << "></g>\n";
                 LOG_WARN("SvgWriter: TextBoxMgr '{}' view[{}] has no "
                          "boundary Path — emitting empty view marker",
-                         obj.id, vi);
+                         obj.name, vi);
+                ++canvas_index;
                 continue;
             }
             const SceneNode& boundary = *view.children[0];
 
             // Open the view group.
-            out << vpad << "<g data-curvz-textbox-view=\"1\""
-                << " data-curvz-view-kind=\"canvas\"";
-            if (!view.internal_id.empty())
-                out << " data-curvz-iid=\"" << view.internal_id << "\"";
-            if (!view.name.empty())
-                out << " data-curvz-name=\"" << xml_escape(view.name) << "\"";
-            if (!view.visible) out << " display=\"none\"";
-            if (view.opacity < 0.999)
-                out << " opacity=\"" << fmt2(view.opacity) << "\"";
+            out << pad << "<g data-curvz-textbox-view=\"1\"";
+            emit_view_open_attrs();
             out << ">\n";
 
             // Boundary child — emit via the normal Path branch so the
             // boundary's fill, stroke, path data, and margins all
             // serialise through the same code path any other Path uses.
-            write_object(out, boundary, indent + 2);
+            write_object(out, boundary, indent + 1);
 
-            // Per-baseline path + textPath pairs for THIS view. The
-            // Mgr plays the role of the "text node" (carries buffer +
-            // font defaults).
+            // Per-baseline path + textPath pairs for THIS view. The Mgr
+            // plays the role of the "text node" (carries buffer + font
+            // defaults) — same as the pre-m1c-redux emit did, just at
+            // one less indent level since there's no Mgr wrapper now.
+            const std::string vipad((indent + 1) * 2, ' ');
             TextLayout layout = compute_text_layout(&boundary, &obj);
             for (size_t bi = 0; bi < layout.baselines.size(); ++bi) {
                 const auto& bl = layout.baselines[bi];
@@ -880,10 +1020,19 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
                     << "</textPath>"
                     << "</text>\n";
             }
-            out << vpad << "</g>\n";
+            out << pad << "</g>\n";
+            ++canvas_index;
         }
 
-        out << pad << "</g>\n";
+        // role_hint: currently used by Blend's A/B path emit. TextBoxMgr
+        // isn't a Blend role child today, but if a future Mgr ever ended
+        // up nested as a Blend source the hint would have no obvious
+        // attachment site in dual-block emit. Logging-only is safest.
+        if (role_hint) {
+            LOG_WARN("SvgWriter: TextBoxMgr '{}' got role_hint='{}' but "
+                     "dual-block emit has no Mgr wrapper to attach it to",
+                     obj.name, role_hint);
+        }
         return;
     }
 
@@ -1280,6 +1429,20 @@ std::string write_svg(const CurvzDocument& doc) {
         if (l) collect_shadows(*l, sc);
     g_shadow_collector = &sc;
 
+    // ── s311 m1c-redux — TextBoxMgr pre-pass ──────────────────────────
+    // Dual-block disk format. Walk the tree once, collect every Mgr by
+    // iid. Each collected Mgr emits a <g data-curvz-textbox-mgr> blob
+    // into <defs> (buffer + caret + font defaults + fill/stroke);
+    // write_object's TextBoxMgr branch emits each canvas view at the
+    // Mgr's layer position with the Mgr's iid as back-pointer. The
+    // collector exists so the views' write_object branch can confirm
+    // the Mgr was indeed emitted (defensive — every in-tree Mgr should
+    // make it into the collector).
+    MgrCollector mc;
+    for (const auto& l : doc.layers)
+        if (l) collect_mgrs(*l, mc);
+    g_mgr_collector = &mc;
+
     // ── <defs> with <clipPath> + <linearGradient>/<radialGradient> ────
     // Walk the tree once, collect every ClipGroup, and emit its
     // clip_shape inside <clipPath id="<clip_id>">. The ClipGroup node
@@ -1304,7 +1467,8 @@ std::string write_svg(const CurvzDocument& doc) {
         for (const auto& l : doc.layers)
             if (l) collect(*l);
 
-        if (!clip_groups.empty() || !gc.entries.empty() || !sc.entries.empty()) {
+        if (!clip_groups.empty() || !gc.entries.empty() || !sc.entries.empty()
+            || !mc.entries.empty()) {
             out << "  <defs>\n";
             for (const SceneNode* cg : clip_groups) {
                 // clipPathUnits defaults to userSpaceOnUse (what we want).
@@ -1339,6 +1503,14 @@ std::string write_svg(const CurvzDocument& doc) {
             for (const SceneNode* node : sc.entries) {
                 const std::string& id = sc.id_map.at(node);
                 write_shadow_filter(out, id, *node, 2);
+            }
+            // s311 m1c-redux — TextBoxMgr defs. One <g data-curvz-textbox-
+            // mgr> per Mgr in the document. Sole authority on the Mgr's
+            // flow-state on load: the parser hydrates these first, then
+            // walks the visible tree and routes views to their Mgr by
+            // back-pointer iid.
+            for (const SceneNode* mgr : mc.entries) {
+                write_textbox_mgr_def(out, *mgr, 2);
             }
             out << "  </defs>\n";
         }
@@ -1500,6 +1672,7 @@ std::string write_svg(const CurvzDocument& doc) {
     // didn't reactivate (which it always does, but defensiveness is free).
     g_grad_collector = nullptr;
     g_shadow_collector = nullptr;  // S97 m1
+    g_mgr_collector    = nullptr;  // s311 m1c-redux
     return out.str();
 }
 

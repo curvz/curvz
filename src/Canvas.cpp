@@ -675,15 +675,19 @@ Canvas::Canvas() {
   // threshold AFTER a press. Claiming here defuses the drag for the
   // current sequence.
   //
-  // Skipped during active text-cursor edit because the edit-mode click
-  // path owns those events and would conflict with the popover's
-  // autohide.
+  // s312 m2.3 — The canvas TextCursor and the popover's TextView are
+  // two surfaces on the same buffer. Clicking the indicator during an
+  // active canvas edit is a deliberate cross-boundary gesture: the user
+  // wants to keep editing, just on the other surface. The cursor stays
+  // alive (cross_back_to_canvas reactivates it when the user crosses
+  // back); only focus moves. Removed the m_text_cursor early-return
+  // that pre-s312 blocked clicks during an active edit.
   auto overflow_click = Gtk::GestureClick::create();
   overflow_click->set_button(1);
   overflow_click->signal_pressed().connect(
       [this, overflow_click](int n_press, double x, double y) {
         if (n_press != 1) return;
-        if (!m_doc || m_text_cursor) return;
+        if (!m_doc) return;
         SceneNode* hit_text = nullptr;
         SceneNode* hit_boundary = nullptr;
         if (check_overflow_hit(x, y, &hit_text, &hit_boundary)) {
@@ -4167,6 +4171,47 @@ void Canvas::end_text_cursor_edit() {
   queue_draw();
 }
 
+// s312 m2.3 — Hide the canvas caret while the popover holds focus.
+//   Without this, the canvas-side caret keeps blinking under
+//   m_text_cursor while the TextView's native caret blinks on top —
+//   two visible cursors, breaking the one-caret-two-surfaces
+//   illusion. Disconnecting the timer stops the toggle; forcing
+//   visible=false ensures the next draw renders nothing for the
+//   canvas caret regardless of whichever phase the blink was on.
+//   queue_draw fires the redraw immediately so the user sees the
+//   canvas caret vanish the moment focus crosses.
+void Canvas::suspend_text_cursor_blink() {
+  if (m_text_cursor_blink_conn.connected()) {
+    m_text_cursor_blink_conn.disconnect();
+  }
+  if (m_text_cursor) {
+    m_text_cursor->set_visible(false);
+  }
+  queue_draw();
+}
+
+// s312 m2.3 — Re-arm the blink timer + force-visible after the
+//   popover dismisses. Called from the popover's signal_closed
+//   handler so every dismiss path (cross_back, autohide-from-
+//   click-outside, Escape inside popover) restores the canvas
+//   caret. Idempotent: no cursor → no-op; timer already connected
+//   → re-anchor visibility without double-connecting (a duplicate
+//   connection would double the blink rate).
+void Canvas::resume_text_cursor_blink() {
+  if (!m_text_cursor) return;
+  if (!m_text_cursor_blink_conn.connected()) {
+    m_text_cursor_blink_conn = Glib::signal_timeout().connect(
+        [this]() -> bool {
+          if (!m_text_cursor) return false;
+          m_text_cursor->toggle_visible();
+          queue_draw();
+          return true;
+        }, 530);
+  }
+  m_text_cursor->set_visible(true);
+  queue_draw();
+}
+
 // ── s301 m1c — Key dispatch for on-canvas text editing ──────────────────────
 // Called from MainWindow_bindings.cpp's CAPTURE-phase key controller
 // BEFORE the global shortcut cascade. Returns true if the keystroke was
@@ -4626,6 +4671,26 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       return true;
 
     case GDK_KEY_Right:
+      // s312 m2.3 — Cross-boundary at canvas-right-edge. If the caret
+      //   is at compute_text_layout's bytes_consumed AND overflow
+      //   exists, Right means "step into the popover" rather than
+      //   "advance one codepoint past the canvas-rendered region."
+      //   Shift+Right does NOT cross — selection-extend across the
+      //   boundary would require cross-surface selection mirroring
+      //   we haven't designed; fall through to stock move_right
+      //   which advances byte_index but renders no visible change
+      //   beyond the canvas-end (a small honest cosmetic glitch
+      //   pending selection-mirror work).
+      if (!shift) {
+        SceneNode* xb_mgr = nullptr;
+        if (caret_at_canvas_end(&xb_mgr) && xb_mgr) {
+          flush_text_segment();  // motion leaves the typing run
+          LOG_INFO("Canvas: cross-into-popover from Right at canvas "
+                   "end — Mgr '{}'", xb_mgr->name);
+          cross_into_popover(xb_mgr);
+          return true;
+        }
+      }
       if (shift) {
         extend_with([this]() { m_text_cursor->move_right(); });
       } else {
@@ -4684,11 +4749,33 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       return true;
 
     case GDK_KEY_Down:
+      // s312 m2.3 — Cross-boundary at canvas-last-baseline. move_down
+      //   returns false when there's no canvas baseline below; if the
+      //   Mgr has overflow at that point, the next "line down" is the
+      //   popover's first line. Cross. Same shift policy as Right:
+      //   plain Down crosses, Shift+Down extends within the canvas
+      //   only (selection-mirror is a follow-on).
+      //
+      //   The cross condition doesn't depend on the cursor's column —
+      //   pressing Down anywhere on the last canvas baseline crosses
+      //   to the popover. The TextView's caret lands at offset 0
+      //   (top-left of depot), collapsing the preferred-x column;
+      //   true preferred-x continuity across the boundary needs more
+      //   plumbing and is a separate follow-on.
       if (shift) {
         extend_with([this]() { m_text_cursor->move_down(); });
-      } else {
-        flush_text_segment();  // s307 m3
-        m_text_cursor->move_down();
+        queue_draw();
+        return true;
+      }
+      flush_text_segment();  // s307 m3
+      if (!m_text_cursor->move_down()) {
+        SceneNode* xb_mgr = nullptr;
+        if (mgr_has_overflow(&xb_mgr) && xb_mgr) {
+          LOG_INFO("Canvas: cross-into-popover from Down at canvas "
+                   "last baseline — Mgr '{}'", xb_mgr->name);
+          cross_into_popover(xb_mgr);
+          return true;
+        }
       }
       queue_draw();
       return true;

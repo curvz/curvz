@@ -2075,4 +2075,18 @@ columnview.widget-index-grid > header > button:hover {
     background-color: var(--hover-bg);
 }
 
+/* s312 — Depot popover TextView font size.
+ *   The overflow popover's editable TextView reads as a normal-size
+ *   inspector surface (12pt) regardless of theme defaults. Class
+ *   added in Canvas_input.cpp's show_overflow_popover on fresh build.
+ *   The `text` selector also rules over the GtkText sub-node that
+ *   GTK4 uses for the actual text rendering inside a TextView —
+ *   without it the font-size rule on the outer widget doesn't
+ *   reach the glyphs.
+ */
+textview.curvz-popover-textview,
+textview.curvz-popover-textview text {
+    font-size: 12pt;
+}
+
 )css";

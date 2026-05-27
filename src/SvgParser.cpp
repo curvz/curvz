@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <map>
 #include <unordered_set>
+#include <set>          // s311 m1c-redux — placed_mgrs tracking
 #include <sstream>
 #include <string>
 #include <cstring>
@@ -384,12 +385,32 @@ static void apply_style_attrs(GlyphObject& obj, const std::string& tag) {
 
 // ── Tag splitter ──────────────────────────────────────────────────────────────
 // Yields each complete XML tag from the source string.
+//
+// s311 m1c-redux — CDATA support. A naive `find('>', open)` cuts a
+// <![CDATA[...]]> token at the first '>' inside the payload, which is wrong
+// when the payload itself contains '>' (rare in textbox buffers but possible).
+// Special-case the CDATA prefix: when we see `<![CDATA[`, find the matching
+// `]]>` and emit the whole stretch as one token. The token form returned to
+// the main loop is `![CDATA[<payload>]]` (the same convention as the rest
+// of split_tags — leading `<` and trailing `>` stripped). Downstream the
+// main loop recognises the `![CDATA[` prefix and harvests the payload.
 static std::vector<std::string> split_tags(const std::string& src) {
     std::vector<std::string> tags;
     size_t i = 0;
     while (i < src.size()) {
         auto open = src.find('<', i);
         if (open == std::string::npos) break;
+        // CDATA fast-path: <![CDATA[...]]> — find the closing ]]> rather
+        // than the next bare '>'. If the closing marker is missing (file
+        // truncated mid-CDATA), bail out same as the naive case.
+        if (src.compare(open, 9, "<![CDATA[") == 0) {
+            auto close = src.find("]]>", open + 9);
+            if (close == std::string::npos) break;
+            // Token body excludes the outer < and the closing > of ]]>.
+            tags.push_back(src.substr(open + 1, (close + 2) - open - 1));
+            i = close + 3;
+            continue;
+        }
         auto close = src.find('>', open);
         if (close == std::string::npos) break;
         tags.push_back(src.substr(open + 1, close - open - 1));
@@ -1210,6 +1231,25 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
     // referenced by id from elsewhere, not part of the visible tree.
     int in_defs = 0;
 
+    // ── s311 m1c-redux — dual-block textbox state ─────────────────────────
+    // Mgrs defined in <defs> are hydrated into pending_mgrs (owned) and
+    // mgr_def_by_iid (back-pointer index). When a TextBoxView in the
+    // visible tree references a Mgr by data-curvz-mgr-iid, the parser
+    // splices the Mgr into the view's current layer (the first view's
+    // layer wins) and attaches the view as a child of the Mgr. Mgrs that
+    // no view ever references get placed in the first regular layer at
+    // end-of-parse as a fallback, so a Mgr with no canvas views round-
+    // trips as a Mgr-with-only-popover (matching legacy save shapes for
+    // freshly-constructed-but-never-bounded textboxes).
+    //
+    // in_textbox_mgr_def points at the Mgr currently being hydrated from
+    // a <g data-curvz-textbox-mgr> open inside <defs>. CDATA tokens flow
+    // into its text_content while non-null; the </g> close clears it.
+    std::vector<std::unique_ptr<SceneNode>> pending_mgrs;
+    std::map<std::string, SceneNode*> mgr_def_by_iid;
+    std::set<std::string> placed_mgrs;
+    SceneNode* in_textbox_mgr_def = nullptr;
+
     // Push a freshly-built SceneNode into the correct destination:
     //   - When in_clip_def_id is active we're inside <clipPath id="X">;
     //     the node is stashed in clip_defs[X] and will later be attached
@@ -1251,6 +1291,33 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
         // first sweep; the structural pump push_into_parent is the right
         // long-term answer).
         try {
+        // s311 m1c-redux — CDATA harvest. When we're inside a
+        // <g data-curvz-textbox-mgr> open in <defs>, the next CDATA
+        // section is the Mgr's buffer. Token form is `![CDATA[...]]`
+        // (split_tags strips the outer < and trailing > of ]]>).
+        // The payload starts at offset 8 ("![CDATA[".size()) and ends
+        // at the last `]]`; we strip that off too. Outside a Mgr def
+        // we drop CDATA silently — Curvz files don't otherwise carry
+        // CDATA today, and dropping is safe (no semantic loss for
+        // tools that emit incidental CDATA in unrelated places).
+        if (tag.size() >= 8 && tag.compare(0, 8, "![CDATA[") == 0) {
+            if (in_textbox_mgr_def) {
+                // Payload is the substring between ![CDATA[ and ]]:
+                //   tag = "![CDATA[<payload>]]"
+                size_t pl_start = 8;
+                size_t pl_end   = tag.size();
+                if (pl_end >= 2 && tag.compare(pl_end - 2, 2, "]]") == 0)
+                    pl_end -= 2;
+                if (pl_end < pl_start) pl_end = pl_start;
+                in_textbox_mgr_def->text_content.assign(
+                    tag, pl_start, pl_end - pl_start);
+                LOG_INFO("SvgParser: TextBoxMgr def '{}' buffer "
+                         "loaded — {} bytes",
+                         in_textbox_mgr_def->name,
+                         in_textbox_mgr_def->text_content.size());
+            }
+            continue;
+        }
         if (tag.empty() || tag[0] == '?' || tag[0] == '!') continue;
 
         // Closing tags — pop the stack
@@ -1287,6 +1354,24 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
             // the defs subtree. See in_defs declaration for full notes.
             if (tag == "/defs") {
                 if (in_defs > 0) --in_defs;
+                continue;
+            }
+            // s311 m1c-redux — close the in-defs TextBoxMgr blob. Fires
+            // for the `</g>` that pairs with a <g data-curvz-textbox-mgr>
+            // opened in <defs>. The Mgr is already in pending_mgrs and
+            // mgr_def_by_iid; this handler just clamps the caret against
+            // the now-known buffer length and clears the in-defs pointer.
+            // Placement into a layer happens later (when a view
+            // references the Mgr, or at end-of-parse as fallback).
+            if (tag == "/g" && in_textbox_mgr_def) {
+                SceneNode* mgr = in_textbox_mgr_def;
+                if (mgr->text_caret_byte > (int32_t)mgr->text_content.size())
+                    mgr->text_caret_byte = (int32_t)mgr->text_content.size();
+                LOG_INFO("SvgParser: <defs> textbox-mgr '{}' closed — "
+                         "content_len={} caret={}",
+                         mgr->name, mgr->text_content.size(),
+                         mgr->text_caret_byte);
+                in_textbox_mgr_def = nullptr;
                 continue;
             }
             if ((tag == "/g" || tag.rfind("/g", 0) == 0) && !stack.empty()) {
@@ -2174,22 +2259,22 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 continue;
             }
 
-            if (is_textbox && !stack.empty()) {
-                // ── TextBoxMgr: child of current parent ───────────────────
-                // s310 m1bc — construct the Mgr directly (no transient
-                // Type::TextBox stop). The buffer (text_content) and the
-                // caret byte hoist straight onto the Mgr — the Mgr fills
-                // the role the synthetic Text child used to fill, so any
-                // reader that expected text_*/fill/stroke fields on the
-                // "text node" now reads them off the Mgr.
+            if (is_textbox && in_defs > 0) {
+                // ── TextBoxMgr in <defs> (s311 m1c-redux dual-block) ──────
+                // Dual-block format: the Mgr's flow-state lives in a
+                // non-rendering blob in <defs>. We hydrate the Mgr from
+                // attributes here; the CDATA buffer is harvested by the
+                // ![CDATA[ token handler at the top of the main loop
+                // while in_textbox_mgr_def points at us. The </g> close
+                // arm finalizes (clears in_textbox_mgr_def + records
+                // pending placement).
                 //
-                // TextBoxPending still exists but is now slimmed to font
-                // attrs only: those are harvested from the first <text>
-                // child encountered during the inner parse (the writer
-                // emits them on every per-baseline <text>, but one
-                // suffices), then hoisted to the Mgr in the close-handler.
-                // The boundary Path child accumulates here too and gets
-                // wrapped into a Canvas TextBoxView in the close-handler.
+                // Crucially we do NOT push onto the regular parse stack.
+                // The defs subtree must not contribute to any layer's
+                // children — see in_defs comments for the rationale. The
+                // Mgr is owned by pending_mgrs and gets spliced into a
+                // layer when its first canvas view appears (or as a
+                // fallback at end-of-parse if no view references it).
                 auto mgr = std::make_unique<SceneNode>();
                 mgr->type = SceneNode::Type::TextBoxMgr;
                 auto id = attr(tag, "id");
@@ -2202,15 +2287,74 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 auto op = attr(tag, "opacity");
                 if (!op.empty()) mgr->opacity = dbl(op, 1.0);
                 apply_shadow_attrs(*mgr, tag);
-                // Buffer hoists straight onto the Mgr. Round-trip-safe
-                // because emit reads the buffer off the Mgr too (writer
-                // m1d).
+                // Font defaults — read directly from the Mgr's own attrs
+                // in dual-block format; no per-baseline <text> harvest
+                // needed because the Mgr blob is the sole authority.
+                {
+                    auto ff = attr(tag, "data-curvz-font-family");
+                    if (!ff.empty()) mgr->text_font_family = ff;
+                    auto fs = attr(tag, "data-curvz-font-size");
+                    if (!fs.empty()) mgr->text_font_size = dbl(fs,
+                                                  mgr->text_font_size);
+                    if (attr(tag, "data-curvz-font-bold")   == "1")
+                        mgr->text_bold = true;
+                    if (attr(tag, "data-curvz-font-italic") == "1")
+                        mgr->text_italic = true;
+                }
+                // Fill + stroke flow through the standard parser helper.
+                // The Mgr is the text-bearing node, so its fill/stroke
+                // are what the text glyphs render in.
+                apply_style_attrs(*mgr, tag);
+                // text_anchor / text_align are canonical for Mgr-owned
+                // text — boundary determines layout, not anchoring.
+                mgr->text_anchor = "start";
+                mgr->text_align  = "left";
+                // Caret byte. Buffer content arrives via CDATA after
+                // this open tag; the caret will be re-clamped against
+                // the final content size at close-time.
+                {
+                    auto cb = attr(tag, "data-curvz-caret-byte");
+                    if (!cb.empty()) {
+                        try {
+                            int64_t v = std::stol(cb);
+                            if (v < 0) v = 0;
+                            mgr->text_caret_byte = (int32_t)v;
+                        } catch (...) {
+                            mgr->text_caret_byte = 0;
+                        }
+                    }
+                }
+                SceneNode* mgr_raw = mgr.get();
+                pending_mgrs.push_back(std::move(mgr));
+                mgr_def_by_iid[mgr_raw->internal_id] = mgr_raw;
+                in_textbox_mgr_def = mgr_raw;
+                LOG_INFO("SvgParser: <defs> textbox-mgr '{}' opened "
+                         "(iid='{}', font='{}' size={:.1f})",
+                         mgr_raw->name, mgr_raw->internal_id,
+                         mgr_raw->text_font_family,
+                         mgr_raw->text_font_size);
+            } else if (is_textbox && !stack.empty()) {
+                // ── Legacy TextBoxMgr in layer (s310 m1bc nested format) ──
+                // Pre-s311 files emitted the Mgr's <g> directly in the
+                // layer with the buffer in data-curvz-content. This arm
+                // is the back-compat path: construct the Mgr at the
+                // current parent's children, push onto the stack so its
+                // inner views (or legacy direct children) populate
+                // normally.
+                auto mgr = std::make_unique<SceneNode>();
+                mgr->type = SceneNode::Type::TextBoxMgr;
+                auto id = attr(tag, "id");
+                if (!id.empty()) mgr->id = id;
+                auto iid = attr(tag, "data-curvz-iid");
+                mgr->internal_id = iid.empty() ? generate_internal_id() : iid;
+                auto nm = attr(tag, "data-curvz-name");
+                mgr->name = nm.empty() ? (id.empty() ? "Text" : id) : nm;
+                if (attr(tag, "display") == "none") mgr->visible = false;
+                auto op = attr(tag, "opacity");
+                if (!op.empty()) mgr->opacity = dbl(op, 1.0);
+                apply_shadow_attrs(*mgr, tag);
+                // Legacy: buffer rides on data-curvz-content attr.
                 mgr->text_content = attr(tag, "data-curvz-content");
-                // s305 m1 — caret persistence. Missing attr → 0 (the
-                //   "no saved position" default that lets the cursor
-                //   fall back to end-of-buffer on entry). The Mgr is
-                //   the new home for the caret byte, mirroring its
-                //   ownership of the buffer.
                 {
                     auto cb = attr(tag, "data-curvz-caret-byte");
                     if (!cb.empty()) {
@@ -2225,39 +2369,20 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                         }
                     }
                 }
-                // Font defaults — start at the SceneNode-default values
-                // (Sans 24.0, not bold, not italic). If the file carries
-                // a per-baseline <text> child, the close-handler will
-                // overwrite these with the harvested attrs before the
-                // pending entry is erased. Files written by older Curvz
-                // versions always carry such children, so this fallback
-                // path is only exercised by foreign tools that wrote
-                // the marker without the text children.
                 TextBoxPending pending;
                 SceneNode* mgrptr = mgr.get();
                 textbox_pending[mgrptr] = pending;
                 stack.back().node->children.push_back(std::move(mgr));
                 AffineMatrix mgr_xfm = parse_transform(attr(tag, "transform"));
                 stack.push_back({mgrptr, mgr_xfm, /*is_curvz=*/true});
-                LOG_INFO("SvgParser: <g> textbox-mgr '{}' created in '{}'",
+                LOG_INFO("SvgParser: <g> textbox-mgr '{}' (legacy in-layer) "
+                         "created in '{}'",
                          mgrptr->name, stack[stack.size()-2].node->name);
             } else if (is_textbox_view && !stack.empty()) {
-                // ── TextBoxView: child of current parent ──────────────────
-                // s310 m1c — Construct the view node and push onto the
-                // stack. Inner parse accumulates the boundary <path>,
-                // any baseline-marker <path data-curvz-baseline="1">
-                // entries (discarded by the close-handler), and any
-                // <text> children (font attrs harvested up to the Mgr
-                // ancestor by the close-handler, the <text> wrappers
-                // discarded). The close-handler reorganizes children
-                // into the canonical [boundary] shape.
-                //
-                // view_kind defaults to Canvas; the on-disk
-                // data-curvz-view-kind attribute overrides for
-                // popover-kind views. (m1's writer doesn't emit
-                // popover views, but the parser handles them
-                // defensively — a foreign tool or future format
-                // could carry one.)
+                // ── TextBoxView: dual-block or legacy-nested ──────────────
+                // Two cases, distinguished by whether the view carries a
+                // data-curvz-mgr-iid back-pointer (dual-block) or sits
+                // inside an Mgr on the parse stack (legacy nested).
                 auto view = std::make_unique<SceneNode>();
                 view->type = SceneNode::Type::TextBoxView;
                 auto id = attr(tag, "id");
@@ -2279,16 +2404,99 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 }
                 view->view_byte_start = 0;
                 view->view_bytes_consumed = 0;
-                SceneNode* vptr = view.get();
-                stack.back().node->children.push_back(std::move(view));
-                AffineMatrix v_xfm = parse_transform(attr(tag, "transform"));
-                stack.push_back({vptr, v_xfm, /*is_curvz=*/true});
-                LOG_INFO("SvgParser: <g> textbox-view '{}' (kind={}) "
-                         "created in '{}'",
-                         vptr->internal_id,
-                         vptr->view_kind == SceneNode::ViewKind::Canvas
-                             ? "canvas" : "popover",
-                         stack[stack.size()-2].node->name);
+
+                // Dual-block path: data-curvz-mgr-iid present → look up
+                // the Mgr in mgr_def_by_iid (hydrated from <defs>) and
+                // splice it into the current layer if it hasn't been
+                // placed yet. The view becomes a child of the Mgr.
+                std::string mgr_iid = attr(tag, "data-curvz-mgr-iid");
+                bool routed_to_mgr_def = false;
+                if (!mgr_iid.empty()) {
+                    auto it = mgr_def_by_iid.find(mgr_iid);
+                    if (it != mgr_def_by_iid.end()) {
+                        SceneNode* mgr = it->second;
+                        // Splice Mgr into current layer (the parent of
+                        // this view's <g>) if not already placed. The
+                        // Mgr's pending_mgrs unique_ptr gets transferred
+                        // into the layer's children; mgr_def_by_iid
+                        // raw pointer remains valid (ownership change
+                        // doesn't invalidate the raw).
+                        if (!placed_mgrs.count(mgr_iid)) {
+                            // Find the unique_ptr owning this Mgr in
+                            // pending_mgrs and move it into the layer.
+                            // O(N) scan but pending_mgrs is small (one
+                            // entry per Mgr in the document).
+                            std::unique_ptr<SceneNode> owned;
+                            for (auto pit = pending_mgrs.begin();
+                                 pit != pending_mgrs.end(); ++pit) {
+                                if (pit->get() == mgr) {
+                                    owned = std::move(*pit);
+                                    pending_mgrs.erase(pit);
+                                    break;
+                                }
+                            }
+                            if (owned) {
+                                stack.back().node->children.push_back(
+                                    std::move(owned));
+                                placed_mgrs.insert(mgr_iid);
+                                LOG_INFO("SvgParser: TextBoxMgr '{}' "
+                                         "placed in layer '{}' (first "
+                                         "view referenced it)",
+                                         mgr->name,
+                                         stack.back().node->name);
+                            } else {
+                                LOG_WARN("SvgParser: TextBoxView '{}' "
+                                         "references Mgr iid='{}' but "
+                                         "ownership transfer failed "
+                                         "(Mgr already moved?)",
+                                         view->internal_id, mgr_iid);
+                            }
+                        }
+                        // Push the view as a child of the Mgr (NOT the
+                        // current layer parent). The stack entry uses
+                        // the Mgr's accumulated transform — for now
+                        // identity, since dual-block views don't carry
+                        // transforms on the Mgr blob.
+                        SceneNode* vptr = view.get();
+                        mgr->children.push_back(std::move(view));
+                        AffineMatrix v_xfm = parse_transform(attr(tag,
+                                                  "transform"));
+                        stack.push_back({vptr, v_xfm, /*is_curvz=*/true});
+                        routed_to_mgr_def = true;
+                        LOG_INFO("SvgParser: <g> textbox-view '{}' "
+                                 "(kind={}, idx={}/{}) routed to Mgr "
+                                 "'{}' via mgr-iid back-pointer",
+                                 vptr->internal_id,
+                                 vptr->view_kind ==
+                                     SceneNode::ViewKind::Canvas
+                                     ? "canvas" : "popover",
+                                 attr(tag, "data-curvz-view-index"),
+                                 attr(tag, "data-curvz-view-count"),
+                                 mgr->name);
+                    } else {
+                        LOG_WARN("SvgParser: TextBoxView '{}' references "
+                                 "mgr-iid='{}' but no matching Mgr in "
+                                 "<defs> — treating as legacy",
+                                 view->internal_id, mgr_iid);
+                    }
+                }
+                if (!routed_to_mgr_def) {
+                    // Legacy nested-shape: view's <g> sits inside its
+                    // Mgr's <g> on disk, so the current stack parent IS
+                    // the Mgr. Push as today.
+                    SceneNode* vptr = view.get();
+                    stack.back().node->children.push_back(std::move(view));
+                    AffineMatrix v_xfm = parse_transform(attr(tag,
+                                              "transform"));
+                    stack.push_back({vptr, v_xfm, /*is_curvz=*/true});
+                    LOG_INFO("SvgParser: <g> textbox-view '{}' (kind={}) "
+                             "created in '{}' (legacy nested)",
+                             vptr->internal_id,
+                             vptr->view_kind ==
+                                 SceneNode::ViewKind::Canvas
+                                 ? "canvas" : "popover",
+                             stack[stack.size()-2].node->name);
+                }
             } else if ((is_group || is_compound) && !stack.empty()) {
                 // ── Group or Compound: child of current parent ─────────────
                 auto g = std::make_unique<SceneNode>();
@@ -3127,6 +3335,78 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
     // Ensure every document has exactly one GuideLayer, even if loading an
     // older file that predates guide support.
     doc->ensure_guide_layer();
+
+    // ── s311 m1c-redux — dual-block Mgr finalization ─────────────────
+    // Two cleanups happen here, after the main parse but before the
+    // assign_iids / dedup_names / find_active_layer passes that
+    // expect the layer tree to be in its final shape:
+    //
+    //   1. Any Mgr still in pending_mgrs is orphaned — its <g data-
+    //      curvz-textbox-mgr> hydrated from <defs> but no TextBoxView
+    //      in the visible tree referenced it via mgr-iid. Splice the
+    //      Mgr into the first regular Layer so it round-trips on save.
+    //      (Mgrs with no canvas views still need to exist — they can
+    //      hold buffer state that the popover view will surface once
+    //      the user re-engages the textbox.)
+    //
+    //   2. For every Mgr in mgr_def_by_iid (placed or orphaned), if
+    //      no Popover-kind TextBoxView is among its children, synthesize
+    //      one. Same shape the legacy nested-format close-arm uses.
+    //      The popover view is a structural fixture — every Mgr always
+    //      has exactly one, regardless of how many canvas views there
+    //      are. Its boundary geometry comes from the widget allocation
+    //      at runtime; it has no Path child on disk or in memory.
+    {
+        // Step 1: place orphaned Mgrs in the first regular Layer.
+        SceneNode* first_layer = nullptr;
+        for (auto& l : doc->layers) {
+            if (l && l->is_layer()) { first_layer = l.get(); break; }
+        }
+        if (!pending_mgrs.empty()) {
+            if (first_layer) {
+                for (auto& mgr_uptr : pending_mgrs) {
+                    if (!mgr_uptr) continue;
+                    LOG_INFO("SvgParser: TextBoxMgr '{}' was orphaned "
+                             "(no view referenced it) — placing in "
+                             "first layer '{}'",
+                             mgr_uptr->name, first_layer->name);
+                    first_layer->children.push_back(std::move(mgr_uptr));
+                }
+            } else {
+                LOG_WARN("SvgParser: {} orphaned TextBoxMgr(s) and no "
+                         "regular layer to place them in — dropping",
+                         pending_mgrs.size());
+            }
+            pending_mgrs.clear();
+        }
+        // Step 2: synthesize Popover view per Mgr if absent.
+        for (auto& kv : mgr_def_by_iid) {
+            SceneNode* mgr = kv.second;
+            if (!mgr) continue;
+            bool has_popover = false;
+            int  canvas_count = 0;
+            for (auto& c : mgr->children) {
+                if (!c || !c->is_text_box_view()) continue;
+                if (c->view_kind == SceneNode::ViewKind::Popover)
+                    has_popover = true;
+                else
+                    ++canvas_count;
+            }
+            if (!has_popover) {
+                auto popover = std::make_unique<SceneNode>();
+                popover->type = SceneNode::Type::TextBoxView;
+                popover->internal_id = generate_internal_id();
+                popover->view_kind = SceneNode::ViewKind::Popover;
+                popover->view_byte_start = 0;
+                popover->view_bytes_consumed = 0;
+                mgr->children.push_back(std::move(popover));
+            }
+            LOG_INFO("SvgParser: TextBoxMgr '{}' finalized — "
+                     "content_len={} canvas_views={} popover={}",
+                     mgr->name, mgr->text_content.size(),
+                     canvas_count, has_popover ? "kept" : "synthesized");
+        }
+    }
 
     // active_layer_index must point at a normal Layer, not the GuideLayer.
     // Find the first non-guide layer.

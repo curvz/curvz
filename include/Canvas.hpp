@@ -55,6 +55,8 @@ namespace Curvz { class TextCursor; }
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>                              // s311 m2.1 — popover anchor cache
+#include <gdkmm/rectangle.h>                // s311 m2.1 — popover anchor cache
 #include <gtkmm/drawingarea.h>
 #include <gtkmm/entry.h>
 #include <gtkmm/eventcontrollerkey.h>
@@ -63,6 +65,9 @@ namespace Curvz { class TextCursor; }
 #include <gtkmm/fixed.h>
 #include <gtkmm/gesturedrag.h>
 #include <gtkmm/gesturezoom.h>
+#include <gtkmm/label.h>                    // s311 m2.1.v2 — per-Mgr popover cache
+#include <gtkmm/popover.h>                  // s311 m2.1.v2 — per-Mgr popover cache
+#include <gtkmm/textview.h>                 // s311 m2.1.v2 — per-Mgr popover cache
 #include <optional>
 #include <pango/pangocairo.h>
 #include <pangomm/fontdescription.h>
@@ -1981,6 +1986,57 @@ private:
   //   menu in Canvas.cpp:680).
   Glib::RefPtr<Gdk::Pixbuf>   m_overflow_glyph_pixbuf;
 
+  // s311 m2.1 — Popover anchor persistence within session. When the
+  //   overflow popover is dismissed, its current screen position is
+  //   cached here keyed by the Mgr's iid. On subsequent open for the
+  //   same Mgr, we set_pointing_to the cached rect rather than the
+  //   indicator's default screen position, so the popover reappears
+  //   where the user last placed it. Cleared by clearing the map (no
+  //   persistence-across-doc-reload yet — popover position is
+  //   session-only ephemera, not save-file state). Per-Mgr keying
+  //   means two textboxes each remember their own popover position.
+  std::map<std::string, Gdk::Rectangle> m_popover_anchor_by_mgr;
+
+  // s311 m2.1.v2 — Per-Mgr long-lived popover widget. Each TextBoxMgr
+  //   gets exactly one popover that hosts its depot view (the tail of
+  //   the buffer beyond the last canvas view's bytes_consumed). The
+  //   widget is built lazily on first indicator click for that Mgr,
+  //   stored here keyed by Mgr iid, and reused across hide/show cycles
+  //   for the rest of the Mgr's lifetime. Scroll position, edit state,
+  //   and position-on-screen all survive a dismiss-and-reopen because
+  //   the widget itself is the same widget.
+  //
+  //   The popover is always present (always holds the depot, even when
+  //   the depot is empty) but only shown when the user clicks the
+  //   indicator on the last canvas view. When the depot empties (canvas
+  //   views consume the full buffer), no indicator renders, so the
+  //   popover stays hidden — but the widget remains in this map ready
+  //   for the next time overflow appears.
+  //
+  //   Lifetime: built lazily on first show; destroyed when its Mgr is
+  //   no longer in the doc tree (lazy GC pass at each show — walks
+  //   the map, removes entries whose Mgr is gone). No explicit
+  //   destruction signal from Mgr — the GC pass is cheap and correct.
+  //
+  //   Parallel maps cache the inner widgets so a show can update
+  //   contents without re-resolving via Gtk widget-tree walking.
+  //   Same key (Mgr iid). Entries removed in lockstep with the
+  //   popover map's GC pass.
+  std::map<std::string, Gtk::Popover*> m_popover_by_mgr;
+  std::map<std::string, Gtk::Label*>   m_popover_stats_by_mgr;
+  std::map<std::string, Gtk::TextView*> m_popover_textview_by_mgr;
+
+  // s311 m2.1.v2.1 — Re-entrance guard for the popover's TextView
+  //   signal_changed handler. The handler routes user edits into the
+  //   Mgr's buffer, but Canvas also writes to the TextView buffer
+  //   programmatically (seed-on-fresh-build, future buffer-sync from
+  //   canvas-side edits). Without a guard, those writes would re-fire
+  //   the signal and overwrite the Mgr buffer with the (still being
+  //   set) TextView contents — a stale read corrupting the source.
+  //   Set true around any programmatic set_text on the TextView; the
+  //   handler bails when true.
+  bool m_popover_suppress_changed = false;
+
   // s305 m3 — Drag-to-select state. Set true at press-inside-active-edit
   //   (after place_caret_at seeds anchor=caret at the click byte);
   //   on_draw_update reads it to extend the caret end of the selection
@@ -1997,6 +2053,27 @@ private:
   // and cancel_text_edit. Both are idempotent.
   void begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary);
   void end_text_cursor_edit();
+
+  // s312 m2.3 — Suspend / resume the blink timer without tearing down
+  //   the cursor. Used during cross-boundary travel: when the user
+  //   crosses canvas → popover, the canvas-side caret should disappear
+  //   (the illusion is "one caret, two surfaces" — two blinking carets
+  //   breaks it) but the cursor model state (byte_index, anchor,
+  //   preferred_x, in-flight segment) must survive untouched for the
+  //   cross-back. suspend_* disconnects the blink timer and forces
+  //   visible=false + queue_draw; resume_* reconnects the timer and
+  //   sets visible=true. Both are idempotent: suspend after suspend
+  //   is a no-op; resume with no cursor is a no-op; resume while
+  //   already connected re-anchors visibility without double-
+  //   connecting.
+  //
+  //   resume is called from the popover's signal_closed handler so
+  //   ANY dismiss path (cross_back, autohide-from-click-outside,
+  //   Escape) restores the canvas caret. cross_back_to_canvas relies
+  //   on its own popdown() to trigger signal_closed → resume, then
+  //   does the caret reposition.
+  void suspend_text_cursor_blink();
+  void resume_text_cursor_blink();
 
   // s307 m1 — Flush the in-flight text-edit segment to history.
   //
@@ -2081,6 +2158,59 @@ private:
   bool check_overflow_hit(double screen_x, double screen_y,
                           SceneNode** out_text, SceneNode** out_boundary);
   void show_overflow_popover(SceneNode* text_node, SceneNode* boundary);
+
+  // ── s312 m2.3 — Cross-boundary caret travel ──────────────────────────
+  // The canvas TextCursor and the popover's TextView are two surfaces
+  // on the same buffer (the Mgr's text_content). The boundary between
+  // them is the byte index view_byte_start on the Popover view: bytes
+  // [0, view_byte_start) render on the canvas; [view_byte_start, end)
+  // render in the popover. Cross-boundary travel makes that byte seam
+  // a navigable position so the caret can walk across without the
+  // user having to click the indicator or escape-and-reenter.
+  //
+  // cross_into_popover(mgr): the canvas-side caret has just tried to
+  //   step past the canvas portion's last byte (Right at end of canvas
+  //   text, or Down with no canvas baseline below). Open the popover
+  //   for this Mgr (reusing the long-lived widget if one exists), grab
+  //   focus to the TextView, place the TextView caret at offset 0.
+  //   The canvas TextCursor STAYS ALIVE: the two surfaces share the
+  //   buffer, and a subsequent cross_back_to_canvas only needs to flip
+  //   focus and reposition the canvas caret — no rebuild required.
+  //
+  // cross_back_to_canvas(mgr): the popover-side caret has just tried
+  //   to step before the depot's first byte (Left at offset 0, or Up
+  //   on the first line). Hide the popover, focus the canvas, and
+  //   position the canvas TextCursor at view_byte_start (the byte
+  //   immediately past the canvas portion, which is the natural
+  //   landing site coming from the popover's offset 0). If the
+  //   canvas TextCursor doesn't yet exist (popover was opened from
+  //   outside an active edit), begin one via begin_textbox_edit.
+  //
+  // caret_at_canvas_end(out_mgr): query helper used by
+  //   handle_text_edit_key to detect a cross attempt. Returns true
+  //   when the active canvas edit is on a TextBoxMgr AND the
+  //   cursor's byte_index sits at compute_text_layout's bytes_consumed
+  //   for the Mgr's last canvas view AND the buffer has unrendered
+  //   bytes beyond that point (overflow exists). The Mgr is written
+  //   to *out_mgr when present. False (and *out_mgr unchanged) in
+  //   every other case — legacy unbound text, no overflow, malformed
+  //   Mgr structure, cursor not active.
+  //
+  // mgr_has_overflow(out_mgr): weaker predicate used by the Down-
+  //   arrow path. Returns true when the active edit is on a
+  //   TextBoxMgr with unrendered bytes — regardless of where the
+  //   cursor is. Down crosses on "move_down failed (no canvas
+  //   baseline below)" AND "overflow exists"; the cursor's column
+  //   position doesn't gate the cross (unlike Right, which needs
+  //   the cursor exactly at the byte-seam).
+  //
+  // Both helpers no-op silently on malformed input — the cross is a
+  // navigation gesture, not a state-mutating operation, so a missing
+  // Mgr or missing canvas view should not crash, just decline.
+  bool caret_at_canvas_end(SceneNode** out_mgr) const;
+  bool mgr_has_overflow(SceneNode** out_mgr) const;
+  void cross_into_popover(SceneNode* mgr);
+  void cross_back_to_canvas(SceneNode* mgr);
 
   // s301 m1b — Draw the leading hairlines inside an actively-edited text
   // boundary so the user can see how many lines the bbox will hold before
