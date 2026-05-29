@@ -70,6 +70,21 @@ void BezierPath::insert_node_at(int seg_idx, double t) {
 void BezierPath::delete_node(int idx) {
     int n = (int)nodes.size();
     if (n <= 0) return;
+    // s321 — total guard. A stale/out-of-range idx must never index past
+    // the vector: when a path is broken into two and a node deleted, a
+    // selection index (m_selected_node) can be left pointing at an index
+    // valid for the path it WAS, out of range for the path it now IS.
+    // set_node_type (just below) already guards this exact indexing;
+    // delete_node did not, and erase(begin()+idx) on a bad idx segfaults.
+    // WARN (not silent) so the diagnostic survives even though the crash
+    // does not — the root cause is caller-side; this hardens the leaf so
+    // it's a safe no-op meanwhile, and the log tells us when it fires.
+    if (idx < 0 || idx >= n) {
+        LOG_WARN("BezierPath::delete_node: out-of-range idx={} (nodes={} "
+                 "closed={}) — ignoring (stale selection index after break?)",
+                 idx, n, closed);
+        return;
+    }
     if (n == 1) {
         // Only node — erase it, caller should delete the object
         nodes.clear();

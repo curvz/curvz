@@ -7,6 +7,7 @@
 #include "MacroSystem.hpp"
 #include "SvgParser.hpp"
 #include "TextCursor.hpp"   // s301 m1c — compute_text_layout + caret render
+#include "math/TextFlowGeometry.hpp"  // s322 — form-fit reflow debug overlay
 #include "curvz_utils.hpp"  // S97 m2 — box_blur_argb32 for drop-shadow render
 #include "color/SwatchLibrary.hpp"  // set_swatch_library + apply_swatch_to_selection
 #include "color/FillStyleInterop.hpp"  // to_fillstyle — live-recolour walk (s70 M3)
@@ -1177,6 +1178,14 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   // boundary is selected. The helper itself decides which case applies
   // and which text/boundary pair to use.
   draw_text_baseline_guides(cr);
+
+  // ── s322 — Form-fit reflow debug overlay (TEMPORARY) ──────────────────
+  // Visualizes the form-fit geometry chain on a selected closed Path while
+  // the Node tool is active: eroded margin, float-found first baseline, and
+  // per-line spans striding by leading. Not wired into real text layout —
+  // a pure geometry probe so the chain can be eyeballed on a shape (and
+  // watched reflow live as the shape is node-edited) before integration.
+  draw_formfit_debug(cr);
 
   // ── s301 m1c/m1f — Caret render. Inside doc-space transform; the
   //    cursor manages its own line width and color (zoom-aware width,
@@ -4845,6 +4854,105 @@ void Canvas::draw_text_baseline_guides(
     cr->move_to(sx0, std::floor(sy) + 0.5);
     cr->line_to(sx1, std::floor(sy) + 0.5);
     cr->stroke();
+  }
+
+  cr->restore();
+}
+
+// ── s322 — Form-fit reflow debug overlay (TEMPORARY) ─────────────────────────
+// Pure geometry probe: on a selected closed Path with the Node tool active,
+// draw the eroded margin (orange), the float-found first baseline (green), and
+// the per-line spans striding down by leading (blue). Exercises the whole
+// math chain — erode_outline -> baseline_ribbon -> intersect_regions_polylines
+// -> intervals_for_baseline — with no dependency on real text layout, so the
+// geometry can be validated on a shape (and watched reflow live as the shape
+// is node-edited) before wiring into compute_text_layout. Debug constants here
+// stand in for the text node's margin + font metrics.
+void Canvas::draw_formfit_debug(const Cairo::RefPtr<Cairo::Context>& cr) {
+  if (!m_doc) return;
+  if (m_tool != ActiveTool::Node) return;
+  if (!m_selected || !m_selected->is_path() || !m_selected->path) return;
+  const PathData& shape = *m_selected->path;
+  if (!shape.closed || shape.nodes.size() < 3) return;
+
+  // Stand-ins for the text node's margin + font metrics (overlay only).
+  const double inset    = 12.0;   // uniform margin (erosion distance)
+  const double ascent   = 19.0;   // ~0.8 * 24pt — band above baseline
+  const double leading  = 29.0;   // ~1.2 * 24pt — line stride
+  const double ribbon_t = 2.0;    // baseline ribbon thickness
+
+  std::vector<PathData> eroded = Curvz::erode_outline(shape, inset);
+  if (eroded.empty()) return;
+
+  // bbox of the eroded region (float bounds + baseline overhang).
+  double ex0 = 1e18, ey0 = 1e18, ex1 = -1e18, ey1 = -1e18;
+  for (const auto& pd : eroded)
+    for (const auto& n : pd.nodes) {
+      ex0 = std::min(ex0, n.x); ex1 = std::max(ex1, n.x);
+      ey0 = std::min(ey0, n.y); ey1 = std::max(ey1, n.y);
+    }
+  if (ex1 <= ex0 || ey1 <= ey0) return;
+
+  // Straight base baseline at y=0, overhanging the bbox on both ends so every
+  // run boundary in the intersect is a true margin crossing.
+  const double over = (ex1 - ex0) * 0.5 + inset;
+  auto mk = [](double x, double y) {
+    BezierNode n; n.x = x; n.y = y; n.cx1 = x; n.cy1 = y; n.cx2 = x; n.cy2 = y;
+    n.type = BezierNode::Type::Corner; return n;
+  };
+  PathData base;
+  base.nodes.push_back(mk(ex0 - over, 0.0));
+  base.nodes.push_back(mk(ex1 + over, 0.0));
+  base.closed = false;
+
+  cr->save();
+
+  // Eroded margin outline(s) — orange.
+  cr->set_line_width(1.0);
+  cr->set_source_rgba(0.95, 0.55, 0.15, 0.9);
+  for (const auto& pd : eroded) {
+    if (pd.nodes.size() < 2) continue;
+    double sx, sy;
+    doc_to_screen(pd.nodes[0].x, pd.nodes[0].y, sx, sy);
+    cr->move_to(sx, sy);
+    for (size_t i = 1; i < pd.nodes.size(); ++i) {
+      doc_to_screen(pd.nodes[i].x, pd.nodes[i].y, sx, sy);
+      cr->line_to(sx, sy);
+    }
+    cr->close_path();
+    cr->stroke();
+  }
+
+  // Float the CAP line (baseline - ascent) down until it clears the eroded
+  // top — i.e. until a run appears. That baseline is where the first line
+  // sits. (Inside-out "push up until it hits" lands on the same y; this scans
+  // the cap downward from above the top, which is the same contact.)
+  const double step = std::max(1.0, leading * 0.1);
+  double first_baseline = 1e18;
+  for (double by = ey0; by <= ey1; by += step) {
+    auto caps = Curvz::intervals_for_baseline(eroded, base, by - ascent, ribbon_t);
+    if (!caps.empty()) { first_baseline = by; break; }
+  }
+  if (first_baseline > 1e17) { cr->restore(); return; }
+
+  // Stride baselines down by leading; draw each line's spans. A line with no
+  // run (a pinch/gap) is skipped, not a stop — lower lines may still clear.
+  cr->set_line_width(2.0);
+  bool first = true;
+  for (double by = first_baseline; by <= ey1; by += leading) {
+    auto spans = Curvz::intervals_for_baseline(eroded, base, by, ribbon_t);
+    if (spans.empty()) continue;
+    if (first) cr->set_source_rgba(0.20, 0.85, 0.40, 0.95);   // first line: green
+    else       cr->set_source_rgba(0.30, 0.60, 1.00, 0.85);   // rest: blue
+    for (const auto& sp : spans) {
+      double sx0, sy0, sx1, sy1;
+      doc_to_screen(sp.start.x, sp.start.y, sx0, sy0);
+      doc_to_screen(sp.end.x,   sp.end.y,   sx1, sy1);
+      cr->move_to(sx0, sy0);
+      cr->line_to(sx1, sy1);
+      cr->stroke();
+    }
+    first = false;
   }
 
   cr->restore();

@@ -421,6 +421,10 @@ set(SOURCES
     # uniformity strip. See include/math/PathNormalize.hpp and PathReduce.hpp.
     src/math/PathNormalize.cpp
     src/math/PathReduce.cpp
+    # s322 — form-fit text reflow geometry (erode_outline margin generator;
+    # baseline ribbon + Clipper2 intersect land here next). Pure math layer,
+    # no GTK/Pango. See include/math/TextFlowGeometry.hpp.
+    src/math/TextFlowGeometry.cpp
     # s300 m3 — shape-driven minimal-node refit (Douglas-Peucker for cubics).
     # Source-agnostic, type-agnostic cleanup pass. Called by expand_stroke_op
     # to strip Clipper2's dense polyline noise from stroke bands.

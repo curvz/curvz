@@ -7465,6 +7465,51 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
   // click hadn't populated multi-select for some reason), synthesize a
   // single-entry list. Preserves the historical single-node case.
   if (keyval == GDK_KEY_Delete || keyval == GDK_KEY_BackSpace) {
+    // ── s321 DELSEL_TRACE (temporary) ──────────────────────────────────
+    // Classify every m_node_selection entry as LIVE or DANGLING by pointer
+    // identity against a fresh walk of the live tree. CRITICAL: a dangling
+    // entry's obj is NOT dereferenced here — that deref is the crash we're
+    // hunting. We only compare the pointer value, and read ->path solely
+    // on entries confirmed live. If a DANGLING line appears, that stale
+    // entry is the use-after-free; whatever op freed it failed to call
+    // scrub_node_refs.
+    {
+      std::unordered_set<const SceneNode *> live;
+      std::vector<const SceneNode *> stack;
+      if (m_doc)
+        for (const auto &l : m_doc->layers)
+          stack.push_back(l.get());
+      while (!stack.empty()) {
+        const SceneNode *nptr = stack.back();
+        stack.pop_back();
+        if (!nptr)
+          continue;
+        live.insert(nptr);
+        for (const auto &c : nptr->children)
+          stack.push_back(c.get());
+      }
+      LOG_INFO("DELSEL_TRACE: {} selection entr(ies); m_selected={} "
+               "m_selected_node={} live_nodes={}",
+               m_node_selection.size(), (const void *)m_selected,
+               m_selected_node, live.size());
+      for (size_t i = 0; i < m_node_selection.size(); ++i) {
+        const auto &ns = m_node_selection[i];
+        if (live.count(ns.obj)) {
+          int pn = (ns.obj && ns.obj->path) ? (int)ns.obj->path->nodes.size() : -1;
+          bool in_range = (pn >= 0 && ns.node_idx >= 0 && ns.node_idx < pn);
+          LOG_INFO("DELSEL_TRACE   [{}] obj={} LIVE node_idx={} path_nodes={} "
+                   "in_range={}", i, (const void *)ns.obj, ns.node_idx, pn,
+                   in_range);
+        } else {
+          LOG_WARN("DELSEL_TRACE   [{}] obj={} DANGLING (not in live tree) "
+                   "node_idx={} -- stale entry, NOT dereferenced",
+                   i, (const void *)ns.obj, ns.node_idx);
+        }
+      }
+      if (m_selected && !live.count(m_selected))
+        LOG_WARN("DELSEL_TRACE   m_selected={} DANGLING (not in live tree)",
+                 (const void *)m_selected);
+    }
     // Build the (path → indices) groups, preserving first-seen order of
     // paths so undo grouping is deterministic. Synthesize a single entry
     // from m_selected/m_selected_node when m_node_selection is empty.
@@ -8749,6 +8794,84 @@ void Canvas::on_node_begin(double x, double y) {
     // Shift+click missed all nodes — fall through to path body hit
   }
 
+  // ── s322: grab-to-drag an existing multi-selection ────────────────────
+  // A mousedown on a node ALREADY in m_node_selection means "drag the whole
+  // set," not "start a fresh selection." The old code asked this question
+  // only against m_selected (step 1's already_in_selection guard) and never
+  // in the other-paths branch (step 2), so grabbing a marquee-selected node
+  // that lived on any path other than the arbitrary "first" path (the one
+  // on_node_end happened to assign to m_selected) fell through to step 2's
+  // plain-click branch and collapsed the whole set to the single clicked
+  // node. The question never cared which path owned the node, so the
+  // my-path/other-paths split was the wrong seam for it. Hoist it above the
+  // split: answer "is the grabbed node already selected?" once, globally, by
+  // node identity. When yes, make the clicked node the drag primary and
+  // PRESERVE the set — on_node_update already group-applies the primary's
+  // delta to every other m_node_selection entry, so the group move just
+  // works once the set survives the press.
+  //
+  // Only anchor (Node) and handle (HandleIn/HandleOut) hits on SELECTED
+  // nodes short-circuit here. hit_test returns anchors before handles, and
+  // both carry the owning node index; an OnCurve hit means insert
+  // (node_index == -1) and must fall through to step 1. The grabbed hit's
+  // real kind drives the drag: Node -> on_node_update group-applies the
+  // delta to the whole set; a handle drag moves only that handle but keeps
+  // the set selected (matches the pre-s322 guard's behavior). Shift has its
+  // own semantics, handled above. Nearest selected node under the cursor
+  // wins the primary slot; unselected nodes never suppress the grab.
+  if (!m_mod_shift && !m_node_selection.empty()) {
+    SceneNode *grab_obj = nullptr;
+    HitResult grab_hit;
+    grab_hit.distance = 1e9;
+    std::function<void(SceneNode *)> grab_scan = [&](SceneNode *node) {
+      if (node->type == SceneNode::Type::Path && node->path) {
+        BezierPath bp = BezierPath::from_path_data(*node->path);
+        HitResult h = bp.hit_test(doc_pos, m_zoom);
+        bool node_or_handle = h.kind == HitResult::Kind::Node ||
+                              h.kind == HitResult::Kind::HandleIn ||
+                              h.kind == HitResult::Kind::HandleOut;
+        if (node_or_handle && h.distance < grab_hit.distance) {
+          bool in_set = std::any_of(
+              m_node_selection.begin(), m_node_selection.end(),
+              [&](const NodeSel &ns) {
+                return ns.obj == node && ns.node_idx == h.node_index;
+              });
+          if (in_set) {
+            grab_hit = h;
+            grab_obj = node;
+          }
+        }
+      } else if (node->type == SceneNode::Type::Group ||
+                 node->type == SceneNode::Type::Compound) {
+        for (auto &c : node->children)
+          grab_scan(c.get());
+      }
+    };
+    for (auto &layer : m_doc->layers) {
+      if (!layer->visible || layer->locked || layer->is_special_layer())
+        continue;
+      for (auto &obj_uptr : layer->children)
+        grab_scan(obj_uptr.get());
+    }
+    if (grab_obj) {
+      // Group grab: clicked node becomes the drag primary, the set is kept.
+      m_selected = grab_obj;
+      m_selected_node = grab_hit.node_index;
+      m_node_drag_kind = grab_hit.kind;
+      m_cycle_last_pos = doc_pos;
+      m_cycle_index = 0;
+      m_selection = {grab_obj}; // sync object side for SelectionContext
+      LOG_DEBUG("NodeTool: grab-to-drag set ({} nodes), primary obj='{}' "
+                "node={} kind={}", m_node_selection.size(), grab_obj->id,
+                grab_hit.node_index, (int)grab_hit.kind);
+      notify_object_selection_changed();
+      notify_node_selection_changed();
+      m_sig_node_changed.emit(m_selected, m_selected_node);
+      queue_draw();
+      return;
+    }
+  }
+
   // 1. Try to hit the currently selected path first
   if (m_selected && m_selected->type == SceneNode::Type::Path &&
       m_selected->path) {
@@ -8766,17 +8889,15 @@ void Canvas::on_node_begin(double x, double y) {
       m_cycle_last_pos = doc_pos;
       m_cycle_index = 0;
 
-      // Only clear multi-selection if clicking a node NOT already in it
-      bool already_in_selection = std::any_of(
-          m_node_selection.begin(), m_node_selection.end(),
-          [&](const NodeSel &ns) {
-            return ns.obj == m_selected && ns.node_idx == hit.node_index;
-          });
-      if (!already_in_selection) {
-        m_node_selection.clear();
-        if (hit.kind == HitResult::Kind::Node)
-          m_node_selection.push_back({m_selected, hit.node_index});
-      }
+      // s322: a click on a node already in m_node_selection is caught by the
+      // grab-to-drag pre-check above and returns before reaching here, so by
+      // this point the clicked node is necessarily new. Clear the set and
+      // seed it with the freshly clicked node. (Was a conditional guard
+      // keyed on m_selected only; that concept now lives solely in the
+      // hoisted pre-check, keyed on node identity across all paths.)
+      m_node_selection.clear();
+      if (hit.kind == HitResult::Kind::Node)
+        m_node_selection.push_back({m_selected, hit.node_index});
 
       if (hit.kind == HitResult::Kind::OnCurve) {
         // Node-count lock: same reasoning as delete — A and B of a Blend

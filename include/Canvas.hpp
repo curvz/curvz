@@ -2499,6 +2499,8 @@ private:
   // s301 m1c: also drawn when a bound text or its boundary is *selected*
   // (not just edited) so the user can see the layout capacity.
   void draw_text_baseline_guides(const Cairo::RefPtr<Cairo::Context>& cr);
+  // s322 — temporary form-fit reflow geometry probe (see Canvas_draw.cpp).
+  void draw_formfit_debug(const Cairo::RefPtr<Cairo::Context>& cr);
 
   // s301 m1c — Glyph painter for bound text. Routes from draw_text_node
   // when text_boundary_ids is non-empty. Reads the boundary geometry,

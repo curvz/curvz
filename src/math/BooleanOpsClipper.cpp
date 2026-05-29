@@ -361,6 +361,50 @@ std::vector<PathData> boolean_op_clipper(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Raw-polyline intersect (no Bézier refit) — s322 form-fit reflow
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// boolean_op_clipper refits its output to cubic paths, which is fine for an
+// edit op the user sees but LOSSY for a caller that needs the exact
+// intersection VERTICES. Form-fit baseline-span reads depend on the precise
+// crossings where a thin baseline ribbon meets the margin wall, so this entry
+// returns the raw Clipper output loops as polylines — same flatten + Intersect
+// machinery, no refit. Each region is a list of closed subpaths; result is the
+// closed boundary loops of A ∩ B in document space, deduped at the
+// DECIMAL_PREC grid. NonZero fill treats each operand's subpaths as one filled
+// region (no holes); compound boundaries with cutouts are the caller's
+// concern (intersect per subpath upstream). Empty if either operand flattens
+// to nothing or the intersection is empty.
+std::vector<std::vector<Vec2>> intersect_regions_polylines(
+    const std::vector<BezierPath>& A,
+    const std::vector<BezierPath>& B) {
+    std::vector<std::vector<Vec2>> out;
+
+    Clipper2Lib::PathsD pa = build_pathsd(A);
+    Clipper2Lib::PathsD pb = build_pathsd(B);
+    if (pa.empty() || pb.empty()) return out;
+
+    Clipper2Lib::PathsD result;
+    try {
+        result = Clipper2Lib::Intersect(pa, pb,
+                     Clipper2Lib::FillRule::NonZero, DECIMAL_PREC);
+    } catch (const std::exception& e) {
+        LOG_WARN("intersect_regions_polylines: Intersect threw — {}", e.what());
+        return out;
+    }
+
+    out.reserve(result.size());
+    for (const auto& loop : result) {
+        if (loop.size() < 3) continue;
+        std::vector<Vec2> v;
+        v.reserve(loop.size());
+        for (const auto& pt : loop) v.push_back(Vec2{pt.x, pt.y});
+        out.push_back(std::move(v));
+    }
+    return out;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Public entry point — 2-operand back-compat shim
 // ══════════════════════════════════════════════════════════════════════════════
 std::vector<PathData> boolean_op_clipper(

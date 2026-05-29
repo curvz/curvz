@@ -97,4 +97,18 @@ std::vector<std::vector<Vec2>> offset_path_clipper_polylines(
     LineJoin        join              = LineJoin::Miter,
     double          miter_limit_ratio = 4.0);
 
+// ── s322 — Raw-polyline intersect (no Bézier refit) ──────────────────────────
+//
+// Intersect two filled regions and return the result as raw closed polylines
+// (document space), NOT refit to cubics. boolean_op_clipper refits for clean
+// editable output; this entry preserves the exact intersection vertices for
+// callers that read geometry off them — the form-fit reflow span read needs
+// the precise crossings where a baseline ribbon meets the eroded margin wall.
+// Each operand is a list of closed subpaths (Path = 1, Compound = N). NonZero
+// fill, so each operand's subpaths union into one filled region. Empty if
+// either operand is degenerate or the intersection is empty.
+std::vector<std::vector<Vec2>> intersect_regions_polylines(
+    const std::vector<BezierPath>& A,
+    const std::vector<BezierPath>& B);
+
 } // namespace Curvz

@@ -906,8 +906,15 @@ static std::optional<PathData> offset_rect_ns(const PathData& path, double d) {
     double new_w = w + 2.0 * d;
     double new_h = h + 2.0 * d;
     if (new_w < 1e-9 || new_h < 1e-9) return std::nullopt; // would collapse
-    double new_rx = std::max(0.0, rx + d);
-    double new_ry = std::max(0.0, ry + d);
+    // s321 fix — do NOT manufacture a corner radius on a square-cornered
+    // rect. The offset tool uses a miter join (offset_path's default
+    // LineJoin::Miter), so a sharp 90-degree corner stays sharp under
+    // offset — same result the Clipper2 general path gives for non-rects.
+    // Only a genuinely rounded corner (rx/ry > 0) grows its arc by d
+    // (concentric). The old `rx + d` added a d-radius arc to EVERY square
+    // corner, rounding every outward rect offset.
+    double new_rx = (rx > 1e-9) ? std::max(0.0, rx + d) : 0.0;
+    double new_ry = (ry > 1e-9) ? std::max(0.0, ry + d) : 0.0;
     return rect_to_path(cx - new_w * 0.5, cy - new_h * 0.5, new_w, new_h,
                         new_rx, new_ry);
 }
