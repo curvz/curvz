@@ -2123,6 +2123,16 @@ void MainWindow::connect_signals() {
           return true;
         }
 
+        // s314 m1c — F12: toggle the overlay dummy playground. Bare key
+        // (no modifiers) so it's easy to flip on and off while
+        // evaluating the canvas-region depot model. Direct method call;
+        // the SimpleAction "debug-overlay-dummy" exists for menu/script
+        // invocation but accel dispatch is cosmetic in this codebase.
+        if (!ctrl && !alt && !shift && kv == GDK_KEY_F12) {
+          m_canvas.toggle_overlay_dummy();
+          return true;
+        }
+
         // s135 m1: Align hotkeys. Shape mirrors the boolean ops block —
         // wired directly in CAPTURE because set_accels_for_action accel
         // dispatch is cosmetic in this codebase. Each branch consults the

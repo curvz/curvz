@@ -291,10 +291,12 @@ void Canvas::draw_text_on_path(const Cairo::RefPtr<Cairo::Context> &cr,
 // Each baseline draws its chunk starting at (x_start, y - ascent) so the
 // Pango layout's top-left aligns with the visual top of the line and the
 // text's baseline lands on bl.y as intended.
-void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
+size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
                                     const SceneNode& text_obj,
-                                    const SceneNode& boundary) {
-  TextLayout tl = compute_text_layout(&boundary, &text_obj);
+                                    const SceneNode& boundary,
+                                    size_t byte_start,
+                                    bool draw_overflow_indicator) {
+  TextLayout tl = compute_text_layout(&boundary, &text_obj, byte_start);
 
   // ── s308 m1 — Overflow indicator (drawn before baselines-empty
   // early-return) ───────────────────────────────────────────────────────
@@ -310,12 +312,14 @@ void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
   // and the most extreme version of that is "none of it is visible".
   //
   // Geometry: 16 screen px glyph, centered 14 screen px inside the
-  // bottom-right corner of the bbox so it sits ABOVE the bottom-right
-  // resize handle (rendered separately by the selection-handles pass).
+  // bottom-RIGHT corner of the tail's bbox (s317 — the overflow `!`
+  // belongs to the tail member; lower-right keeps it clear of the
+  // member's leading text and reads as the spill affordance).
   // Sizer-pattern affordance — Canvas paints it, Canvas hit-tests it
   // (check_overflow_hit), Canvas dispatches the click (GestureClick
   // wired in Canvas.cpp). Constants here MUST match check_overflow_hit.
-  if (tl.bytes_consumed < text_obj.text_content.size() &&
+  if (draw_overflow_indicator &&
+      tl.bytes_consumed < text_obj.text_content.size() &&
       boundary.path && boundary.path->nodes.size() >= 3) {
     const auto& bp = boundary.path->nodes;
     double bx0 = bp[0].x, by0 = bp[0].y;
@@ -328,7 +332,7 @@ void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
     constexpr double INDICATOR_INSET_PX = 14.0;  // ditto
     double size_doc = INDICATOR_SIZE_PX / std::max(m_zoom, 0.001);
     double inset_doc = INDICATOR_INSET_PX / std::max(m_zoom, 0.001);
-    double cx = bx1 - inset_doc;
+    double cx = bx1 - inset_doc;   // s317 — lower-RIGHT corner (tail's spill)
     double cy = by1 - inset_doc;
 
     // Lazy-load the pixbuf on first use, recolored from currentColor
@@ -362,7 +366,7 @@ void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
     }
   }
 
-  if (tl.baselines.empty()) return;
+  if (tl.baselines.empty()) return tl.bytes_consumed;
 
   // ── s305 m3 — Selection highlight ────────────────────────────────────────
   // When this text node is the active edit and the cursor has a
@@ -442,6 +446,25 @@ void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
   }
 
   cr->save();
+  // s317 — Clip glyphs to the interior (margin) rect. compute_text_layout
+  //   wraps to this width, but a word that measures as fitting can render a
+  //   hair wider; clipping guarantees text never spills past the margins,
+  //   which is the contract ("text is bound to be inside the margins").
+  if (boundary.path && boundary.path->nodes.size() >= 2) {
+    const auto& cbn = boundary.path->nodes;
+    double cbx0 = cbn[0].x, cby0 = cbn[0].y, cbx1 = cbx0, cby1 = cby0;
+    for (const auto& pn : cbn) {
+      if (pn.x < cbx0) cbx0 = pn.x; if (pn.x > cbx1) cbx1 = pn.x;
+      if (pn.y < cby0) cby0 = pn.y; if (pn.y > cby1) cby1 = pn.y;
+    }
+    auto cm = effective_text_margins(&text_obj, &boundary);
+    const double clx = cbx0 + cm.left, cty = cby0 + cm.top;
+    const double crx = cbx1 - cm.right, cby = cby1 - cm.bottom;
+    if (crx > clx && cby > cty) {
+      cr->rectangle(clx, cty, crx - clx, cby - cty);
+      cr->clip();
+    }
+  }
   apply_fill(cr, text_obj.fill);
 
   for (const auto& bl : tl.baselines) {
@@ -467,6 +490,7 @@ void Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
   }
 
   cr->restore();
+  return tl.bytes_consumed;
 }
 
 void Canvas::draw_text_node(const Cairo::RefPtr<Cairo::Context> &cr,
@@ -676,6 +700,17 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   draw_grid(cr, (int)cw, (int)ch);
 
   draw_objects(cr);
+
+  // s314 m1c — Overlay dummy playground. Painted after the main scene
+  //   so it appears on top of any document content. Doc-space transform
+  //   active here (translate(ox,oy) is on the CTM); we apply the zoom
+  //   ourselves since draw_objects restored its own scale.
+  if (m_overlay_dummy.visible) {
+    cr->save();
+    cr->scale(m_zoom, m_zoom);
+    draw_overlay_dummy(cr);
+    cr->restore();
+  }
 
   cr->restore();
 
@@ -1133,7 +1168,26 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
     cr->save();
     cr->translate(ox_dc, oy_dc);
     cr->scale(m_zoom, m_zoom);
+    // s319 — when the caret is in the OA, window it like the OA text: clip
+    //   to the visible text rect and translate by the scroll offset (derived
+    //   in the OA draw, which ran earlier in this paint), so the caret
+    //   scrolls with the content and never draws outside the panel.
+    bool oa_windowed = false;
+    if (caret_in_overflow() && m_text_editing) {
+      MgrOverlayLayout L = compute_mgr_overlay_layout(m_text_editing);
+      if (L.valid && L.has_overlay) {
+        OverflowBubbleLayout B = compute_overflow_bubble_layout(L);
+        if (B.valid && B.text_w > 0.0 && B.text_h > 0.0) {
+          cr->save();
+          cr->rectangle(B.text_x, B.text_y, B.text_w, B.text_h);
+          cr->clip();
+          cr->translate(0.0, -m_overflow_scroll_y);
+          oa_windowed = true;
+        }
+      }
+    }
     m_text_cursor->render(cr);
+    if (oa_windowed) cr->restore();
     cr->restore();
   }
 
@@ -2657,6 +2711,43 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
       return;
     }
     begin_alpha();
+    // s317 — Flow resolver (render-time). The shared buffer pours through
+    //   the members in child order: member 0 lays out from byte 0, consumes
+    //   what fits, and hands its end offset to member 1, and so on. Each
+    //   member renders only its slice (draw_text_in_boundary takes a
+    //   byte_start and returns the absolute bytes_consumed, which we chain).
+    //   This replaces the s316 "first view only" stub — text now visibly
+    //   flows from a full box into the next linked box. The `!` overflow
+    //   indicator is gated to the TAIL member (the last canvas view): only
+    //   the tail can have text that still has nowhere to go.
+    //
+    //   Paint is const — it does NOT write the view_byte_start /
+    //   view_bytes_consumed caches (those belong to a recompute_views seam,
+    //   not the render path). The chained local offset is all the render
+    //   needs; the slice boundaries are re-derived here every paint.
+    //
+    //   First find the tail (last canvas view) so we can flag it.
+    const SceneNode* tail_view = nullptr;
+    for (const auto& vp : obj.children)
+      if (vp && vp->is_canvas_view()) tail_view = vp.get();
+
+    // s317 — collect each member's rect + boundary as we flow, so the
+    //   post-pass can draw the unadorned member outlines and the flow
+    //   connectors (arrowed lines proving 0->N order) without recomputing.
+    struct MemberRect { double x, y, w, h; const SceneNode* boundary; };
+    std::vector<MemberRect> member_rects;
+
+    // s318 — Active-edit pad bookkeeping. If this Mgr is the one being
+    //   edited, remember which member holds the caret and where its text
+    //   slice begins, so a post-loop pass can mask its interior and redraw
+    //   its text cleanly on top of any overlapping members.
+    const bool editing_this_mgr =
+        (m_text_editing == &obj) && (m_text_boundary_editing != nullptr);
+    const SceneNode* edit_boundary = nullptr;
+    size_t edit_byte_start = 0;
+    bool   edit_is_tail = false;
+
+    size_t flow_offset = 0;
     for (const auto& view_ptr : obj.children) {
       if (!view_ptr) continue;
       const SceneNode& view = *view_ptr;
@@ -2669,12 +2760,549 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
       // boundary's fill/stroke/opacity/transform all apply via the
       // normal Path branch.
       draw_object(cr, boundary, layer_r, layer_g, layer_b);
-      // Text on top, laid out against this view's boundary. The Mgr
-      // plays the text-node role — compute_text_layout reads
-      // text_content / text_font_* / etc. off whatever node it gets
-      // passed.
-      draw_text_in_boundary(cr, obj, boundary);
+      // Member rect (bbox of the boundary path) for the viz post-pass.
+      if (boundary.path && boundary.path->nodes.size() >= 2) {
+        const auto& bn = boundary.path->nodes;
+        double rx0 = bn[0].x, ry0 = bn[0].y, rx1 = rx0, ry1 = ry0;
+        for (const auto& pn : bn) {
+          if (pn.x < rx0) rx0 = pn.x; if (pn.x > rx1) rx1 = pn.x;
+          if (pn.y < ry0) ry0 = pn.y; if (pn.y > ry1) ry1 = pn.y;
+        }
+        member_rects.push_back({rx0, ry0, rx1 - rx0, ry1 - ry0, &boundary});
+      }
+      // Text slice for this member, starting where the previous member
+      // left off. Indicator only on the tail.
+      const bool is_tail = (&view == tail_view);
+      // s318 — record the editing member's slice start before drawing it,
+      //   so the post-loop pad can redraw exactly this member's text.
+      if (editing_this_mgr && &boundary == m_text_boundary_editing) {
+        edit_boundary   = &boundary;
+        edit_byte_start = flow_offset;
+        edit_is_tail    = is_tail;
+      }
+      flow_offset =
+          draw_text_in_boundary(cr, obj, boundary, flow_offset, is_tail);
     }
+
+    // s318 — Active-edit pad. In edit mode, mask the editing member's
+    //   interior with a 65%-opaque white rect inset to its text margins,
+    //   then re-draw that member's text on top. Stacked no-fill boxes show
+    //   each other's text through on the canvas; this gives the box being
+    //   edited a clean field. It is purely an edit-mode overlay — nothing
+    //   persists, so the moment edit ends the boxes revert to their plain
+    //   (possibly overlapping) appearance, per the design note. Drawn AFTER
+    //   the flow loop so it sits above every other member regardless of
+    //   child order.
+    if (editing_this_mgr && edit_boundary && edit_boundary->path &&
+        edit_boundary->path->nodes.size() >= 2) {
+      const auto& bn = edit_boundary->path->nodes;
+      double px0 = bn[0].x, py0 = bn[0].y, px1 = px0, py1 = py0;
+      for (const auto& pn : bn) {
+        if (pn.x < px0) px0 = pn.x; if (pn.x > px1) px1 = pn.x;
+        if (pn.y < py0) py0 = pn.y; if (pn.y > py1) py1 = pn.y;
+      }
+      const double ml = edit_boundary->text_margin_left;
+      const double mr = edit_boundary->text_margin_right;
+      const double mt = edit_boundary->text_margin_top;
+      const double mb = edit_boundary->text_margin_bottom;
+      const double rx = px0 + ml, ry = py0 + mt;
+      const double rw = (px1 - px0) - (ml + mr);
+      const double rh = (py1 - py0) - (mt + mb);
+      if (rw > 0.0 && rh > 0.0) {
+        // s318 — Pad color is derived from the artboard background (so it
+        //   tracks motif + the user's artboard color) but shifted AWAY from
+        //   it so the panel is actually visible: painting the bg colour over
+        //   the bg is a no-op. On a dark artboard we lighten (an "elevated
+        //   card"); on a light artboard we darken. The panel lands between
+        //   the text colour and the background, so text stays legible while
+        //   other boxes' bleed-through dims under the 65% fill. `delta` is
+        //   the visibility knob; the 0.65 alpha is the masking-strength knob.
+        double br = 0.157, bg = 0.157, bb = 0.157;   // fallback ~dark artboard
+        if (m_doc) {
+          br = m_doc->artboard_bg_r(doc_motif());
+          bg = m_doc->artboard_bg_g(doc_motif());
+          bb = m_doc->artboard_bg_b(doc_motif());
+        }
+        const double luma = 0.299 * br + 0.587 * bg + 0.114 * bb;
+        const double delta = 0.18;
+        const double s = (luma > 0.5) ? -delta : +delta;  // light bg darkens
+        const double pad_r = std::clamp(br + s, 0.0, 1.0);
+        const double pad_g = std::clamp(bg + s, 0.0, 1.0);
+        const double pad_b = std::clamp(bb + s, 0.0, 1.0);
+        cr->save();
+        cr->set_source_rgba(pad_r, pad_g, pad_b, 0.65);
+        cr->rectangle(rx, ry, rw, rh);
+        cr->fill();
+        cr->restore();
+        draw_text_in_boundary(cr, obj, *edit_boundary, edit_byte_start,
+                              edit_is_tail);
+      }
+    }
+
+    // s317 — is there any text past the last member? (Used to gate the
+    //   overflow area: an empty overflow draws nothing.)
+    const bool has_overflow_text = (flow_offset < obj.text_content.size());
+
+    // s314 m1 — Canvas-region depot (sighting shot). Paint the depot
+    //   region anchored at (textbox.right, textbox.bottom) using the
+    //   overlay_w / overlay_h stored on the Popover view. Just a
+    //   stroked rectangle for the prototype — no text inside yet.
+    //   When the layout reads right and the grip drag feels natural,
+    //   we tear out the widget-based depot machinery and wire the
+    //   text-flow rendering into this region.
+    //
+    //   The mask corners (UR above depot, LL below textbox) paint
+    //   nothing — they're literally just absent from the depot paint
+    //   call, so the canvas background shows through.
+    auto L = compute_mgr_overlay_layout(&obj);
+    const bool mgr_is_selected = (m_selected == &obj);
+
+    // s317 — Container rect: visible proof of ownership. When a Mgr has
+    //   more than one member, draw a thin frame around the union of the
+    //   member boxes so the user can SEE the boxes are one structure (the
+    //   mock's container_bbox). It is a DERIVED visualization, never a hit
+    //   target (member_hit_test only claims member rects) — the enclosing
+    //   rect is the picture of the structure, not a UI object. A single-
+    //   member Mgr draws nothing here: the lone box outline already is the
+    //   whole structure, so a second frame would just be noise.
+    if (L.valid && L.member_count >= 2) {
+      const double iz = 1.0 / std::max(m_zoom, 0.001);
+      // s317 — the container frame proves ownership of everything the Mgr
+      //   owns: the member boxes AND the overflow panel (when presented).
+      //   Start from the member union and extend over the panel's actual
+      //   drawn rect (it's shifted left of the depot anchor for the
+      //   vertical pointer, so union the bubble body, not L.bbox).
+      double ux0 = L.members_x, uy0 = L.members_y;
+      double ux1 = L.members_x + L.members_w, uy1 = L.members_y + L.members_h;
+      const bool ov_shown = (m_overflow_shown_iid == obj.internal_id) &&
+                            has_overflow_text && L.has_overlay;
+      if (ov_shown) {
+        OverflowBubbleLayout ob = compute_overflow_bubble_layout(L);
+        if (ob.valid) {
+          ux0 = std::min(ux0, ob.body_x);
+          uy0 = std::min(uy0, ob.body_y);
+          ux1 = std::max(ux1, ob.body_x + ob.body_w);
+          uy1 = std::max(uy1, ob.body_y + ob.body_h);
+        }
+      }
+      cr->save();
+      cr->rectangle(ux0, uy0, ux1 - ux0, uy1 - uy0);
+      cr->set_source_rgba(0.2, 0.4, 0.8, 0.7);
+      cr->set_line_width(1.0 * iz);
+      cr->set_dash(std::vector<double>{}, 0.0);
+      cr->stroke();
+      cr->restore();
+    }
+
+    // s317 — Per-member viz + flow connectors. Two parts, both only when
+    //   there's more than one member (a single box is its own structure):
+    //
+    //   (a) Each member that is NOT the active selection draws an
+    //       unadorned rect outline, so every box reads as a box. The
+    //       ACTIVE member is skipped here — its 8 resizers + dashed
+    //       selection rect (draw_selection_handles) already mark it, and
+    //       a second outline would just double up.
+    //
+    //   (b) A flow connector between each consecutive pair: a dashed line
+    //       from member i's bottom-right to member i+1's top-left with a
+    //       midpoint arrowhead pointing in flow direction (0 -> N). This
+    //       is the picture of the text route — port of the mock's flow
+    //       connectors. Drawn UNDER the member rects so the boxes sit on
+    //       top of the threads.
+    if (member_rects.size() >= 2) {
+      const double iz = 1.0 / std::max(m_zoom, 0.001);
+      const double hair = 1.0 * iz;
+
+      auto is_selected_boundary = [&](const SceneNode* b) -> bool {
+        if (m_selected == b) return true;
+        return std::find(m_selection.begin(), m_selection.end(), b) !=
+               m_selection.end();
+      };
+
+      // (b) Flow connectors first (underneath the rects).
+      cr->save();
+      cr->set_source_rgba(0.55, 0.3, 0.7, 0.85);
+      const double arrow_doc = 9.0 * iz;
+      std::vector<double> fdash = { 5.0 * iz, 4.0 * iz };
+      for (std::size_t i = 0; i + 1 < member_rects.size(); ++i) {
+        const MemberRect& a = member_rects[i];
+        const MemberRect& b = member_rects[i + 1];
+        const double ax = a.x + a.w, ay = a.y + a.h;   // i's BR
+        const double bx = b.x,        by = b.y;        // i+1's TL
+
+        cr->set_line_width(hair * 1.3);
+        cr->set_dash(fdash, 0.0);
+        cr->move_to(ax, ay);
+        cr->line_to(bx, by);
+        cr->stroke();
+        cr->set_dash(std::vector<double>{}, 0.0);
+
+        // Midpoint arrowhead, tip at the midpoint, barbs trailing back
+        // along the travel direction (so it reads as "flowing toward i+1").
+        const double mx = (ax + bx) * 0.5, my = (ay + by) * 0.5;
+        const double ang = std::atan2(by - ay, bx - ax);
+        const double spread = 0.5;  // radians half-spread
+        cr->move_to(mx, my);
+        cr->line_to(mx - arrow_doc * std::cos(ang - spread),
+                    my - arrow_doc * std::sin(ang - spread));
+        cr->move_to(mx, my);
+        cr->line_to(mx - arrow_doc * std::cos(ang + spread),
+                    my - arrow_doc * std::sin(ang + spread));
+        cr->stroke();
+      }
+      cr->restore();
+
+      // (a) Unadorned rect for every non-active member.
+      cr->save();
+      cr->set_source_rgba(0.55, 0.58, 0.62, 0.8);
+      cr->set_line_width(hair);
+      cr->set_dash(std::vector<double>{}, 0.0);
+      for (const auto& mr : member_rects) {
+        if (is_selected_boundary(mr.boundary)) continue;  // active gets handles
+        cr->rectangle(mr.x, mr.y, mr.w, mr.h);
+        cr->stroke();
+      }
+      cr->restore();
+
+      // s317 — Margin guides: a dashed rect inset by each member's margins,
+      //   so the user can see where text is bound. Drawn for every member
+      //   (active included — the margins matter most on the box you're
+      //   editing). Faint dashes so they read as a guide, not a border.
+      cr->save();
+      cr->set_source_rgba(0.5, 0.55, 0.6, 0.55);
+      cr->set_line_width(hair);
+      std::vector<double> mdash = { 3.0 * iz, 3.0 * iz };
+      cr->set_dash(mdash, 0.0);
+      for (const auto& mr : member_rects) {
+        auto mg = effective_text_margins(&obj, mr.boundary);
+        const double ilx = mr.x + mg.left;
+        const double ity = mr.y + mg.top;
+        const double iw  = mr.w - mg.left - mg.right;
+        const double ih  = mr.h - mg.top  - mg.bottom;
+        if (iw > 0.0 && ih > 0.0) {
+          cr->rectangle(ilx, ity, iw, ih);
+          cr->stroke();
+        }
+      }
+      cr->set_dash(std::vector<double>{}, 0.0);
+      cr->restore();
+    }
+
+    // s316 m3 — The custom overflow region is a popup-style affordance
+    //   presented by the `!` button, not a permanent fixture. Draw it
+    //   only when the user has toggled it on for THIS Mgr. The region's
+    //   size persists on the popover view (overlay_w/overlay_h); its
+    //   visibility is the transient m_overflow_shown_iid toggle.
+    const bool overflow_presented = (m_overflow_shown_iid == obj.internal_id);
+    // s317 — an overflow area with nothing spilling into it draws nothing,
+    //   even if toggled on (e.g. a box was resized so the text now fits).
+    if (overflow_presented && has_overflow_text && L.valid && L.has_overlay) {
+      OverflowBubbleLayout B = compute_overflow_bubble_layout(L);
+      if (B.valid) {
+        const double iz = 1.0 / std::max(m_zoom, 0.001);
+        const double hair = 1.0 * iz;
+
+        // ── Bubble outline ────────────────────────────────────────────
+        // Speech-bubble: three SOFT corners (TL, TR, BL) + one SHARP
+        // corner (BR, where the grip lives) + a vertical point on the top
+        // edge under the `!`. The soft edges read as "floating area"; the
+        // sharp grip corner reads as "drag to resize." One closed path,
+        // factored into a lambda so the drop shadow can reuse the exact
+        // silhouette offset down-right.
+        const double r = B.corner_r;
+        const double x0 = B.body_x, y0 = B.body_y;
+        const double x1 = B.body_x + B.body_w, y1 = B.body_y + B.body_h;
+        auto build_bubble_path = [&](double ox, double oy) {
+          cr->begin_new_path();
+          cr->move_to(x0 + r + ox, y0 + oy);
+          cr->line_to(B.point_base_l + ox, y0 + oy);
+          cr->line_to(B.point_tip_x + ox, B.point_tip_y + oy);
+          cr->line_to(B.point_base_r + ox, y0 + oy);
+          cr->line_to(x1 - r + ox, y0 + oy);
+          cr->arc(x1 - r + ox, y0 + r + oy, r, -M_PI / 2, 0);
+          cr->line_to(x1 + ox, y1 + oy);
+          cr->line_to(x0 + r + ox, y1 + oy);
+          cr->arc(x0 + r + ox, y1 - r + oy, r, M_PI / 2, M_PI);
+          cr->line_to(x0 + ox, y0 + r + oy);
+          cr->arc(x0 + r + ox, y0 + r + oy, r, M_PI, 3 * M_PI / 2);
+          cr->close_path();
+        };
+
+        // Drop shadow — the depth cue that makes the panel read as floating
+        //   ABOVE the canvas. A floating surface casts a soft, offset
+        //   shadow: we approximate the blur cheaply by stacking a few
+        //   copies of the silhouette, each offset further down-right with
+        //   lower alpha, so the edge fades. (A true Gaussian via
+        //   box_blur_argb32 exists for object shadows, but the stacked-
+        //   silhouette trick is enough for a small popup and avoids an
+        //   offscreen surface per paint.)
+        cr->save();
+        const double sh_step = 2.0 * iz;
+        for (int s = 4; s >= 1; --s) {
+          build_bubble_path(sh_step * s, sh_step * s);
+          cr->set_source_rgba(0.0, 0.0, 0.0, 0.10);
+          cr->fill();
+        }
+        cr->restore();
+
+        // s317 — Light/dark-aware panel. Sample the artboard luma to pick a
+        //   surface that reads as a panel against the current motif: an
+        //   "elevated dark" in dark mode, a near-white in light mode. The
+        //   overflow text reuses the Mgr's own fill (already tuned for the
+        //   motif on the canvas), so contrast carries over for free; chrome
+        //   (info text, link, grip) flips to match.
+        double panel_r, panel_g, panel_b, chrome_r, chrome_g, chrome_b;
+        std::string chrome_hex;
+        {
+          const double abr = m_doc->artboard_bg_r(doc_motif());
+          const double abg = m_doc->artboard_bg_g(doc_motif());
+          const double abb = m_doc->artboard_bg_b(doc_motif());
+          const double luma = 0.2126 * abr + 0.7152 * abg + 0.0722 * abb;
+          const bool dark = (luma < 0.5);
+          if (dark) {
+            panel_r = 0.17; panel_g = 0.17; panel_b = 0.19;     // elevated dark
+            chrome_r = 0.80; chrome_g = 0.83; chrome_b = 0.88;  // light chrome
+            chrome_hex = "#ccd4e0";
+          } else {
+            panel_r = 0.96; panel_g = 0.96; panel_b = 0.97;     // light surface
+            chrome_r = 0.22; chrome_g = 0.24; chrome_b = 0.28;  // dark chrome
+            chrome_hex = "#383d47";
+          }
+        }
+
+        // Body fill — NO border (s317). The shape reads as a panel from the
+        //   fill + the outer drop shadow + the inner perimeter glow below.
+        cr->save();
+        build_bubble_path(0.0, 0.0);
+        cr->set_source_rgba(panel_r, panel_g, panel_b, 0.98);
+        cr->fill();
+        cr->restore();
+
+        // Inner perimeter glow — darken the inside edges so the panel reads
+        //   as a recessed floating area without a hard outline. Clip to the
+        //   silhouette, then stroke the path several times with a dark,
+        //   semi-transparent ink at decreasing width: the outer half of each
+        //   stroke is clipped away, leaving a soft dark band hugging the
+        //   exact perimeter (rounded corners + point included).
+        cr->save();
+        build_bubble_path(0.0, 0.0);
+        cr->clip();
+        build_bubble_path(0.0, 0.0);
+        cr->set_source_rgba(0.0, 0.0, 0.0, 0.18);
+        cr->set_line_width(10.0 * iz);
+        cr->stroke();
+        build_bubble_path(0.0, 0.0);
+        cr->set_source_rgba(0.0, 0.0, 0.0, 0.16);
+        cr->set_line_width(5.0 * iz);
+        cr->stroke();
+        cr->restore();
+
+        // ── Info bar — TEXT, not an outlined region: total word count and
+        //    how many words spilled into the overflow. (s317 — the old
+        //    outlined rects were just region markers; the real content is
+        //    the text.)
+        {
+          auto count_words = [](const std::string& s, size_t from) -> int {
+            int n = 0; bool in_word = false;
+            for (size_t i = from; i < s.size(); ++i) {
+              const char c = s[i];
+              const bool ws = (c == ' ' || c == '\t' || c == '\n' ||
+                               c == '\r' || c == '\f' || c == '\v');
+              if (!ws && !in_word) { ++n; in_word = true; }
+              else if (ws) in_word = false;
+            }
+            return n;
+          };
+          const int total_words = count_words(obj.text_content, 0);
+          const int overflow_words = count_words(obj.text_content, flow_offset);
+          const std::string info_str =
+              std::to_string(total_words) + " words \xC2\xB7 " +
+              std::to_string(overflow_words) + " in overflow";
+          cr->save();
+          // Clip to the info column so it can never run into the link button.
+          cr->rectangle(B.info_x, B.info_y, B.info_w, B.info_h);
+          cr->clip();
+          cr->set_source_rgba(chrome_r, chrome_g, chrome_b, 0.9);
+          cr->set_font_size(B.info_h * 0.5);   // smaller (s317)
+          cr->move_to(B.info_x, B.info_y + B.info_h * 0.66);
+          cr->show_text(info_str);
+          cr->restore();
+        }
+
+        // ── Link button — the SOLE create-next-tb verb. s317: the
+        //    curvz-link-to-symbolic.svg icon, recolored to chrome, NO
+        //    border. Wired to link_textbox_member via hit-test.
+        {
+          ensure_link_glyph_pixbuf(chrome_hex);
+          const double lx = B.link_x, ly = B.link_y;
+          const double lw = B.link_w, lh = B.link_h;
+          const double bcx = lx + lw * 0.5;
+          const double bcy = ly + lh * 0.5;
+          if (m_link_glyph_pixbuf) {
+            const double pw = m_link_glyph_pixbuf->get_width();
+            const double ph = m_link_glyph_pixbuf->get_height();
+            const double fit = std::min(lw, lh) * 0.95;
+            const double scale = fit / std::max(pw, ph);
+            cr->save();
+            cr->translate(bcx, bcy);
+            cr->scale(scale, scale);
+            curvz::utils::cairo_set_source_pixbuf(cr, m_link_glyph_pixbuf,
+                                                  -pw * 0.5, -ph * 0.5);
+            cr->paint();
+            cr->restore();
+          } else {
+            // Fallback: a small chrome "+" if the icon failed to load.
+            cr->save();
+            cr->set_source_rgba(chrome_r, chrome_g, chrome_b, 0.9);
+            cr->set_line_width(hair * 1.4);
+            const double hg = std::min(lw, lh) * 0.25;
+            cr->move_to(bcx - hg, bcy); cr->line_to(bcx + hg, bcy); cr->stroke();
+            cr->move_to(bcx, bcy - hg); cr->line_to(bcx, bcy + hg); cr->stroke();
+            cr->restore();
+          }
+        }
+
+        // ── Text area: the overflow text, rendered here (s317; s319 scroll)
+        //   Everything past the last member (byte_start = flow_offset) is
+        //   poured into the panel. s319 — the region is laid out to its FULL
+        //   remainder height (tall boundary, same as the cursor anchors to)
+        //   and the panel WINDOWS it: clip to the visible text rect and
+        //   translate by m_overflow_scroll_y, which follows the caret.
+        if (B.text_w > 0.0 && B.text_h > 0.0) {
+          const double pad_doc = 4.0 * iz;
+          // s319 — content-sized region (matches sync_overflow_region_boundary)
+          //   so layout doesn't flood with capacity baselines.
+          const double region_h = overflow_region_height(
+              &obj, B.text_x, B.text_y, B.text_w, B.text_h, pad_doc, flow_offset);
+          SceneNode area_boundary;
+          area_boundary.type = SceneNode::Type::Path;
+          area_boundary.path = std::make_unique<PathData>(
+              rect_to_path(B.text_x, B.text_y, B.text_w, region_h));
+          area_boundary.text_margin_top    = pad_doc;
+          area_boundary.text_margin_bottom = pad_doc;
+          area_boundary.text_margin_left   = pad_doc;
+          area_boundary.text_margin_right  = pad_doc;
+
+          // s319 — scroll-follows-caret. When the caret is editing in THIS
+          //   OA, derive the scroll so the caret line stays inside the
+          //   visible window. Stored for the caret render (overlay pass) to
+          //   window identically. Pure transient view state.
+          const bool caret_here =
+              (m_overflow_shown_iid == obj.internal_id) && caret_in_overflow();
+          if (caret_here && m_text_cursor) {
+            // s319 — Keep the cursor's OA region boundary (the popover's
+            //   children[0]) sized to the CURRENT content: typing in the OA
+            //   may have grown/shrunk the remainder since cross-in, and the
+            //   caret can only reach lines its boundary lays out. The popover
+            //   boundary is our own cursor scaffolding (not user geometry —
+            //   object_bbox/hit-test exclude the popover), so resizing it to
+            //   the freshly-computed region_h here keeps caret math valid
+            //   without per-keystroke wiring. Done before position_on_canvas
+            //   so the caret geometry reflects the resize.
+            SceneNode& mobj = const_cast<SceneNode&>(obj);
+            for (auto& c : mobj.children) {
+              if (c && c->is_popover_view() && !c->children.empty() &&
+                  c->children[0] && c->children[0]->is_path()) {
+                c->children[0]->path = std::make_unique<PathData>(
+                    rect_to_path(B.text_x, B.text_y, B.text_w, region_h));
+                break;
+              }
+            }
+            TextCursor::Geometry g = m_text_cursor->position_on_canvas();
+            if (g.valid) {
+              const double vis_top = B.text_y;
+              const double vis_bot = B.text_y + B.text_h;
+              double sy = m_overflow_scroll_y;
+              if (g.y + g.height - sy > vis_bot) sy = g.y + g.height - vis_bot;
+              if (g.y - sy < vis_top)            sy = g.y - vis_top;
+              if (sy < 0.0) sy = 0.0;
+              m_overflow_scroll_y = sy;
+            }
+          } else {
+            m_overflow_scroll_y = 0.0;   // not editing here → pinned at top
+          }
+
+          cr->save();
+          cr->rectangle(B.text_x, B.text_y, B.text_w, B.text_h);
+          cr->clip();
+          cr->translate(0.0, -m_overflow_scroll_y);
+          draw_text_in_boundary(cr, obj, area_boundary, flow_offset,
+                                /*draw_overflow_indicator=*/false);
+          cr->restore();
+
+          // ── Scroll thumb (s319) — sized to window/content and positioned
+          //    by the scroll offset. panel_end is now the full remainder
+          //    (tall boundary), so overflow is detected from content HEIGHT
+          //    vs the visible window, not a byte count.
+          TextLayout tl_full =
+              compute_text_layout(&area_boundary, &obj, flow_offset);
+          double content_h = 0.0;
+          for (const auto& b : tl_full.baselines)
+            if (b.byte_end > b.byte_start)        // s319 — skip capacity empties
+              content_h = (b.y + b.descent) - B.text_y + pad_doc;
+          const double window_h = B.text_h;
+          if (content_h > window_h + 0.5) {
+            const double max_scroll = content_h - window_h;
+            double frac = window_h / content_h;
+            if (frac < 0.08) frac = 0.08;
+            if (frac > 1.0)  frac = 1.0;
+            const double track_h = B.sbar_h;
+            const double thumb_h = track_h * frac;
+            const double thumb_w = B.sbar_w * 0.6;
+            const double thumb_x = B.sbar_x + (B.sbar_w - thumb_w) * 0.5;
+            double pos_frac =
+                (max_scroll > 0.0) ? (m_overflow_scroll_y / max_scroll) : 0.0;
+            if (pos_frac < 0.0) pos_frac = 0.0;
+            if (pos_frac > 1.0) pos_frac = 1.0;
+            const double thumb_y = B.sbar_y + (track_h - thumb_h) * pos_frac;
+            cr->save();
+            cr->set_source_rgba(chrome_r, chrome_g, chrome_b, 0.55);
+            const double rr = thumb_w * 0.5;
+            cr->begin_new_path();
+            cr->arc(thumb_x + rr, thumb_y + rr, rr, M_PI, 1.5 * M_PI);
+            cr->arc(thumb_x + thumb_w - rr, thumb_y + rr, rr, 1.5 * M_PI, 2 * M_PI);
+            cr->arc(thumb_x + thumb_w - rr, thumb_y + thumb_h - rr, rr, 0, 0.5 * M_PI);
+            cr->arc(thumb_x + rr, thumb_y + thumb_h - rr, rr, 0.5 * M_PI, M_PI);
+            cr->close_path();
+            cr->fill();
+            cr->restore();
+          }
+        }
+
+        // ── Scrollbar strip: omitted (no region lines — s317). Scroll
+        //    wiring comes when the overflow exceeds the panel height.
+
+        // ── Grip: hatch marks in the sharp BR corner ──────────────────
+        cr->save();
+        cr->set_source_rgba(chrome_r, chrome_g, chrome_b, 0.85);
+        cr->set_line_width(hair * 1.2);
+        for (int k = 1; k <= 3; ++k) {
+          const double off = (B.grip_w) * (k / 4.0);
+          cr->move_to(x1 - off, y1);
+          cr->line_to(x1, y1 - off);
+          cr->stroke();
+        }
+        cr->restore();
+
+        // s314 m1 — when the Mgr is selected, dashed-outline the tail tb
+        //   so tb + bubble read as one object.
+        if (mgr_is_selected) {
+          cr->save();
+          cr->rectangle(L.textbox_x, L.textbox_y, L.textbox_w, L.textbox_h);
+          cr->set_source_rgba(0.35, 0.35, 0.35, 0.5);
+          cr->set_line_width(hair);
+          std::vector<double> dashes_tb = { 4.0 * iz, 3.0 * iz };
+          cr->set_dash(dashes_tb, 0.0);
+          cr->stroke();
+          cr->restore();
+        }
+      }
+    }
+    // s316 m3 — The old "materialize a depot by dragging a grip at the tb
+    //   BR" affordance (s314 else-branch) is removed: the `!` button now
+    //   owns the tb bottom-right and is the way the overflow region is
+    //   summoned. No grip is drawn when the region is hidden.
+
     end_alpha();
     cr->restore();
     return;
@@ -4129,6 +4757,22 @@ void Canvas::draw_text_baseline_guides(
   }
 
   if (!text_for_guides || !boundary_for_guides) return;
+
+  // s319 — Suppress baseline guides for the OA/overflow region. The popover
+  //   boundary is sized to hold the FULL overflow remainder (taller than the
+  //   visible panel window), so its margin rect + baseline hairlines would
+  //   paint the whole capacity height with no OA clip and spill below the
+  //   panel as stray dashed rects — their count tracking the line capacity at
+  //   the last build/grip-resize. The OA panel is self-contained chrome;
+  //   member boundaries still get their guides.
+  if (text_for_guides->is_text_box_mgr()) {
+    for (const auto& v : text_for_guides->children) {
+      if (v && v->is_popover_view() && !v->children.empty() &&
+          v->children[0] && v->children[0].get() == boundary_for_guides) {
+        return;
+      }
+    }
+  }
 
   TextLayout tl = compute_text_layout(boundary_for_guides, text_for_guides);
   if (tl.baselines.empty()) return;

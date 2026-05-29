@@ -108,8 +108,9 @@ static size_t baseline_index_for(const TextLayout& tl, size_t byte_index,
 
 // ── Construction ────────────────────────────────────────────────────────────
 TextCursor::TextCursor(Canvas* canvas, SceneNode* text_node,
-                       SceneNode* boundary)
-    : m_canvas(canvas), m_text(text_node), m_boundary(boundary) {
+                       SceneNode* boundary, size_t byte_start)
+    : m_canvas(canvas), m_text(text_node), m_boundary(boundary),
+      m_byte_start(byte_start) {
     if (!m_text) return;
     // s305 m1 — Caret persistence. Restore the byte the last edit left
     //   off at; fall back to end-of-buffer when no saved position
@@ -273,7 +274,7 @@ void TextCursor::move_line_start() {
             m_text->text_boundary_ids.front());
     }
     if (boundary) {
-        TextLayout tl = compute_text_layout(boundary, m_text);
+        TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
         if (!tl.baselines.empty()) {
             // s305 m4d — Later-baseline-wins at wrap boundary. See
             //   position_on_canvas for the rationale. Strict `<` on
@@ -327,7 +328,7 @@ void TextCursor::move_line_end() {
             m_text->text_boundary_ids.front());
     }
     if (boundary) {
-        TextLayout tl = compute_text_layout(boundary, m_text);
+        TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
         if (!tl.baselines.empty()) {
             // s305 m4d — Later-baseline-wins (see move_line_start).
             // s307 (newline fix v2) — Empty-baseline ownership gated.
@@ -435,7 +436,7 @@ bool TextCursor::move_up() {
         if (!boundary) return false;
     }
 
-    TextLayout tl = compute_text_layout(boundary, m_text);
+    TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
     if (tl.baselines.empty()) return false;
 
     size_t cur_idx = baseline_index_for(tl, m_byte_index, m_text->text_content);
@@ -523,7 +524,7 @@ bool TextCursor::move_down() {
         if (!boundary) return false;
     }
 
-    TextLayout tl = compute_text_layout(boundary, m_text);
+    TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
     if (tl.baselines.empty()) return false;
 
     size_t cur_idx = baseline_index_for(tl, m_byte_index, m_text->text_content);
@@ -715,9 +716,34 @@ static size_t fit_chunk_to_width(const char* chunk, size_t chunk_len,
     return (size_t)(g_utf8_next_char(chunk) - chunk);
 }
 
+// ── s317 — Last word-break opportunity strictly before `len` ──────────
+// Returns the byte offset of the latest Pango line-break opportunity that
+// is < len (excluding the end). Used to back a line off by one word when
+// the chosen break still renders too wide (a belt-and-braces guard over
+// fit_chunk_to_width's index_to_pos measurement, which can disagree with
+// the actual rendered width by a word at the margin). Returns 0 if there
+// is no earlier break (a single unbreakable word).
+static size_t last_word_break_before(const char* s, size_t len) {
+    glong nc = g_utf8_strlen(s, (gssize)len);
+    if (nc <= 1) return 0;
+    std::vector<PangoLogAttr> a((size_t)nc + 1);
+    pango_get_log_attrs(s, (int)len, -1, nullptr, a.data(), (int)a.size());
+    const char* p = s;
+    size_t last = 0;
+    for (int ci = 1; ci < (int)nc; ++ci) {   // ci == nc would be the end; skip
+        const char* np = g_utf8_next_char(p);
+        size_t bo = (size_t)(np - s);
+        if (bo >= len) break;
+        if (a[ci].is_line_break) last = bo;
+        p = np;
+    }
+    return last;
+}
+
 // ── The universal layout function ───────────────────────────────────────────
 TextLayout compute_text_layout(const SceneNode* boundary,
-                               const SceneNode* text) {
+                               const SceneNode* text,
+                               size_t byte_start) {
     TextLayout out;
     if (!boundary || !boundary->path || !text) return out;
     const PathData& bp = *boundary->path;
@@ -791,7 +817,15 @@ TextLayout compute_text_layout(const SceneNode* boundary,
     // too short), no baselines are emitted and bytes_consumed stays 0.
     double baseline_y = iy0 + ascent;
 
-    size_t cursor = 0;
+    // s317 — flow resolver: a member view lays out its slice of the shared
+    // Mgr buffer starting at byte_start (the running offset handed down by
+    // the Mgr render loop). Clamp defensively; byte_start == size means the
+    // upstream members already consumed everything, so this view emits only
+    // empty baselines (the buffer-exhausted branch below). The emitted
+    // baselines carry ABSOLUTE byte offsets into text_content, and
+    // bytes_consumed is the absolute end offset, so the caller can chain
+    // offset = bytes_consumed into the next member with no bookkeeping.
+    size_t cursor = std::min(byte_start, text->text_content.size());
     const std::string& buf = text->text_content;
     int safety = 0;
     while (baseline_y <= iy1 && cursor <= buf.size() && safety++ < 10000) {
@@ -868,6 +902,45 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         PangoLayout* line_layout = make_single_line_layout(text,
                                                             remaining,
                                                             (int)consumed_on_line);
+        // s317 — Belt-and-braces: the chosen break is verified against the
+        //   ACTUAL rendered width. If the line is still wider than the
+        //   interior (the index_to_pos estimate over-reached by a word),
+        //   back off to the previous word boundary and rebuild — never let
+        //   a word render past the margin and get clipped mid-word. A
+        //   single unbreakable word that exceeds the width is left as-is
+        //   (the paint clip is the final guard for that rare case).
+        {
+            const int avail_pango = (int)(avail * PANGO_SCALE);
+            // s317 — Tolerance. fit_chunk_to_width measures candidate breaks
+            //   with index_to_pos over the FULL single-line layout; this
+            //   backoff re-measures with a freshly shaped per-line layout.
+            //   The two can disagree by a sub-pixel at the margin, and a
+            //   strict `lw > avail_pango` then drops a word that actually
+            //   fits — leaving a whole word's worth of trailing gap (the
+            //   line was short, so the gap looks large). Only back off when
+            //   the overrun exceeds a slack well under any real word width
+            //   (~0.3em): sub-pixel noise is absorbed, a genuine word past
+            //   the margin (tens of units) still triggers the backoff.
+            const int slack_pango = (int)(font_size * 0.3 * PANGO_SCALE);
+            int lw = 0, lh = 0;
+            pango_layout_get_size(line_layout, &lw, &lh);
+            while (lw > avail_pango + slack_pango && consumed_on_line > 1) {
+                size_t shorter = last_word_break_before(remaining,
+                                                         consumed_on_line);
+                while (shorter > 0 &&
+                       (remaining[shorter - 1] == ' ' ||
+                        remaining[shorter - 1] == '\t')) {
+                    --shorter;
+                }
+                if (shorter == 0 || shorter >= consumed_on_line)
+                    break;   // single long word: leave it, clip will bound it
+                consumed_on_line = shorter;
+                g_object_unref(line_layout);
+                line_layout = make_single_line_layout(text, remaining,
+                                                       (int)consumed_on_line);
+                pango_layout_get_size(line_layout, &lw, &lh);
+            }
+        }
         bl.pango.reset(line_layout);
 
         // s305 m4e — Auto-wrap trailing whitespace handling. fit_chunk_to_width
@@ -943,7 +1016,7 @@ TextCursor::Geometry TextCursor::position_on_canvas() const {
         if (!boundary) return g;
     }
 
-    TextLayout tl = compute_text_layout(boundary, m_text);
+    TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
     if (tl.baselines.empty()) return g;
 
     // s305 m4d — At a wrap byte boundary, the byte belongs to the
@@ -1063,7 +1136,7 @@ std::optional<size_t> TextCursor::byte_index_at(
         if (!boundary) return std::nullopt;
     }
 
-    TextLayout tl = compute_text_layout(boundary, m_text);
+    TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
     if (tl.baselines.empty()) return std::nullopt;
 
     // Choose baseline by vertical band. A baseline's visual band runs

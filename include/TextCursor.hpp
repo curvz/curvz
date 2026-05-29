@@ -103,7 +103,8 @@ struct TextLayout {
 // all flow through this one function. The rect case is just the
 // degenerate one where every baseline has the same (x_start, x_end).
 TextLayout compute_text_layout(const SceneNode* boundary,
-                               const SceneNode* text);
+                               const SceneNode* text,
+                               size_t byte_start = 0);
 
 class TextCursor {
 public:
@@ -124,10 +125,24 @@ public:
     // did. The two paths coexist so files loaded from before the
     // TextBox migration continue to edit correctly.
     TextCursor(Canvas* canvas, SceneNode* text_node,
-               SceneNode* boundary = nullptr);
+               SceneNode* boundary = nullptr, size_t byte_start = 0);
 
     SceneNode* text_node() const { return m_text; }
     size_t     byte_index() const { return m_byte_index; }
+
+    // s317 — Multi-region support. The cursor lays out [m_byte_start, …]
+    //   into m_boundary; for a Mgr with several member boxes, each box is
+    //   a region with its own boundary + byte_start. Canvas drives crossing
+    //   between regions by re-anchoring via set_region. The cursor itself
+    //   stays single-region; absolute byte offsets in the layout (see
+    //   compute_text_layout) mean m_byte_index matching is unchanged.
+    SceneNode* boundary() const { return m_boundary; }
+    size_t     region_byte_start() const { return m_byte_start; }
+    void       set_region(SceneNode* boundary, size_t byte_start) {
+        m_boundary = boundary;
+        m_byte_start = byte_start;
+        m_preferred_caret_x = -1.0;   // re-anchoring resets column intent
+    }
 
     // ── Buffer mutation. Returns true when the operation actually
     //    changed the buffer (caller may then queue_draw + emit
@@ -328,6 +343,9 @@ private:
     // iid lookup on m_text->text_boundary_ids," the legacy path.
     SceneNode* m_boundary = nullptr;
     size_t     m_byte_index = 0;
+    // s317 — absolute byte where this region's layout begins (0 for a
+    //   single-box edit; the running flow offset for member k>0).
+    size_t     m_byte_start = 0;
     // s305 m2 — Selection anchor. The OTHER end of the selection;
     //   the caret (m_byte_index) is one end and m_anchor_byte is the
     //   other. Initialised equal to m_byte_index (in the ctor, after

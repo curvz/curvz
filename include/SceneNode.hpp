@@ -765,6 +765,30 @@ struct SceneNode {
   size_t   view_byte_start    = 0;
   size_t   view_bytes_consumed = 0;
 
+  // s314 m1 — Overlay extent for the Popover view in the new
+  //   canvas-region depot model. Replaces the s311/s312/s313 widget-
+  //   based depot (popover, then window). Stored on the Popover view
+  //   in doc units; meaningful when view_kind == Popover.
+  //
+  //   The Mgr's container bbox = (textbox bbox + overlay_w extending
+  //   right + overlay_h extending down). The textbox region paints
+  //   in the upper-left of that bbox; the depot region paints in the
+  //   lower-right; the two diagonally-opposite corners are masked
+  //   (transparent, click-through). Both extents default to 0 — no
+  //   depot region exists until the user drags the bbox grip to
+  //   materialize it.
+  //
+  //   When overlay_w == 0 && overlay_h == 0, the Mgr is just the
+  //   textbox — same footprint as a non-overflowing Mgr today.
+  //   When overlay_w > 0 XOR overlay_h > 0, the depot is a side-
+  //   panel (right of, or below, the textbox) with no masked
+  //   corners.
+  //   When overlay_w > 0 AND overlay_h > 0, the depot is the lower-
+  //   right tile of a 2x2 grid with the other diagonal pair masked
+  //   — the staircase shape.
+  double overlay_w = 0.0;
+  double overlay_h = 0.0;
+
   // Image data — meaningful on Image only
   std::string image_path; // absolute path to the image file
   double image_x = 0.0;   // top-left x in doc space (Y-down)
@@ -991,6 +1015,9 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->view_kind          = src.view_kind;
   dst->view_byte_start    = src.view_byte_start;
   dst->view_bytes_consumed = src.view_bytes_consumed;
+  // s314 m1 — Canvas-region depot extents on the Popover view.
+  dst->overlay_w          = src.overlay_w;
+  dst->overlay_h          = src.overlay_h;
   dst->image_path = src.image_path;
   dst->image_x = src.image_x;
   dst->image_y = src.image_y;

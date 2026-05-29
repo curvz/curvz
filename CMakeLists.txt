@@ -365,6 +365,18 @@ set(SOURCES
     # clipboard contents so the user can select a piece and Ctrl+C
     # it. Motivated by the Measure tool's structured-block copy.
     src/ClipboardViewWindow.cpp
+    # s313 m1 — DepotWindow. Per-Mgr overflow-depot host as a custom
+    # Gtk::Window subclass. Replaces the s311/s312 Gtk::Popover host;
+    # Window resize is native (no popover autohide-on-content-resize
+    # pathology), letting drag-to-resize work cleanly. WindowHandle
+    # wraps the top_row for WM-native drag-to-move.
+    src/DepotWindow.cpp
+    # s314 m1c — OverlayDummy. Pure geometry playground for the
+    # canvas-region depot model: one outer container with textbox
+    # + overlay regions, 8 standard resize handles, 9th internal
+    # grip, plus a toggle button. Invoked via F12; deleted entirely
+    # when the canvas-region depot work lands for real.
+    src/OverlayDummy.cpp
     src/PreviewPanel.cpp
     src/ContextBar.cpp
     src/DocTabBar.cpp

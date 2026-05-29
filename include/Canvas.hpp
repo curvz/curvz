@@ -3,6 +3,7 @@
 #include "CurvzDocument.hpp"
 #include "ImageInfo.hpp"  // s210 m1 — payload struct for signal_request_image_info
 #include "SceneNode.hpp"
+#include "OverlayDummy.hpp"
 #include "SelectionContext.hpp"  // s158 m1 — capability classifier
 #include "Toolbar.hpp"
 #include "color/Paint.hpp"  // SwatchId alias — pure header, no nlohmann/sigc/gtk
@@ -55,7 +56,7 @@ namespace Curvz { class TextCursor; }
 #include <chrono>
 #include <cstdint>
 #include <functional>
-#include <map>                              // s311 m2.1 — popover anchor cache
+#include <map>                              // s311 m2.1 — popover anchor cache; s313 — depot window cache
 #include <gdkmm/rectangle.h>                // s311 m2.1 — popover anchor cache
 #include <gtkmm/drawingarea.h>
 #include <gtkmm/entry.h>
@@ -65,9 +66,8 @@ namespace Curvz { class TextCursor; }
 #include <gtkmm/fixed.h>
 #include <gtkmm/gesturedrag.h>
 #include <gtkmm/gesturezoom.h>
-#include <gtkmm/label.h>                    // s311 m2.1.v2 — per-Mgr popover cache
-#include <gtkmm/popover.h>                  // s311 m2.1.v2 — per-Mgr popover cache
-#include <gtkmm/textview.h>                 // s311 m2.1.v2 — per-Mgr popover cache
+#include <gtkmm/label.h>                    // s311 m2.1.v2 — per-Mgr popover cache (legacy comment retained)
+#include <gtkmm/textview.h>                 // s313 — on_depot_text_changed TextView parameter
 #include <optional>
 #include <pango/pangocairo.h>
 #include <pangomm/fontdescription.h>
@@ -81,6 +81,13 @@ namespace Curvz {
 // create a transitive include cycle through SwatchLibrary/StyleLibrary
 // templates).
 struct CurvzProject;
+
+// s313 — Forward decl. Canvas holds per-Mgr DepotWindows in
+// m_depot_window_by_mgr and exposes on_depot_text_changed as the
+// edit-routing callback DepotWindow's signal_changed lambda fires.
+// Avoids pulling DepotWindow.hpp (and thus gtkmm.h via that header)
+// into every Canvas client.
+class DepotWindow;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Canvas implementation is split across four TUs (s161). The split is
@@ -105,6 +112,14 @@ struct CurvzProject;
 // ─────────────────────────────────────────────────────────────────────────────
 class Canvas : public Gtk::DrawingArea {
 public:
+  // s313 m1 — DepotWindow is a tightly-coupled inner widget owned by
+  // Canvas's per-Mgr cache (m_depot_window_by_mgr). It calls back into
+  // Canvas for edit routing (on_depot_text_changed) and cross-boundary
+  // navigation (cross_back_to_canvas). Friending keeps those methods
+  // private to outside callers while letting DepotWindow reach them
+  // without a public surface that other code might mistakenly use.
+  friend class DepotWindow;
+
   Canvas();
 
   void set_document(CurvzDocument *doc);
@@ -1985,57 +2000,155 @@ private:
   //   same shape as the other Canvas popovers (e.g. rclick context
   //   menu in Canvas.cpp:680).
   Glib::RefPtr<Gdk::Pixbuf>   m_overflow_glyph_pixbuf;
+  // s317 — link-to icon for the overflow panel's link button. Recolored to
+  // the panel chrome at load; re-baked if the chrome color changes (motif
+  // flip), tracked by m_link_glyph_color.
+  Glib::RefPtr<Gdk::Pixbuf>   m_link_glyph_pixbuf;
+  std::string                 m_link_glyph_color;
 
-  // s311 m2.1 — Popover anchor persistence within session. When the
-  //   overflow popover is dismissed, its current screen position is
-  //   cached here keyed by the Mgr's iid. On subsequent open for the
-  //   same Mgr, we set_pointing_to the cached rect rather than the
-  //   indicator's default screen position, so the popover reappears
-  //   where the user last placed it. Cleared by clearing the map (no
-  //   persistence-across-doc-reload yet — popover position is
-  //   session-only ephemera, not save-file state). Per-Mgr keying
-  //   means two textboxes each remember their own popover position.
+  // s311 m2.1 — Popover anchor persistence within session. (Retained
+  //   from the s311/s312 popover world for documentation continuity;
+  //   the field itself is no longer used now that s313 migrated to
+  //   DepotWindow. The map is kept declared so cross-references in
+  //   the historical comments stay grep-resolvable; it should be
+  //   cleared at construction and never read or written by post-s313
+  //   code. Removed entirely in a follow-on cleanup once the surface
+  //   has shaken out.)
   std::map<std::string, Gdk::Rectangle> m_popover_anchor_by_mgr;
 
-  // s311 m2.1.v2 — Per-Mgr long-lived popover widget. Each TextBoxMgr
-  //   gets exactly one popover that hosts its depot view (the tail of
-  //   the buffer beyond the last canvas view's bytes_consumed). The
-  //   widget is built lazily on first indicator click for that Mgr,
-  //   stored here keyed by Mgr iid, and reused across hide/show cycles
-  //   for the rest of the Mgr's lifetime. Scroll position, edit state,
-  //   and position-on-screen all survive a dismiss-and-reopen because
-  //   the widget itself is the same widget.
+  // s313 m1 — Per-Mgr long-lived DepotWindow. Replaces the four parallel
+  //   m_popover_*_by_mgr maps from s311/s312. Each TextBoxMgr owns
+  //   exactly one DepotWindow, built lazily on first indicator click /
+  //   cross-into-depot, stored here keyed by Mgr iid, and reused across
+  //   hide/show cycles for the rest of the Mgr's lifetime. The window
+  //   uses set_hide_on_close(true) so close() (Escape, click-outside,
+  //   programmatic) hides without destroying — scroll position, edit
+  //   state, drag-resized size, and screen position all survive a
+  //   dismiss-and-reopen because the widget itself survives.
   //
-  //   The popover is always present (always holds the depot, even when
-  //   the depot is empty) but only shown when the user clicks the
-  //   indicator on the last canvas view. When the depot empties (canvas
-  //   views consume the full buffer), no indicator renders, so the
-  //   popover stays hidden — but the widget remains in this map ready
-  //   for the next time overflow appears.
+  //   DepotWindow exposes accessors (text_view, stats_label) so Canvas
+  //   can update contents on show without rebuilding the widget tree.
   //
   //   Lifetime: built lazily on first show; destroyed when its Mgr is
-  //   no longer in the doc tree (lazy GC pass at each show — walks
-  //   the map, removes entries whose Mgr is gone). No explicit
-  //   destruction signal from Mgr — the GC pass is cheap and correct.
-  //
-  //   Parallel maps cache the inner widgets so a show can update
-  //   contents without re-resolving via Gtk widget-tree walking.
-  //   Same key (Mgr iid). Entries removed in lockstep with the
-  //   popover map's GC pass.
-  std::map<std::string, Gtk::Popover*> m_popover_by_mgr;
-  std::map<std::string, Gtk::Label*>   m_popover_stats_by_mgr;
-  std::map<std::string, Gtk::TextView*> m_popover_textview_by_mgr;
+  //   no longer in the doc tree (lazy GC pass at each show — walks the
+  //   map, removes entries whose Mgr is gone). No explicit destruction
+  //   signal from Mgr — the GC pass is cheap and correct.
+  std::map<std::string, DepotWindow*> m_depot_window_by_mgr;
 
-  // s311 m2.1.v2.1 — Re-entrance guard for the popover's TextView
-  //   signal_changed handler. The handler routes user edits into the
-  //   Mgr's buffer, but Canvas also writes to the TextView buffer
-  //   programmatically (seed-on-fresh-build, future buffer-sync from
-  //   canvas-side edits). Without a guard, those writes would re-fire
-  //   the signal and overwrite the Mgr buffer with the (still being
-  //   set) TextView contents — a stale read corrupting the source.
-  //   Set true around any programmatic set_text on the TextView; the
-  //   handler bails when true.
-  bool m_popover_suppress_changed = false;
+  // s316 m3 — Presented-overflow state. The custom canvas-drawn overflow
+  //   region (the mockup-proven replacement for the DepotWindow) is a
+  //   popup-style affordance: the `!` button at the tail tb's bottom-
+  //   right toggles it. This holds the internal_id of the Mgr whose
+  //   overflow region is currently presented (empty = none shown). It's
+  //   transient UI state — one region shown at a time, dismissed by `!`
+  //   again (and, once text editing lands in the region, by the cursor
+  //   crossing back into the tb). Not persisted; the region's *size*
+  //   persists separately on the popover view (overlay_w/overlay_h).
+  std::string m_overflow_shown_iid;
+
+  // s319 — Vertical scroll offset (doc units) of the presented OA's text,
+  //   so the in-OA caret can travel past the visible bottom: the region is
+  //   laid out to its full remainder height and the OA windows it. Transient
+  //   VIEW state (like m_zoom), not doc data — derived in the OA draw each
+  //   paint to keep the caret in view (scroll-follows-caret), and read by the
+  //   caret render so both window the same way. Reset to 0 on cross-in.
+  mutable double m_overflow_scroll_y = 0.0;
+
+  // s311 m2.1.v2.1 — Re-entrance guard for the DepotWindow's TextView
+  //   signal_changed handler. on_depot_text_changed routes user edits
+  //   into the Mgr's buffer, but Canvas also writes to the TextView
+  //   buffer programmatically (seed-on-fresh-build, future buffer-sync
+  //   from canvas-side edits). Without a guard, those writes would
+  //   re-fire signal_changed and overwrite the Mgr buffer with the
+  //   (still being set) TextView contents — a stale read corrupting
+  //   the source. Set true around any programmatic set_text on the
+  //   TextView; the handler bails when true.
+  //
+  //   Renamed from m_popover_suppress_changed at s313 m1 alongside the
+  //   DepotWindow migration. Same semantics, new name to reflect the
+  //   new container.
+  bool m_depot_suppress_changed = false;
+
+  // s314 m1 — Overlay grip drag state. When the user presses inside the
+  //   grip hit-region on a selected Mgr's bbox bottom-right corner, the
+  //   normal selection drag is intercepted: the press records the
+  //   starting overlay_w / overlay_h, drag_update translates the doc-
+  //   space delta into overlay extent updates, drag_end clears the
+  //   armed Mgr pointer. The grip is the only affordance for creating
+  //   a depot region in the sighting-shot prototype.
+  SceneNode* m_overlay_grip_mgr     = nullptr;  // armed Mgr; null when not dragging
+  double     m_overlay_grip_start_w = 0.0;
+  double     m_overlay_grip_start_h = 0.0;
+  double     m_overlay_grip_start_doc_x = 0.0;  // press point in doc space
+  double     m_overlay_grip_start_doc_y = 0.0;
+
+  // s314 m1c — Overlay dummy playground. A self-contained geometry
+  //   prototype for the canvas-region depot model — one outer container,
+  //   textbox region upper-left, overlay region lower-right, 8 standard
+  //   resize handles on the container plus a 9th grip on the internal
+  //   split, plus a toggle button that hides/shows the overlay. The
+  //   dummy is invoked via Gio::SimpleAction "debug-overlay-dummy" and
+  //   has no integration with selection, undo, SceneNode tree, or
+  //   save/load. Pure prototype to evaluate visual + interaction feel
+  //   before we delete the s311–s313 widget-based depot machinery.
+  //
+  //   See include/OverlayDummy.hpp for the geometry model and sizer
+  //   conventions.
+  OverlayDummy m_overlay_dummy;
+
+  // s314 m1c — Toggle dummy visibility. Called by the
+  //   Gio::SimpleAction "debug-overlay-dummy" wired in MainWindow.
+  //   Public so MainWindow can reach it via the canvas() accessor.
+public:
+  void toggle_overlay_dummy();
+
+  // s314 m1c — Paint the dummy on the canvas (called from Canvas_draw
+  //   after the scene render). No-op when m_overlay_dummy.visible is
+  //   false. Paints: outer container border, textbox region border,
+  //   overlay region border (when shown), 8 sizer handles, overlay
+  //   grip handle, toggle button.
+  void draw_overlay_dummy(const Cairo::RefPtr<Cairo::Context>& cr);
+
+  // s314 m1c — Hit-test the dummy at a doc-space point. Returns the
+  //   sizer index (0..7 for container, 8 for grip, 9 for toggle
+  //   button) or -1 for no hit. Called from on_draw_begin to
+  //   intercept presses before tool routing.
+  //   s315: out_member receives which textbox member the hit belongs
+  //   to (or -1). Verbs that act on the Mgr/tail (8 grip, 9 toggle,
+  //   11 link) report the tail index.
+  int hit_test_overlay_dummy(double doc_x, double doc_y,
+                             int* out_member = nullptr) const;
+
+  // s314 m1c / s315 — Begin/update/end a dummy drag. Mutates the
+  //   dummy's geometry per the sizer's semantics. Drag-begin takes the
+  //   member index so sizer/body drags target the right member.
+  //   Drag-end clears active_sizer/active_member; geometry was
+  //   committed live during update.
+  void overlay_dummy_drag_begin(int sizer, int member,
+                                double doc_x, double doc_y);
+  void overlay_dummy_drag_update(double doc_x, double doc_y);
+  void overlay_dummy_drag_end();
+
+  // s315 — Link button action: append a new tail textbox member to the
+  //   dummy. Overflow re-anchors to the new tail automatically.
+  void overlay_dummy_link();
+
+  // s315 — Delete a textbox member by index. Survivors promote (the
+  //   vector closes the gap); the tail is recomputed and the overlay
+  //   re-anchors. Deleting the last remaining member empties the dummy
+  //   and hides it (simulates empty-Mgr auto-delete).
+  void overlay_dummy_delete_member(int member);
+
+  // s315 m3 — Selection model mock. Plain click selects one member
+  //   (active + sole selection); shift-click toggles a member into the
+  //   selection set (highlight). Returns true if the click was handled
+  //   by the dummy (landed on a member), false to fall through.
+  bool overlay_dummy_select_click(int member, bool shift);
+
+  // s315 m3 — Double-click a member → mark it editing (red rect).
+  void overlay_dummy_edit_click(int member);
+
+private:
 
   // s305 m3 — Drag-to-select state. Set true at press-inside-active-edit
   //   (after place_caret_at seeds anchor=caret at the click byte);
@@ -2051,7 +2164,8 @@ private:
   // focus so keystrokes route through Canvas::handle_text_edit_key.
   // end_* tears down the cursor + timer; called from commit_text_edit
   // and cancel_text_edit. Both are idempotent.
-  void begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary);
+  void begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary,
+                              size_t byte_start = 0);
   void end_text_cursor_edit();
 
   // s312 m2.3 — Suspend / resume the blink timer without tearing down
@@ -2147,44 +2261,201 @@ private:
   //   for each that overflows, computes the indicator's screen rect and
   //   tests against (screen_x, screen_y). On hit: writes the text node
   //   and boundary into out_text/out_boundary, returns true. The caller
-  //   claims the gesture sequence and dispatches show_overflow_popover.
+  //   claims the gesture sequence and dispatches show_overflow_depot.
   //
-  //   show_overflow_popover builds a transient popover anchored to the
-  //   indicator's screen rect (same pointing-rect idiom the right-click
-  //   menu uses) — stats bar + scrolled overflowed text + two disabled
-  //   placeholder buttons for the text-threading arc. Lifetime: managed
-  //   via signal_closed + idle-unparent.
+  //   show_overflow_depot (s313 m1, was show_overflow_popover through
+  //   s312) builds-or-reuses the per-Mgr DepotWindow, updates its stats
+  //   label + view_byte_start bookkeeping, and shows it. The widget
+  //   itself owns its layout, edit routing, cross-boundary controller,
+  //   and drag-to-resize gesture — this method is an orchestrator, not
+  //   a builder.
   void ensure_overflow_glyph_pixbuf();
+  // s317 — Lazily load curvz-link-to-symbolic.svg, recolored to `hex`
+  // (the panel chrome). Re-bakes when `hex` differs from the cached color.
+  void ensure_link_glyph_pixbuf(const std::string& hex);
   bool check_overflow_hit(double screen_x, double screen_y,
                           SceneNode** out_text, SceneNode** out_boundary);
-  void show_overflow_popover(SceneNode* text_node, SceneNode* boundary);
+  void show_overflow_depot(SceneNode* text_node, SceneNode* boundary);
+
+  // s313 m1 — Edit-routing callback fired by DepotWindow's TextView
+  //   signal_changed. The DepotWindow holds the widget; Canvas owns the
+  //   splice logic (knows about view_byte_start, m_depot_suppress_changed,
+  //   queue_draw). DepotWindow's lambda is a thin "call into Canvas with
+  //   my Mgr and TextView" — the heavy lifting lives here so the rest
+  //   of Canvas's text-flow machinery doesn't need to reach into the
+  //   widget tree.
+  void on_depot_text_changed(SceneNode* mgr, Gtk::TextView* text_view);
+
+  // s314 m1 — Compute the Mgr's overlay layout: textbox rect (from the
+  //   Mgr's last canvas view's boundary path), depot rect (offset from
+  //   textbox by overlay_w right / overlay_h down), bbox (the union),
+  //   and the two masked corners (upper-right above depot, lower-left
+  //   below textbox). All in doc space. has_overlay is true when
+  //   overlay_w > 0 || overlay_h > 0 — i.e., the depot region exists
+  //   even if visually empty.
+  //
+  //   This is the sighting-shot version of the canvas-region depot
+  //   model. The s311–s313 widget-based depot (popover/window) stays
+  //   in place alongside until this approach is proven. Once we have
+  //   convergent evidence the layout reads right and the grip drag
+  //   feels natural, the widget-based code gets torn out.
+  struct MgrOverlayLayout {
+    bool   valid       = false;  // false when Mgr has no canvas-view boundary
+    bool   has_overlay = false;  // true when overlay_w > 0 || overlay_h > 0
+    // s316 m1 — `textbox_*` is the TAIL member's rect: the last canvas
+    //   view, which owns the overflow. Name kept for continuity with
+    //   the s314 callers (grip/depot anchor against the tail). When the
+    //   Mgr has N>1 members, this is member N-1's rect, not the union.
+    double textbox_x   = 0.0;    // tail member rect in doc space
+    double textbox_y   = 0.0;
+    double textbox_w   = 0.0;
+    double textbox_h   = 0.0;
+    double depot_x     = 0.0;    // depot bbox in doc space (only when has_overlay)
+    double depot_y     = 0.0;
+    double depot_w     = 0.0;
+    double depot_h     = 0.0;
+    // s316 m1 — Container bbox is now the union of ALL member rects (+
+    //   depot when shown), not the tail-plus-depot it was at N=1. At
+    //   N=1 union(members) == the single member, so this is identical
+    //   to the prior behaviour for every existing single-box Mgr — the
+    //   generalisation only changes geometry once a second member
+    //   exists (the link verb, m2). Ports the mock's container_bbox.
+    double bbox_x      = 0.0;    // union(all members) ∪ depot
+    double bbox_y      = 0.0;
+    double bbox_w      = 0.0;
+    double bbox_h      = 0.0;
+    // s316 m1 — Union of all member rects WITHOUT the depot. The pure
+    //   "ink" extent of the boxes; bbox_* adds the overflow region on
+    //   top. Equal to the tail rect at N=1.
+    double members_x   = 0.0;
+    double members_y   = 0.0;
+    double members_w   = 0.0;
+    double members_h   = 0.0;
+    int    member_count = 0;     // number of Canvas views (flow members)
+  };
+  MgrOverlayLayout compute_mgr_overlay_layout(const SceneNode* mgr) const;
+
+  // ── s316 m1 — TextboxMgr member-iteration seam ───────────────────────
+  // The locked TextboxMgr model (architecture_s315 addendum, proven on
+  // the s315 OverlayDummy mock) is: one Mgr owns an ORDERED LIST of
+  // member boxes; order = flow = z = storage, set at link time, never
+  // reordered; the TAIL (last member) owns the single overflow region.
+  //
+  // In the live tree a "member" is a Canvas TextBoxView (its boundary
+  // is the view's Path child). The trailing Popover view is the
+  // overflow panel's home (carries overlay_w/overlay_h) and is NOT a
+  // member. These two accessors are the single place that maps the
+  // SceneNode child list onto the mock's member vocabulary, so every
+  // consumer (draw, hit-test, future link/delete/selection commands)
+  // agrees on "what are the members" and "who is the tail."
+  //
+  //   mgr_canvas_views — members in flow order (the Canvas views,
+  //                      popover excluded). Empty if mgr is not a Mgr.
+  //   mgr_tail_view    — the overflow-owning member (last Canvas view),
+  //                      or nullptr if there are no members.
+  std::vector<const SceneNode*> mgr_canvas_views(const SceneNode* mgr) const;
+  const SceneNode* mgr_tail_view(const SceneNode* mgr) const;
+
+  // s317 — Member hit-test. Live port of the mock's hit_test_overlay_dummy
+  // body-hit branch: returns the boundary Path of the TextBoxMgr member
+  // under (doc_x, doc_y), or nullptr if the click isn't on any member rect.
+  // Layers walked front-to-back (child 0 on top); members walked tail-first
+  // (back() is newest, on top). The returned boundary is the selectable
+  // atom — routed through the normal object-pick path in on_select_begin,
+  // it inherits the existing 8-sizer handles + resize + body-drag because
+  // collect_paths descends Mgr -> CanvasView -> boundary and the scale/move
+  // machinery operates on the boundary's path nodes. Empty Mgr area returns
+  // nullptr so the caller's hit_test fallback can still claim the Mgr.
+  SceneNode* member_hit_test(double doc_x, double doc_y) const;
+
+  // s317 — Map a member boundary Path back to its owning Mgr + view (the
+  // inverse of member_hit_test's descent). Returns false if the boundary
+  // isn't a live member of any TextBoxMgr.
+  bool find_textbox_member(const SceneNode* boundary, SceneNode** out_mgr,
+                           SceneNode** out_view) const;
+
+  // s317 — Delete a member box: remove the view, reflow the text, and
+  // auto-delete the Mgr when it was the last member. Undoable. Wired to the
+  // Delete key (via delete_selected) and the member right-click menu.
+  void delete_textbox_member(SceneNode* mgr, SceneNode* member_view);
+
+  // s316 m2 — Link: append a new member box to a TextboxMgr. The live
+  // realisation of the mock's overlay_dummy_link — appends a Canvas
+  // TextBoxView after the current tail (boundary cloned from the tail,
+  // offset down-right), inserted before the trailing popover so child
+  // order stays [members..., popover]. The new view becomes the tail;
+  // the m1 seam re-anchors the overflow to it automatically. Undoable
+  // via InsertObjectCommand. Wired to the overflow panel's link button
+  // (DepotWindow, a friend, calls this). Structure only in m2 — the new
+  // member renders empty until the layout resolver flows text into it.
+  void link_textbox_member(SceneNode* mgr);
+
+  // s316 m3 — Toggle the custom canvas overflow region for a Mgr. Called
+  // by the `!` button click (Canvas.cpp overflow_click). Presents the
+  // region if hidden (seeding a default size on the popover view the
+  // first time, so the region has area to draw + a grip to resize),
+  // dismisses it if already shown for this Mgr. The region itself is
+  // painted in Canvas_draw and hit-tested via compute_mgr_overlay_layout.
+  void toggle_overflow_region(SceneNode* mgr);
+
+  // s316 m4a — Interior layout of the custom overflow bubble. The bubble
+  // body is the depot rect (L.depot_*); this carves its interior into the
+  // recognizable chrome from the mockup: a wide info rect + the link
+  // button across the top, the text area filling the body, a scrollbar
+  // strip down the right edge of the text area, and the resize grip in
+  // the SHARP bottom-right corner. The triangular point sits on the top
+  // edge aligned under the `!` (the tail tb's bottom-right). Paddings are
+  // screen-px-scaled (divided by zoom) so the chrome stays a constant
+  // on-screen size while the bubble body scales in doc space. Computed in
+  // one place so draw (Canvas_draw) and hit-test (Canvas.cpp) agree.
+  struct OverflowBubbleLayout {
+    bool   valid = false;
+    double body_x = 0, body_y = 0, body_w = 0, body_h = 0;   // bubble rect
+    double point_tip_x = 0, point_tip_y = 0;                 // tail point tip
+    double point_base_l = 0, point_base_r = 0, point_base_y = 0;
+    double info_x = 0, info_y = 0, info_w = 0, info_h = 0;    // word-count rect
+    double link_x = 0, link_y = 0, link_w = 0, link_h = 0;    // link button
+    double text_x = 0, text_y = 0, text_w = 0, text_h = 0;    // text area
+    double sbar_x = 0, sbar_y = 0, sbar_w = 0, sbar_h = 0;    // scrollbar strip
+    double grip_x = 0, grip_y = 0, grip_w = 0, grip_h = 0;    // sharp-corner grip
+    double corner_r = 0;                                     // soft-corner radius
+  };
+  OverflowBubbleLayout compute_overflow_bubble_layout(
+      const MgrOverlayLayout& L) const;
+
+  // s316 m4a — Hit-test the presented overflow bubble's link button.
+  // Returns the Mgr whose bubble link button is under (doc_x, doc_y), or
+  // nullptr. Called from the overflow click gesture; on a hit the caller
+  // fires link_textbox_member (the sole create-next-tb verb).
+  SceneNode* hit_overflow_link(double doc_x, double doc_y);
 
   // ── s312 m2.3 — Cross-boundary caret travel ──────────────────────────
-  // The canvas TextCursor and the popover's TextView are two surfaces
+  // The canvas TextCursor and the DepotWindow's TextView are two surfaces
   // on the same buffer (the Mgr's text_content). The boundary between
-  // them is the byte index view_byte_start on the Popover view: bytes
-  // [0, view_byte_start) render on the canvas; [view_byte_start, end)
-  // render in the popover. Cross-boundary travel makes that byte seam
-  // a navigable position so the caret can walk across without the
-  // user having to click the indicator or escape-and-reenter.
+  // them is the byte index view_byte_start on the Popover view (named
+  // Popover for legacy reasons; the SceneNode kind is unchanged at s313):
+  // bytes [0, view_byte_start) render on the canvas; [view_byte_start,
+  // end) render in the depot window. Cross-boundary travel makes that
+  // byte seam a navigable position so the caret can walk across without
+  // the user having to click the indicator or escape-and-reenter.
   //
-  // cross_into_popover(mgr): the canvas-side caret has just tried to
+  // cross_into_depot(mgr): the canvas-side caret has just tried to
   //   step past the canvas portion's last byte (Right at end of canvas
-  //   text, or Down with no canvas baseline below). Open the popover
+  //   text, or Down with no canvas baseline below). Open the DepotWindow
   //   for this Mgr (reusing the long-lived widget if one exists), grab
   //   focus to the TextView, place the TextView caret at offset 0.
   //   The canvas TextCursor STAYS ALIVE: the two surfaces share the
   //   buffer, and a subsequent cross_back_to_canvas only needs to flip
   //   focus and reposition the canvas caret — no rebuild required.
   //
-  // cross_back_to_canvas(mgr): the popover-side caret has just tried
+  // cross_back_to_canvas(mgr): the depot-side caret has just tried
   //   to step before the depot's first byte (Left at offset 0, or Up
-  //   on the first line). Hide the popover, focus the canvas, and
+  //   on the first line). Hide the DepotWindow, focus the canvas, and
   //   position the canvas TextCursor at view_byte_start (the byte
   //   immediately past the canvas portion, which is the natural
-  //   landing site coming from the popover's offset 0). If the
-  //   canvas TextCursor doesn't yet exist (popover was opened from
-  //   outside an active edit), begin one via begin_textbox_edit.
+  //   landing site coming from the depot's offset 0). If the canvas
+  //   TextCursor doesn't yet exist (depot was opened from outside an
+  //   active edit), begin one via begin_textbox_edit.
   //
   // caret_at_canvas_end(out_mgr): query helper used by
   //   handle_text_edit_key to detect a cross attempt. Returns true
@@ -2209,7 +2480,7 @@ private:
   // Mgr or missing canvas view should not crash, just decline.
   bool caret_at_canvas_end(SceneNode** out_mgr) const;
   bool mgr_has_overflow(SceneNode** out_mgr) const;
-  void cross_into_popover(SceneNode* mgr);
+  void cross_into_depot(SceneNode* mgr);
   void cross_back_to_canvas(SceneNode* mgr);
 
   // s301 m1b — Draw the leading hairlines inside an actively-edited text
@@ -2226,9 +2497,17 @@ private:
   // builds a TextLayout via compute_text_layout, and paints each
   // baseline's chunk at its baseline's start point. Legacy unbound text
   // continues to use the existing draw_text_node body (text_x/text_y).
-  void draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
+  // s317 — byte_start lets a TextBoxMgr member render its SLICE of the
+  // shared buffer (the flow resolver chains offset = return value into the
+  // next member). draw_overflow_indicator gates the `!` to the TAIL member
+  // only (overflow belongs to the tail). Returns the absolute bytes_consumed
+  // so the Mgr loop can chain it. Defaults reproduce the legacy single-box
+  // behaviour for every existing caller.
+  size_t draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
                               const SceneNode& text_obj,
-                              const SceneNode& boundary);
+                              const SceneNode& boundary,
+                              size_t byte_start = 0,
+                              bool draw_overflow_indicator = true);
 
   void on_text_begin(double sx, double sy); // legacy click-to-edit path,
                                             // now only invoked on hit-test
@@ -2266,7 +2545,88 @@ public:
   //
   // Returns silently if the TextBox is malformed (missing or wrong-
   // typed children). The user sees no edit start, but no crash.
-  void begin_textbox_edit(SceneNode* text_box);
+  // s317 — Optional click point: when have_point, the caret enters the
+  //   MEMBER under (doc_x, doc_y) (anchored to that member's boundary +
+  //   flow byte_start) at the clicked position; without it, edit anchors
+  //   to the first member (legacy behaviour, e.g. fresh construction).
+  void begin_textbox_edit(SceneNode* text_box, bool have_point = false,
+                          double doc_x = 0.0, double doc_y = 0.0);
+  // s317 — Region chain: find which member box contains (doc_x, doc_y) and
+  //   report its boundary Path + the absolute byte where its text slice
+  //   begins (the running flow offset). Returns false if the point isn't
+  //   inside any member. The byte_start is computed by chaining
+  //   compute_text_layout across the ordered member views — the same flow
+  //   the renderer uses, so caret and render agree.
+  bool member_region_at_point(SceneNode* mgr, double doc_x, double doc_y,
+                              SceneNode** out_boundary,
+                              size_t* out_byte_start) const;
+
+  // ── s319 — Caret region flow ─────────────────────────────────────────
+  //   The ordered member region chain the caret walks to cross between
+  //   boxes. Each entry pairs a member box's boundary Path with the
+  //   absolute byte range its text slice occupies, computed by chaining
+  //   compute_text_layout in flow order — the SAME chain
+  //   member_region_at_point's forward pass builds. byte_end is absolute &
+  //   exclusive (== the next member's byte_start). Malformed views are
+  //   skipped without advancing the offset, matching the resolver.
+  struct MemberRegion { SceneNode* boundary; size_t byte_start; size_t byte_end; };
+  std::vector<MemberRegion> build_member_regions(SceneNode* mgr) const;
+
+  // Gating predicates for cross attempts: the caret sitting exactly at the
+  //   current region's start / end byte. Left/Up at the start crosses to
+  //   the previous member; Right/Down at the end crosses to the next.
+  bool caret_at_region_start() const;
+  bool caret_at_region_end() const;
+
+  // Re-anchor the active text caret to the adjacent member region. dir =
+  //   -1 (previous, land at its end) or +1 (next, land at its start).
+  //   Updates m_text_boundary_editing so the s318 active-edit pad and the
+  //   caret render track the new region. Returns false at the chain ends
+  //   (no adjacent member), so callers fall through to stock movement /
+  //   the s312 overflow-terminal crossing.
+  bool cross_member_region(int dir);
+
+  // ── s319 — Overflow terminal region (the OA panel) ───────────────────
+  //   The OA is the chain's terminal region: "just a scrolling tb." To let
+  //   the caret live in it, the popover view carries a rect-Path boundary
+  //   synced to the OA text area (the same rect the renderer pours overflow
+  //   text into), so caret layout == drawn layout. sync_overflow_region_
+  //   boundary creates/updates that boundary and reports the overflow
+  //   byte_start (== the tail member's byte_end). Returns nullptr when
+  //   nothing spills or there's no popover surface.
+  SceneNode* sync_overflow_region_boundary(SceneNode* mgr,
+                                           size_t* out_byte_start);
+
+  // True when the active caret is anchored to the editing Mgr's overflow
+  //   (popover) region — the gate that turns Left/Up at the OA start into
+  //   a cross-OUT rather than a normal move.
+  bool caret_in_overflow() const;
+
+  // Caret presence drives OA visibility. cross_into_overflow presents the
+  //   OA and anchors the caret at the overflow byte_start (called when the
+  //   caret tries to step past the TAIL member's end). cross_out_of_overflow
+  //   closes the OA and re-anchors the caret to the tail member's end
+  //   (called when the caret steps back out at the OA start). Each returns
+  //   false when the move doesn't apply, so callers fall through.
+  bool cross_into_overflow(SceneNode* mgr);
+  bool cross_out_of_overflow();
+
+  // Height needed to lay out the OA's FULL remainder: grows from the
+  //   visible height, doubling until every remaining byte fits, then
+  //   tightens to the content bottom. Bounding the region to its content
+  //   (not a fixed huge height) keeps compute_text_layout from emitting
+  //   tens of thousands of empty capacity baselines, which floods layout
+  //   and wrecks the scroll metric. Both sync (cursor boundary) and the
+  //   renderer (area boundary) size from this so caret math == drawn text.
+  double overflow_region_height(const SceneNode* mgr,
+                                double tx, double ty, double tw,
+                                double vis_h, double pad,
+                                size_t ov_start) const;
+
+  // The Mgr whose currently-presented OA text area contains (doc_x, doc_y),
+  //   else nullptr. Used to route a double-click over the OA into edit.
+  //   Non-const: resolves the Mgr via project().
+  SceneNode* overflow_hit_mgr(double doc_x, double doc_y);
 
   // ── s301 m1g — CurrentColor-style caret contrast.
   //    The caret should be visible against whatever the canvas

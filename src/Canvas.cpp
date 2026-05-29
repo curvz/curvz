@@ -577,6 +577,19 @@ Canvas::Canvas() {
                                                         double y) {
     if (n_press != 2)
       return;
+    // s315 m3 — Overlay dummy double-click → edit the member (red
+    // rect). Highest-priority intercept when the dummy is visible; a
+    // miss falls through to normal double-click handling.
+    if (m_overlay_dummy.visible) {
+      double ddx = 0.0, ddy = 0.0;
+      screen_to_doc(x, y, ddx, ddy);
+      int dmember = -1;
+      int dhit = hit_test_overlay_dummy(ddx, ddy, &dmember);
+      if (dmember >= 0 && (dhit == 10 || (dhit >= 0 && dhit <= 7))) {
+        overlay_dummy_edit_click(dmember);
+        return;
+      }
+    }
     // Selection and Text tools both honour double-click → edit on a
     // textbox. Selection promotes to Text first; Text is already
     // there. Other tools ignore double-clicks (their own gestures
@@ -585,8 +598,53 @@ Canvas::Canvas() {
       return;
     double dx, dy;
     screen_to_doc(x, y, dx, dy);
-    SceneNode *hit = hit_test(dx, dy);
-    if (!hit) return;
+
+    // ── s319 — Double-click inside a PRESENTED OA's text area enters edit
+    //   in the overflow region, caret at the clicked byte. Tested before
+    //   member resolution: the panel floats above member space, so a click
+    //   on it must not fall through to a member underneath. Establish the
+    //   edit (begin_textbox_edit sets up the cursor + snapshot), then
+    //   cross_into_overflow re-anchors the caret to the OA region (scroll
+    //   resets to 0, so the click maps directly through byte_index_at).
+    if (SceneNode* oa_mgr = overflow_hit_mgr(dx, dy)) {
+      auto enter_oa = [this, oa_mgr, dx, dy]() {
+        begin_textbox_edit(oa_mgr, /*have_point=*/false);
+        if (cross_into_overflow(oa_mgr) && m_text_cursor) {
+          if (auto b = m_text_cursor->byte_index_at(dx, dy)) {
+            m_text_cursor->set_byte_index(*b);
+            m_text_cursor->collapse_selection();
+          }
+        }
+        queue_draw();
+      };
+      LOG_INFO("Canvas: DBLCLICK into OA text area → edit overflow region");
+      if (m_tool == ActiveTool::Selection) {
+        m_sig_request_tool.emit(ActiveTool::Text);
+        Glib::signal_idle().connect_once(enter_oa);
+      } else {
+        enter_oa();
+      }
+      return;
+    }
+
+    // ── s318 — Edit-entry resolver. Single-click selection already
+    //   resolves a TBM member via member_hit_test (reverse member order =
+    //   topmost-wins, tests each member's boundary directly, NO object_bbox
+    //   gate). Double-click now goes through the SAME door so the two
+    //   gestures can't disagree, and so overlapping members resolve to the
+    //   newest (top) box. A point that lands on no member's boundary is NOT
+    //   a Mgr edit — the transparent gap of a TBM passes through (per the
+    //   model: TBM area is just the union of real objects; empty space is
+    //   click-through). hit_test's object_bbox union is no longer
+    //   load-bearing for edit-entry.
+    SceneNode* tb = nullptr;
+    if (SceneNode* member_b = member_hit_test(dx, dy)) {
+      SceneNode* owner = nullptr;
+      if (find_textbox_member(member_b, &owner, /*out_view=*/nullptr) && owner)
+        tb = owner;
+    }
+    LOG_INFO("Canvas: DBLCLICK doc=({:.2f},{:.2f}) tool={} member_resolver_mgr='{}'",
+             dx, dy, (int)m_tool, tb ? tb->name : "(none)");
 
     // ── TextBox: double-click → edit, regardless of which of the
     //   two honouring tools we're in. The user model: muscle memory
@@ -601,26 +659,32 @@ Canvas::Canvas() {
     //
     //   Text tool: already in the right tool. Call the helper
     //     directly — no scheduling needed.
-    if (hit->is_text_box_mgr()) {
-      SceneNode* tb = hit;
+    if (tb) {
+      LOG_INFO("Canvas: DBLCLICK → Mgr edit, tool={} (Selection schedules "
+               "via idle; Text calls direct)", (int)m_tool);
       if (m_tool == ActiveTool::Selection) {
         m_sig_request_tool.emit(ActiveTool::Text);
-        Glib::signal_idle().connect_once([this, tb]() {
-          begin_textbox_edit(tb);
+        Glib::signal_idle().connect_once([this, tb, dx, dy]() {
+          LOG_INFO("Canvas: DBLCLICK idle-fire → begin_textbox_edit");
+          begin_textbox_edit(tb, /*have_point=*/true, dx, dy);
         });
       } else {
-        begin_textbox_edit(tb);
+        begin_textbox_edit(tb, /*have_point=*/true, dx, dy);
       }
       return;
     }
 
-    // The remaining cases handle legacy paired-sibling text (bare
-    // Text node or boundary Path at the layer level) and only fire
-    // in Selection tool. Text tool's own press path already handles
-    // legacy paired-sibling re-entry directly; doing it here too
-    // would double-fire.
+    // Not on a TBM member → legacy paired-sibling text (bare Text node or
+    //   boundary Path at the layer level), resolved via the general
+    //   hit_test. These only fire in Selection tool; Text tool's own press
+    //   path already handles legacy re-entry directly (double-firing here
+    //   would conflict).
     if (m_tool != ActiveTool::Selection)
       return;
+    SceneNode *hit = hit_test(dx, dy);
+    LOG_INFO("Canvas: DBLCLICK legacy-path hit='{}' type={}",
+             hit ? hit->name : "(null)", hit ? (int)hit->type : -1);
+    if (!hit) return;
 
     // Case A: double-clicked the text node itself (legacy unbound or
     // bound). Enter edit via Text tool's on_text_begin.
@@ -688,11 +752,24 @@ Canvas::Canvas() {
       [this, overflow_click](int n_press, double x, double y) {
         if (n_press != 1) return;
         if (!m_doc) return;
+        // s316 m4a — If a bubble is presented, a click on its link button
+        //   is the create-next-tb verb. Test it before the `!` toggle so
+        //   the button (which sits over the bubble) wins.
+        double doc_x = 0.0, doc_y = 0.0;
+        screen_to_doc(x, y, doc_x, doc_y);
+        if (SceneNode* link_mgr = hit_overflow_link(doc_x, doc_y)) {
+          overflow_click->set_state(Gtk::EventSequenceState::CLAIMED);
+          link_textbox_member(link_mgr);
+          return;
+        }
         SceneNode* hit_text = nullptr;
         SceneNode* hit_boundary = nullptr;
         if (check_overflow_hit(x, y, &hit_text, &hit_boundary)) {
           overflow_click->set_state(Gtk::EventSequenceState::CLAIMED);
-          show_overflow_popover(hit_text, hit_boundary);
+          // s316 m3 — the `!` now toggles the custom canvas overflow
+          //   region instead of opening the DepotWindow. The window is
+          //   being retired; the overflow lives on the canvas.
+          toggle_overflow_region(hit_text);
         }
       });
   add_controller(overflow_click);
@@ -716,6 +793,97 @@ Canvas::Canvas() {
   rclick->signal_pressed().connect([this](int, double x, double y) {
     if (!m_doc)
       return;
+
+    // s315 — Overlay dummy right-click: if the dummy is visible and the
+    // click landed on a member, offer "Delete textbox" to exercise the
+    // delete/promote lifecycle. Highest priority intercept; a miss
+    // falls through to normal handling. Local per-popup action group
+    // ("dummyctx"), same lifetime idiom as the object/node popovers.
+    if (m_overlay_dummy.visible) {
+      double ddx = 0.0, ddy = 0.0;
+      screen_to_doc(x, y, ddx, ddy);
+      int dmember = -1;
+      int dhit = hit_test_overlay_dummy(ddx, ddy, &dmember);
+      // Member hits are sizer (0..7) or body (10); verbs 8/9/11 are not
+      // delete targets. Require an actual member index.
+      if (dmember >= 0 && (dhit == 10 || (dhit >= 0 && dhit <= 7))) {
+        auto menu = Gio::Menu::create();
+        menu->append("Delete textbox", "dummyctx.delete");
+
+        auto ag = Gio::SimpleActionGroup::create();
+        auto act = Gio::SimpleAction::create("delete");
+        const int captured_member = dmember;
+        act->signal_activate().connect(
+            [this, captured_member](const Glib::VariantBase &) {
+              Glib::signal_idle().connect_once([this, captured_member]() {
+                overlay_dummy_delete_member(captured_member);
+              });
+            });
+        ag->add_action(act);
+        insert_action_group("dummyctx", ag);
+
+        auto *popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
+        popover->set_parent(*this);
+        popover->set_has_arrow(false);
+        Gdk::Rectangle rect((int)x, (int)y, 1, 1);
+        popover->set_pointing_to(rect);
+        popover->signal_closed().connect([popover]() {
+          Glib::signal_idle().connect_once(
+              [popover]() { popover->unparent(); });
+        });
+        popover->popup();
+        return;
+      }
+    }
+
+    // s317 — Live TextBoxMgr member right-click: "Delete text box". Mirrors
+    //   the mock's dummyctx branch but acts on real members. A miss falls
+    //   through to the normal object menu.
+    {
+      double mdx = 0.0, mdy = 0.0;
+      screen_to_doc(x, y, mdx, mdy);
+      SceneNode* member_boundary = member_hit_test(mdx, mdy);
+      if (member_boundary) {
+        SceneNode* mm_mgr = nullptr;
+        SceneNode* mm_view = nullptr;
+        if (find_textbox_member(member_boundary, &mm_mgr, &mm_view) &&
+            mm_mgr && mm_view) {
+          auto menu = Gio::Menu::create();
+          menu->append("Delete text box", "tbmemberctx.delete");
+
+          auto ag = Gio::SimpleActionGroup::create();
+          auto act = Gio::SimpleAction::create("delete");
+          SceneNode* cap_mgr = mm_mgr;
+          SceneNode* cap_view = mm_view;
+          act->signal_activate().connect(
+              [this, cap_mgr, cap_view](const Glib::VariantBase&) {
+                Glib::signal_idle().connect_once([this, cap_mgr, cap_view]() {
+                  // Liveness guard: the Mgr (a layer child) is checkable via
+                  // is_node_alive. The view is nested deeper, so we let
+                  // delete_textbox_member re-validate it (it looks the view
+                  // up in the Mgr's child list and no-ops if it's gone).
+                  if (is_node_alive(cap_mgr))
+                    delete_textbox_member(cap_mgr, cap_view);
+                });
+              });
+          ag->add_action(act);
+          insert_action_group("tbmemberctx", ag);
+
+          auto* popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
+          popover->set_parent(*this);
+          popover->set_has_arrow(false);
+          Gdk::Rectangle rect((int)x, (int)y, 1, 1);
+          popover->set_pointing_to(rect);
+          popover->signal_closed().connect([popover]() {
+            Glib::signal_idle().connect_once(
+                [popover]() { popover->unparent(); });
+          });
+          popover->popup();
+          return;
+        }
+      }
+    }
+
     // TextOnPath tool intercepts right-click for detach
     if (m_tool == ActiveTool::TextOnPath) {
       on_top_rclick(x, y);
@@ -2741,6 +2909,21 @@ bool Canvas::delete_selected() {
   if (m_selection.empty() || !m_doc)
     return false;
 
+  // s317 — If the active selection is a TextBoxMgr member's boundary, the
+  //   Delete key deletes the MEMBER (remove the view, reflow the text, and
+  //   auto-delete the Mgr when it was the last member) — not the raw
+  //   boundary path, which would corrupt the Mgr. Routed here so both the
+  //   Delete accelerator and any delete_selected caller get it.
+  if (m_selected) {
+    SceneNode* mm_mgr = nullptr;
+    SceneNode* mm_view = nullptr;
+    if (find_textbox_member(m_selected, &mm_mgr, &mm_view) &&
+        mm_mgr && mm_view) {
+      delete_textbox_member(mm_mgr, mm_view);
+      return true;
+    }
+  }
+
   bool deleted_any = false;
   // If a Compound dissolves during this delete, its surviving child is
   // tracked here so the post-loop block can promote it as the new
@@ -4029,21 +4212,49 @@ SceneNode* Canvas::find_text_box_for_text(const SceneNode* text) {
 // TextBoxMgr with at least one Canvas TextBoxView holding a Path
 // boundary"; defensive shape-check here protects against corrupted
 // state without crashing.
-void Canvas::begin_textbox_edit(SceneNode* text_box) {
+void Canvas::begin_textbox_edit(SceneNode* text_box, bool have_point,
+                                double doc_x, double doc_y) {
   if (!text_box || !text_box->is_text_box_mgr()) return;
   if (text_box->children.empty()) return;
-  // Find the first canvas view. m1 has one canvas view per Mgr at
-  // children[0]; future multi-view Mgrs might have several. The
-  // edit anchors to the first one's boundary.
-  SceneNode* canvas_view = nullptr;
-  for (auto& v : text_box->children) {
-    if (v && v->is_canvas_view()) { canvas_view = v.get(); break; }
+  // s317 — Region-aware entry. Default: anchor to the FIRST member (byte 0)
+  //   — fresh construction and point-less callers. When a click point is
+  //   given, find which member box it landed in and anchor the caret to
+  //   THAT member's boundary + its flow byte_start, so double-clicking any
+  //   box (not just the first) enters edit there. The single-region cursor
+  //   lays out [byte_start, …] into that boundary; absolute byte offsets
+  //   make the caret math identical to the byte-0 case.
+  SceneNode* boundary = nullptr;
+  size_t byte_start = 0;
+  bool resolved_by_point = false;
+  if (have_point &&
+      member_region_at_point(text_box, doc_x, doc_y, &boundary, &byte_start)) {
+    // boundary + byte_start resolved to the clicked member.
+    resolved_by_point = true;
+  } else {
+    // First canvas view's boundary, byte 0.
+    SceneNode* canvas_view = nullptr;
+    for (auto& v : text_box->children) {
+      if (v && v->is_canvas_view()) { canvas_view = v.get(); break; }
+    }
+    if (!canvas_view || canvas_view->children.empty() ||
+        !canvas_view->children[0] ||
+        canvas_view->children[0]->type != SceneNode::Type::Path) {
+      LOG_INFO("Canvas: begin_textbox_edit BAILED — no first canvas-view "
+               "boundary (have_point={} resolved_by_point={})",
+               have_point, resolved_by_point);
+      return;
+    }
+    boundary = canvas_view->children[0].get();
+    byte_start = 0;
   }
-  if (!canvas_view || canvas_view->children.empty() ||
-      !canvas_view->children[0] ||
-      canvas_view->children[0]->type != SceneNode::Type::Path) return;
-
-  SceneNode* boundary = canvas_view->children[0].get();
+  if (!boundary) {
+    LOG_INFO("Canvas: begin_textbox_edit BAILED — null boundary");
+    return;
+  }
+  LOG_INFO("Canvas: begin_textbox_edit Mgr='{}' have_point={} pt=({:.2f},{:.2f}) "
+           "→ resolved_by_point={} boundary_iid='{}' byte_start={}",
+           text_box->name, have_point, doc_x, doc_y, resolved_by_point,
+           boundary->internal_id, byte_start);
 
   m_text_editing = text_box;          // Mgr is the text-bearing node
   m_text_boundary_editing = boundary;
@@ -4058,10 +4269,33 @@ void Canvas::begin_textbox_edit(SceneNode* text_box) {
   m_selection = {text_box};
   notify_object_selection_changed();
 
-  // (The legacy Gtk::Entry is only ever shown for legacy unbound
-  //  text. A Mgr edit never overlaps it, so we don't need to hide
-  //  it here.)
-  begin_text_cursor_edit(text_box, boundary);
+  begin_text_cursor_edit(text_box, boundary, byte_start);
+
+  // s317 — Place the caret at the clicked position WITHIN the anchored
+  //   member. byte_index_at maps the doc point through this region's
+  //   layout (which starts at byte_start) to an absolute byte.
+  if (have_point && m_text_cursor) {
+    if (auto b = m_text_cursor->byte_index_at(doc_x, doc_y)) {
+      m_text_cursor->set_byte_index(*b);
+      // s318 — Collapse the anchor to the caret. The TextCursor ctor seeds
+      //   the caret (and anchor) at the persisted/end-of-buffer byte; moving
+      //   only the caret via set_byte_index would leave the anchor stranded
+      //   at that old byte, producing a spurious selection that spans from
+      //   the click to end-of-buffer — and, across a multi-member Mgr, that
+      //   selection bridges region boundaries (the highlight bled into the
+      //   other box). A plain double-click is an insertion point, not a
+      //   selection, so collapse here.
+      m_text_cursor->collapse_selection();
+      LOG_INFO("Canvas: caret placed via byte_index_at → byte={} "
+               "(region byte_start={})", *b, byte_start);
+      queue_draw();
+    } else {
+      LOG_INFO("Canvas: byte_index_at FAILED for pt=({:.2f},{:.2f}) — caret "
+               "stays at ctor default byte={} (may be outside this region's "
+               "range → no visible caret)",
+               doc_x, doc_y, m_text_cursor->byte_index());
+    }
+  }
 }
 
 // ── s301 m1g — Caret contrast color ─────────────────────────────────────────
@@ -4112,7 +4346,8 @@ Canvas::~Canvas() {
 //
 // Per-platform-typical 530ms cadence (matches GTK/GNOME text widgets and
 // is close to the Mac/Windows defaults). Could become a preference later.
-void Canvas::begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary) {
+void Canvas::begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary,
+                                    size_t byte_start) {
   if (!text_node) return;
   // boundary may be null if a legacy unbound text somehow routes here —
   // TextCursor's position_on_canvas returns invalid in that case and the
@@ -4124,7 +4359,8 @@ void Canvas::begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary) {
   // a structural sibling, not an iid-linked peer.
 
   end_text_cursor_edit();  // idempotent: clear any prior cursor first
-  m_text_cursor = std::make_unique<TextCursor>(this, text_node, boundary);
+  m_text_cursor = std::make_unique<TextCursor>(this, text_node, boundary,
+                                               byte_start);
 
   // Blink timer. 530ms is the visual cadence; we toggle visibility and
   // queue_draw each tick. Capturing `this` is safe because Canvas owns
@@ -4655,6 +4891,17 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       return true;
 
     case GDK_KEY_Left:
+      // s319 — Caret region flow. At the current region's first byte, plain
+      //   Left steps out: from the OA back to the tail member (closes the
+      //   OA); from a member back to the previous member. No-op at the very
+      //   first member. Shift-extend across regions deferred.
+      if (!shift && caret_at_region_start()) {
+        if (caret_in_overflow()) {
+          if (cross_out_of_overflow()) return true;
+        } else if (cross_member_region(-1)) {
+          return true;
+        }
+      }
       // s305 m4 — Shift+Left extends; plain Left collapses (m2
       //   behaviour preserved by calling the base move which
       //   already collapses).
@@ -4671,6 +4918,16 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       return true;
 
     case GDK_KEY_Right:
+      // s319 — Caret region flow. At the current member's end byte, plain
+      //   Right re-anchors to the NEXT member; at the TAIL member's end it
+      //   steps into the overflow region (presents the OA, caret in). When
+      //   already in the OA, neither fires and we fall through (scroll is a
+      //   follow-on). Shift-extend across regions is deferred.
+      if (!shift && caret_at_region_end()) {
+        if (cross_member_region(+1)) return true;
+        if (!caret_in_overflow() && cross_into_overflow(m_text_editing))
+          return true;
+      }
       // s312 m2.3 — Cross-boundary at canvas-right-edge. If the caret
       //   is at compute_text_layout's bytes_consumed AND overflow
       //   exists, Right means "step into the popover" rather than
@@ -4685,9 +4942,9 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
         SceneNode* xb_mgr = nullptr;
         if (caret_at_canvas_end(&xb_mgr) && xb_mgr) {
           flush_text_segment();  // motion leaves the typing run
-          LOG_INFO("Canvas: cross-into-popover from Right at canvas "
+          LOG_INFO("Canvas: cross-into-depot from Right at canvas "
                    "end — Mgr '{}'", xb_mgr->name);
-          cross_into_popover(xb_mgr);
+          cross_into_depot(xb_mgr);
           return true;
         }
       }
@@ -4743,7 +5000,14 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
         extend_with([this]() { m_text_cursor->move_up(); });
       } else {
         flush_text_segment();
-        m_text_cursor->move_up();
+        // s319 — Top line: step out of the OA back to the tail member
+        //   (closes the OA), or to the previous member. No-op at the first.
+        if (!m_text_cursor->move_up()) {
+          if (caret_in_overflow())
+            cross_out_of_overflow();
+          else
+            cross_member_region(-1);
+        }
       }
       queue_draw();
       return true;
@@ -4769,12 +5033,12 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       }
       flush_text_segment();  // s307 m3
       if (!m_text_cursor->move_down()) {
-        SceneNode* xb_mgr = nullptr;
-        if (mgr_has_overflow(&xb_mgr) && xb_mgr) {
-          LOG_INFO("Canvas: cross-into-popover from Down at canvas "
-                   "last baseline — Mgr '{}'", xb_mgr->name);
-          cross_into_popover(xb_mgr);
-          return true;
+        // s319 — Bottom line: next member first; at the tail, step into the
+        //   overflow region (presents the OA, caret in). Skip when already
+        //   in the OA (scroll is a follow-on).
+        if (!cross_member_region(+1)) {
+          if (!caret_in_overflow())
+            cross_into_overflow(m_text_editing);
         }
       }
       queue_draw();
@@ -5313,17 +5577,36 @@ std::optional<Canvas::BBox> Canvas::object_bbox(const SceneNode &obj,
   //   Falls back gracefully if the container is malformed: missing
   //   boundary child → std::nullopt, same shape as Image with zero
   //   dimensions.
-  // s310 m1bc — TextBoxMgr bbox = first canvas view's boundary bbox.
-  //   The boundary defines the user-visible frame, just one level
-  //   deeper than the pre-s310 TextBox shape. Falls back gracefully
-  //   if the Mgr is malformed: no canvas view, or canvas view has
-  //   no Path child → std::nullopt.
+  // s317 — TextBoxMgr bbox = UNION of all canvas-view boundary bboxes.
+  //   Pre-s317 (m1bc) this returned the FIRST canvas view's bbox and
+  //   stopped — fine when a Mgr had one member, but once a Mgr owns
+  //   several member boxes (link), that left the Mgr's bbox covering only
+  //   box 1. hit_test gates the Mgr on this bbox, so a click in box 2 fell
+  //   outside it and returned null → double-click couldn't enter edit on
+  //   any box but the first. Unioning every member view makes the whole
+  //   Mgr grabbable. (The overflow panel is chrome, not a member box, so
+  //   it's intentionally excluded here — the container frame in the
+  //   renderer handles enclosing the panel separately.) Malformed Mgr
+  //   (no canvas view with a Path child) → std::nullopt as before.
   if (obj.is_text_box_mgr()) {
+    bool found = false;
+    double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
     for (const auto &view : obj.children) {
       if (!view || !view->is_canvas_view()) continue;
       if (view->children.empty() || !view->children[0]) continue;
-      return object_bbox(*view->children[0], include_stroke);
+      auto vb = object_bbox(*view->children[0], include_stroke);
+      if (!vb) continue;
+      if (!found) {
+        x0 = vb->x; y0 = vb->y; x1 = vb->x + vb->w; y1 = vb->y + vb->h;
+        found = true;
+      } else {
+        x0 = std::min(x0, vb->x);
+        y0 = std::min(y0, vb->y);
+        x1 = std::max(x1, vb->x + vb->w);
+        y1 = std::max(y1, vb->y + vb->h);
+      }
     }
+    if (found) return BBox{x0, y0, x1 - x0, y1 - y0};
     return std::nullopt;
   }
 
