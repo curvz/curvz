@@ -446,16 +446,35 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
   }
 
   cr->save();
+  // s320 m1 — Frame rotation. Baselines are in the boundary's upright frame
+  // (see compute_text_layout); rotate the canvas into that frame so the
+  // glyphs land on the rotated box. angle == 0 is a no-op (common rect).
+  if (tl.frame_angle != 0.0) {
+    cr->translate(tl.frame_cx, tl.frame_cy);
+    cr->rotate(tl.frame_angle);
+    cr->translate(-tl.frame_cx, -tl.frame_cy);
+  }
   // s317 — Clip glyphs to the interior (margin) rect. compute_text_layout
   //   wraps to this width, but a word that measures as fitting can render a
   //   hair wider; clipping guarantees text never spills past the margins,
   //   which is the contract ("text is bound to be inside the margins").
+  // s320 m1 — clip in the UPRIGHT frame (the rotation transform above turns
+  //   it into the rotated interior rect). For angle == 0 this is identical
+  //   to the previous doc-space bbox.
   if (boundary.path && boundary.path->nodes.size() >= 2) {
+    const double ca = std::cos(-tl.frame_angle), sa = std::sin(-tl.frame_angle);
+    auto upright = [&](double x, double y, double& ux, double& uy) {
+      double rx = x - tl.frame_cx, ry = y - tl.frame_cy;
+      ux = tl.frame_cx + rx * ca - ry * sa;
+      uy = tl.frame_cy + rx * sa + ry * ca;
+    };
     const auto& cbn = boundary.path->nodes;
-    double cbx0 = cbn[0].x, cby0 = cbn[0].y, cbx1 = cbx0, cby1 = cby0;
+    double cbx0, cby0; upright(cbn[0].x, cbn[0].y, cbx0, cby0);
+    double cbx1 = cbx0, cby1 = cby0;
     for (const auto& pn : cbn) {
-      if (pn.x < cbx0) cbx0 = pn.x; if (pn.x > cbx1) cbx1 = pn.x;
-      if (pn.y < cby0) cby0 = pn.y; if (pn.y > cby1) cby1 = pn.y;
+      double ux, uy; upright(pn.x, pn.y, ux, uy);
+      if (ux < cbx0) cbx0 = ux; if (ux > cbx1) cbx1 = ux;
+      if (uy < cby0) cby0 = uy; if (uy > cby1) cby1 = uy;
     }
     auto cm = effective_text_margins(&text_obj, &boundary);
     const double clx = cbx0 + cm.left, cty = cby0 + cm.top;

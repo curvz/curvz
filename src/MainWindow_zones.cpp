@@ -898,6 +898,15 @@ void MainWindow::setup_menu() {
       "delete-selected", "act_delete_selected",
       [this] { m_canvas.delete_selected(); });
 
+  // s320 m2 — Reset to Rectangle. Selection-targeted (current TextBox/Mgr),
+  // same shape as delete-selected: the right-click menu needs something to
+  // invoke. Un-rotates the box back to its canonical rect (see
+  // Canvas::reset_textbox_transform).
+  curvz::scripting::add_scripted_action(
+      this, m_action_group_scriptable.get(),
+      "reset-transform", "act_reset_transform",
+      [this] { m_canvas.reset_textbox_transform(); });
+
   // s181: was "clone" / clone_selected. Renamed because the operation
   // never had source/instance semantics — it's a zero-offset duplicate.
   //

@@ -90,6 +90,21 @@ struct BaselineLayout {
 struct TextLayout {
     std::vector<BaselineLayout> baselines;
     size_t                      bytes_consumed = 0;
+
+    // s320 m1 — Frame rotation. Baselines are laid out in the boundary's
+    // *upright* frame (x_start/x_end/y are upright-frame doc coords), and
+    // this frame transform maps them into doc space. frame_angle is the
+    // boundary's rotation (radians) derived from its first edge; (frame_cx,
+    // frame_cy) is the boundary centroid the rotation pivots about. A
+    // consumer that wants a baseline point in doc space rotates the upright
+    // point about (frame_cx, frame_cy) by frame_angle. frame_angle == 0 is
+    // the common (axis-aligned) case: the transform is identity and every
+    // consumer behaves exactly as before. Only rotation lives here for now;
+    // skew/curvy outlines are deferred (the baseline still asks "what is my
+    // allowed span", which this milestone answers with the upright bbox).
+    double frame_angle = 0.0;
+    double frame_cx    = 0.0;
+    double frame_cy    = 0.0;
 };
 
 // THE universal layout function. Given a boundary path and a text node
@@ -105,6 +120,19 @@ struct TextLayout {
 TextLayout compute_text_layout(const SceneNode* boundary,
                                const SceneNode* text,
                                size_t byte_start = 0);
+
+// s320 m1 — Frame basis for a text boundary. Derives the boundary's
+// orientation (radians) from its first edge (node[0] -> node[1], which for
+// a rect-built TextBox boundary is the text-flow axis) and its centroid
+// (mean of the path nodes, the pivot the rotation is taken about). Both
+// compute_text_layout and the renderer call this so they agree on one frame
+// — the pump pattern: one place defines the basis, two sides consume it.
+// Returns angle == 0 for a degenerate or missing boundary (axis-aligned
+// fallback). This is the rect-only, derive-from-geometry stage; stored
+// angle/skew memory replaces it when skew and non-rect frames arrive, where
+// geometry can no longer reconstruct the transform unambiguously.
+void text_frame_basis(const SceneNode* boundary,
+                      double& angle, double& cx, double& cy);
 
 class TextCursor {
 public:

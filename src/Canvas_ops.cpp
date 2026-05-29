@@ -7518,6 +7518,64 @@ void Canvas::rotate_selection_by(double angle_deg, double pivot_x,
   queue_draw();
 }
 
+// s320 m2 — Reset a TextBox member to a default-size upright rectangle.
+// Regeneration, not inversion: rather than read the box's angle and counter-
+// rotate (which only works while it's still a readable rect), we discard the
+// boundary geometry and lay down a fresh default rect at 0 degrees, centered
+// on the box's current centroid. Uniform across rotation, skew, and freeform
+// reshape — the answer is always "a known-good rectangle here." Rides
+// ScaleObjectsCommand (path before/after) for a single undo, same as rotate.
+void Canvas::reset_textbox_transform(SceneNode *boundary) {
+  if (!m_doc)
+    return;
+
+  // Resolve the target: the right-clicked member, or the first member of the
+  // selected Mgr when invoked from the object-menu fall-through.
+  if (!boundary) {
+    for (SceneNode *obj : m_selection) {
+      if (!obj || !obj->is_text_box_mgr())
+        continue;
+      for (auto &v : obj->children) {
+        if (v && v->is_text_box_view() && !v->children.empty() &&
+            v->children[0] && v->children[0]->is_path()) {
+          boundary = v->children[0].get();
+          break;
+        }
+      }
+      if (boundary)
+        break;
+    }
+  }
+  if (!boundary || !boundary->path || boundary->path->nodes.empty())
+    return;
+
+  // Keep the box where it is: center the fresh rect on the current centroid.
+  double sx = 0.0, sy = 0.0;
+  for (const auto &n : boundary->path->nodes) {
+    sx += n.x;
+    sy += n.y;
+  }
+  const double cnt = (double)boundary->path->nodes.size();
+  const double cx = sx / cnt, cy = sy / cnt;
+
+  // Default-size rectangle (a usable multi-line box; margins on the boundary
+  // are preserved — only the path geometry is replaced).
+  constexpr double DEFAULT_W = 300.0;
+  constexpr double DEFAULT_H = 150.0;
+  PathData before = *boundary->path;
+  *boundary->path = rect_to_path(cx - DEFAULT_W * 0.5, cy - DEFAULT_H * 0.5,
+                                 DEFAULT_W, DEFAULT_H);
+
+  if (m_history) {
+    std::vector<ScaleObjectsCommand::LeafSnap> snaps;
+    snaps.push_back({boundary->internal_id, before, *boundary->path});
+    m_history->push(std::make_unique<ScaleObjectsCommand>(
+        project(), std::move(snaps), "Reset text box"));
+  }
+  m_sig_doc_changed.emit();
+  queue_draw();
+}
+
 void Canvas::scale_selection_by(double sx, double sy) {
   if (m_selection.empty() || !m_doc)
     return;

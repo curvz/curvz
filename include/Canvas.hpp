@@ -680,6 +680,14 @@ public:
   void rotate_selection_by(double angle_deg, double pivot_x = 0.0,
                            double pivot_y = 0.0, bool pivot_explicit = false);
 
+  // s320 m2 — Reset a TextBox member to a default-size, axis-aligned rect.
+  // "Reset" discards whatever rotation/skew/reshape deformed the box and
+  // regenerates a known-good rectangle centered where the box currently sits
+  // — no measurement, no angle inversion, works on any shape. `boundary` is
+  // the specific member to reset (the right-clicked one); nullptr resets the
+  // first member of the current selection.
+  void reset_textbox_transform(SceneNode* boundary = nullptr);
+
   // Scale selection by factors around bbox centre
   void scale_selection_by(double sx, double sy);
 

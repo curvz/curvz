@@ -741,6 +741,29 @@ static size_t last_word_break_before(const char* s, size_t len) {
 }
 
 // ── The universal layout function ───────────────────────────────────────────
+// s320 m1 — see header. Angle from first edge, centroid from node mean.
+void text_frame_basis(const SceneNode* boundary,
+                      double& angle, double& cx, double& cy) {
+    angle = 0.0; cx = 0.0; cy = 0.0;
+    if (!boundary || !boundary->path) return;
+    const PathData& bp = *boundary->path;
+    if (bp.nodes.size() < 2) return;
+
+    // Centroid: mean of the path nodes. For a rigidly-rotated rect this is
+    // the rect centre, and rotating the nodes by -angle about it recovers an
+    // axis-aligned rect regardless of where the original rotate pivoted.
+    double sx = 0.0, sy = 0.0;
+    for (const auto& n : bp.nodes) { sx += n.x; sy += n.y; }
+    cx = sx / (double)bp.nodes.size();
+    cy = sy / (double)bp.nodes.size();
+
+    // Angle: direction of the first edge (node[0] -> node[1]). For a
+    // rect_to_path boundary that edge is TL->TR, i.e. the text-flow axis.
+    double dx = bp.nodes[1].x - bp.nodes[0].x;
+    double dy = bp.nodes[1].y - bp.nodes[0].y;
+    if (dx != 0.0 || dy != 0.0) angle = std::atan2(dy, dx);
+}
+
 TextLayout compute_text_layout(const SceneNode* boundary,
                                const SceneNode* text,
                                size_t byte_start) {
@@ -749,12 +772,32 @@ TextLayout compute_text_layout(const SceneNode* boundary,
     const PathData& bp = *boundary->path;
     if (bp.nodes.size() < 3) return out;
 
-    // Boundary bbox in doc space (1c: rectangle case).
-    double bx0 = bp.nodes[0].x, by0 = bp.nodes[0].y;
+    // s320 m1 — Frame rotation. Lay out in the boundary's UPRIGHT frame:
+    // rotate every node by -angle about the centroid, bbox THAT, and run the
+    // existing axis-aligned layout there. The baselines come out in upright
+    // coords; the renderer and caret rotate them back via (frame_angle,
+    // frame_cx, frame_cy). angle == 0 reproduces the old doc-space bbox
+    // exactly (cos=1, sin=0), so the common rect case is byte-identical.
+    double fangle, fcx, fcy;
+    text_frame_basis(boundary, fangle, fcx, fcy);
+    out.frame_angle = fangle;
+    out.frame_cx    = fcx;
+    out.frame_cy    = fcy;
+    const double ca = std::cos(-fangle), sa = std::sin(-fangle);
+
+    // Boundary bbox in the upright frame (rect case; the rotated rect maps
+    // back to an axis-aligned rect here).
+    auto upright = [&](double x, double y, double& ux, double& uy) {
+        double rx = x - fcx, ry = y - fcy;
+        ux = fcx + rx * ca - ry * sa;
+        uy = fcy + rx * sa + ry * ca;
+    };
+    double bx0, by0; upright(bp.nodes[0].x, bp.nodes[0].y, bx0, by0);
     double bx1 = bx0, by1 = by0;
     for (const auto& n : bp.nodes) {
-        if (n.x < bx0) bx0 = n.x; if (n.x > bx1) bx1 = n.x;
-        if (n.y < by0) by0 = n.y; if (n.y > by1) by1 = n.y;
+        double ux, uy; upright(n.x, n.y, ux, uy);
+        if (ux < bx0) bx0 = ux; if (ux > bx1) bx1 = ux;
+        if (uy < by0) by0 = uy; if (uy > by1) by1 = uy;
     }
     // Margins live on the boundary for TextBox-owned text; fall back
     // to the text node for legacy paired-sibling files. See
@@ -1091,7 +1134,16 @@ TextCursor::Geometry TextCursor::position_on_canvas() const {
     //      roughly matches how every text editor draws its caret.
     g.y = target->y - target->ascent;
     g.height = target->ascent + target->descent * 0.25;
-    g.angle = target->angle;
+    // s320 m1 — baselines are laid out in the boundary's upright frame; map
+    // the caret origin back into doc space so it sits on the rotated text.
+    // angle == 0 leaves it untouched (the common rect case).
+    if (tl.frame_angle != 0.0) {
+        const double ca = std::cos(tl.frame_angle), sa = std::sin(tl.frame_angle);
+        const double rx = g.x - tl.frame_cx, ry = g.y - tl.frame_cy;
+        g.x = tl.frame_cx + rx * ca - ry * sa;
+        g.y = tl.frame_cy + rx * sa + ry * ca;
+    }
+    g.angle = tl.frame_angle;
     g.valid = true;
     return g;
 }
@@ -1345,9 +1397,10 @@ void TextCursor::render(const Cairo::RefPtr<Cairo::Context>& cr) const {
         cr->move_to(g.x, g.y);
         cr->line_to(g.x, g.y + g.height);
     } else {
-        // Reserved for curved line patterns (Arc F).
-        double dx = std::sin(g.angle) * g.height;
-        double dy = std::cos(g.angle) * g.height;
+        // s320 m1 — caret runs down the frame's local +y (down) axis,
+        // which for a frame rotated by `angle` is (-sin, cos) in doc space.
+        double dx = -std::sin(g.angle) * g.height;
+        double dy =  std::cos(g.angle) * g.height;
         cr->move_to(g.x, g.y);
         cr->line_to(g.x + dx, g.y + dy);
     }

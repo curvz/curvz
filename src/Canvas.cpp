@@ -177,6 +177,20 @@ build_object_context_menu(const ObjectActions &oa,
     append_section_if_nonempty(sec);
   }
 
+  // ── 1.5. Reset to Rectangle (s320 m2) ────────────────────────────────────
+  // TextBox/Mgr only: undo accumulated rotation (and, later, skew/reshape),
+  // returning the box to its canonical upright rectangle. A destructive
+  // one-shot verb, so it lives as a menu item per the "in your face" rule
+  // (no persistent inspector control needed). Inline-gated rather than via
+  // an ObjectActions bit: eligibility is purely "single TextBox selected",
+  // which the selection vector answers directly.
+  if (selection.size() == 1 && selection[0] &&
+      selection[0]->is_text_box_mgr()) {
+    auto sec = Gio::Menu::create();
+    add(sec, "Reset to Rectangle", "win.reset-transform");
+    append_section_if_nonempty(sec);
+  }
+
   // ── 2. Structure ─────────────────────────────────────────────────────────
   {
     auto sec = Gio::Menu::create();
@@ -849,6 +863,7 @@ Canvas::Canvas() {
         if (find_textbox_member(member_boundary, &mm_mgr, &mm_view) &&
             mm_mgr && mm_view) {
           auto menu = Gio::Menu::create();
+          menu->append("Reset to Rectangle", "tbmemberctx.reset");
           menu->append("Delete text box", "tbmemberctx.delete");
 
           auto ag = Gio::SimpleActionGroup::create();
@@ -867,6 +882,22 @@ Canvas::Canvas() {
                 });
               });
           ag->add_action(act);
+          // s320 m2 — Reset to Rectangle on the same menu. Selects the Mgr
+          //   (so the selection-based reset/rotate path acts on it) then
+          //   un-rotates it back to its canonical rect. Deferred one idle
+          //   like the delete sibling so the popover dismisses first.
+          auto act_reset = Gio::SimpleAction::create("reset");
+          SceneNode* cap_boundary = member_boundary;
+          act_reset->signal_activate().connect(
+              [this, cap_mgr, cap_boundary](const Glib::VariantBase&) {
+                Glib::signal_idle().connect_once([this, cap_mgr, cap_boundary]() {
+                  if (is_node_alive(cap_mgr)) {
+                    set_selection_single(cap_mgr);
+                    reset_textbox_transform(cap_boundary);
+                  }
+                });
+              });
+          ag->add_action(act_reset);
           insert_action_group("tbmemberctx", ag);
 
           auto* popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
