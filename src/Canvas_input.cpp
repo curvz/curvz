@@ -117,6 +117,22 @@ void Canvas::set_active_tool(ActiveTool tool) {
   }
 
   if (tool == ActiveTool::Node && m_prev_tool != ActiveTool::Pen) {
+    // s323 — A selected TextBox is a Mgr, not a Path, so the carry check
+    // below would fail and null the selection — leaving node mode with
+    // nothing selected and the baseline guides unresolved until the first
+    // node edit re-established m_selected as the boundary path. Resolve the
+    // Mgr down to its canvas-view boundary here so the carry succeeds and
+    // both node editing and the guides are live the instant the tool
+    // switches (matches the state a node-add would have established late).
+    if (m_selected && m_selected->is_text_box_mgr()) {
+      for (auto& v : m_selected->children) {
+        if (v && v->is_canvas_view() && !v->children.empty() &&
+            v->children[0] && v->children[0]->is_path()) {
+          m_selected = v->children[0].get();
+          break;
+        }
+      }
+    }
     // Carry over a Path selection from Selection tool so the user doesn't
     // have to re-click after switching tools (S→N workflow).
     bool carried = m_selected && m_selected->type == SceneNode::Type::Path &&
@@ -4803,6 +4819,8 @@ void Canvas::on_select_begin(double x, double y) {
           m_skew_is_skew = false;
           m_skew_start_dx = dx;
           m_skew_start_dy = dy;
+          LOG_INFO("SKEW begin: edge-mid handle hk={} start=({:.1f},{:.1f})",
+                   (int)hk, dx, dy);  // s323 DIAG — TEMPORARY
         }
 
         // For rotate kinds, record the starting angle from pivot to cursor
@@ -5359,6 +5377,9 @@ void Canvas::on_select_update(double /*dx*/, double /*dy*/) {
             m_skew_is_skew = vert_dominant;
           else
             m_skew_is_skew = horiz_dominant;
+          LOG_INFO("SKEW resolve: hk={} adx={:.1f} ady={:.1f} h={} v={} "
+                   "-> is_skew={}", (int)m_handle_drag, adx, ady,
+                   horiz_dominant, vert_dominant, m_skew_is_skew);  // s323 DIAG
         }
       }
     }
@@ -5435,6 +5456,19 @@ void Canvas::on_select_update(double /*dx*/, double /*dy*/) {
             nodes[i].cx2 = orig[i].cx2;
             nodes[i].cy2 = orig[i].cy2 + (orig[i].cx2 - anchor_x) * shear;
           }
+        }
+      }
+      // s323 DIAG — TEMPORARY. Skew apply reached: is shear nonzero, are
+      // there snaps to mutate? Change-gated on shear bucket to avoid flooding.
+      {
+        static long s_bucket = -999999;
+        long b = (long)(shear * 1000.0);
+        if (b != s_bucket) {
+          s_bucket = b;
+          LOG_INFO("SKEW apply: horiz_shear={} shear={:.4f} path_snaps={} "
+                   "img_snaps={}", horiz_shear, shear,
+                   (int)m_scale_snaps.size(),
+                   (int)m_image_transform_snaps.size());
         }
       }
       // Skew image nodes via transform matrix shear

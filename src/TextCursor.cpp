@@ -25,11 +25,13 @@
 #include "Canvas.hpp"
 #include "SceneNode.hpp"
 #include "CurvzLog.hpp"
+#include "math/TextFlowGeometry.hpp"   // s323 — form-fit reflow geometry pumps
 
 #include <pango/pangocairo.h>
 #include <glib.h>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace Curvz {
 
@@ -740,6 +742,39 @@ static size_t last_word_break_before(const char* s, size_t len) {
     return last;
 }
 
+// ── s323 — width (doc units) of the first word of `chunk` ─────────────────────
+// Used by the form-fit fall-through wrap to decide whether the next word fits
+// THIS line's span before committing to a break. The "first word" runs to the
+// first Pango line-break opportunity (trailing whitespace stripped). A leading
+// hard newline is the caller's special case; here it measures as empty (0).
+static double measure_first_word_width(const SceneNode* text,
+                                       const char* chunk, size_t chunk_len) {
+    if (chunk_len == 0) return 0.0;
+    glong nc = g_utf8_strlen(chunk, (gssize)chunk_len);
+    if (nc <= 0) return 0.0;
+    std::vector<PangoLogAttr> attrs((size_t)nc + 1);
+    pango_get_log_attrs(chunk, (int)chunk_len, -1, nullptr,
+                        attrs.data(), (int)attrs.size());
+    size_t word_byte = chunk_len;
+    const char* p = chunk;
+    for (int ci = 1; ci <= (int)nc; ++ci) {
+        const char* np = g_utf8_next_char(p);
+        size_t bo = (size_t)(np - chunk);
+        if (chunk[bo - 1] == '\n') { word_byte = bo - 1; break; }   // hard break
+        if (ci < (int)nc && attrs[ci].is_line_break) { word_byte = bo; break; }
+        p = np;
+    }
+    while (word_byte > 0 &&
+           (chunk[word_byte - 1] == ' ' || chunk[word_byte - 1] == '\t'))
+        --word_byte;
+    if (word_byte == 0) return 0.0;
+    PangoLayout* l = make_single_line_layout(text, chunk, (int)word_byte);
+    int w = 0, h = 0;
+    pango_layout_get_size(l, &w, &h);
+    g_object_unref(l);
+    return (double)w / (double)PANGO_SCALE;
+}
+
 // ── The universal layout function ───────────────────────────────────────────
 // s320 m1 — see header. Angle from first edge, centroid from node mean.
 void text_frame_basis(const SceneNode* boundary,
@@ -749,19 +784,25 @@ void text_frame_basis(const SceneNode* boundary,
     const PathData& bp = *boundary->path;
     if (bp.nodes.size() < 2) return;
 
-    // Centroid: mean of the path nodes. For a rigidly-rotated rect this is
-    // the rect centre, and rotating the nodes by -angle about it recovers an
-    // axis-aligned rect regardless of where the original rotate pivoted.
+    // Centroid: mean of the path nodes — the pivot the rotation is taken
+    // about. (Geometry-derived for now; the baseline-editing UI may later
+    // pin the pivot too. With a 0 angle the pivot is moot — the rotation is
+    // a no-op — so node-edit drift of this mean does not matter yet.)
     double sx = 0.0, sy = 0.0;
     for (const auto& n : bp.nodes) { sx += n.x; sy += n.y; }
     cx = sx / (double)bp.nodes.size();
     cy = sy / (double)bp.nodes.size();
 
-    // Angle: direction of the first edge (node[0] -> node[1]). For a
-    // rect_to_path boundary that edge is TL->TR, i.e. the text-flow axis.
-    double dx = bp.nodes[1].x - bp.nodes[0].x;
-    double dy = bp.nodes[1].y - bp.nodes[0].y;
-    if (dx != 0.0 || dy != 0.0) angle = std::atan2(dy, dx);
+    // s323 — Angle is the STORED base-baseline direction, not a reading of
+    // the outline. The old code took atan2 of the first edge (nodes[0] ->
+    // nodes[1]); for a rect_to_path box that edge is the top edge and read 0,
+    // but the angle was pinned to two array indices, so inserting/dragging a
+    // node into slot 1 (or a boolean op reseating the vertices) swung the
+    // whole text block. Direction is independent of the shape: read the
+    // boundary's set-once angle, default 0 (horizontal). The shape still
+    // governs the per-line spans via the form-fit intersect; only the flow
+    // direction is decoupled.
+    angle = boundary->text_baseline_angle;
 }
 
 TextLayout compute_text_layout(const SceneNode* boundary,
@@ -799,15 +840,49 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         if (ux < bx0) bx0 = ux; if (ux > bx1) bx1 = ux;
         if (uy < by0) by0 = uy; if (uy > by1) by1 = uy;
     }
-    // Margins live on the boundary for TextBox-owned text; fall back
-    // to the text node for legacy paired-sibling files. See
-    // effective_text_margins doc in SceneNode.hpp.
+    // s323 (form-fit B) — the text margin is one UNIFORM inward erosion of
+    // the whole boundary outline, not four per-edge rect subtractions
+    // (per-edge has no meaning on a blob). Map the boundary into the upright
+    // frame (anchors + both bezier handles rotate about the centroid) so the
+    // eroded region and the baseline ribbons share one frame for the Clipper
+    // intersect; the geometry pumps stay frame-agnostic, the caller keeps the
+    // frame consistent. effective_text_margins still sources the value; the
+    // four margins collapse to a single inset (the minimum, so we never erode
+    // past the smallest requested margin — per-edge rect margins become a
+    // later needle-frame nicety if wanted). Zero margins -> inset 0 -> erosion
+    // is identity, text flows to the boundary, byte-identical to the old rect.
     auto m = effective_text_margins(text, boundary);
-    double ix0 = bx0 + m.left;
-    double iy0 = by0 + m.top;
-    double ix1 = bx1 - m.right;
-    double iy1 = by1 - m.bottom;
-    if (ix1 <= ix0 || iy1 <= iy0) return out;
+    double inset = std::min(std::min(m.left, m.right),
+                            std::min(m.top,  m.bottom));
+    if (inset < 0.0) inset = 0.0;
+
+    PathData upright_boundary;
+    upright_boundary.closed = true;
+    upright_boundary.nodes.reserve(bp.nodes.size());
+    for (const auto& n : bp.nodes) {
+        BezierNode un = n;
+        upright(n.x,   n.y,   un.x,   un.y);
+        upright(n.cx1, n.cy1, un.cx1, un.cy1);
+        upright(n.cx2, n.cy2, un.cx2, un.cy2);
+        upright_boundary.nodes.push_back(un);
+    }
+
+    std::vector<PathData> eroded = erode_outline(upright_boundary, inset);
+    if (eroded.empty()) return out;   // margin consumed the shape -> no text
+
+    // Vertical extent of the eroded region (upright frame). The first baseline
+    // floats off the REAL eroded top (the rim), not bbox_top + ascent; the
+    // bottom bound replaces the old interior iy1. Read off the eroded vertices
+    // — for M1's rect/ellipse/polygon boundaries the offset output is dense
+    // enough that vertex extrema match the true rim.
+    double eroded_top    =  std::numeric_limits<double>::max();
+    double eroded_bottom = -std::numeric_limits<double>::max();
+    for (const auto& piece : eroded)
+        for (const auto& n : piece.nodes) {
+            if (n.y < eroded_top)    eroded_top    = n.y;
+            if (n.y > eroded_bottom) eroded_bottom = n.y;
+        }
+    if (eroded_bottom <= eroded_top) return out;
 
     const double font_size = text->text_font_size > 0.0
                                  ? text->text_font_size : 24.0;
@@ -856,9 +931,34 @@ TextLayout compute_text_layout(const SceneNode* boundary,
     cairo_destroy(metrics_cr);
     cairo_surface_destroy(metrics_surf);
 
-    // First baseline y. If even the first baseline doesn't fit (interior
-    // too short), no baselines are emitted and bytes_consumed stays 0.
-    double baseline_y = iy0 + ascent;
+    // s323 — cap-float first baseline: the cap line (baseline - ascent) clears
+    // the eroded top exactly at eroded_top, so the first baseline is
+    // eroded_top + ascent. For a flat rim this reproduces the old rect result;
+    // for a curved rim it floats with the real geometry (the first line sits
+    // just under the peak with a narrow span there, and text falls through to
+    // the wider lines below). If even the first baseline overshoots the floor,
+    // no baselines are emitted and bytes_consumed stays 0.
+    double first_baseline_y = eroded_top + ascent;
+
+    // s323 — base baseline (upright frame): a straight horizontal line at the
+    // first-baseline y, overhanging the bbox on both ends so every run
+    // boundary in the Clipper intersect is a true margin crossing, never a
+    // ribbon terminus. intervals_for_baseline translates it DOWN by k*leading
+    // for line k; line 0 is the base baseline itself. (Per-view custom/curvy
+    // base baselines are deferred — M1 is straight-by-default.)
+    const double overhang = std::max(bx1 - bx0, 1.0);
+    PathData base_baseline;
+    base_baseline.closed = false;
+    {
+        BezierNode a; a.x = bx0 - overhang; a.y = first_baseline_y;
+        a.cx1 = a.cx2 = a.x; a.cy1 = a.cy2 = a.y;
+        BezierNode b; b.x = bx1 + overhang; b.y = first_baseline_y;
+        b.cx1 = b.cx2 = b.x; b.cy1 = b.cy2 = b.y;
+        base_baseline.nodes.push_back(a);
+        base_baseline.nodes.push_back(b);
+    }
+
+    double baseline_y = first_baseline_y;
 
     // s317 — flow resolver: a member view lays out its slice of the shared
     // Mgr buffer starting at byte_start (the running offset handed down by
@@ -871,11 +971,22 @@ TextLayout compute_text_layout(const SceneNode* boundary,
     size_t cursor = std::min(byte_start, text->text_content.size());
     const std::string& buf = text->text_content;
     int safety = 0;
-    while (baseline_y <= iy1 && cursor <= buf.size() && safety++ < 10000) {
-        // Rectangle case: every baseline has the full interior width.
-        // Arc E replaces this with outline-intersection scanline.
-        double x_start = ix0;
-        double x_end   = ix1;
+    while (baseline_y <= eroded_bottom && cursor <= buf.size() && safety++ < 10000) {
+        // s323 (Arc E) — per-baseline span from the outline intersection.
+        // M1 takes the single leftmost run (concave multi-span gap-flow is
+        // deferred). dy is measured from the base baseline (line 0) so it
+        // stays exact as baseline_y accumulates float leading. An empty span
+        // means this baseline misses the eroded shape (above the rim, below
+        // the floor, or through a pinch gap): stride down without emitting.
+        double dy = baseline_y - first_baseline_y;
+        std::vector<BaselineSpan> spans =
+            intervals_for_baseline(eroded, base_baseline, dy);
+        if (spans.empty()) {
+            baseline_y += leading;
+            continue;
+        }
+        double x_start = spans.front().start.x;
+        double x_end   = spans.front().end.x;
         double avail   = x_end - x_start;
 
         // Build a single-line layout for the remaining buffer.
@@ -905,6 +1016,25 @@ TextLayout compute_text_layout(const SceneNode* boundary,
             out.baselines.push_back(std::move(bl));
             out.bytes_consumed = cursor;
             baseline_y += leading;
+            continue;
+        }
+
+        // s323 — fall-through wrap (Scott's rule): if the next word does not
+        // fit THIS line's span, don't break the word — emit an empty baseline
+        // here (a real but too-narrow line, e.g. the neck of a vase) and fall
+        // through to the next baseline's (possibly wider) span WITHOUT
+        // advancing the byte cursor. The same bytes retry the next line. A
+        // word wider than EVERY line in the shape never places: the loop ends
+        // at eroded_bottom and the bytes become overflow (today's contract:
+        // bytes_consumed < size, the user resizes the shape). Forcing it onto
+        // the widest line and clipping is the deferred floor.
+        if (remaining[0] != '\n' &&
+            measure_first_word_width(text, remaining, remaining_n) > avail) {
+            PangoLayout* empty = make_single_line_layout(text, "", 0);
+            bl.pango.reset(empty);
+            bl.byte_end = cursor;          // empty line; owns no bytes
+            out.baselines.push_back(std::move(bl));
+            baseline_y += leading;         // cursor NOT advanced
             continue;
         }
 

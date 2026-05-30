@@ -660,6 +660,16 @@ struct SceneNode {
       "left"; // paragraph align: "left"|"center"|"right"|"justify"
   double text_baseline_shift =
       0.0; // perpendicular offset from path/baseline in doc units
+  // s323 — Form-fit text direction. The angle (radians) of the base
+  // baseline the text flows along, INDEPENDENT of the boundary outline.
+  // Set once at construction (default 0 = horizontal) and thereafter
+  // changed only through the baseline-editing UI. text_frame_basis reads
+  // this instead of deriving an angle from the boundary's first edge —
+  // that derivation tied flow direction to nodes[0]->nodes[1] by index, so
+  // node-editing the shape (which reseats those indices) silently swung the
+  // text. Direction belongs to the baseline, not the shape; node edits now
+  // reflow the per-line spans but never touch the angle.
+  double text_baseline_angle = 0.0;
   double text_letter_spacing = 0.0; // extra advance between glyphs in doc units
   // Text-on-path fields — meaningful on Text only when text_path_id is
   // non-empty
@@ -993,6 +1003,7 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->text_anchor = src.text_anchor;
   dst->text_align = src.text_align;
   dst->text_baseline_shift = src.text_baseline_shift;
+  dst->text_baseline_angle = src.text_baseline_angle;
   dst->text_letter_spacing = src.text_letter_spacing;
   dst->text_path_id = src.text_path_id;
   dst->text_path_offset = src.text_path_offset;

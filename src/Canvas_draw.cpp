@@ -4733,16 +4733,98 @@ void Canvas::draw_text_baseline_guides(
     const Cairo::RefPtr<Cairo::Context> &cr) {
   if (!m_doc) return;
 
-  // Identify which text+boundary pair to render guides for. Four
-  // sources, in priority order:
-  //   1. Active edit (m_text_editing + m_text_boundary_editing).
-  //   2. A selected TextBox container — text is children[0],
-  //      boundary is children[1] (structural sibling lookup).
-  //   3. A selected boundary whose iid is referenced by some text
-  //      node's text_boundary_ids (legacy paired-sibling: select the
-  //      boundary → show its guides).
-  //   4. A selected bound text node whose first boundary resolves
-  //      (legacy paired-sibling: select the text → show its guides).
+  // ── The per-box drawing ─────────────────────────────────────────────────
+  // Margin frame + baseline hairlines for one (text, boundary) pair. Factored
+  // out so both the node-mode "show every box" walk and the single-selection
+  // path below share one source of truth. Recomputes the layout from live
+  // geometry every call, so the guides always match the current shape.
+  auto draw_pair = [&](SceneNode* text, SceneNode* boundary,
+                       size_t byte_start) {
+    if (!text || !boundary || !boundary->path ||
+        boundary->path->nodes.size() < 3)
+      return;
+    TextLayout tl = compute_text_layout(boundary, text, byte_start);
+    if (tl.baselines.empty()) return;
+
+    cr->save();
+    cr->set_source_rgba(0.30, 0.55, 0.85, 0.45);
+    cr->set_line_width(1.0);
+    std::vector<double> dash = {3.0, 3.0};
+    cr->set_dash(dash, 0);
+
+    // Margin rect — faint dashed frame at the interior extents (bbox minus
+    // margins). The "this is your text frame" cue. (Rect-era overlay; on a
+    // skewed/curved boundary it traces the bbox, not the eroded shape — the
+    // eroded-outline replacement is a separate follow-up.)
+    if (boundary->path->nodes.size() >= 3) {
+      const auto& bp_nodes = boundary->path->nodes;
+      double bx0 = bp_nodes[0].x, by0 = bp_nodes[0].y;
+      double bx1 = bx0, by1 = by0;
+      for (const auto& n : bp_nodes) {
+        if (n.x < bx0) bx0 = n.x; if (n.x > bx1) bx1 = n.x;
+        if (n.y < by0) by0 = n.y; if (n.y > by1) by1 = n.y;
+      }
+      auto m = effective_text_margins(text, boundary);
+      double ix0 = bx0 + m.left,  iy0 = by0 + m.top;
+      double ix1 = bx1 - m.right, iy1 = by1 - m.bottom;
+      if (ix1 > ix0 && iy1 > iy0) {
+        double sx0, sy0, sx1, sy1;
+        doc_to_screen(ix0, iy0, sx0, sy0);
+        doc_to_screen(ix1, iy1, sx1, sy1);
+        cr->rectangle(std::floor(sx0) + 0.5, std::floor(sy0) + 0.5,
+                      std::floor(sx1 - sx0), std::floor(sy1 - sy0));
+        cr->stroke();
+      }
+    }
+
+    for (const auto& bl : tl.baselines) {
+      double sx0, sx1, sy_unused, sy, sx_unused;
+      doc_to_screen(bl.x_start, 0.0, sx0, sy_unused);
+      doc_to_screen(bl.x_end,   0.0, sx1, sy_unused);
+      doc_to_screen(0.0, bl.y, sx_unused, sy);
+      cr->move_to(sx0, std::floor(sy) + 0.5);
+      cr->line_to(sx1, std::floor(sy) + 0.5);
+      cr->stroke();
+    }
+    cr->restore();
+  };
+
+  // ── s323 — Node mode is the "outline mode" for text ──────────────────────
+  // Every text box in every TextBoxMgr shows its baselines while the Node tool
+  // is active, independent of what's selected. This deletes the whole class of
+  // single-target-resolver bugs: no m_selected dependency, no resolution gap,
+  // no sync-on-edit gating. draw_pair recomputes from live geometry and node
+  // edits already repaint, so the guides are always current. byte_start is 0
+  // per member — the hairline GRID is geometry-driven (capacity fills the
+  // shape regardless of which bytes land where), so the flow offset doesn't
+  // affect where the guides sit. (Cost: one layout per visible box per paint;
+  // fine for typical docs, revisit with a cache if a dense doc lags.)
+  if (m_tool == ActiveTool::Node) {
+    std::function<void(SceneNode*)> walk = [&](SceneNode* n) {
+      if (!n) return;
+      if (n->is_text_box_mgr()) {
+        for (auto& v : n->children) {
+          if (v && v->is_canvas_view() && !v->children.empty() &&
+              v->children[0] && v->children[0]->is_path())
+            draw_pair(n, v->children[0].get(), 0);   // canvas members only
+        }
+        return;                                       // don't descend further
+      }
+      if (n->type == SceneNode::Type::Group ||
+          n->type == SceneNode::Type::Compound ||
+          n->type == SceneNode::Type::ClipGroup)
+        for (auto& c : n->children) walk(c.get());
+    };
+    for (auto& layer : m_doc->layers) {
+      if (!layer->visible || layer->locked || layer->is_special_layer())
+        continue;
+      for (auto& c : layer->children) walk(c.get());
+    }
+    return;
+  }
+
+  // ── Non-node mode: single resolved (text, boundary) pair ─────────────────
+  // Active text edit, or a selected box/boundary/legacy-bound-text.
   SceneNode* text_for_guides = nullptr;
   SceneNode* boundary_for_guides = nullptr;
 
@@ -4750,9 +4832,6 @@ void Canvas::draw_text_baseline_guides(
     text_for_guides = m_text_editing;
     boundary_for_guides = m_text_boundary_editing;
   } else if (m_selected) {
-    // s310 m1bc — Selected Mgr: text-bearing node IS the Mgr;
-    // boundary lives at mgr → first canvas view → children[0].
-    // Same structure as begin_textbox_edit + object_bbox use.
     if (m_selected->is_text_box_mgr()) {
       SceneNode* canvas_view = nullptr;
       for (auto& v : m_selected->children) {
@@ -4769,30 +4848,29 @@ void Canvas::draw_text_baseline_guides(
       boundary_for_guides = find_text_boundary(
           m_selected->text_boundary_ids.front());
     } else if (m_selected->is_path()) {
-      // Walk doc once to find a text node whose first boundary is this.
-      for (auto& layer : m_doc->layers) {
-        for (auto& c : layer->children) {
-          if (c->is_text() && !c->text_boundary_ids.empty() &&
-              c->text_boundary_ids.front() == m_selected->internal_id) {
-            text_for_guides = c.get();
-            boundary_for_guides = m_selected;
-            break;
+      SceneNode* owner_mgr = nullptr;
+      if (find_textbox_member(m_selected, &owner_mgr, nullptr) && owner_mgr) {
+        text_for_guides     = owner_mgr;
+        boundary_for_guides = m_selected;
+      } else {
+        for (auto& layer : m_doc->layers) {
+          for (auto& c : layer->children) {
+            if (c->is_text() && !c->text_boundary_ids.empty() &&
+                c->text_boundary_ids.front() == m_selected->internal_id) {
+              text_for_guides = c.get();
+              boundary_for_guides = m_selected;
+              break;
+            }
           }
+          if (text_for_guides) break;
         }
-        if (text_for_guides) break;
       }
     }
   }
 
   if (!text_for_guides || !boundary_for_guides) return;
 
-  // s319 — Suppress baseline guides for the OA/overflow region. The popover
-  //   boundary is sized to hold the FULL overflow remainder (taller than the
-  //   visible panel window), so its margin rect + baseline hairlines would
-  //   paint the whole capacity height with no OA clip and spill below the
-  //   panel as stray dashed rects — their count tracking the line capacity at
-  //   the last build/grip-resize. The OA panel is self-contained chrome;
-  //   member boundaries still get their guides.
+  // Suppress guides for the OA/overflow popover region (self-contained chrome).
   if (text_for_guides->is_text_box_mgr()) {
     for (const auto& v : text_for_guides->children) {
       if (v && v->is_popover_view() && !v->children.empty() &&
@@ -4802,61 +4880,7 @@ void Canvas::draw_text_baseline_guides(
     }
   }
 
-  TextLayout tl = compute_text_layout(boundary_for_guides, text_for_guides);
-  if (tl.baselines.empty()) return;
-
-  cr->save();
-  cr->set_source_rgba(0.30, 0.55, 0.85, 0.45);
-  cr->set_line_width(1.0);
-  std::vector<double> dash = {3.0, 3.0};
-  cr->set_dash(dash, 0);
-
-  // s301 m1e — Margin rect. Drawn as a faint dashed rectangle inside the
-  // boundary at the interior extents — that's the geometry text actually
-  // occupies. Helps the user see why text isn't reaching the bbox edge
-  // (because of the 9pt margins) and provides a visible target for the
-  // "the text frame has margins" concept that's otherwise invisible.
-  // Computed from the boundary path's bbox + the text node's margins,
-  // exactly the same math compute_text_layout uses for interior extents.
-  if (boundary_for_guides && boundary_for_guides->path &&
-      boundary_for_guides->path->nodes.size() >= 3) {
-    const auto& bp_nodes = boundary_for_guides->path->nodes;
-    double bx0 = bp_nodes[0].x, by0 = bp_nodes[0].y;
-    double bx1 = bx0, by1 = by0;
-    for (const auto& n : bp_nodes) {
-      if (n.x < bx0) bx0 = n.x; if (n.x > bx1) bx1 = n.x;
-      if (n.y < by0) by0 = n.y; if (n.y > by1) by1 = n.y;
-    }
-    // Margins owned by the boundary for TextBox-owned text; legacy
-    // paired-sibling text owns them on the text node. The helper
-    // returns whichever side actually carries them.
-    auto m = effective_text_margins(text_for_guides, boundary_for_guides);
-    double ix0 = bx0 + m.left;
-    double iy0 = by0 + m.top;
-    double ix1 = bx1 - m.right;
-    double iy1 = by1 - m.bottom;
-    if (ix1 > ix0 && iy1 > iy0) {
-      double sx0, sy0, sx1, sy1;
-      doc_to_screen(ix0, iy0, sx0, sy0);
-      doc_to_screen(ix1, iy1, sx1, sy1);
-      cr->rectangle(std::floor(sx0) + 0.5, std::floor(sy0) + 0.5,
-                    std::floor(sx1 - sx0), std::floor(sy1 - sy0));
-      cr->stroke();
-    }
-  }
-
-  for (const auto& bl : tl.baselines) {
-    double sx0, sx1, sy_unused, sy;
-    double sx_unused;
-    doc_to_screen(bl.x_start, 0.0, sx0, sy_unused);
-    doc_to_screen(bl.x_end,   0.0, sx1, sy_unused);
-    doc_to_screen(0.0, bl.y, sx_unused, sy);
-    cr->move_to(sx0, std::floor(sy) + 0.5);
-    cr->line_to(sx1, std::floor(sy) + 0.5);
-    cr->stroke();
-  }
-
-  cr->restore();
+  draw_pair(text_for_guides, boundary_for_guides, 0);
 }
 
 // ── s322 — Form-fit reflow debug overlay (TEMPORARY) ─────────────────────────
