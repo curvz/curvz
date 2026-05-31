@@ -1,5 +1,6 @@
 #pragma once
 #include "SceneNode.hpp"
+#include "CurvzLog.hpp"   // s326 SPANLIFE (TEMPORARY) — lifecycle probe
 #include "color/SwatchLibrary.hpp"
 #include "style/StyleLibrary.hpp"   // BindStyleCommand / UnbindStyleCommand (S79 m4a)
 #include "style/StyleInterop.hpp"   // materialise_from_style on redo (S79 m4a)
@@ -306,6 +307,7 @@ struct TextEditCommand : CurvzCommand {
     // before state
     std::string before_content, before_family, before_anchor, before_align;
     double      before_x = 0, before_y = 0, before_size = 0;
+    double      before_line_height = 0;  // s326 m2b
     bool        before_bold = false, before_italic = false;
     FillStyle   before_fill;
     StrokeStyle before_stroke;
@@ -339,6 +341,17 @@ struct TextEditCommand : CurvzCommand {
     double      before_margin_bottom = 0.0;
     double      before_margin_left   = 0.0;
     double      before_margin_right  = 0.0;
+    // s326 m1 — per-run formatting spine carrier. The s325 spine put
+    //   text_attr_spans (the flat AttrSpan list mirroring the Pango markup)
+    //   on the Mgr but did NOT thread it through the command, correct at the
+    //   time because nothing edited the spans. The styler (m2+) mutates them
+    //   on every B/I/U/colour/size apply, so undo/redo must round-trip the
+    //   list or a formatting edit rolls back content while leaving the spans
+    //   in their post-edit state (the same desync class s298 fixed for the
+    //   text-on-path triple). AttrSpan is a plain value type, so the snapshot
+    //   is a free vector copy. Empty list is the pre-s326 baseline — a plain
+    //   box snapshots an empty list, identical to before this field existed.
+    std::vector<AttrSpan> before_attr_spans;
     // s307 m6 — Caret position captured alongside the content snapshot.
     //   Mid-edit Ctrl+Z and Ctrl+Shift+Z need to restore the cursor's
     //   caret to where it was at segment open / segment close,
@@ -356,6 +369,7 @@ struct TextEditCommand : CurvzCommand {
     // after state
     std::string after_content, after_family, after_anchor, after_align;
     double      after_x = 0, after_y = 0, after_size = 0;
+    double      after_line_height = 0;   // s326 m2b
     bool        after_bold = false, after_italic = false;
     FillStyle   after_fill;
     StrokeStyle after_stroke;
@@ -371,6 +385,8 @@ struct TextEditCommand : CurvzCommand {
     double      after_margin_bottom = 0.0;
     double      after_margin_left   = 0.0;
     double      after_margin_right  = 0.0;
+    // s326 m1 — per-run formatting spine carrier (after-state half).
+    std::vector<AttrSpan> after_attr_spans;
 
     static TextEditCommand snapshot_before(CurvzProject* proj, SceneNode* o) {
         TextEditCommand c;
@@ -384,6 +400,7 @@ struct TextEditCommand : CurvzCommand {
         c.before_x       = o->text_x;
         c.before_y       = o->text_y;
         c.before_size    = o->text_font_size;
+        c.before_line_height = o->text_line_height;  // s326 m2b
         c.before_bold    = o->text_bold;
         c.before_italic  = o->text_italic;
         c.before_fill    = o->fill;
@@ -401,6 +418,10 @@ struct TextEditCommand : CurvzCommand {
         c.before_margin_bottom = o->text_margin_bottom;
         c.before_margin_left   = o->text_margin_left;
         c.before_margin_right  = o->text_margin_right;
+        // s326 m1 — per-run formatting spine
+        c.before_attr_spans    = o->text_attr_spans;
+        LOG_INFO("[SPANLIFE] snapshot_before captured {} spans (node iid='{}')",
+                 o->text_attr_spans.size(), o->internal_id);
         // s307 m6 — Caret position. Reads off text_caret_byte, which
         //   the caller is responsible for keeping current: at edit
         //   entry the persisted byte is correct (last edit's caret);
@@ -421,6 +442,7 @@ struct TextEditCommand : CurvzCommand {
         after_x       = o->text_x;
         after_y       = o->text_y;
         after_size    = o->text_font_size;
+        after_line_height = o->text_line_height;  // s326 m2b
         after_bold    = o->text_bold;
         after_italic  = o->text_italic;
         after_fill    = o->fill;
@@ -438,6 +460,10 @@ struct TextEditCommand : CurvzCommand {
         after_margin_bottom = o->text_margin_bottom;
         after_margin_left   = o->text_margin_left;
         after_margin_right  = o->text_margin_right;
+        // s326 m1 — per-run formatting spine
+        after_attr_spans    = o->text_attr_spans;
+        LOG_INFO("[SPANLIFE] record_after captured {} spans (node iid='{}')",
+                 o->text_attr_spans.size(), o->internal_id);
         // s307 m6 — Caret position; same convention as snapshot_before.
         //   Caller writes m_text_cursor->byte_index() into
         //   text_caret_byte before calling record_after.
@@ -454,6 +480,7 @@ struct TextEditCommand : CurvzCommand {
         o->text_x          = after ? after_x       : before_x;
         o->text_y          = after ? after_y       : before_y;
         o->text_font_size  = after ? after_size    : before_size;
+        o->text_line_height= after ? after_line_height : before_line_height; // s326 m2b
         o->text_bold       = after ? after_bold    : before_bold;
         o->text_italic     = after ? after_italic  : before_italic;
         o->fill            = after ? after_fill    : before_fill;
@@ -471,6 +498,12 @@ struct TextEditCommand : CurvzCommand {
         o->text_margin_bottom = after ? after_margin_bottom : before_margin_bottom;
         o->text_margin_left   = after ? after_margin_left   : before_margin_left;
         o->text_margin_right  = after ? after_margin_right  : before_margin_right;
+        // s326 m1 — per-run formatting spine
+        o->text_attr_spans    = after ? after_attr_spans    : before_attr_spans;
+        LOG_INFO("[SPANLIFE] apply(after={}) wrote {} spans onto node iid='{}' "
+                 "(before={} after={})",
+                 after, o->text_attr_spans.size(), o->internal_id,
+                 before_attr_spans.size(), after_attr_spans.size());
     }
     void execute() override;  // see CommandHistory.cpp
     void undo()    override;  // see CommandHistory.cpp

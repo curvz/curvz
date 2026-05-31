@@ -601,9 +601,85 @@ bool TextCursor::move_down() {
 // Pango is told NOT to wrap (width = -1) so the layout is whatever wide
 // the text wants to be. We measure against the available width and pick
 // the break ourselves.
+// ── s325 — per-run apply seam ───────────────────────────────────────────────
+// Build a PangoAttrList for ONE laid-out line by slicing the node's flat
+// text_attr_spans to the line's byte window [chunk_start, chunk_start+chunk_len)
+// and rebasing each surviving span into line-local [0, len) coordinates. This
+// is the only place the flat buffer spans meet a Pango layout; it runs for the
+// render layout AND the measurement layouts, so a wider run (bold/big) changes
+// the measured width and the breaker accounts for it — not just the paint.
+// Empty span list -> nullptr -> byte-identical to pre-s325 (scalar font only).
+static PangoAttrList* build_line_attrs(const SceneNode* text,
+                                       size_t chunk_start, int chunk_len) {
+    if (!text || text->text_attr_spans.empty() || chunk_len <= 0)
+        return nullptr;
+    const size_t lo = chunk_start;
+    const size_t hi = chunk_start + (size_t)chunk_len;
+    // s326 ATTRPROBE (TEMPORARY) — does the per-run attr actually get built for
+    //   the painted line? Logs the line window + every span's overlap decision
+    //   and rebased local indices. span_count=0 here would mean the spans
+    //   aren't on the node the renderer sees; "no overlap" would mean wrong
+    //   chunk_start; a produced attr means the bug is downstream of here.
+    static int s_attrprobe_n = 0;
+    const bool probe = (s_attrprobe_n < 40);
+    if (probe) {
+        ++s_attrprobe_n;
+        LOG_INFO("[ATTRPROBE] line window [{},{}) chunk_len={} span_count={}",
+                 lo, hi, chunk_len, text->text_attr_spans.size());
+    }
+    PangoAttrList* list = nullptr;
+    for (const AttrSpan& s : text->text_attr_spans) {
+        if (s.end_byte <= lo || s.start_byte >= hi) {
+            if (probe)
+                LOG_INFO("[ATTRPROBE]   span type={} [{},{}) — NO overlap",
+                         s.type, s.start_byte, s.end_byte);
+            continue;  // no overlap
+        }
+        guint ls = (guint)(std::max((size_t)s.start_byte, lo) - lo);
+        guint le = (guint)(std::min((size_t)s.end_byte,   hi) - lo);
+        if (le <= ls) continue;
+        if (probe)
+            LOG_INFO("[ATTRPROBE]   span type={} [{},{}) -> LOCAL [{},{}) "
+                     "iv={}", s.type, s.start_byte, s.end_byte, ls, le, s.ivalue);
+        PangoAttribute* a = nullptr;
+        switch ((PangoAttrType)s.type) {
+            case PANGO_ATTR_WEIGHT:
+                a = pango_attr_weight_new((PangoWeight)s.ivalue); break;
+            case PANGO_ATTR_STYLE:
+                a = pango_attr_style_new((PangoStyle)s.ivalue); break;
+            case PANGO_ATTR_UNDERLINE:
+                a = pango_attr_underline_new((PangoUnderline)s.ivalue); break;
+            case PANGO_ATTR_SIZE:
+                a = pango_attr_size_new((int)s.ivalue); break;
+            case PANGO_ATTR_ABSOLUTE_SIZE:
+                a = pango_attr_size_new_absolute((int)s.ivalue); break;
+            case PANGO_ATTR_LETTER_SPACING:
+                a = pango_attr_letter_spacing_new((int)s.ivalue); break;
+            case PANGO_ATTR_FAMILY:
+                a = pango_attr_family_new(s.svalue.c_str()); break;
+            case PANGO_ATTR_FOREGROUND: {
+                // packed 0xRRGGBB (8-bit) -> Pango 16-bit channels (v<<8|v).
+                guint16 r = (guint16)(((s.ivalue >> 16) & 0xFF) * 0x101);
+                guint16 g = (guint16)(((s.ivalue >>  8) & 0xFF) * 0x101);
+                guint16 b = (guint16)(( s.ivalue        & 0xFF) * 0x101);
+                a = pango_attr_foreground_new(r, g, b);
+                break;
+            }
+            default: break;  // unhandled-for-m1 type: recorded but not applied
+        }
+        if (!a) continue;
+        a->start_index = ls;
+        a->end_index   = le;
+        if (!list) list = pango_attr_list_new();
+        pango_attr_list_insert(list, a);  // takes ownership of `a`
+    }
+    return list;
+}
+
 static PangoLayout* make_single_line_layout(const SceneNode* text,
                                              const char* chunk,
-                                             int chunk_len) {
+                                             int chunk_len,
+                                             size_t chunk_byte_start = 0) {
     // Tiny temp cairo context so PangoCairo can build a layout.
     cairo_surface_t* surf = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
     cairo_t* tmp = cairo_create(surf);
@@ -624,6 +700,12 @@ static PangoLayout* make_single_line_layout(const SceneNode* text,
 
     pango_layout_set_width(layout, -1);  // no Pango wrap
     pango_layout_set_text(layout, chunk, chunk_len);
+    // s325 — per-run formatting for this line. The scalar font_description
+    // above is the baseline; these spans override it per byte-range.
+    if (PangoAttrList* la = build_line_attrs(text, chunk_byte_start, chunk_len)) {
+        pango_layout_set_attributes(layout, la);
+        pango_attr_list_unref(la);
+    }
     return layout;
 }
 
@@ -748,7 +830,8 @@ static size_t last_word_break_before(const char* s, size_t len) {
 // first Pango line-break opportunity (trailing whitespace stripped). A leading
 // hard newline is the caller's special case; here it measures as empty (0).
 static double measure_first_word_width(const SceneNode* text,
-                                       const char* chunk, size_t chunk_len) {
+                                       const char* chunk, size_t chunk_len,
+                                       size_t chunk_byte_start = 0) {
     if (chunk_len == 0) return 0.0;
     glong nc = g_utf8_strlen(chunk, (gssize)chunk_len);
     if (nc <= 0) return 0.0;
@@ -768,7 +851,8 @@ static double measure_first_word_width(const SceneNode* text,
            (chunk[word_byte - 1] == ' ' || chunk[word_byte - 1] == '\t'))
         --word_byte;
     if (word_byte == 0) return 0.0;
-    PangoLayout* l = make_single_line_layout(text, chunk, (int)word_byte);
+    PangoLayout* l = make_single_line_layout(text, chunk, (int)word_byte,
+                                              chunk_byte_start);
     int w = 0, h = 0;
     pango_layout_get_size(l, &w, &h);
     g_object_unref(l);
@@ -921,10 +1005,14 @@ TextLayout compute_text_layout(const SceneNode* boundary,
     // Leading: standard typographic line height is ascent + descent
     // plus a small visual gap. Many fonts produce ascent+descent ≈
     // 1.0 × em-size already; we add 20% as the line-spacing default
-    // to match the prior look. The user can override later via a
-    // text_line_height field if needed.
+    // to match the prior look.
+    // s326 m2b — an explicit text_line_height (doc units) overrides the
+    //   derivation; 0 (the default) keeps the metric-based 1.2x so existing
+    //   boxes are byte-identical to before this field existed.
     double leading = (ascent + descent) * 1.2;
     if (leading <= 0.0) leading = font_size * 1.2;  // defensive fallback
+    if (text && text->text_line_height > 0.0)
+        leading = text->text_line_height;
     pango_font_metrics_unref(fmetrics);
     pango_font_description_free(metrics_desc);
     g_object_unref(metrics_layout);
@@ -1029,7 +1117,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         // bytes_consumed < size, the user resizes the shape). Forcing it onto
         // the widest line and clipping is the deferred floor.
         if (remaining[0] != '\n' &&
-            measure_first_word_width(text, remaining, remaining_n) > avail) {
+            measure_first_word_width(text, remaining, remaining_n, cursor) > avail) {
             PangoLayout* empty = make_single_line_layout(text, "", 0);
             bl.pango.reset(empty);
             bl.byte_end = cursor;          // empty line; owns no bytes
@@ -1040,7 +1128,8 @@ TextLayout compute_text_layout(const SceneNode* boundary,
 
         PangoLayout* layout = make_single_line_layout(text,
                                                        remaining,
-                                                       (int)remaining_n);
+                                                       (int)remaining_n,
+                                                       cursor);
         size_t consumed_on_line = fit_chunk_to_width(remaining, remaining_n,
                                                       layout, avail);
         // Special case: a leading '\n' makes fit_chunk_to_width return 0,
@@ -1074,7 +1163,8 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         g_object_unref(layout);
         PangoLayout* line_layout = make_single_line_layout(text,
                                                             remaining,
-                                                            (int)consumed_on_line);
+                                                            (int)consumed_on_line,
+                                                            cursor);
         // s317 — Belt-and-braces: the chosen break is verified against the
         //   ACTUAL rendered width. If the line is still wider than the
         //   interior (the index_to_pos estimate over-reached by a word),
@@ -1110,7 +1200,8 @@ TextLayout compute_text_layout(const SceneNode* boundary,
                 consumed_on_line = shorter;
                 g_object_unref(line_layout);
                 line_layout = make_single_line_layout(text, remaining,
-                                                       (int)consumed_on_line);
+                                                       (int)consumed_on_line,
+                                                       cursor);
                 pango_layout_get_size(line_layout, &lw, &lh);
             }
         }
@@ -1470,6 +1561,98 @@ void TextCursor::select_all() {
     m_anchor_byte = 0;
     m_byte_index = m_text->text_content.size();
     // s306 m6 — Caret jumped to buffer end; drop preferred_x.
+    m_preferred_caret_x = -1.0;
+}
+
+// ── s326 m2c — Multi-click granularity selection ────────────────────────────
+// Double / triple / quadruple click in edit mode select word / visual line /
+// paragraph around a byte offset (resolved by byte_index_at at the click).
+// Each sets anchor + caret to the span bounds; no buffer mutation. byte is
+// absolute into text_content (the cursor's own coordinate system).
+
+void TextCursor::select_word_at(size_t byte) {
+    if (!m_text) return;
+    const std::string& s = m_text->text_content;
+    const size_t n = s.size();
+    if (n == 0) { m_anchor_byte = m_byte_index = 0; return; }
+    if (byte > n) byte = n;
+
+    // Character class for word runs: 0 = word (alnum + '_'), 1 = whitespace,
+    // 2 = other (punctuation/symbol). Double-click selects the maximal run of
+    // the class under the click — word on a word, the space run on a space.
+    auto cls = [](gunichar c) -> int {
+        if (g_unichar_isspace(c)) return 1;
+        if (g_unichar_isalnum(c) || c == (gunichar)'_') return 0;
+        return 2;
+    };
+
+    const char* base = s.c_str();
+    // Reference char: the one starting at `byte`; at end-of-buffer step back
+    // so a caret past the last glyph still selects the final word.
+    size_t ref = byte;
+    if (ref >= n) ref = (size_t)(g_utf8_prev_char(base + n) - base);
+    gunichar rc = g_utf8_get_char(base + ref);
+    const int target = cls(rc);
+
+    // Extend left over same-class chars.
+    size_t start = ref;
+    while (start > 0) {
+        const char* prev = g_utf8_prev_char(base + start);
+        if (cls(g_utf8_get_char(prev)) != target) break;
+        start = (size_t)(prev - base);
+    }
+    // Extend right over same-class chars.
+    size_t end = (size_t)(g_utf8_next_char(base + ref) - base);
+    while (end < n) {
+        if (cls(g_utf8_get_char(base + end)) != target) break;
+        end = (size_t)(g_utf8_next_char(base + end) - base);
+    }
+    m_anchor_byte = start;
+    m_byte_index  = end;
+    m_preferred_caret_x = -1.0;
+}
+
+void TextCursor::select_line_at(size_t byte) {
+    if (!m_text || !m_canvas) return;
+    SceneNode* boundary = m_boundary;
+    if (!boundary) {
+        if (m_text->text_boundary_ids.empty()) return;
+        boundary = m_canvas->find_text_boundary(
+            m_text->text_boundary_ids.front());
+        if (!boundary) return;
+    }
+    TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
+    if (tl.baselines.empty()) return;
+    // The visual line is the baseline whose byte window contains `byte`.
+    for (const auto& bl : tl.baselines) {
+        if (byte >= bl.byte_start && byte < bl.byte_end) {
+            m_anchor_byte = bl.byte_start;
+            m_byte_index  = bl.byte_end;
+            m_preferred_caret_x = -1.0;
+            return;
+        }
+    }
+    // Past the last placed byte -> the last baseline.
+    const BaselineLayout& last = tl.baselines.back();
+    m_anchor_byte = last.byte_start;
+    m_byte_index  = last.byte_end;
+    m_preferred_caret_x = -1.0;
+}
+
+void TextCursor::select_paragraph_at(size_t byte) {
+    if (!m_text) return;
+    const std::string& s = m_text->text_content;
+    const size_t n = s.size();
+    if (n == 0) { m_anchor_byte = m_byte_index = 0; return; }
+    if (byte > n) byte = n;
+    // Paragraph = the run between hard '\n' breaks. '\n' is a single byte and
+    // cannot occur inside a UTF-8 multibyte sequence, so byte scanning is safe.
+    size_t start = byte;
+    while (start > 0 && s[start - 1] != '\n') --start;
+    size_t end = byte;
+    while (end < n && s[end] != '\n') ++end;   // up to, not including, the '\n'
+    m_anchor_byte = start;
+    m_byte_index  = end;
     m_preferred_caret_x = -1.0;
 }
 

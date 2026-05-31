@@ -11,6 +11,7 @@
 #include <map>
 #include <vector>
 #include <algorithm>
+#include <pango/pango.h>  // s325 m3 — PANGO_ATTR_* / PANGO_STYLE_* for markup encode
 
 namespace Curvz {
 
@@ -494,6 +495,99 @@ static void collect_mgrs(const SceneNode& n, MgrCollector& mc) {
 // without per-byte attribute escaping. Always emit CDATA even when the
 // buffer is empty — its presence on disk says "this Mgr has a buffer
 // slot", which is structural truth regardless of content.
+// ── s325 m3 — markup encode (the per-run spine's write side) ────────────────
+// Inverse of SvgParser::decode_markup_into. clean text_content + flat AttrSpan
+// list -> Pango markup string. The "markup of unformatted text is just text"
+// identity is load-bearing: zero spans returns the escaped buffer unchanged,
+// so the marker can ride EVERY Mgr def and a plain box round-trips byte-for-
+// byte through parse_markup. Pango parses markup but will not emit it, so this
+// is the one hand-written half of the round-trip (the deferred-doubt piece).
+//
+// Overlapping spans are handled by segmenting at every span edge and emitting
+// one merged <span> per segment carrying all attrs active over it (close-all /
+// reopen-all). Not minimal markup, but valid and exactly round-tripping — the
+// decode pump re-flattens abutting same-value runs if it ever matters.
+static std::string encode_markup(const std::string& text,
+                                 const std::vector<AttrSpan>& spans) {
+    auto esc = [](const std::string& s, bool in_attr) {
+        std::string r;
+        for (char c : s) {
+            if      (c == '&') r += "&amp;";
+            else if (c == '<') r += "&lt;";
+            else if (c == '>') r += "&gt;";
+            else if (in_attr && c == '"') r += "&quot;";
+            else r += c;
+        }
+        return r;
+    };
+    if (spans.empty())
+        return esc(text, false);   // plain text is valid markup
+
+    std::vector<size_t> bounds{0, text.size()};
+    for (const auto& s : spans) {
+        if (s.start_byte <= text.size()) bounds.push_back(s.start_byte);
+        if (s.end_byte   <= text.size()) bounds.push_back(s.end_byte);
+    }
+    std::sort(bounds.begin(), bounds.end());
+    bounds.erase(std::unique(bounds.begin(), bounds.end()), bounds.end());
+
+    std::string out;
+    for (size_t i = 0; i + 1 < bounds.size(); ++i) {
+        size_t a = bounds[i], b = bounds[i + 1];
+        if (b <= a) continue;
+        std::string attrs;
+        for (const auto& s : spans) {
+            if ((size_t)s.start_byte > a || (size_t)s.end_byte < b) continue; // not covering
+            switch ((PangoAttrType)s.type) {
+                case PANGO_ATTR_WEIGHT:
+                    attrs += " weight=\"" + std::to_string(s.ivalue) + "\"";
+                    break;
+                case PANGO_ATTR_STYLE:
+                    attrs += std::string(" style=\"")
+                           + (s.ivalue == PANGO_STYLE_ITALIC  ? "italic"
+                            : s.ivalue == PANGO_STYLE_OBLIQUE ? "oblique"
+                                                              : "normal")
+                           + "\"";
+                    break;
+                case PANGO_ATTR_UNDERLINE:
+                    attrs += std::string(" underline=\"")
+                           + (s.ivalue == PANGO_UNDERLINE_SINGLE ? "single"
+                            : s.ivalue == PANGO_UNDERLINE_DOUBLE ? "double"
+                            : s.ivalue == PANGO_UNDERLINE_LOW    ? "low"
+                            : s.ivalue == PANGO_UNDERLINE_ERROR  ? "error"
+                                                                 : "none")
+                           + "\"";
+                    break;
+                case PANGO_ATTR_SIZE:
+                case PANGO_ATTR_ABSOLUTE_SIZE:
+                    // Emitted as markup `size` (re-decodes as PANGO_ATTR_SIZE);
+                    // absolute vs point reconciliation is m2-panel work.
+                    attrs += " size=\"" + std::to_string(s.ivalue) + "\"";
+                    break;
+                case PANGO_ATTR_LETTER_SPACING:
+                    attrs += " letter_spacing=\"" + std::to_string(s.ivalue) + "\"";
+                    break;
+                case PANGO_ATTR_FAMILY:
+                    attrs += " font_family=\"" + esc(s.svalue, true) + "\"";
+                    break;
+                case PANGO_ATTR_FOREGROUND: {
+                    static const char* hexd = "0123456789ABCDEF";
+                    unsigned long v = (unsigned long)(s.ivalue & 0xFFFFFF);
+                    std::string hx = "#";
+                    for (int sh = 20; sh >= 0; sh -= 4) hx += hexd[(v >> sh) & 0xF];
+                    attrs += " foreground=\"" + hx + "\"";
+                    break;
+                }
+                default: break;  // unhandled-for-m1 type: dropped on encode
+            }
+        }
+        std::string seg = esc(text.substr(a, b - a), false);
+        if (attrs.empty()) out += seg;
+        else                out += "<span" + attrs + ">" + seg + "</span>";
+    }
+    return out;
+}
+
 static void write_textbox_mgr_def(std::ostringstream& out,
                                   const SceneNode& mgr,
                                   int indent) {
@@ -538,14 +632,23 @@ static void write_textbox_mgr_def(std::ostringstream& out,
         out << " data-curvz-caret-byte=\"" << mgr.text_caret_byte << "\"";
     out << " data-curvz-font-family=\"" << xml_escape(mgr.text_font_family) << "\"";
     out << " data-curvz-font-size=\""   << fmt2(mgr.text_font_size) << "\"";
+    // s326 m2b — explicit leading; only emitted when set (>0) so unmarked /
+    //   pre-s326 boxes stay byte-identical and load with the derived 1.2x.
+    if (mgr.text_line_height > 0.0)
+        out << " data-curvz-line-height=\"" << fmt2(mgr.text_line_height) << "\"";
     if (mgr.text_bold)   out << " data-curvz-font-bold=\"1\"";
     if (mgr.text_italic) out << " data-curvz-font-italic=\"1\"";
+    // s325 m3 — the CDATA below is Pango markup (plain text is valid markup,
+    // so the marker rides every Mgr def, not only formatted ones).
+    out << " data-curvz-markup=\"1\"";
     out << " fill=\"" << fill_attr(mgr.fill) << "\"";
     if (mgr.stroke.paint.type != FillStyle::Type::None)
         out << stroke_attrs(mgr.stroke);
     out << shadow_attr_str(mgr);
     out << ">\n";
-    out << pad << "  <![CDATA[" << cdata_escape(mgr.text_content) << "]]>\n";
+    out << pad << "  <![CDATA[" << cdata_escape(encode_markup(mgr.text_content,
+                                                              mgr.text_attr_spans))
+        << "]]>\n";
     // Future sub-manager element children (TabMgr, StyleMgr, etc.)
     // land here.
     out << pad << "</g>\n";

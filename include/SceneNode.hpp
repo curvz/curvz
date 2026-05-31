@@ -211,6 +211,31 @@ struct PathData {
 //             → Edit Warp re-opens dialog → Release Warp restores
 //             source → Flatten Warp replaces Warp with baked paths.
 //
+
+// ── AttrSpan — s325 per-run formatting spine ────────────────────────────────
+// One per-attribute range over the TextBoxMgr buffer (text_content), a flat
+// mirror of a single PangoAttribute: {type, value, [start,end) bytes}. The
+// list (text_attr_spans, below) is the runtime form of the Pango markup stored
+// in the Mgr's CDATA — born at parse-time (pango_parse_markup → attrlist →
+// these spans), consumed at the layout apply seam (sliced to each line's byte
+// range and rebuilt into a per-line PangoAttrList). Flat and overlapping by
+// design: different attribute types never fight over the same byte, so there
+// is no nesting to canonicalise (see text_formatting_design.md §1).
+//
+// `type` is the PangoAttrType cast to int so this header stays pango-free.
+// `ivalue` carries integer-valued attrs (weight, absolute size in PANGO_SCALE
+// units, style enum, letter-spacing) and packed colour (0xRRGGBB for
+// foreground); `svalue` carries string-valued attrs (font family). Plain value
+// type — copies and snapshots for free, which is what keeps the copy helper
+// and (m2) the command carriers trivial.
+struct AttrSpan {
+  int          type       = 0;   // (int)PangoAttrType
+  long         ivalue     = 0;   // integer attrs + packed 0xRRGGBB colour
+  std::string  svalue;           // string attrs (font family)
+  unsigned     start_byte = 0;   // byte offset into text_content (inclusive)
+  unsigned     end_byte   = 0;   // byte offset into text_content (exclusive)
+};
+
 struct SceneNode {
   enum class Type {
     Layer,
@@ -653,6 +678,14 @@ struct SceneNode {
   double text_y = 0.0; // anchor y in doc space (Y-up)
   std::string text_font_family = "Sans";
   double text_font_size = 24.0; // in document units
+  // s326 m2b — Explicit line height (leading) in document units. 0 = derive
+  //   from font metrics as before ((ascent+descent)*1.2); >0 = use this value
+  //   as the per-line stride. The layout (compute_text_layout) reads it; the
+  //   creation default seeds it. This makes leading a first-class, settable,
+  //   round-tripped property instead of the implicit 1.2x derivation the
+  //   layout note ("text_line_height field if needed") always anticipated.
+  //   Box-level for now; per-paragraph leading is the layer-2 paragraph model.
+  double text_line_height = 0.0;
   bool text_bold = false;
   bool text_italic = false;
   std::string text_anchor = "start"; // SVG text-anchor: "start"|"middle"|"end"
@@ -671,6 +704,14 @@ struct SceneNode {
   // reflow the per-line spans but never touch the angle.
   double text_baseline_angle = 0.0;
   double text_letter_spacing = 0.0; // extra advance between glyphs in doc units
+  // ── s325 — per-run character formatting spine ──────────────────────────────
+  // Flat list of per-attribute spans over text_content (the Mgr buffer). Empty
+  // = no per-run formatting, the node renders with its scalar font defaults
+  // exactly as before this change (pure superset; pre-s325 files load with an
+  // empty list). Populated on load by pango_parse_markup over the CDATA buffer;
+  // consumed at the layout apply seam. Meaningful on the buffer-owning node
+  // (TextBoxMgr); offsets are absolute byte positions into text_content.
+  std::vector<AttrSpan> text_attr_spans;
   // Text-on-path fields — meaningful on Text only when text_path_id is
   // non-empty
   std::string text_path_id; // id of guide path SceneNode; empty = normal text
@@ -998,6 +1039,7 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->text_y = src.text_y;
   dst->text_font_family = src.text_font_family;
   dst->text_font_size = src.text_font_size;
+  dst->text_line_height = src.text_line_height;  // s326 m2b — explicit leading
   dst->text_bold = src.text_bold;
   dst->text_italic = src.text_italic;
   dst->text_anchor = src.text_anchor;
@@ -1005,6 +1047,7 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->text_baseline_shift = src.text_baseline_shift;
   dst->text_baseline_angle = src.text_baseline_angle;
   dst->text_letter_spacing = src.text_letter_spacing;
+  dst->text_attr_spans = src.text_attr_spans;  // s325 — per-run spine (value copy)
   dst->text_path_id = src.text_path_id;
   dst->text_path_offset = src.text_path_offset;
   dst->text_path_flip = src.text_path_flip;

@@ -2128,4 +2128,133 @@ std::string resolve_welcome_svg_path() {
   return {};
 }
 
+// ── Per-run formatting span pump (s326 m2) ──────────────────────────────────
+// Flat-model implementation of the §1/§7 apply seam. See curvz_utils.hpp for
+// the contract. `Curvz::AttrSpan` is now a complete type (SceneNode.hpp is
+// included above), so these bodies can read/write the struct directly.
+
+namespace {
+
+// Value equality for one attribute type. String-valued attrs (font family)
+// compare svalue; everything else compares ivalue (weight, style, underline,
+// size, packed colour). Keeping the split in one helper means the three
+// public pumps never re-derive "which field is the value."
+inline bool attr_value_eq(const Curvz::AttrSpan& s,
+                          int type, long ivalue, const std::string& svalue) {
+  if (s.type != type) return false;
+  // PANGO_ATTR_FAMILY == 1 is the only string-valued attr we carry; compare
+  // svalue for it, ivalue for all others. Using the numeric constant avoids
+  // pulling pango into this TU just for one enum.
+  constexpr int kFamily = 1;  // PANGO_ATTR_FAMILY
+  return (type == kFamily) ? (s.svalue == svalue) : (s.ivalue == ivalue);
+}
+
+} // namespace
+
+bool range_has_attr(const std::vector<Curvz::AttrSpan>& spans,
+                    int type, long ivalue, const std::string& svalue,
+                    unsigned a, unsigned b) {
+  if (a >= b) return false;
+  // Walk the gap line: every byte in [a,b) must be covered by at least one
+  // matching span. Coverage can come from several spans (they may abut or
+  // overlap), so we sweep a cursor forward, extending it past any matching
+  // span that starts at-or-before it. If the cursor can't advance past some
+  // byte < b, that byte is uncovered -> not "everywhere."
+  unsigned covered_to = a;
+  bool progressed = true;
+  while (covered_to < b && progressed) {
+    progressed = false;
+    for (const auto& s : spans) {
+      if (!attr_value_eq(s, type, ivalue, svalue)) continue;
+      if (s.start_byte <= covered_to && s.end_byte > covered_to) {
+        covered_to = s.end_byte;
+        progressed = true;
+      }
+    }
+  }
+  return covered_to >= b;
+}
+
+void clear_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
+                           int type, unsigned a, unsigned b) {
+  if (a >= b) return;
+  std::vector<Curvz::AttrSpan> out;
+  out.reserve(spans.size() + 2);
+  for (const auto& s : spans) {
+    if (s.type != type || s.end_byte <= a || s.start_byte >= b) {
+      // Different type, or no overlap with [a,b): survives untouched.
+      out.push_back(s);
+      continue;
+    }
+    // Overlaps [a,b): keep the slivers outside the range, drop the middle.
+    if (s.start_byte < a) {
+      Curvz::AttrSpan left = s;
+      left.end_byte = a;
+      out.push_back(left);
+    }
+    if (s.end_byte > b) {
+      Curvz::AttrSpan right = s;
+      right.start_byte = b;
+      out.push_back(right);
+    }
+  }
+  spans.swap(out);
+}
+
+void set_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
+                         int type, long ivalue, const std::string& svalue,
+                         unsigned a, unsigned b) {
+  if (a >= b) return;
+  // Clear the type in-range so the byte holds exactly one value of it, then
+  // insert the new span.
+  clear_attr_over_range(spans, type, a, b);
+  Curvz::AttrSpan ns;
+  ns.type = type;
+  ns.ivalue = ivalue;
+  ns.svalue = svalue;
+  ns.start_byte = a;
+  ns.end_byte = b;
+  spans.push_back(ns);
+
+  // Merge abutting/overlapping same-value spans of this type so the list
+  // doesn't fragment as edits churn it (the §1 normalize, done locally for
+  // the touched type). Sort the type's spans by start, coalesce, leave other
+  // types in place.
+  std::vector<Curvz::AttrSpan> same, other;
+  same.reserve(spans.size());
+  for (const auto& s : spans) {
+    if (s.type == type && attr_value_eq(s, type, ivalue, svalue))
+      same.push_back(s);
+    else
+      other.push_back(s);
+  }
+  std::sort(same.begin(), same.end(),
+            [](const Curvz::AttrSpan& x, const Curvz::AttrSpan& y) {
+              return x.start_byte < y.start_byte;
+            });
+  std::vector<Curvz::AttrSpan> merged;
+  for (const auto& s : same) {
+    if (!merged.empty() && s.start_byte <= merged.back().end_byte) {
+      if (s.end_byte > merged.back().end_byte)
+        merged.back().end_byte = s.end_byte;
+    } else {
+      merged.push_back(s);
+    }
+  }
+  other.insert(other.end(), merged.begin(), merged.end());
+  spans.swap(other);
+}
+
+bool toggle_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
+                            int type, long ivalue, const std::string& svalue,
+                            unsigned a, unsigned b) {
+  if (a >= b) return false;
+  if (range_has_attr(spans, type, ivalue, svalue, a, b)) {
+    clear_attr_over_range(spans, type, a, b);
+    return false;  // toggled off
+  }
+  set_attr_over_range(spans, type, ivalue, svalue, a, b);
+  return true;     // toggled on
+}
+
 } // namespace curvz::utils

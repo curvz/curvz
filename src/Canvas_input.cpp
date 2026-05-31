@@ -727,6 +727,12 @@ bool Canvas::flush_text_segment() {
   if (!m_text_has_snapshot) return false;
   if (!m_history) return false;
 
+  // s326 SPANLIFE (TEMPORARY) — node span count at flush entry, and whether
+  //   the content-only guard is about to early-out (span-only edits skip push).
+  LOG_INFO("[SPANLIFE] flush_text_segment ENTER spans={} content_changed={}",
+           m_text_editing->text_attr_spans.size(),
+           (m_text_snapshot.before_content != m_text_editing->text_content));
+
   // Empty delta? Don't push. Activate-and-deactivate-without-typing
   // produces no history entry — Ctrl+Z won't roll back to an unrelated
   // earlier state of this textbox.
@@ -2006,8 +2012,8 @@ bool Canvas::find_textbox_member(const SceneNode* boundary,
 // Remove one member view from its Mgr. Text reflows automatically (the
 // render resolver re-pours the buffer through whatever members remain).
 // Deleting the LAST member deletes the whole Mgr — the empty-Mgr auto-
-// delete (an empty container owns no text and has no reason to exist),
-// matching the mock's overlay_dummy_delete_member. Undoable: a member
+// delete (an empty container owns no text and has no reason to exist).
+// Undoable: a member
 // delete is a DeleteObjectCommand on the Mgr; the last-member case is a
 // DeleteObjectCommand on the Mgr's layer.
 void Canvas::delete_textbox_member(SceneNode* mgr, SceneNode* member_view) {
@@ -2175,7 +2181,7 @@ Canvas::compute_mgr_overlay_layout(const SceneNode* mgr) const {
 }
 
 // ── s316 m2 — Link: append a new member box ───────────────────────────
-// Live realisation of the mock's overlay_dummy_link. Appends a new
+// Appends a new
 // Canvas TextBoxView (a member) after the current tail, inserted BEFORE
 // the trailing popover view so child order stays [members..., popover].
 // The new member becomes the tail; the m1 member-iteration seam makes
@@ -2684,58 +2690,6 @@ void Canvas::on_pan_end(double /*dx*/, double /*dy*/) {}
 void Canvas::on_draw_begin(double x, double y) {
   if (!m_doc)
     return;
-
-  // s314 m1c — Overlay dummy playground. Highest-priority press
-  //   intercept when the dummy is visible: a hit on any sizer or the
-  //   toggle button claims the gesture and prevents normal tool routing.
-  //   A miss falls through silently.
-  if (m_overlay_dummy.visible) {
-    double dummy_doc_x = 0.0, dummy_doc_y = 0.0;
-    screen_to_doc(x, y, dummy_doc_x, dummy_doc_y);
-    int hit_member = -1;
-    int hit = hit_test_overlay_dummy(dummy_doc_x, dummy_doc_y, &hit_member);
-    if (hit == 9) {
-      // Toggle button — flip overlay visibility. No caching needed:
-      // (ovw, ovh) are primary state on the dummy and stay live
-      // through hide/show; the grip's position is derived from
-      // tail.BR + (ovw, ovh) and reappears at the correct spot
-      // automatically when shown, even if the textbox was reshaped
-      // while the overlay was hidden.
-      OverlayDummy& d = m_overlay_dummy;
-      d.overlay_shown = !d.overlay_shown;
-      LOG_INFO("Canvas: overlay-dummy toggle — overlay_shown={} "
-               "ovw={:.1f} ovh={:.1f}",
-               d.overlay_shown ? "true" : "false", d.ovw, d.ovh);
-      queue_draw();
-      return;
-    }
-    if (hit == 11) {
-      // Link button — append a new tail textbox member. Overflow
-      // re-anchors to the new tail automatically.
-      overlay_dummy_link();
-      return;
-    }
-    if (hit == 10) {
-      // Body hit. Shift-click toggles selection (no drag). Plain or
-      // ctrl click selects then begins a drag — ctrl makes it a
-      // drag-all (handled inside overlay_dummy_drag_begin via
-      // m_mod_ctrl). A plain click also selects the sole member.
-      if (m_mod_shift) {
-        overlay_dummy_select_click(hit_member, /*shift=*/true);
-        return;
-      }
-      overlay_dummy_select_click(hit_member, /*shift=*/false);
-      overlay_dummy_drag_begin(hit, hit_member, dummy_doc_x, dummy_doc_y);
-      return;
-    }
-    if (hit >= 0 && hit <= 8) {
-      overlay_dummy_drag_begin(hit, hit_member, dummy_doc_x, dummy_doc_y);
-      return;
-    }
-    // Hit==-1: fall through to normal handling (includes masked
-    // corners and dead space between members, which deliberately
-    // don't hit so clicks there fall through to the canvas beneath).
-  }
 
   // Space+left-drag → pan regardless of active tool.
   // Capture pan origin and early-return — no tool action.
@@ -3444,21 +3398,6 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
   if (!m_doc)
     return;
 
-  // s314 m1c — Overlay dummy playground drag.
-  if (m_overlay_dummy.visible && m_overlay_dummy.active_sizer >= 0) {
-    double doc_x = 0.0, doc_y = 0.0;
-    // Press point + screen-delta → current doc position via the
-    // press point we stored at drag_begin. Convert the screen delta
-    // through zoom; combine with the press-time doc coord directly
-    // (avoids relying on the gesture's current event).
-    const double dx_doc = delta_x / std::max(m_zoom, 0.001);
-    const double dy_doc = delta_y / std::max(m_zoom, 0.001);
-    doc_x = m_overlay_dummy.drag_press_doc_x + dx_doc;
-    doc_y = m_overlay_dummy.drag_press_doc_y + dy_doc;
-    overlay_dummy_drag_update(doc_x, doc_y);
-    return;
-  }
-
   // s314 m1 — Overlay grip drag. If the press armed a grip drag, update
   //   overlay_w / overlay_h on the Popover view from the cursor's
   //   current doc position relative to the press point's doc position.
@@ -3873,12 +3812,6 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
   if (!m_doc)
     return;
 
-  // s314 m1c — Overlay dummy playground drag end.
-  if (m_overlay_dummy.visible && m_overlay_dummy.active_sizer >= 0) {
-    overlay_dummy_drag_end();
-    return;
-  }
-
   // s314 m1 — Overlay grip drag end. Just clear the armed Mgr; the
   //   geometry was committed via direct field writes during update.
   //   No undo plumbing yet — this is the sighting-shot prototype.
@@ -4148,9 +4081,15 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
       bool real_drag = (std::abs(dw) >= TEXT_MARQUEE_MIN) ||
                        (std::abs(dh) >= TEXT_MARQUEE_MIN);
 
-      constexpr double TEXT_DEFAULT_FONT_SIZE = 24.0;
+      constexpr double TEXT_DEFAULT_FONT_SIZE = 12.0;   // s326 m2b
       constexpr double TEXT_DEFAULT_MARGIN    = 9.0;  // s301 m1d: was 4, bumped per Scott's feedback (lean to 9pt baseline-to-edge gutter)
       constexpr double LEADING_FACTOR         = 1.2;
+      // s326 m2b — new-box default text format. Hardcoded for now; when the
+      //   app-settings default lands, these read from AppPreferences and this
+      //   creation site is the only thing that changes. (TNR may fall back to
+      //   a system serif on distros without it — fine; Pango resolves it.)
+      const std::string TEXT_DEFAULT_FONT_FAMILY = "Times New Roman";
+      constexpr double  TEXT_DEFAULT_LINE_HEIGHT = 14.0;
       double leading = TEXT_DEFAULT_FONT_SIZE * LEADING_FACTOR;
 
       double x1, y1, w, h;
@@ -4221,8 +4160,9 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
       });
       mgr->text_x = x1;
       mgr->text_y = y1 + TEXT_DEFAULT_FONT_SIZE;
-      mgr->text_font_family = "Sans";
+      mgr->text_font_family = TEXT_DEFAULT_FONT_FAMILY;
       mgr->text_font_size = TEXT_DEFAULT_FONT_SIZE;
+      mgr->text_line_height = TEXT_DEFAULT_LINE_HEIGHT;  // s326 m2b
       mgr->text_anchor = "start";
       mgr->text_align  = "left";
 

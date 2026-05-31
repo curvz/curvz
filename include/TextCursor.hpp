@@ -323,6 +323,16 @@ public:
     // Anchor = 0, caret = text_content.size(). Triggered by Ctrl+A.
     void select_all();
 
+    // s326 m2c — Multi-click granularity selection around a byte offset
+    //   (from byte_index_at at the click point). Double-click -> word,
+    //   triple -> visual line (the baseline's byte window), quadruple ->
+    //   paragraph (between hard '\n' breaks). Each sets anchor + caret to
+    //   the span; no buffer mutation. select_line_at resolves the layout
+    //   the same way byte_index_at does.
+    void select_word_at(size_t byte);
+    void select_line_at(size_t byte);
+    void select_paragraph_at(size_t byte);
+
     // Erase [start, end) if non-empty, set caret = start, collapse
     // anchor. Returns true when the buffer actually changed. Used
     // by m4 "typing-while-selected replaces" and m5 "Ctrl+X" /

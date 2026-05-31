@@ -1265,19 +1265,6 @@ void MainWindow::setup_menu() {
       [this](const Glib::VariantBase &) { m_help_window.show(*this); });
   add_action(act_help);
 
-  // s314 m1c — Overlay dummy playground. Activates a debug visualization
-  //   on the canvas: an outer container with textbox + overlay regions,
-  //   8 standard resize handles, an overlay grip, and a toggle button.
-  //   Used to prove the canvas-region depot model's geometry and
-  //   interaction feel before unwinding the s311–s313 widget-based
-  //   depot machinery. Bound to Ctrl+Shift+D as a default accel
-  //   (see m_app->set_accels_for_action elsewhere; if not bound, invoke
-  //   via gtk's runtime action API).
-  auto act_overlay_dummy = Gio::SimpleAction::create("debug-overlay-dummy");
-  act_overlay_dummy->signal_activate().connect(
-      [this](const Glib::VariantBase &) { m_canvas.toggle_overlay_dummy(); });
-  add_action(act_overlay_dummy);
-
   // View — rulers toggle (stateful boolean action — shows checkmark)
   // s256 m2 — migrated to add_scripted_bool_action. The setter takes
   // the FINAL desired value (true=show rulers, false=hide) and owns

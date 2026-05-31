@@ -1467,6 +1467,15 @@ void LayersPanel::add_path_row(int layer_idx, int obj_idx, Gtk::Box *parent) {
   const char *type_str = "Path";
   if (obj.type == SceneNode::Type::Text) {
     type_str = "Text";
+  } else if (obj.is_text_box_mgr() || obj.is_text_box()) {
+    // s325 — TextBoxMgr (and legacy TextBox) get a first-class "Text"
+    //   entry instead of falling through to the generic "Path" label.
+    //   The leaf row already carries the rename gesture and the DnD grip,
+    //   so naming + reorder (= layer z-order) come for free; this just
+    //   makes the row recognisable as the text box it is. The Mgr's
+    //   TextBoxView children stay hidden — they're structural plumbing,
+    //   not user-draggable objects, so the row is a leaf, not a container.
+    type_str = "Text";
   } else if (obj.type == SceneNode::Type::Image) {
     type_str = "Image";
   } else if (obj.path && !obj.path->node_sets.empty()) {
@@ -1485,7 +1494,8 @@ void LayersPanel::add_path_row(int layer_idx, int obj_idx, Gtk::Box *parent) {
   // ── Name — prefer name over id; double-click to rename
   std::string display_name = obj.name.empty() ? obj.id : obj.name;
   if (display_name.empty())
-    display_name = obj.is_text() ? "Text" : "path";
+    display_name = (obj.is_text() || obj.is_text_box_mgr() || obj.is_text_box())
+                       ? "Text" : "path";
   auto *name_lbl = Gtk::make_managed<Gtk::Label>(display_name);
   name_lbl->set_xalign(0.0f);
   name_lbl->set_hexpand(true);
@@ -1690,6 +1700,8 @@ void LayersPanel::add_child_row(SceneNode *obj, int layer_idx, int indent,
           const char *type_str = "Path";
           if (obj->type == SceneNode::Type::Text) {
             type_str = "Text";
+          } else if (obj->is_text_box_mgr() || obj->is_text_box()) {
+            type_str = "Text";  // s325 — match add_path_row's TBM entry
           } else if (obj->type == SceneNode::Type::Image) {
             type_str = "Image";
           } else if (obj->path && !obj->path->node_sets.empty()) {
@@ -1707,7 +1719,8 @@ void LayersPanel::add_child_row(SceneNode *obj, int layer_idx, int indent,
 
           std::string display_name = obj->name.empty() ? obj->id : obj->name;
           if (display_name.empty())
-            display_name = "path";
+            display_name = (obj->is_text_box_mgr() || obj->is_text_box())
+                               ? "Text" : "path";
           auto *name_lbl = Gtk::make_managed<Gtk::Label>(display_name);
           name_lbl->set_xalign(0.0f);
           name_lbl->set_hexpand(true);

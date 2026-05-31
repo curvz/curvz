@@ -721,17 +721,6 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
 
   draw_objects(cr);
 
-  // s314 m1c — Overlay dummy playground. Painted after the main scene
-  //   so it appears on top of any document content. Doc-space transform
-  //   active here (translate(ox,oy) is on the CTM); we apply the zoom
-  //   ourselves since draw_objects restored its own scale.
-  if (m_overlay_dummy.visible) {
-    cr->save();
-    cr->scale(m_zoom, m_zoom);
-    draw_overlay_dummy(cr);
-    cr->restore();
-  }
-
   cr->restore();
 
 
@@ -1179,13 +1168,24 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   // and which text/boundary pair to use.
   draw_text_baseline_guides(cr);
 
-  // ── s322 — Form-fit reflow debug overlay (TEMPORARY) ──────────────────
-  // Visualizes the form-fit geometry chain on a selected closed Path while
-  // the Node tool is active: eroded margin, float-found first baseline, and
-  // per-line spans striding by leading. Not wired into real text layout —
-  // a pure geometry probe so the chain can be eyeballed on a shape (and
-  // watched reflow live as the shape is node-edited) before integration.
-  draw_formfit_debug(cr);
+  // ── s322 — Form-fit reflow debug overlay (PARKED s326) ────────────────
+  // Pure geometry probe: eroded margin + float-found baselines on a selected
+  // closed Path in Node mode. PARKED — it fired on ANY selected closed path,
+  // textbox or not (an ellipse selected in node mode lit up with baseline-
+  // looking spans), which read as "all closed paths draw baselines." The
+  // dispatch is disabled; the body is kept as the validation harness for the
+  // layer-2 form-fit work (the "eroded-outline margin frame" backlog item).
+  //
+  // It also surfaced a real layer-2 finding worth keeping: on a curved
+  // boundary the eroded margin comes back as a POLYGON, not an inset curve
+  // (an ellipse insets to a diamond) — erode_outline -> offset_path feeds
+  // Clipper2 the raw node polygon without flattening the beziers. Fix when
+  // layer-2 actually consumes the eroded outline (rect boxes are unaffected:
+  // they take offset_path's square-corner fast path).
+  //
+  // Re-arm by uncommenting the call below.
+  // draw_formfit_debug(cr);
+
 
   // ── s301 m1c/m1f — Caret render. Inside doc-space transform; the
   //    cursor manages its own line width and color (zoom-aware width,
@@ -2885,6 +2885,25 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
     auto L = compute_mgr_overlay_layout(&obj);
     const bool mgr_is_selected = (m_selected == &obj);
 
+    // s326 — Gate the structure-proof viz (container rect, flow connectors,
+    //   member outlines, margin guides) to selection. Unselected, a TextBoxMgr
+    //   reads as plain text on the page; selecting the Mgr (or any member box)
+    //   reveals the ownership structure. The overflow `!` indicator and the
+    //   user-toggled overflow bubble are NOT gated here — they are functional
+    //   affordances, not structural chrome. A member is "selected" when it is
+    //   the active single selection or part of the multi-selection set.
+    bool mgr_or_member_selected = mgr_is_selected || (m_text_editing == &obj);
+    if (!mgr_or_member_selected) {
+      for (const auto& mr : member_rects) {
+        if (mr.boundary == m_selected ||
+            std::find(m_selection.begin(), m_selection.end(), mr.boundary) !=
+                m_selection.end()) {
+          mgr_or_member_selected = true;
+          break;
+        }
+      }
+    }
+
     // s317 — Container rect: visible proof of ownership. When a Mgr has
     //   more than one member, draw a thin frame around the union of the
     //   member boxes so the user can SEE the boxes are one structure (the
@@ -2893,7 +2912,7 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
     //   rect is the picture of the structure, not a UI object. A single-
     //   member Mgr draws nothing here: the lone box outline already is the
     //   whole structure, so a second frame would just be noise.
-    if (L.valid && L.member_count >= 2) {
+    if (mgr_or_member_selected && L.valid && L.member_count >= 2) {
       const double iz = 1.0 / std::max(m_zoom, 0.001);
       // s317 — the container frame proves ownership of everything the Mgr
       //   owns: the member boxes AND the overflow panel (when presented).
@@ -2937,7 +2956,7 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
     //       is the picture of the text route — port of the mock's flow
     //       connectors. Drawn UNDER the member rects so the boxes sit on
     //       top of the threads.
-    if (member_rects.size() >= 2) {
+    if (mgr_or_member_selected && member_rects.size() >= 2) {
       const double iz = 1.0 / std::max(m_zoom, 0.001);
       const double hair = 1.0 * iz;
 

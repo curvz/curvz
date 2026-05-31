@@ -1,6 +1,85 @@
 #include "SvgParser.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"  // s147 m2: warp_presets::PRESET_COUNT for preset clamp
+#include <pango/pango.h>    // s325 — pango_parse_markup for the per-run spine
+
+// ── s325 — markup decode (the per-run spine's read side) ────────────────────
+// Pango markup in the Mgr CDATA -> clean text_content + flat AttrSpan list.
+// This is the "born at the parse pump" half of §2: pango_parse_markup hands
+// back the clean UTF-8 string (no formatting bytes) and a flat PangoAttrList,
+// which we mirror into text_attr_spans. The string goes to text_content so
+// every existing reader (fitter, caret, slicer) is untouched — they only ever
+// see clean bytes. Only called when the Mgr def carried data-curvz-markup="1";
+// raw (pre-s325) buffers never reach here, so legacy load is byte-identical.
+static void decode_markup_into(Curvz::SceneNode* mgr, const std::string& payload) {
+    if (!mgr) return;
+    char*           clean = nullptr;
+    PangoAttrList*  attrs = nullptr;
+    GError*         err   = nullptr;
+    if (!pango_parse_markup(payload.c_str(), (int)payload.size(), 0,
+                            &attrs, &clean, nullptr, &err)) {
+        // Malformed markup: fall back to treating the payload as plain text
+        // so the box still loads (degraded, no formatting) rather than losing
+        // the buffer entirely.
+        LOG_WARN("SvgParser: TextBoxMgr '{}' markup parse failed ({}); "
+                 "loading buffer as plain text",
+                 mgr->name, err ? err->message : "unknown");
+        if (err) g_error_free(err);
+        mgr->text_content = payload;
+        mgr->text_attr_spans.clear();
+        return;
+    }
+    mgr->text_content = clean ? std::string(clean) : std::string{};
+    if (clean) g_free(clean);
+    mgr->text_attr_spans.clear();
+    if (attrs) {
+        // Enumerate every attribute (filter callback returning FALSE leaves
+        // the list intact; we use it purely to walk). Each PangoAttribute maps
+        // to one AttrSpan; the value field read depends on the attr klass.
+        pango_attr_list_filter(
+            attrs,
+            [](PangoAttribute* a, gpointer data) -> gboolean {
+                auto* spans = static_cast<std::vector<Curvz::AttrSpan>*>(data);
+                Curvz::AttrSpan s;
+                s.type       = (int)a->klass->type;
+                s.start_byte = a->start_index;
+                s.end_byte   = a->end_index;
+                switch (a->klass->type) {
+                    case PANGO_ATTR_WEIGHT:
+                    case PANGO_ATTR_STYLE:
+                    case PANGO_ATTR_UNDERLINE:
+                    case PANGO_ATTR_SIZE:
+                    case PANGO_ATTR_ABSOLUTE_SIZE:
+                    case PANGO_ATTR_LETTER_SPACING:
+                        s.ivalue = ((PangoAttrInt*)a)->value;
+                        break;
+                    case PANGO_ATTR_FAMILY:
+                        s.svalue = ((PangoAttrString*)a)->value
+                                       ? ((PangoAttrString*)a)->value : "";
+                        break;
+                    case PANGO_ATTR_FOREGROUND: {
+                        const PangoColor& c = ((PangoAttrColor*)a)->color;
+                        // 16-bit channels -> packed 0xRRGGBB.
+                        s.ivalue = ((long)(c.red   >> 8) << 16)
+                                 | ((long)(c.green >> 8) <<  8)
+                                 | ((long)(c.blue  >> 8));
+                        break;
+                    }
+                    default:
+                        // Unhandled attr type for m1 — recorded so it survives
+                        // (round-trip fidelity) but ignored at the apply seam.
+                        s.ivalue = 0;
+                        break;
+                }
+                spans->push_back(std::move(s));
+                return FALSE;  // keep the attribute in the list
+            },
+            &mgr->text_attr_spans);
+        pango_attr_list_unref(attrs);
+    }
+    LOG_INFO("SvgParser: TextBoxMgr '{}' markup decoded — {} bytes, {} spans",
+             mgr->name, mgr->text_content.size(), mgr->text_attr_spans.size());
+}
 #include <fstream>
 #include <unordered_map>
 #include <map>
@@ -1249,6 +1328,7 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
     std::map<std::string, SceneNode*> mgr_def_by_iid;
     std::set<std::string> placed_mgrs;
     SceneNode* in_textbox_mgr_def = nullptr;
+    bool mgr_def_is_markup = false;  // s325 — current Mgr def's CDATA is Pango markup
 
     // Push a freshly-built SceneNode into the correct destination:
     //   - When in_clip_def_id is active we're inside <clipPath id="X">;
@@ -1309,12 +1389,21 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                 if (pl_end >= 2 && tag.compare(pl_end - 2, 2, "]]") == 0)
                     pl_end -= 2;
                 if (pl_end < pl_start) pl_end = pl_start;
-                in_textbox_mgr_def->text_content.assign(
-                    tag, pl_start, pl_end - pl_start);
-                LOG_INFO("SvgParser: TextBoxMgr def '{}' buffer "
-                         "loaded — {} bytes",
-                         in_textbox_mgr_def->name,
-                         in_textbox_mgr_def->text_content.size());
+                if (mgr_def_is_markup) {
+                    // s325 — CDATA is Pango markup: decode to clean text +
+                    // per-run spans. text_content ends up clean, so all
+                    // downstream readers are unaffected.
+                    decode_markup_into(in_textbox_mgr_def,
+                                       std::string(tag, pl_start,
+                                                   pl_end - pl_start));
+                } else {
+                    in_textbox_mgr_def->text_content.assign(
+                        tag, pl_start, pl_end - pl_start);
+                    LOG_INFO("SvgParser: TextBoxMgr def '{}' buffer "
+                             "loaded — {} bytes",
+                             in_textbox_mgr_def->name,
+                             in_textbox_mgr_def->text_content.size());
+                }
             }
             continue;
         }
@@ -1372,6 +1461,7 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                          mgr->name, mgr->text_content.size(),
                          mgr->text_caret_byte);
                 in_textbox_mgr_def = nullptr;
+                mgr_def_is_markup = false;  // s325
                 continue;
             }
             if ((tag == "/g" || tag.rfind("/g", 0) == 0) && !stack.empty()) {
@@ -2296,6 +2386,10 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     auto fs = attr(tag, "data-curvz-font-size");
                     if (!fs.empty()) mgr->text_font_size = dbl(fs,
                                                   mgr->text_font_size);
+                    // s326 m2b — explicit leading (absent -> stays 0 -> derived)
+                    auto lh = attr(tag, "data-curvz-line-height");
+                    if (!lh.empty()) mgr->text_line_height = dbl(lh,
+                                                  mgr->text_line_height);
                     if (attr(tag, "data-curvz-font-bold")   == "1")
                         mgr->text_bold = true;
                     if (attr(tag, "data-curvz-font-italic") == "1")
@@ -2328,6 +2422,7 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 pending_mgrs.push_back(std::move(mgr));
                 mgr_def_by_iid[mgr_raw->internal_id] = mgr_raw;
                 in_textbox_mgr_def = mgr_raw;
+                mgr_def_is_markup = (attr(tag, "data-curvz-markup") == "1"); // s325
                 LOG_INFO("SvgParser: <defs> textbox-mgr '{}' opened "
                          "(iid='{}', font='{}' size={:.1f})",
                          mgr_raw->name, mgr_raw->internal_id,

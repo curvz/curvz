@@ -589,21 +589,41 @@ Canvas::Canvas() {
   dbl_click->set_button(1);
   dbl_click->signal_pressed().connect([this, dbl_click](int n_press, double x,
                                                         double y) {
-    if (n_press != 2)
-      return;
-    // s315 m3 — Overlay dummy double-click → edit the member (red
-    // rect). Highest-priority intercept when the dummy is visible; a
-    // miss falls through to normal double-click handling.
-    if (m_overlay_dummy.visible) {
-      double ddx = 0.0, ddy = 0.0;
-      screen_to_doc(x, y, ddx, ddy);
-      int dmember = -1;
-      int dhit = hit_test_overlay_dummy(ddx, ddy, &dmember);
-      if (dmember >= 0 && (dhit == 10 || (dhit >= 0 && dhit <= 7))) {
-        overlay_dummy_edit_click(dmember);
-        return;
+    // s326 m2c — Multi-click selection WHILE EDITING: 2 = word, 3 = line,
+    //   4 = paragraph. Runs only when a cursor is active and the click is on
+    //   the editing target. Deferred to idle because the GestureDrag press
+    //   (on_select_begin -> place_caret_at) collapses the selection on the
+    //   same press; the idle callback runs after that and re-establishes the
+    //   granularity selection, robust to gesture firing order. byte_index_at
+    //   is pure geometry (caret-independent), so re-mapping in idle is safe.
+    if (m_text_cursor && m_text_editing && n_press >= 2 && n_press <= 4) {
+      double mdx = 0.0, mdy = 0.0;
+      screen_to_doc(x, y, mdx, mdy);
+      SceneNode* hit = hit_test(mdx, mdy);
+      SceneNode* editing_tb = find_text_box_for_text(m_text_editing);
+      bool on_edit =
+          (hit && editing_tb && hit == editing_tb) ||
+          (hit == m_text_editing) ||
+          (hit && hit == m_text_boundary_editing);
+      if (on_edit) {
+        int press = n_press;
+        Glib::signal_idle().connect_once([this, mdx, mdy, press]() {
+          if (!m_text_cursor) return;
+          auto b = m_text_cursor->byte_index_at(mdx, mdy);
+          if (!b) return;
+          if (press == 2)      m_text_cursor->select_word_at(*b);
+          else if (press == 3) m_text_cursor->select_line_at(*b);
+          else                 m_text_cursor->select_paragraph_at(*b);
+          m_text_select_dragging = false;  // don't let a stray drag fight it
+          m_text_cursor->set_visible(true);
+          queue_draw();
+        });
+        return;  // consumed; don't fall through to enter-edit handling
       }
     }
+
+    if (n_press != 2)
+      return;
     // Selection and Text tools both honour double-click → edit on a
     // textbox. Selection promotes to Text first; Text is already
     // there. Other tools ignore double-clicks (their own gestures
@@ -808,51 +828,8 @@ Canvas::Canvas() {
     if (!m_doc)
       return;
 
-    // s315 — Overlay dummy right-click: if the dummy is visible and the
-    // click landed on a member, offer "Delete textbox" to exercise the
-    // delete/promote lifecycle. Highest priority intercept; a miss
-    // falls through to normal handling. Local per-popup action group
-    // ("dummyctx"), same lifetime idiom as the object/node popovers.
-    if (m_overlay_dummy.visible) {
-      double ddx = 0.0, ddy = 0.0;
-      screen_to_doc(x, y, ddx, ddy);
-      int dmember = -1;
-      int dhit = hit_test_overlay_dummy(ddx, ddy, &dmember);
-      // Member hits are sizer (0..7) or body (10); verbs 8/9/11 are not
-      // delete targets. Require an actual member index.
-      if (dmember >= 0 && (dhit == 10 || (dhit >= 0 && dhit <= 7))) {
-        auto menu = Gio::Menu::create();
-        menu->append("Delete textbox", "dummyctx.delete");
-
-        auto ag = Gio::SimpleActionGroup::create();
-        auto act = Gio::SimpleAction::create("delete");
-        const int captured_member = dmember;
-        act->signal_activate().connect(
-            [this, captured_member](const Glib::VariantBase &) {
-              Glib::signal_idle().connect_once([this, captured_member]() {
-                overlay_dummy_delete_member(captured_member);
-              });
-            });
-        ag->add_action(act);
-        insert_action_group("dummyctx", ag);
-
-        auto *popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
-        popover->set_parent(*this);
-        popover->set_has_arrow(false);
-        Gdk::Rectangle rect((int)x, (int)y, 1, 1);
-        popover->set_pointing_to(rect);
-        popover->signal_closed().connect([popover]() {
-          Glib::signal_idle().connect_once(
-              [popover]() { popover->unparent(); });
-        });
-        popover->popup();
-        return;
-      }
-    }
-
-    // s317 — Live TextBoxMgr member right-click: "Delete text box". Mirrors
-    //   the mock's dummyctx branch but acts on real members. A miss falls
-    //   through to the normal object menu.
+    // s317 — Live TextBoxMgr member right-click: "Delete text box". A miss
+    //   falls through to the normal object menu.
     {
       double mdx = 0.0, mdy = 0.0;
       screen_to_doc(x, y, mdx, mdy);
@@ -4508,6 +4485,83 @@ void Canvas::resume_text_cursor_blink() {
 //                 commit_text_edit; we return true here to override
 //                 that — Enter during canvas-cursor edit means newline,
 //                 NOT commit.
+// ── s326 m2 — Per-run character formatting toggle ───────────────────────────
+// The keyboard spine for the styler: take the active selection, toggle one
+// attribute over it, commit one undoable edit. The render + persistence are
+// already banked (s325), and the span pump (curvz::utils) is proven in
+// isolation, so this is just the wiring: selection -> pump -> commit.
+//
+// Commit model: a format toggle is a discrete edit, not part of a typing
+// run, so flush_text_segment() first to close any in-flight typing as its
+// own history step. flush re-snapshots to the current state when it pushes;
+// when it no-ops (no pending typing) m_text_snapshot already reflects the
+// current buffer -- either way m_text_snapshot.before_* is the pre-toggle
+// state. Then push the span delta directly: flush's guard is content-only
+// (before_content == text_content) and a toggle changes text_attr_spans,
+// not text_content, so flush would no-op it -- record_after + push + re-
+// snapshot here, mirroring flush's tail.
+//
+// m2 is selection-only: no selection -> no-op. The caret-insertion case
+// (set the "pending format" for the next typed char) is the bar's job and
+// comes with m3. Returns true when a toggle was applied.
+bool Canvas::apply_text_format_toggle(int attr_type, long ivalue,
+                                      const std::string& svalue) {
+  if (!m_text_cursor || !m_text_editing) return false;
+  auto [a, b] = m_text_cursor->selection_range();
+  // s326 m2 — log at entry (before the selection gate) so a no-selection
+  //   chord is distinguishable from a non-arriving keystroke in the trace.
+  LOG_INFO("[s326] format toggle ENTER type={} sel=[{},{}) has_sel={}",
+           attr_type, (unsigned)a, (unsigned)b, (a < b));
+  if (a >= b) return false;  // selection-only in m2
+
+  // s326 SPANDUMP (TEMPORARY) — print the live formatting state as a readable
+  //   span list so the pango codes are visible, not just their rendered result.
+  //   Each line: one AttrSpan {type=(int)PangoAttrType iv=ivalue sv='svalue'
+  //   [start,end)}. Compare BEFORE vs AFTER to see exactly what the toggle did.
+  auto dump_spans = [this](const char* when) {
+    const auto& spans = m_text_editing->text_attr_spans;
+    LOG_INFO("[SPANDUMP] {} — text.size={} span_count={}",
+             when, m_text_editing->text_content.size(), spans.size());
+    for (size_t i = 0; i < spans.size(); ++i) {
+      const auto& s = spans[i];
+      LOG_INFO("[SPANDUMP]   [{}] type={} iv={} sv='{}' [{},{})",
+               i, s.type, s.ivalue, s.svalue, s.start_byte, s.end_byte);
+    }
+  };
+  dump_spans("BEFORE");
+
+  // Close any in-flight typing run as its own undo step.
+  flush_text_segment();
+
+  bool now_on = curvz::utils::toggle_attr_over_range(
+      m_text_editing->text_attr_spans, attr_type, ivalue, svalue,
+      (unsigned)a, (unsigned)b);
+
+  dump_spans("AFTER");
+
+  // Push the span delta. (flush's content-only guard would skip it.)
+  if (m_text_has_snapshot && m_history) {
+    size_t cb = m_text_cursor->byte_index();
+    if (cb > (size_t)std::numeric_limits<int32_t>::max())
+      cb = (size_t)std::numeric_limits<int32_t>::max();
+    m_text_editing->text_caret_byte = (int32_t)cb;
+
+    m_text_snapshot.record_after(m_text_editing);
+    m_history->push(
+        std::make_unique<TextEditCommand>(std::move(m_text_snapshot)));
+    // Re-open a fresh segment from the post-toggle state.
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), m_text_editing);
+  }
+
+  LOG_INFO("[s326] format toggle type={} ivalue={} range=[{},{}) -> {}",
+           attr_type, ivalue, (unsigned)a, (unsigned)b,
+           now_on ? "on" : "off");
+
+  m_sig_doc_changed.emit();
+  queue_draw();
+  return true;
+}
+
 bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
   if (!m_text_cursor) return false;
 
@@ -4526,6 +4580,38 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
     m_text_cursor->select_all();
     m_text_cursor->set_visible(true);
     queue_draw();
+    return true;
+  }
+
+  // s326 m2 — Ctrl+B / Ctrl+I / Ctrl+U: per-run character formatting on the
+  //   current selection. Intercepted above the ctrl-passthrough gate (same
+  //   reason as Ctrl+A): the chord means "format the selected text," not any
+  //   global shortcut. No selection -> no-op (the bar's chips will drive the
+  //   caret-insertion-style case later; m2 is selection-only). The attribute
+  //   values are the Pango constants, passed as ints so this TU stays
+  //   pango-free: weight bold = PANGO_WEIGHT_BOLD (700), style italic =
+  //   PANGO_STYLE_ITALIC (2), underline single = PANGO_UNDERLINE_SINGLE (1);
+  //   the attr-type ids are PANGO_ATTR_WEIGHT (4), PANGO_ATTR_STYLE (3),
+  //   PANGO_ATTR_UNDERLINE (11). s326 — pass the real PangoAttrType symbols
+  //   (NOT hardcoded ints) so they match build_line_attrs / encode_markup;
+  //   a prior transcription used 8/5/10 (FONT_DESC/VARIANT/BACKGROUND), which
+  //   every consumer dropped, so toggles never rendered or saved.
+  if (ctrl && !alt && !shift &&
+      (keyval == GDK_KEY_b || keyval == GDK_KEY_B)) {
+    apply_text_format_toggle(PANGO_ATTR_WEIGHT,
+                             /*PANGO_WEIGHT_BOLD*/ 700, "");
+    return true;
+  }
+  if (ctrl && !alt && !shift &&
+      (keyval == GDK_KEY_i || keyval == GDK_KEY_I)) {
+    apply_text_format_toggle(PANGO_ATTR_STYLE,
+                             /*PANGO_STYLE_ITALIC*/ 2, "");
+    return true;
+  }
+  if (ctrl && !alt && !shift &&
+      (keyval == GDK_KEY_u || keyval == GDK_KEY_U)) {
+    apply_text_format_toggle(PANGO_ATTR_UNDERLINE,
+                             /*PANGO_UNDERLINE_SINGLE*/ 1, "");
     return true;
   }
 

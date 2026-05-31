@@ -90,6 +90,7 @@ struct SceneNode;       // s132 m2 — count_anchors / count_objects pumps
 struct CurvzDocument;   // s132 m2 — document-level wrappers
 struct CurvzProject;    // s167 m1 — project-level find_by_iid wrapper
 struct PathData;        // s146 m2 — warp_presets pump signatures
+struct AttrSpan;        // s326 m2 — per-run formatting span pump signatures
 }
 
 namespace curvz::utils {
@@ -272,6 +273,53 @@ double normalize_doc_for_target(Curvz::CurvzDocument& doc,
 // Returns nullptr if iid is empty or no document contains a match.
 Curvz::SceneNode* find_by_iid(const Curvz::CurvzProject& proj,
                               const std::string& iid);
+
+// ── Per-run formatting span pump (s326 m2) ───────────────────────────
+// The flat-span apply seam from text_formatting_design.md §1/§7. A
+// TextBoxMgr's text_attr_spans is a flat, overlapping bag of per-attribute
+// ranges (a mirror of PangoAttrList). These pumps mutate that bag for one
+// attribute type over one byte range [a, b) into text_content, with the
+// pango_attr_list_change semantics expressed in the flat model:
+//
+//   - SAME type is exclusive over a byte: setting weight over [a,b) clips
+//     any existing weight span in that window (split left/right, drop the
+//     middle) before inserting the new one — a byte can't hold two weights.
+//   - OTHER types are independent: weight, style, colour, size overlap
+//     freely; the pump never touches a type it wasn't asked about.
+//
+// All three operate purely on the span vector + byte offsets (offsets are
+// absolute into text_content, the cursor's own coordinate system — the
+// selection_range() pair drops straight in, no rebasing). Round-trip and
+// render are already banked (s325), so these are the only new logic on the
+// edit path. Ranges with a >= b are no-ops.
+
+// True iff EVERY byte in [a,b) is covered by a span of `type` whose value
+// matches (ivalue for integer/colour attrs, svalue for string attrs). This
+// is the toggle predicate: "is the whole selection already bold?" Empty
+// range (a >= b) returns false (nothing to be "everywhere true" over).
+bool range_has_attr(const std::vector<Curvz::AttrSpan>& spans,
+                    int type, long ivalue, const std::string& svalue,
+                    unsigned a, unsigned b);
+
+// Remove `type` over [a,b): clip every span of that type to the parts
+// OUTSIDE the range (keep [s,a) and [b,e) slivers, drop the overlap). The
+// range becomes un-attributed for `type` and inherits the node default.
+void clear_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
+                           int type, unsigned a, unsigned b);
+
+// Set `type` = (ivalue/svalue) over [a,b): clear that type in the range,
+// then insert one span carrying the value. Adjacent same-value spans of
+// the type are merged so the list doesn't fragment as edits churn it.
+void set_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
+                         int type, long ivalue, const std::string& svalue,
+                         unsigned a, unsigned b);
+
+// The B/I/U entry: if [a,b) is already entirely (type==value), clear it;
+// otherwise set it. Returns the resulting on/off state (true = now set).
+// Composed from the three above.
+bool toggle_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
+                            int type, long ivalue, const std::string& svalue,
+                            unsigned a, unsigned b);
 
 // ── Layer-index resolver (s171 m1) ───────────────────────────────────
 // Layers live at the top of the document tree (`doc->layers`) and are

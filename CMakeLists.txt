@@ -371,12 +371,6 @@ set(SOURCES
     # pathology), letting drag-to-resize work cleanly. WindowHandle
     # wraps the top_row for WM-native drag-to-move.
     src/DepotWindow.cpp
-    # s314 m1c — OverlayDummy. Pure geometry playground for the
-    # canvas-region depot model: one outer container with textbox
-    # + overlay regions, 8 standard resize handles, 9th internal
-    # grip, plus a toggle button. Invoked via F12; deleted entirely
-    # when the canvas-region depot work lands for real.
-    src/OverlayDummy.cpp
     src/PreviewPanel.cpp
     src/ContextBar.cpp
     src/DocTabBar.cpp

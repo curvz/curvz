@@ -3,7 +3,6 @@
 #include "CurvzDocument.hpp"
 #include "ImageInfo.hpp"  // s210 m1 — payload struct for signal_request_image_info
 #include "SceneNode.hpp"
-#include "OverlayDummy.hpp"
 #include "SelectionContext.hpp"  // s158 m1 — capability classifier
 #include "Toolbar.hpp"
 #include "color/Paint.hpp"  // SwatchId alias — pure header, no nlohmann/sigc/gtk
@@ -2090,72 +2089,6 @@ private:
   double     m_overlay_grip_start_doc_x = 0.0;  // press point in doc space
   double     m_overlay_grip_start_doc_y = 0.0;
 
-  // s314 m1c — Overlay dummy playground. A self-contained geometry
-  //   prototype for the canvas-region depot model — one outer container,
-  //   textbox region upper-left, overlay region lower-right, 8 standard
-  //   resize handles on the container plus a 9th grip on the internal
-  //   split, plus a toggle button that hides/shows the overlay. The
-  //   dummy is invoked via Gio::SimpleAction "debug-overlay-dummy" and
-  //   has no integration with selection, undo, SceneNode tree, or
-  //   save/load. Pure prototype to evaluate visual + interaction feel
-  //   before we delete the s311–s313 widget-based depot machinery.
-  //
-  //   See include/OverlayDummy.hpp for the geometry model and sizer
-  //   conventions.
-  OverlayDummy m_overlay_dummy;
-
-  // s314 m1c — Toggle dummy visibility. Called by the
-  //   Gio::SimpleAction "debug-overlay-dummy" wired in MainWindow.
-  //   Public so MainWindow can reach it via the canvas() accessor.
-public:
-  void toggle_overlay_dummy();
-
-  // s314 m1c — Paint the dummy on the canvas (called from Canvas_draw
-  //   after the scene render). No-op when m_overlay_dummy.visible is
-  //   false. Paints: outer container border, textbox region border,
-  //   overlay region border (when shown), 8 sizer handles, overlay
-  //   grip handle, toggle button.
-  void draw_overlay_dummy(const Cairo::RefPtr<Cairo::Context>& cr);
-
-  // s314 m1c — Hit-test the dummy at a doc-space point. Returns the
-  //   sizer index (0..7 for container, 8 for grip, 9 for toggle
-  //   button) or -1 for no hit. Called from on_draw_begin to
-  //   intercept presses before tool routing.
-  //   s315: out_member receives which textbox member the hit belongs
-  //   to (or -1). Verbs that act on the Mgr/tail (8 grip, 9 toggle,
-  //   11 link) report the tail index.
-  int hit_test_overlay_dummy(double doc_x, double doc_y,
-                             int* out_member = nullptr) const;
-
-  // s314 m1c / s315 — Begin/update/end a dummy drag. Mutates the
-  //   dummy's geometry per the sizer's semantics. Drag-begin takes the
-  //   member index so sizer/body drags target the right member.
-  //   Drag-end clears active_sizer/active_member; geometry was
-  //   committed live during update.
-  void overlay_dummy_drag_begin(int sizer, int member,
-                                double doc_x, double doc_y);
-  void overlay_dummy_drag_update(double doc_x, double doc_y);
-  void overlay_dummy_drag_end();
-
-  // s315 — Link button action: append a new tail textbox member to the
-  //   dummy. Overflow re-anchors to the new tail automatically.
-  void overlay_dummy_link();
-
-  // s315 — Delete a textbox member by index. Survivors promote (the
-  //   vector closes the gap); the tail is recomputed and the overlay
-  //   re-anchors. Deleting the last remaining member empties the dummy
-  //   and hides it (simulates empty-Mgr auto-delete).
-  void overlay_dummy_delete_member(int member);
-
-  // s315 m3 — Selection model mock. Plain click selects one member
-  //   (active + sole selection); shift-click toggles a member into the
-  //   selection set (highlight). Returns true if the click was handled
-  //   by the dummy (landed on a member), false to fall through.
-  bool overlay_dummy_select_click(int member, bool shift);
-
-  // s315 m3 — Double-click a member → mark it editing (red rect).
-  void overlay_dummy_edit_click(int member);
-
 private:
 
   // s305 m3 — Drag-to-select state. Set true at press-inside-active-edit
@@ -2344,8 +2277,8 @@ private:
   MgrOverlayLayout compute_mgr_overlay_layout(const SceneNode* mgr) const;
 
   // ── s316 m1 — TextboxMgr member-iteration seam ───────────────────────
-  // The locked TextboxMgr model (architecture_s315 addendum, proven on
-  // the s315 OverlayDummy mock) is: one Mgr owns an ORDERED LIST of
+  // The locked TextboxMgr model (architecture_s315 addendum) is:
+  // one Mgr owns an ORDERED LIST of
   // member boxes; order = flow = z = storage, set at link time, never
   // reordered; the TAIL (last member) owns the single overflow region.
   //
@@ -2364,8 +2297,7 @@ private:
   std::vector<const SceneNode*> mgr_canvas_views(const SceneNode* mgr) const;
   const SceneNode* mgr_tail_view(const SceneNode* mgr) const;
 
-  // s317 — Member hit-test. Live port of the mock's hit_test_overlay_dummy
-  // body-hit branch: returns the boundary Path of the TextBoxMgr member
+  // s317 — Member hit-test. Returns the boundary Path of the TextBoxMgr member
   // under (doc_x, doc_y), or nullptr if the click isn't on any member rect.
   // Layers walked front-to-back (child 0 on top); members walked tail-first
   // (back() is newest, on top). The returned boundary is the selectable
@@ -2387,8 +2319,7 @@ private:
   // Delete key (via delete_selected) and the member right-click menu.
   void delete_textbox_member(SceneNode* mgr, SceneNode* member_view);
 
-  // s316 m2 — Link: append a new member box to a TextboxMgr. The live
-  // realisation of the mock's overlay_dummy_link — appends a Canvas
+  // s316 m2 — Link: append a new member box to a TextboxMgr. Appends a Canvas
   // TextBoxView after the current tail (boundary cloned from the tail,
   // offset down-right), inserted before the trailing popover so child
   // order stays [members..., popover]. The new view becomes the tail;
@@ -2660,6 +2591,14 @@ public:
   // keystrokes don't trigger Ctrl+Z-style shortcuts. Returns false
   // when no edit is active.
   bool handle_text_edit_key(guint keyval, Gdk::ModifierType mods);
+
+  // s326 m2 — Toggle one per-run character attribute over the active text
+  //   selection (Ctrl+B/I/U today; the style-bar chips in m3). attr_type is
+  //   a PangoAttrType, ivalue the integer/colour value, svalue the string
+  //   value (font family). No-op without a selection. Applies via the
+  //   curvz::utils span pump and commits one undoable TextEditCommand.
+  bool apply_text_format_toggle(int attr_type, long ivalue,
+                                const std::string& svalue);
 
   // s301 m1c — Public query for the active text-edit state. MainWindow
   // uses this to gate which shortcuts pass through.
