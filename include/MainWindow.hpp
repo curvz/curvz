@@ -68,6 +68,7 @@
 #include "Canvas.hpp"
 #include "CommandHistory.hpp"
 #include "ContextBar.hpp"
+#include "StyleBar.hpp"  // s329 — docked text formatting band
 #include "CurvzProject.hpp"
 #include "CurvzSpinButton.hpp"
 #include "DocTabBar.hpp"
@@ -1515,6 +1516,10 @@ private:
   Gtk::Overlay m_canvas_overlay;
   Gtk::Fixed m_text_fixed; // overlay layer for text entry widget
   Gtk::Grid m_canvas_grid;
+  // s329 — the docked formatting band. A non-movable panel at the top of the
+  // canvas workspace (grid row 0, above the ruler), built once and hidden until
+  // a text edit begins. Visibility is driven by Canvas's edit-state signal.
+  StyleBar m_style_bar;
 
   // ── Corner Treatment panel (Popover on corner tool button) ────────────────
   Gtk::Popover m_corner_panel;

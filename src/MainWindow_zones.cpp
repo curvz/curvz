@@ -1614,6 +1614,27 @@ void MainWindow::setup_layout() {
   m_canvas_grid.attach(m_vruler, 0, 1, 1, 1);
   m_canvas_grid.attach(m_canvas, 1, 1, 1, 1);
 
+  // s329 — dock the formatting band as a new top row spanning both columns,
+  // pushing the ruler L (and canvas) down. insert_row(0) shifts the just-
+  // attached children from rows 0/1 to rows 1/2; the band takes row 0. Hidden
+  // until a text edit begins — when hidden the row collapses to zero height so
+  // the ruler returns to the top. Built once, never rebuilt.
+  m_canvas_grid.insert_row(0);
+  m_canvas_grid.attach(m_style_bar, 0, 0, 2, 1);
+  m_style_bar.set_visible(false);
+  m_style_bar.set_hexpand(true);
+  m_style_bar.set_halign(Gtk::Align::FILL);
+  // The chips' triggers route into the s326 character-formatting backend on
+  // the canvas (selection-only; decides on/off from the selection itself).
+  m_style_bar.set_format_toggle(
+      [this](int attr_type, long ivalue, const std::string &svalue) {
+        m_canvas.apply_text_format_toggle(attr_type, ivalue, svalue);
+      });
+  // Show/hide with the edit session — the single edit-state signal covers
+  // every enter/exit path.
+  m_canvas.signal_text_edit_changed().connect(
+      [this](bool active) { m_style_bar.set_visible(active); });
+
   m_canvas.set_document(m_project->active_doc());
   m_canvas.set_zoom(m_project->zoom);
   m_canvas.set_history(&m_history);

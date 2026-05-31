@@ -1477,6 +1477,34 @@ button.tb-type-btn.tb-type-btn-active {
     padding-left: 15px;
 }
 
+/* s329 — text formatting band. Toned down to read as chrome, not as primary
+   controls: chip labels mirror the inspector group titles (the "DOCUMENT"
+   look) — small, bold, muted, letter-spaced, uppercase. The muted `color`
+   cascades to the symbolic content too (the align glyph, each chip's dropdown
+   arrow), so labels and icons dim together and the whole band recedes into
+   the chrome rather than competing with the canvas. */
+.curvz-style-bar {
+    padding: 1px 6px;
+}
+.curvz-style-chip,
+.curvz-style-chip label {
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: 0.6px;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+}
+.curvz-style-chip {
+    min-height: 0;
+    padding: 1px 6px;
+}
+.curvz-style-chip image {
+    -gtk-icon-size: 14px;
+}
+.curvz-style-sep {
+    margin: 2px 4px;
+}
+
 /* s148 m2 fix3: indent the body of a nested disclosure (e.g. the
    "Motif" disclosure in the Document group, which contains Canvas /
    Margins / Grid / Guides as inner sections). 12px reads as a

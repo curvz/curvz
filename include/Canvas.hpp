@@ -435,6 +435,17 @@ public:
   SelectionChangedSignal &signal_selection_changed() { return m_sig_selection; }
   DocumentChangedSignal &signal_document_changed() { return m_sig_doc_changed; }
 
+  // s329 — emitted when an on-canvas text edit begins/ends (the m_text_cursor
+  // transition). true = a cursor edit just became active, false = it just
+  // ended. MainWindow drives the docked style bar's visibility off this, and
+  // the tab bar will subscribe too. Emitted at the two cursor funnels
+  // (begin_text_cursor_edit / end_text_cursor_edit), so every edit-entry and
+  // edit-exit path is covered without hooking each scattered call site.
+  using TextEditChangedSignal = sigc::signal<void(bool)>;
+  TextEditChangedSignal &signal_text_edit_changed() {
+    return m_sig_text_edit_changed;
+  }
+
   // s158 m1 — SelectionContext is the canonical answer to "what's
   // selected and what can it do?" Refreshed automatically whenever
   // m_sig_selection emits (Canvas wires the recompute internally).
@@ -2703,6 +2714,7 @@ private:
   CursorMovedSignal m_sig_cursor;
   SelectionChangedSignal m_sig_selection;
   DocumentChangedSignal m_sig_doc_changed;
+  TextEditChangedSignal m_sig_text_edit_changed;  // s329
   RequestToolSignal m_sig_request_tool;
   NodeChangedSignal m_sig_node_changed;
   ShowMessageSignal m_sig_show_message;

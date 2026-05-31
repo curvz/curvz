@@ -373,6 +373,7 @@ set(SOURCES
     src/DepotWindow.cpp
     src/PreviewPanel.cpp
     src/ContextBar.cpp
+    src/StyleBar.cpp  # s329 — floating text formatting bar
     src/DocTabBar.cpp
     src/LibraryPanel.cpp
     src/LayersPanel.cpp

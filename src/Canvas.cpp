@@ -4382,10 +4382,17 @@ void Canvas::begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary,
 
   // Make sure the canvas has focus so key events arrive.
   grab_focus();
+
+  // s329 — announce the edit began. MainWindow shows the docked style bar off
+  // this; the tab bar will subscribe too. Emitting at this single funnel covers
+  // every edit-entry path.
+  m_sig_text_edit_changed.emit(true);
+
   queue_draw();
 }
 
 void Canvas::end_text_cursor_edit() {
+  const bool was_active = (bool)m_text_cursor;  // s329 — gate the end signal
   // s305 m1 — Write the cursor's byte position back to the text node
   //   before tearing down. The next entry to the same text (via
   //   double-click in either tool) restores from text_caret_byte in
@@ -4412,6 +4419,12 @@ void Canvas::end_text_cursor_edit() {
     m_text_typing_pause_conn.disconnect();
   }
   m_text_cursor.reset();
+  // s329 — announce the edit ended, but only if one was actually active.
+  // end_text_cursor_edit also runs as the idempotent clear at the top of
+  // begin_text_cursor_edit; without this guard a fresh edit would emit a
+  // spurious false (hide) immediately before its true (show).
+  if (was_active)
+    m_sig_text_edit_changed.emit(false);
   queue_draw();
 }
 
