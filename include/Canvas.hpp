@@ -715,6 +715,7 @@ public:
   // R held over a selection → pivot placement mode (rotate from point).
   void notify_r_pressed();
   void notify_r_released();
+  bool notify_t_pressed(); // s328 m4a — toggle text-compass (text rotate) mode; returns true if consumed
 
   // ── Custom-pivot public surface (s205 m1) ──────────────────────────────
   // Pivot state mutations from outside Canvas — currently the inspector's
@@ -1020,6 +1021,7 @@ private:
   void draw_eyedropper_loupe(const Cairo::RefPtr<Cairo::Context> &cr);
   void refresh_loupe_buffer();
   void draw_selection_handles(const Cairo::RefPtr<Cairo::Context> &cr);
+  void draw_text_compass(const Cairo::RefPtr<Cairo::Context> &cr); // s328 m4a
   void draw_guides(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h);
   void draw_ruler_overlay(const Cairo::RefPtr<Cairo::Context> &cr, int w,
                           int h);
@@ -1369,6 +1371,56 @@ private:
   double m_custom_pivot_x = 0.0;   // doc coords
   double m_custom_pivot_y = 0.0;
   bool m_pivot_dragging = false; // true during R+drag to reposition pivot
+
+  // ── s328 m4a — text compass (text-angle rotate gesture) ────────────
+  // Active while the user drags the BODY of a singly-selected textbox in
+  // rotate mode (R held). The press point is the FIXED measurement vertex;
+  // the drag angle (atan2 to that vertex) drives text_baseline_angle on the
+  // buffer-owning Mgr node, so the text reflows at the new angle independent
+  // of the box (the box stays put; corners still rotate the box). The compass
+  // needle (draw_text_compass) is the live readout, drawn at the text centre.
+  // No pivot in the model — the vertex is only the angle origin; the reflow
+  // pivots about the boundary centroid inside compute_text_layout. The gain
+  // falls off with distance from the vertex (atan2 geometry), left bare.
+  //
+  // Mode is toggled by T (notify_t_pressed), independent of R/pivot mode —
+  // R is the box's rotate, T is the text's. m_text_compass_mode true == the
+  // needle is shown and a body press starts the gesture.
+  bool       m_text_compass_mode     = false;   // T toggled rotate mode
+  bool       m_text_compass_dragging   = false;
+  SceneNode* m_text_compass_text       = nullptr; // Mgr (owns text_baseline_angle)
+  SceneNode* m_text_compass_boundary   = nullptr; // selected member boundary
+  double     m_text_compass_fx         = 0.0;     // fixed vertex, doc coords
+  double     m_text_compass_fy         = 0.0;
+  double     m_text_compass_start_angle = 0.0;    // baseline angle at press (rad)
+  bool       m_text_compass_ref_set    = false;   // reference atan2 captured yet?
+  double     m_text_compass_ref        = 0.0;     // atan2 of first motion vector
+  double     m_text_compass_live_angle = 0.0;     // current tracked angle (draw)
+  TextEditCommand m_text_compass_snapshot;        // before-state for undo
+  // s328 m4b — Ctrl = lock. While Ctrl is held during the compass drag the
+  // box rotates WITH the text (rigid): the boundary nodes rotate about the
+  // centroid by the same delta the text takes, so box-angle and text-angle
+  // advance together. Without Ctrl the box stays put (text-only). box_delta
+  // accumulates only across Ctrl-held frames, so toggling Ctrl mid-drag does
+  // not snap the box; the boundary is always re-derived from box_before by the
+  // accumulated delta, so there is no float drift.
+  PathData   m_text_compass_box_before;           // boundary nodes at press
+  double     m_text_compass_box_cx = 0.0;         // rotation centroid (doc)
+  double     m_text_compass_box_cy = 0.0;
+  double     m_text_compass_box_delta = 0.0;      // total box rotation (rad)
+  double     m_text_compass_prev_angle = 0.0;     // last frame's tracked angle
+
+  // s328 m4c — the symmetric half: Ctrl while ROTATING THE BOX (the R-held
+  // rotate-handle drag) locks the TEXT to follow, so box+text rotate rigidly
+  // from either grab. Captured at rotate-begin; the text angle accumulates
+  // only across Ctrl-held frames (same anti-snap / anti-drift scheme as m4b),
+  // and is folded into the rotate's own undo entry on release. lock_node ==
+  // null means the rotated selection is not a textbox (nothing to lock).
+  SceneNode* m_text_rotate_lock_node   = nullptr;
+  double     m_text_rotate_start_angle = 0.0;
+  double     m_text_rotate_lock_delta  = 0.0;
+  double     m_text_rotate_prev_delta  = 0.0;
+  TextEditCommand m_text_rotate_snapshot;
 
   // ── Warp envelope drag state (M4b) ─────────────────────────────────
   // Populated on mouse-press when a Warp is selected and the click lands

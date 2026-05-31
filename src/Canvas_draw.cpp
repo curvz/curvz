@@ -1168,6 +1168,9 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
   // and which text/boundary pair to use.
   draw_text_baseline_guides(cr);
 
+  // ── s328 m4a — text compass (text-angle readout / live rotate guide) ──
+  draw_text_compass(cr);
+
   // ── s322 — Form-fit reflow debug overlay (PARKED s326) ────────────────
   // Pure geometry probe: eroded margin + float-found baselines on a selected
   // closed Path in Node mode. PARKED — it fired on ANY selected closed path,
@@ -4922,6 +4925,101 @@ void Canvas::draw_text_baseline_guides(
   }
 
   draw_pair(text_for_guides, boundary_for_guides, 0);
+}
+
+// ── s328 m4a — text compass ──────────────────────────────────────────────────
+// The text-angle indicator. NOT tied to the bbox (it just lives inside it):
+// drawn at the text centre (the boundary centroid, the same point
+// compute_text_layout pivots the reflow about), oriented to the live
+// text_baseline_angle. A long arm marks the reading direction (with an
+// arrowhead), a short arm crosses it perpendicular — a compass needle that
+// visualises the angle the drag is tracking. Shown in compass mode (T) so
+// the user sees the affordance the moment the box is "about to rotate," and
+// kept live during the drag (m_text_compass_live_angle). It is a readout, not
+// an interaction target — the gesture is a press anywhere in the text body
+// (see on_draw_begin), with the press point as the angle vertex.
+void Canvas::draw_text_compass(const Cairo::RefPtr<Cairo::Context> &cr) {
+  if (!m_doc || m_tool != ActiveTool::Selection) return;
+  if (!(m_text_compass_mode || m_text_compass_dragging)) return;
+  if (m_text_editing) return;
+  if (m_selection.size() != 1) return;
+
+  SceneNode *boundary = m_selection[0];
+  SceneNode *mgr = nullptr;
+  if (!find_textbox_member(boundary, &mgr, nullptr) || !mgr) return;
+  if (!boundary || !boundary->path || boundary->path->nodes.empty()) return;
+
+  // Centre = boundary centroid (matches text_frame_basis cx/cy).
+  double sx = 0.0, sy = 0.0;
+  for (const auto &n : boundary->path->nodes) { sx += n.x; sy += n.y; }
+  const double n = (double)boundary->path->nodes.size();
+  double ccx = sx / n, ccy = sy / n;
+
+  // Live angle while this box is being dragged; otherwise the stored angle.
+  double angle = (m_text_compass_dragging && m_text_compass_text == mgr)
+                     ? m_text_compass_live_angle
+                     : mgr->text_baseline_angle;
+
+  double cx, cy;
+  doc_to_screen(ccx, ccy, cx, cy);
+  const double ca = std::cos(angle), sa = std::sin(angle);
+
+  // Screen-space arm lengths (constant regardless of zoom).
+  const double arm   = 46.0; // reading-direction half-length
+  const double perp  = 16.0; // perpendicular half-length
+  const double ring  = 6.0;  // hub radius
+  const double headl = 10.0; // arrowhead length
+  const double headw = 6.0;  // arrowhead half-width
+
+  // Endpoints (screen y grows downward — sin term added, not subtracted).
+  auto axis = [&](double t_along, double t_perp, double &px, double &py) {
+    px = cx + t_along * ca - t_perp * sa;
+    py = cy + t_along * sa + t_perp * ca;
+  };
+  double ax0, ay0, ax1, ay1, px0, py0, px1, py1;
+  axis(-arm, 0, ax0, ay0);
+  axis( arm, 0, ax1, ay1);
+  axis(0, -perp, px0, py0);
+  axis(0,  perp, px1, py1);
+
+  cr->save();
+  cr->set_line_cap(Cairo::Context::LineCap::ROUND);
+
+  // Dark halo underneath for contrast on any background.
+  cr->set_source_rgba(0.0, 0.0, 0.0, 0.55);
+  cr->set_line_width(3.5);
+  cr->move_to(ax0, ay0); cr->line_to(ax1, ay1); cr->stroke();
+  cr->move_to(px0, py0); cr->line_to(px1, py1); cr->stroke();
+
+  // Violet needle — distinct from the orange pivot and blue handles.
+  cr->set_source_rgba(0.62, 0.22, 0.86, 0.95);
+  cr->set_line_width(1.6);
+  cr->move_to(ax0, ay0); cr->line_to(ax1, ay1); cr->stroke();
+  cr->move_to(px0, py0); cr->line_to(px1, py1); cr->stroke();
+
+  // Arrowhead at the reading-direction (+) end.
+  double hbx, hby, hlx, hly, hrx, hry;
+  axis(arm, 0, hbx, hby);
+  axis(arm - headl, -headw, hlx, hly);
+  axis(arm - headl,  headw, hrx, hry);
+  cr->set_source_rgba(0.62, 0.22, 0.86, 0.95);
+  cr->move_to(hbx, hby);
+  cr->line_to(hlx, hly);
+  cr->line_to(hrx, hry);
+  cr->close_path();
+  cr->fill();
+
+  // Hub ring.
+  cr->set_source_rgba(0.0, 0.0, 0.0, 0.55);
+  cr->set_line_width(3.0);
+  cr->arc(cx, cy, ring, 0, 2 * M_PI);
+  cr->stroke();
+  cr->set_source_rgba(1.0, 1.0, 1.0, 1.0);
+  cr->set_line_width(1.6);
+  cr->arc(cx, cy, ring, 0, 2 * M_PI);
+  cr->stroke();
+
+  cr->restore();
 }
 
 // ── s322 — Form-fit reflow debug overlay (TEMPORARY) ─────────────────────────

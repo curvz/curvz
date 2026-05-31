@@ -365,6 +365,7 @@ void Canvas::notify_r_pressed() {
   }
 
   m_r_held = true;
+  m_text_compass_mode = false; // s328 m4a — pivot and compass rotate are exclusive
   // s259 — Default pivot is the selection's weighted (true) centre, which
   // matches bbox centre for regular shapes (rect / ellipse / regular
   // polygon-or-star) and gives a no-wobble rotation pivot for everything
@@ -390,6 +391,35 @@ void Canvas::notify_r_pressed() {
 void Canvas::notify_r_released() {
   // R is now a toggle — key release does nothing
   (void)0;
+}
+
+// s328 m4a — toggle text-compass (text rotate) mode. Mirrors notify_r_pressed's
+// "is this context even applicable" gate so the key binding can fall back to
+// switching to the Text tool. Returns true when the press was consumed as a
+// mode toggle (Selection tool + a single textbox selected); false otherwise,
+// in which case the caller switches to the Text tool (plain-T's normal job).
+// Mutually exclusive with pivot mode: entering compass mode clears R.
+bool Canvas::notify_t_pressed() {
+  if (m_tool != ActiveTool::Selection || m_selection.size() != 1)
+    return false;
+  SceneNode *mgr = nullptr;
+  if (!find_textbox_member(m_selection[0], &mgr, nullptr) || !mgr)
+    return false; // not a textbox — caller switches to the Text tool
+
+  m_text_compass_mode = !m_text_compass_mode;
+  if (m_text_compass_mode) {
+    if (m_r_held) { // leave pivot mode; the two rotates are exclusive
+      m_r_held = false;
+      m_has_custom_pivot = false;
+      m_pivot_dragging = false;
+      m_sig_pivot_changed.emit();
+    }
+    set_cursor("grab");
+  } else {
+    set_cursor("default");
+  }
+  queue_draw();
+  return true;
 }
 
 // s205 m1 — public pivot setters. See banner in Canvas.hpp. All pivot
@@ -2941,16 +2971,92 @@ void Canvas::on_draw_begin(double x, double y) {
     return;
   }
 
+  // s328 m4a — text compass mode (T). Independent of R/pivot mode. A press on
+  //   the BODY of the singly-selected textbox starts the text-rotate gesture
+  //   (drives text_baseline_angle on the Mgr; the box stays put, the text
+  //   reflows at the new angle). Corners are excluded so the bbox scale handles
+  //   keep working for resize. Placed before the R-held block — the two modes
+  //   are mutually exclusive (notify_t_pressed clears R, notify_r_pressed
+  //   clears T), so only one can be active, but ordering keeps T self-contained.
+  if (m_text_compass_mode && m_tool == ActiveTool::Selection &&
+      m_selection.size() == 1 && !m_text_editing) {
+    double cdx, cdy;
+    screen_to_doc(x, y, cdx, cdy);
+    SceneNode *cmp_mgr = nullptr;
+    if (find_textbox_member(m_selection[0], &cmp_mgr, nullptr) && cmp_mgr) {
+      HandleKind chk = handle_hit_test(x, y);
+      bool on_corner =
+          (chk == HandleKind::NW || chk == HandleKind::NE ||
+           chk == HandleKind::SE || chk == HandleKind::SW);
+      SceneNode *body = member_hit_test(cdx, cdy);
+      SceneNode *body_mgr = nullptr;
+      bool on_body = body && find_textbox_member(body, &body_mgr, nullptr) &&
+                     body_mgr == cmp_mgr;
+      if (!on_corner && on_body) {
+        m_text_compass_dragging    = true;
+        m_text_compass_text        = cmp_mgr;
+        m_text_compass_boundary    = m_selection[0];
+        m_text_compass_fx          = cdx;
+        m_text_compass_fy          = cdy;
+        m_text_compass_start_angle = cmp_mgr->text_baseline_angle;
+        m_text_compass_live_angle  = cmp_mgr->text_baseline_angle;
+        m_text_compass_ref_set     = false;
+        m_text_compass_snapshot =
+            TextEditCommand::snapshot_before(project(), cmp_mgr);
+        // s328 m4b — capture the boundary for the Ctrl-lock box rotation.
+        m_text_compass_box_delta  = 0.0;
+        m_text_compass_prev_angle = cmp_mgr->text_baseline_angle;
+        if (m_selection[0]->path) {
+          m_text_compass_box_before = *m_selection[0]->path;
+          double bsx = 0.0, bsy = 0.0;
+          for (const auto &bn : m_text_compass_box_before.nodes) {
+            bsx += bn.x;
+            bsy += bn.y;
+          }
+          const double bcount =
+              (double)std::max<size_t>(1, m_text_compass_box_before.nodes.size());
+          m_text_compass_box_cx = bsx / bcount;
+          m_text_compass_box_cy = bsy / bcount;
+        }
+        set_cursor("grabbing");
+        queue_draw();
+        return;
+      }
+    }
+  }
+
   // R pivot mode + Selection tool: intercept clicks near the pivot crosshair
   // to move it. Clicks elsewhere fall through to normal handle/selection logic
   // so the rotate handles work as usual.
   if (m_r_held && m_tool == ActiveTool::Selection && !m_selection.empty()) {
     if (m_mod_ctrl) {
-      // Ctrl+click anywhere → exact position dialog
-      double dx, dy;
-      screen_to_doc(x, y, dx, dy);
-      on_pivot_dialog(dx, dy);
-      return;
+      // s328 m4c — Ctrl + a rotate handle on a single textbox is the rigid
+      //   box-rotate-with-text gesture (Ctrl held through the drag locks the
+      //   text), NOT the pivot dialog. Let that press fall through to the
+      //   rotate-handle path. Every other Ctrl+click in pivot mode still
+      //   opens the exact-position dialog.
+      bool ctrl_rotate_textbox = false;
+      if (m_selection.size() == 1) {
+        HandleKind ch = handle_hit_test(x, y);
+        bool on_rot_handle =
+            (ch == HandleKind::NW || ch == HandleKind::NE ||
+             ch == HandleKind::SE || ch == HandleKind::SW ||
+             ch == HandleKind::RotateNW || ch == HandleKind::RotateNE ||
+             ch == HandleKind::RotateSE || ch == HandleKind::RotateSW);
+        SceneNode *tbmgr = nullptr;
+        if (on_rot_handle &&
+            find_textbox_member(m_selection[0], &tbmgr, nullptr) && tbmgr)
+          ctrl_rotate_textbox = true;
+      }
+      if (!ctrl_rotate_textbox) {
+        // Ctrl+click anywhere → exact position dialog
+        double dx, dy;
+        screen_to_doc(x, y, dx, dy);
+        on_pivot_dialog(dx, dy);
+        return;
+      }
+      // fall through — the rotate-handle escape below + handle-drag setup
+      // start the rotate; the lock reads m_mod_ctrl live each frame.
     }
     // s259 — Rotate-handle clicks escape the pivot intercept. Two
     // sources of rotation:
@@ -3436,6 +3542,77 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
     return;
   }
 
+  // s328 m4a — text compass drag. The press fixed a vertex (m_text_compass_fx/
+  //   fy); the cursor's angle ABOUT that vertex drives text_baseline_angle.
+  //   The reference atan2 is captured on the first motion past a small radius
+  //   (so the grab doesn't snap the text to the cursor direction), then the
+  //   baseline tracks start_angle + (current - reference). Near the vertex the
+  //   angle swings fast and far out it is smooth — the bare distance-gain
+  //   falloff, deliberately left without a dead-zone. Shift restricts the
+  //   ABSOLUTE angle to 15-degree steps. Without Ctrl only the text reflows
+  //   (box untouched); with Ctrl the box rotates with it (m4b lock, below).
+  //   The renderer re-runs compute_text_layout each draw, so queue_draw is the
+  //   reflow.
+  if (m_text_compass_dragging && m_text_compass_text) {
+    double cx, cy;
+    screen_to_doc(m_mouse_x, m_mouse_y, cx, cy);
+    double vx = cx - m_text_compass_fx;
+    double vy = cy - m_text_compass_fy;
+    if (!m_text_compass_ref_set) {
+      double eps = 2.0 / std::max(m_zoom, 0.001); // ~2 screen px in doc units
+      if (std::hypot(vx, vy) > eps) {
+        m_text_compass_ref     = std::atan2(vy, vx);
+        m_text_compass_ref_set = true;
+      }
+    } else {
+      double cur = std::atan2(vy, vx);
+      double ang = m_text_compass_start_angle + (cur - m_text_compass_ref);
+      if (m_mod_shift) {
+        const double STEP = M_PI / 12.0; // 15 degrees
+        ang = std::round(ang / STEP) * STEP;
+      }
+      m_text_compass_text->text_baseline_angle = ang;
+      m_text_compass_live_angle = ang;
+
+      // s328 m4b — Ctrl lock. Accumulate the box rotation only across
+      //   Ctrl-held frames, then re-derive the boundary nodes from the press
+      //   snapshot by the accumulated delta about the centroid. Re-deriving
+      //   from the snapshot (rather than rotating in place) means toggling
+      //   Ctrl off freezes the box exactly where it was with no drift, and
+      //   toggling back on resumes cleanly. box_delta == text delta while
+      //   Ctrl is held throughout, so box-angle and text-angle advance
+      //   together and the pair reads as one rigid rotation.
+      double d_frame = ang - m_text_compass_prev_angle;
+      if (m_mod_ctrl)
+        m_text_compass_box_delta += d_frame;
+      m_text_compass_prev_angle = ang;
+      if (std::abs(m_text_compass_box_delta) > 1e-9 &&
+          m_text_compass_boundary && m_text_compass_boundary->path &&
+          m_text_compass_box_before.nodes.size() ==
+              m_text_compass_boundary->path->nodes.size()) {
+        const double bca = std::cos(m_text_compass_box_delta);
+        const double bsa = std::sin(m_text_compass_box_delta);
+        const double pcx = m_text_compass_box_cx, pcy = m_text_compass_box_cy;
+        auto brot = [&](double ix, double iy, double &ox, double &oy) {
+          double rx = ix - pcx, ry = iy - pcy;
+          ox = pcx + rx * bca - ry * bsa;
+          oy = pcy + rx * bsa + ry * bca;
+        };
+        auto &live = m_text_compass_boundary->path->nodes;
+        const auto &src = m_text_compass_box_before.nodes;
+        for (size_t i = 0; i < live.size(); ++i) {
+          brot(src[i].x,   src[i].y,   live[i].x,   live[i].y);
+          brot(src[i].cx1, src[i].cy1, live[i].cx1, live[i].cy1);
+          brot(src[i].cx2, src[i].cy2, live[i].cx2, live[i].cy2);
+        }
+      }
+
+      m_sig_doc_changed.emit();
+      queue_draw();
+    }
+    return;
+  }
+
   // s305 m3 — Text-cursor drag-to-select. When the press landed inside
   //   an active text edit, motion extends the caret end of the
   //   selection while the anchor stays at the press byte. set_byte_index
@@ -3902,6 +4079,46 @@ void Canvas::on_draw_end(double delta_x, double delta_y) {
     m_warp_drag_is_multi = false;
     m_warp_drag_press_doc_x = 0.0;
     m_warp_drag_press_doc_y = 0.0;
+    queue_draw();
+    return;
+  }
+
+  // s328 m4a — text compass release. Push the angle change as a TextEditCommand
+  //   (same before/after carrier the styler and content edits use; the s327 m2
+  //   baseline-angle fields round-trip it). Only push when the angle actually
+  //   moved — a press-without-drag in rotate mode is a no-op, not an undo entry.
+  if (m_text_compass_dragging) {
+    m_text_compass_dragging = false;
+    SceneNode *mgr      = m_text_compass_text;
+    SceneNode *boundary = m_text_compass_boundary;
+    m_text_compass_text     = nullptr;
+    m_text_compass_boundary = nullptr;
+    bool angle_moved =
+        mgr && std::abs(mgr->text_baseline_angle - m_text_compass_start_angle) >
+                   1e-6;
+    bool box_moved =
+        std::abs(m_text_compass_box_delta) > 1e-6 && boundary && boundary->path;
+    if (m_history && (angle_moved || box_moved)) {
+      m_text_compass_snapshot.record_after(mgr);
+      if (box_moved) {
+        // s328 m4b — box + text rotated together (Ctrl lock). One composite so
+        //   undo reverts both the boundary geometry and the text angle atomically.
+        auto comp = std::make_unique<CompositeCommand>("Rotate text + box");
+        comp->add(std::make_unique<EditPathCommand>(
+            project(), boundary->internal_id, m_text_compass_box_before,
+            *boundary->path, "Rotate text + box"));
+        comp->add(std::make_unique<TextEditCommand>(
+            std::move(m_text_compass_snapshot)));
+        m_history->push(std::move(comp));
+      } else {
+        m_history->push(std::make_unique<TextEditCommand>(
+            std::move(m_text_compass_snapshot)));
+      }
+      m_sig_doc_changed.emit();
+      notify_object_selection_changed();
+    }
+    m_text_compass_box_delta = 0.0;
+    set_cursor("grab"); // compass mode still on — back to the rotate affordance
     queue_draw();
     return;
   }
@@ -4800,6 +5017,21 @@ void Canvas::on_select_begin(double x, double y) {
           m_handle_pivot_y = rpy;
           m_rotate_start_dx = dx;
           m_rotate_start_dy = dy;
+
+          // s328 m4c — if the rotated selection is a single textbox, arm the
+          //   text lock so Ctrl during this box rotate carries the text along.
+          m_text_rotate_lock_node  = nullptr;
+          m_text_rotate_lock_delta = 0.0;
+          m_text_rotate_prev_delta = 0.0;
+          if (m_selection.size() == 1) {
+            SceneNode *rmgr = nullptr;
+            if (find_textbox_member(m_selection[0], &rmgr, nullptr) && rmgr) {
+              m_text_rotate_lock_node   = rmgr;
+              m_text_rotate_start_angle = rmgr->text_baseline_angle;
+              m_text_rotate_snapshot =
+                  TextEditCommand::snapshot_before(project(), rmgr);
+            }
+          }
         }
 
         m_moving = false;
@@ -5227,6 +5459,21 @@ void Canvas::on_select_update(double /*dx*/, double /*dy*/) {
       }
 
       m_last_rotate_angle_deg = delta * (180.0 / M_PI);
+
+      // s328 m4c — Ctrl locks the text to the box rotation. Same accumulate-
+      //   while-Ctrl scheme as m4b: only Ctrl-held frames advance the text
+      //   angle, re-applied from the captured start each frame, so releasing
+      //   Ctrl freezes the text and toggling back resumes with no drift. With
+      //   Ctrl held throughout, the text delta equals the box delta and the
+      //   pair rotates rigidly.
+      if (m_text_rotate_lock_node) {
+        double d_frame = delta - m_text_rotate_prev_delta;
+        if (m_mod_ctrl)
+          m_text_rotate_lock_delta += d_frame;
+        m_text_rotate_prev_delta = delta;
+        m_text_rotate_lock_node->text_baseline_angle =
+            m_text_rotate_start_angle + m_text_rotate_lock_delta;
+      }
 
       double cosA = std::cos(delta);
       double sinA = std::sin(delta);
@@ -5772,7 +6019,25 @@ void Canvas::on_select_end(double /*dx*/, double /*dy*/) {
       std::string desc = was_rotate
                              ? "Rotate object"
                              : (was_skew ? "Skew object" : "Scale object");
-      if (!snaps.empty())
+      // s328 m4c — if Ctrl locked the text to a box rotate, fold the text-
+      //   angle change into the SAME undo entry as the boundary rotation so
+      //   one Ctrl+Z reverts the rigid pair. Only fires on a textbox rotate
+      //   where the angle actually moved.
+      bool textlock_moved =
+          was_rotate && m_text_rotate_lock_node &&
+          std::abs(m_text_rotate_lock_node->text_baseline_angle -
+                   m_text_rotate_start_angle) > 1e-6;
+      if (textlock_moved) {
+        auto comp = std::make_unique<CompositeCommand>(desc);
+        if (!snaps.empty())
+          comp->add(std::make_unique<ScaleObjectsCommand>(
+              project(), std::move(snaps), std::string(desc)));
+        m_text_rotate_snapshot.record_after(m_text_rotate_lock_node);
+        comp->add(std::make_unique<TextEditCommand>(
+            std::move(m_text_rotate_snapshot)));
+        if (!comp->steps.empty())
+          m_history->push(std::move(comp));
+      } else if (!snaps.empty())
         m_history->push(std::make_unique<ScaleObjectsCommand>(
             project(), std::move(snaps), std::move(desc)));
       // Image transform undo
@@ -5828,6 +6093,7 @@ void Canvas::on_select_end(double /*dx*/, double /*dy*/) {
 
     m_scale_snaps.clear();
     m_image_transform_snaps.clear();
+    m_text_rotate_lock_node = nullptr; // s328 m4c — done with box-rotate text lock
     m_sig_doc_changed.emit();
     notify_object_selection_changed();
     queue_draw();
@@ -6330,7 +6596,32 @@ void Canvas::on_motion(double x, double y) {
         set_cursor("grab");
     } else {
       HandleKind hk = handle_hit_test(x, y);
-      if (m_r_held) {
+      if (m_text_compass_mode) {
+        // s328 m4a — T mode: the textbox BODY is the text-rotate zone (hand);
+        //   corners keep their resize cursors so the box stays resizable;
+        //   elsewhere default. The body hand mirrors the rotation affordance
+        //   the corner sizers present for the box.
+        bool on_corner = (hk == HandleKind::NW || hk == HandleKind::NE ||
+                          hk == HandleKind::SE || hk == HandleKind::SW);
+        if (on_corner) {
+          set_cursor((hk == HandleKind::NW || hk == HandleKind::SE)
+                         ? "nw-resize"
+                         : "ne-resize");
+        } else {
+          bool on_body = false;
+          if (m_selection.size() == 1 && !m_text_editing) {
+            double mdx, mdy;
+            screen_to_doc(x, y, mdx, mdy);
+            SceneNode *cmgr = nullptr, *bmgr = nullptr;
+            SceneNode *body = member_hit_test(mdx, mdy);
+            if (body && find_textbox_member(m_selection[0], &cmgr, nullptr) &&
+                find_textbox_member(body, &bmgr, nullptr) && cmgr &&
+                cmgr == bmgr)
+              on_body = true;
+          }
+          set_cursor(on_body ? "grab" : "default");
+        }
+      } else if (m_r_held) {
         // Pivot mode cursors:
         // Near pivot crosshair → move cursor (can drag pivot)
         // Near corner handles → grab cursor (can rotate)

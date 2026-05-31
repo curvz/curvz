@@ -2026,6 +2026,13 @@ void MainWindow::connect_signals() {
             return true;
           case GDK_KEY_t:
           case GDK_KEY_T:
+            // s328 m4a — like R for pivot mode: with the Selection tool and a
+            // single textbox selected, T toggles text-compass (text rotate)
+            // mode rather than switching to the Text tool. notify_t_pressed
+            // returns false when that context doesn't apply, so we fall
+            // through to the normal tool switch.
+            if (m_canvas.notify_t_pressed())
+              return true;
             switch_tool(ActiveTool::Text);
             return true;
           case GDK_KEY_i:
