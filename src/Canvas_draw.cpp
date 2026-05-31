@@ -4796,13 +4796,35 @@ void Canvas::draw_text_baseline_guides(
       }
     }
 
+    // s327 — Each baseline's (x_start, x_end) at bl.y are the form-fit
+    // intersection endpoints: where this line's ribbon crosses the eroded
+    // margin, computed in the UPRIGHT frame. The line IS those two points.
+    // Send them home through the same frame the text renders in (rotate by
+    // +frame_angle about the centroid — the inverse of compute_text_layout's
+    // upright-ing) and the guide both rotates with the text and clips to the
+    // margin, because the endpoints were born on the eroded boundary. At
+    // frame_angle 0 this is byte-identical to the old horizontal segment.
+    const double gca = std::cos(tl.frame_angle), gsa = std::sin(tl.frame_angle);
+    auto upright_to_doc = [&](double ux, double uy, double& dx, double& dy) {
+      double rx = ux - tl.frame_cx, ry = uy - tl.frame_cy;
+      dx = tl.frame_cx + rx * gca - ry * gsa;
+      dy = tl.frame_cy + rx * gsa + ry * gca;
+    };
     for (const auto& bl : tl.baselines) {
-      double sx0, sx1, sy_unused, sy, sx_unused;
-      doc_to_screen(bl.x_start, 0.0, sx0, sy_unused);
-      doc_to_screen(bl.x_end,   0.0, sx1, sy_unused);
-      doc_to_screen(0.0, bl.y, sx_unused, sy);
-      cr->move_to(sx0, std::floor(sy) + 0.5);
-      cr->line_to(sx1, std::floor(sy) + 0.5);
+      double d0x, d0y, d1x, d1y;
+      upright_to_doc(bl.x_start, bl.y, d0x, d0y);
+      upright_to_doc(bl.x_end,   bl.y, d1x, d1y);
+      double sx0, sy0, sx1, sy1;
+      doc_to_screen(d0x, d0y, sx0, sy0);
+      doc_to_screen(d1x, d1y, sx1, sy1);
+      if (tl.frame_angle == 0.0) {
+        // Horizontal: keep the half-pixel snap for a crisp hairline.
+        cr->move_to(sx0, std::floor(sy0) + 0.5);
+        cr->line_to(sx1, std::floor(sy0) + 0.5);
+      } else {
+        cr->move_to(sx0, sy0);
+        cr->line_to(sx1, sy1);
+      }
       cr->stroke();
     }
     cr->restore();

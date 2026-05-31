@@ -131,7 +131,10 @@ TextLayout compute_text_layout(const SceneNode* boundary,
 // fallback). This is the rect-only, derive-from-geometry stage; stored
 // angle/skew memory replaces it when skew and non-rect frames arrive, where
 // geometry can no longer reconstruct the transform unambiguously.
-void text_frame_basis(const SceneNode* boundary,
+// s327 — angle is sourced from the TEXT (buffer-owning) node, not the
+// boundary shape: per the field comment, flow direction belongs to the
+// baseline, not the outline. centroid (cx,cy) still comes from the boundary.
+void text_frame_basis(const SceneNode* boundary, const SceneNode* text,
                       double& angle, double& cx, double& cy);
 
 class TextCursor {

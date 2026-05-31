@@ -841,7 +841,7 @@ static double measure_first_word_width(const SceneNode* text,
 
 // ── The universal layout function ───────────────────────────────────────────
 // s320 m1 — see header. Angle from first edge, centroid from node mean.
-void text_frame_basis(const SceneNode* boundary,
+void text_frame_basis(const SceneNode* boundary, const SceneNode* text,
                       double& angle, double& cx, double& cy) {
     angle = 0.0; cx = 0.0; cy = 0.0;
     if (!boundary || !boundary->path) return;
@@ -857,16 +857,16 @@ void text_frame_basis(const SceneNode* boundary,
     cx = sx / (double)bp.nodes.size();
     cy = sy / (double)bp.nodes.size();
 
-    // s323 — Angle is the STORED base-baseline direction, not a reading of
-    // the outline. The old code took atan2 of the first edge (nodes[0] ->
-    // nodes[1]); for a rect_to_path box that edge is the top edge and read 0,
-    // but the angle was pinned to two array indices, so inserting/dragging a
-    // node into slot 1 (or a boolean op reseating the vertices) swung the
-    // whole text block. Direction is independent of the shape: read the
-    // boundary's set-once angle, default 0 (horizontal). The shape still
-    // governs the per-line spans via the form-fit intersect; only the flow
-    // direction is decoupled.
-    angle = boundary->text_baseline_angle;
+    // s327 — Angle is the STORED base-baseline direction, read from the TEXT
+    // (buffer-owning) node. Pre-s327 the read was off the boundary; the field
+    // comment is explicit that direction belongs to the baseline, not the
+    // shape, and the buffer node is where the s325 spans and the other text
+    // properties (line-height, font) live. The angle was never assigned
+    // anywhere before this session, so every existing file reads 0.0 either
+    // way — the move is behavior-identical until the compass first writes it.
+    // The shape still governs the per-line spans via the form-fit intersect;
+    // only the flow direction is decoupled.
+    angle = text ? text->text_baseline_angle : 0.0;
 }
 
 TextLayout compute_text_layout(const SceneNode* boundary,
@@ -884,7 +884,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
     // frame_cx, frame_cy). angle == 0 reproduces the old doc-space bbox
     // exactly (cos=1, sin=0), so the common rect case is byte-identical.
     double fangle, fcx, fcy;
-    text_frame_basis(boundary, fangle, fcx, fcy);
+    text_frame_basis(boundary, text, fangle, fcx, fcy);
     out.frame_angle = fangle;
     out.frame_cx    = fcx;
     out.frame_cy    = fcy;
@@ -1392,6 +1392,21 @@ std::optional<size_t> TextCursor::byte_index_at(
     TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
     if (tl.baselines.empty()) return std::nullopt;
 
+    // s327 m3 — The baselines in `tl` live in the UPRIGHT frame: the layout
+    // rotated the boundary by -frame_angle about the centroid before laying
+    // text out. The incoming click is in doc space. Map it INTO the upright
+    // frame with the SAME rotation the layout used, so the band/x tests below
+    // (all written for upright coords) compare like with like. Caret OUTPUT is
+    // rotated back to doc space in position_on_canvas; this is the missing
+    // input side. frame_angle 0 -> ux/uy == doc_x/doc_y exactly (identity).
+    double ux = doc_x, uy = doc_y;
+    if (tl.frame_angle != 0.0) {
+        const double ca = std::cos(-tl.frame_angle), sa = std::sin(-tl.frame_angle);
+        const double rx = doc_x - tl.frame_cx, ry = doc_y - tl.frame_cy;
+        ux = tl.frame_cx + rx * ca - ry * sa;
+        uy = tl.frame_cy + rx * sa + ry * ca;
+    }
+
     // Choose baseline by vertical band. A baseline's visual band runs
     // from "halfway up to the previous baseline" down to "halfway
     // down to the next baseline" — same convention as how clicking in
@@ -1404,14 +1419,14 @@ std::optional<size_t> TextCursor::byte_index_at(
         const BaselineLayout& bl = tl.baselines[i];
         double top    = bl.y - bl.ascent;
         double bottom = bl.y + bl.descent;
-        if (doc_y >= top && doc_y <= bottom) {
+        if (uy >= top && uy <= bottom) {
             target = &bl;
             break;
         }
         // Click above this band — if it's the first baseline, snap
         // to it; otherwise let the previous baseline have already
         // claimed it via its bottom-edge band.
-        if (doc_y < top) {
+        if (uy < top) {
             if (i == 0) {
                 target = &bl;
                 break;
@@ -1421,7 +1436,7 @@ std::optional<size_t> TextCursor::byte_index_at(
             const BaselineLayout& prev = tl.baselines[i - 1];
             double prev_bottom = prev.y + prev.descent;
             double mid = 0.5 * (prev_bottom + top);
-            target = (doc_y < mid) ? &prev : &bl;
+            target = (uy < mid) ? &prev : &bl;
             break;
         }
     }
@@ -1435,7 +1450,7 @@ std::optional<size_t> TextCursor::byte_index_at(
     // at byte_end.
     double line_width = target->x_end - target->x_start;
     if (line_width < 0.0) line_width = 0.0;
-    double x_in_line = doc_x - target->x_start;
+    double x_in_line = ux - target->x_start;
     if (x_in_line < 0.0) x_in_line = 0.0;
     if (x_in_line > line_width) x_in_line = line_width;
 

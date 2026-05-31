@@ -2390,6 +2390,10 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     auto lh = attr(tag, "data-curvz-line-height");
                     if (!lh.empty()) mgr->text_line_height = dbl(lh,
                                                   mgr->text_line_height);
+                    // s327 m1 — baseline flow angle (absent -> stays 0 -> horizontal)
+                    auto ba = attr(tag, "data-curvz-baseline-angle");
+                    if (!ba.empty()) mgr->text_baseline_angle = dbl(ba,
+                                                  mgr->text_baseline_angle);
                     if (attr(tag, "data-curvz-font-bold")   == "1")
                         mgr->text_bold = true;
                     if (attr(tag, "data-curvz-font-italic") == "1")

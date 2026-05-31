@@ -636,6 +636,13 @@ static void write_textbox_mgr_def(std::ostringstream& out,
     //   pre-s326 boxes stay byte-identical and load with the derived 1.2x.
     if (mgr.text_line_height > 0.0)
         out << " data-curvz-line-height=\"" << fmt2(mgr.text_line_height) << "\"";
+    // s327 m1 — baseline flow angle (radians). Default 0 omits cleanly so
+    //   pre-s327 / un-rotated boxes stay byte-identical. fmt6 matches the
+    //   guide-angle precision precedent; fmt2 would snap free-rotated text on
+    //   reload (round-trip fidelity). Lives on the mgr/buffer node alongside
+    //   the other baseline text properties, NOT the boundary shape.
+    if (mgr.text_baseline_angle != 0.0)
+        out << " data-curvz-baseline-angle=\"" << fmt6(mgr.text_baseline_angle) << "\"";
     if (mgr.text_bold)   out << " data-curvz-font-bold=\"1\"";
     if (mgr.text_italic) out << " data-curvz-font-italic=\"1\"";
     // s325 m3 — the CDATA below is Pango markup (plain text is valid markup,

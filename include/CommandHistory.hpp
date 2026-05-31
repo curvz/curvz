@@ -307,6 +307,7 @@ struct TextEditCommand : CurvzCommand {
     std::string before_content, before_family, before_anchor, before_align;
     double      before_x = 0, before_y = 0, before_size = 0;
     double      before_line_height = 0;  // s326 m2b
+    double      before_baseline_angle = 0;  // s327 m2
     bool        before_bold = false, before_italic = false;
     FillStyle   before_fill;
     StrokeStyle before_stroke;
@@ -369,6 +370,7 @@ struct TextEditCommand : CurvzCommand {
     std::string after_content, after_family, after_anchor, after_align;
     double      after_x = 0, after_y = 0, after_size = 0;
     double      after_line_height = 0;   // s326 m2b
+    double      after_baseline_angle = 0;   // s327 m2
     bool        after_bold = false, after_italic = false;
     FillStyle   after_fill;
     StrokeStyle after_stroke;
@@ -400,6 +402,7 @@ struct TextEditCommand : CurvzCommand {
         c.before_y       = o->text_y;
         c.before_size    = o->text_font_size;
         c.before_line_height = o->text_line_height;  // s326 m2b
+        c.before_baseline_angle = o->text_baseline_angle;  // s327 m2
         c.before_bold    = o->text_bold;
         c.before_italic  = o->text_italic;
         c.before_fill    = o->fill;
@@ -440,6 +443,7 @@ struct TextEditCommand : CurvzCommand {
         after_y       = o->text_y;
         after_size    = o->text_font_size;
         after_line_height = o->text_line_height;  // s326 m2b
+        after_baseline_angle = o->text_baseline_angle;  // s327 m2
         after_bold    = o->text_bold;
         after_italic  = o->text_italic;
         after_fill    = o->fill;
@@ -476,6 +480,7 @@ struct TextEditCommand : CurvzCommand {
         o->text_y          = after ? after_y       : before_y;
         o->text_font_size  = after ? after_size    : before_size;
         o->text_line_height= after ? after_line_height : before_line_height; // s326 m2b
+        o->text_baseline_angle = after ? after_baseline_angle : before_baseline_angle; // s327 m2
         o->text_bold       = after ? after_bold    : before_bold;
         o->text_italic     = after ? after_italic  : before_italic;
         o->fill            = after ? after_fill    : before_fill;
