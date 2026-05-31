@@ -446,6 +446,29 @@ public:
     return m_sig_text_edit_changed;
   }
 
+  // s330 — the style bar's live-read seam. Fires when the caret moves, the
+  // selection changes, or a format is applied during a text edit, so the bar
+  // can re-read the effective character style under the caret/selection and
+  // refresh its chip faces. Emitted from the input funnels (Option A): the
+  // keyboard caller, the pointer caret-set sites, edit-begin, and the
+  // format-apply paths. Guarded on an active cursor so it's inert otherwise.
+  using TextStyleChangedSignal = sigc::signal<void()>;
+  TextStyleChangedSignal &signal_text_style_changed() {
+    return m_sig_text_style_changed;
+  }
+  void emit_text_style_changed() {
+    if (m_text_cursor) m_sig_text_style_changed.emit();
+  }
+
+  // Effective character style over the current selection/caret, for the bar's
+  // face. Return false when no edit is active (face shows its axis name). When
+  // true, out_mixed flags a selection spanning more than one value (face shows
+  // the "mixed" marker); otherwise the out value is the single effective one
+  // (counting the node default wherever no span covers). A bare caret samples
+  // the byte before it.
+  bool text_style_query_family(Glib::ustring &out_family, bool &out_mixed) const;
+  bool text_style_query_weight(long &out_weight, bool &out_mixed) const;
+
   // s158 m1 — SelectionContext is the canonical answer to "what's
   // selected and what can it do?" Refreshed automatically whenever
   // m_sig_selection emits (Canvas wires the recompute internally).
@@ -2663,6 +2686,15 @@ public:
   bool apply_text_format_toggle(int attr_type, long ivalue,
                                 const std::string& svalue);
 
+  // s330 — SET (not toggle) one per-run character attribute over the active
+  //   selection. The value-attr counterpart of apply_text_format_toggle:
+  //   weight / size / family / fill are value axes (pick replaces the last),
+  //   not booleans, so they route through set_attr_over_range rather than
+  //   toggle_attr_over_range. Same selection gate, same single-TextEditCommand
+  //   commit. Returns false (no-op) when there is no selection.
+  bool apply_text_format_set(int attr_type, long ivalue,
+                             const std::string& svalue);
+
   // s301 m1c — Public query for the active text-edit state. MainWindow
   // uses this to gate which shortcuts pass through.
   bool text_cursor_active() const { return (bool)m_text_cursor; }
@@ -2715,6 +2747,7 @@ private:
   SelectionChangedSignal m_sig_selection;
   DocumentChangedSignal m_sig_doc_changed;
   TextEditChangedSignal m_sig_text_edit_changed;  // s329
+  TextStyleChangedSignal m_sig_text_style_changed;  // s330 live-read
   RequestToolSignal m_sig_request_tool;
   NodeChangedSignal m_sig_node_changed;
   ShowMessageSignal m_sig_show_message;

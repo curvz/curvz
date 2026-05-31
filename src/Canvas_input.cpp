@@ -1516,6 +1516,7 @@ void Canvas::cross_back_to_canvas(SceneNode* mgr) {
   m_text_cursor->set_byte_index(landing_byte);
   m_text_cursor->set_anchor_byte(landing_byte);
   m_text_cursor->set_visible(true);
+  emit_text_style_changed();  // s330 — face follows the cross-back caret
   grab_focus();
   queue_draw();
   LOG_INFO("Canvas: crossed back to canvas for Mgr '{}' — "
@@ -3331,6 +3332,7 @@ void Canvas::on_draw_begin(double x, double y) {
           m_text_cursor->set_byte_index(*b);
           m_text_cursor->collapse_selection();
           m_text_cursor->set_visible(true);
+          emit_text_style_changed();  // s330 — face follows the click
         }
       } else {
         m_selected  = oa_mgr;
@@ -3399,6 +3401,7 @@ void Canvas::on_draw_begin(double x, double y) {
         flush_text_segment();
         if (m_text_cursor->place_caret_at(dx, dy)) {
           m_text_cursor->set_visible(true);
+          emit_text_style_changed();  // s330 — face follows the mousedown caret
           queue_draw();
         }
         // s305 m3 — Arm drag-to-select (see Selection-tool branch).
@@ -3632,6 +3635,7 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
     if (byte) {
       m_text_cursor->set_byte_index(*byte);
       m_text_cursor->set_visible(true);
+      emit_text_style_changed();  // s330 — face follows the drag-selection
       queue_draw();
     }
     return;
@@ -4742,6 +4746,7 @@ void Canvas::on_select_begin(double x, double y) {
         // Reset blink so the caret pops to visible right away —
         // matches the keystroke reset in handle_text_edit_key.
         m_text_cursor->set_visible(true);
+        emit_text_style_changed();  // s330 — face follows the mousedown caret
         queue_draw();
       }
       // s305 m3 — Arm drag-to-select. place_caret_at collapsed the

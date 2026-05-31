@@ -4387,6 +4387,7 @@ void Canvas::begin_text_cursor_edit(SceneNode* text_node, SceneNode* boundary,
   // this; the tab bar will subscribe too. Emitting at this single funnel covers
   // every edit-entry path.
   m_sig_text_edit_changed.emit(true);
+  emit_text_style_changed();  // s330 — initial face read on entering the edit
 
   queue_draw();
 }
@@ -4553,7 +4554,160 @@ bool Canvas::apply_text_format_toggle(int attr_type, long ivalue,
            now_on ? "on" : "off");
 
   m_sig_doc_changed.emit();
+  emit_text_style_changed();  // s330 — refresh faces after the toggle
   queue_draw();
+  return true;
+}
+
+bool Canvas::apply_text_format_set(int attr_type, long ivalue,
+                                   const std::string& svalue) {
+  if (!m_text_cursor || !m_text_editing) return false;
+  auto [a, b] = m_text_cursor->selection_range();
+  LOG_INFO("[s330] format set ENTER type={} val={} sel=[{},{}) has_sel={}",
+           attr_type, ivalue, (unsigned)a, (unsigned)b, (a < b));
+  if (a >= b) return false;  // selection-only, matching the toggle path
+
+  // Close any in-flight typing run as its own undo step.
+  flush_text_segment();
+
+  // Value-set: clear this attr in the range, then lay one span carrying the
+  // picked value. (vs toggle_attr_over_range's flip.)
+  curvz::utils::set_attr_over_range(
+      m_text_editing->text_attr_spans, attr_type, ivalue, svalue,
+      (unsigned)a, (unsigned)b);
+
+  // Push the span delta. (flush's content-only guard would skip it.)
+  if (m_text_has_snapshot && m_history) {
+    size_t cb = m_text_cursor->byte_index();
+    if (cb > (size_t)std::numeric_limits<int32_t>::max())
+      cb = (size_t)std::numeric_limits<int32_t>::max();
+    m_text_editing->text_caret_byte = (int32_t)cb;
+
+    m_text_snapshot.record_after(m_text_editing);
+    m_history->push(
+        std::make_unique<TextEditCommand>(std::move(m_text_snapshot)));
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), m_text_editing);
+  }
+
+  LOG_INFO("[s330] format set type={} ivalue={} range=[{},{}) done",
+           attr_type, ivalue, (unsigned)a, (unsigned)b);
+
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();  // s330 — refresh faces after the set
+  queue_draw();
+  return true;
+}
+
+// s330 — style-bar live-read helpers. Sweep type-T spans clipped to [a,b),
+// returning whether the effective value is uniform (one value everywhere,
+// counting `def` wherever no span covers) and what that single value is. A
+// bare caret (a==b) samples the byte before it. Family is string-valued;
+// weight is int-valued — two variants rather than a template to stay readable.
+namespace {
+bool sweep_family_uniform(const std::vector<Curvz::AttrSpan>& spans,
+                          const std::string& def, unsigned a, unsigned b,
+                          std::string& out) {
+  if (a == b) {  // caret: the font of the byte just before it
+    unsigned p = (a > 0) ? a - 1 : 0;
+    out = def;
+    for (const auto& s : spans)
+      if (s.type == PANGO_ATTR_FAMILY &&
+          (unsigned)s.start_byte <= p && (unsigned)s.end_byte > p)
+        out = s.svalue;
+    return true;
+  }
+  std::vector<const Curvz::AttrSpan*> sp;
+  for (const auto& s : spans)
+    if (s.type == PANGO_ATTR_FAMILY &&
+        (unsigned)s.end_byte > a && (unsigned)s.start_byte < b)
+      sp.push_back(&s);
+  std::sort(sp.begin(), sp.end(),
+            [](const Curvz::AttrSpan* x, const Curvz::AttrSpan* y) {
+              return x->start_byte < y->start_byte;
+            });
+  std::string first;
+  bool have = false, mixed = false;
+  unsigned cur = a;
+  auto note = [&](const std::string& v) {
+    if (!have) { first = v; have = true; }
+    else if (v != first) mixed = true;
+  };
+  for (auto* s : sp) {
+    unsigned ss = std::max((unsigned)s->start_byte, a);
+    unsigned se = std::min((unsigned)s->end_byte, b);
+    if (ss > cur) note(def);  // gap before this span -> node default
+    note(s->svalue);
+    cur = std::max(cur, se);
+    if (mixed) break;
+  }
+  if (!mixed && cur < b) note(def);  // trailing gap
+  out = have ? first : def;
+  return !mixed;
+}
+
+bool sweep_weight_uniform(const std::vector<Curvz::AttrSpan>& spans,
+                          long def, unsigned a, unsigned b, long& out) {
+  if (a == b) {
+    unsigned p = (a > 0) ? a - 1 : 0;
+    out = def;
+    for (const auto& s : spans)
+      if (s.type == PANGO_ATTR_WEIGHT &&
+          (unsigned)s.start_byte <= p && (unsigned)s.end_byte > p)
+        out = s.ivalue;
+    return true;
+  }
+  std::vector<const Curvz::AttrSpan*> sp;
+  for (const auto& s : spans)
+    if (s.type == PANGO_ATTR_WEIGHT &&
+        (unsigned)s.end_byte > a && (unsigned)s.start_byte < b)
+      sp.push_back(&s);
+  std::sort(sp.begin(), sp.end(),
+            [](const Curvz::AttrSpan* x, const Curvz::AttrSpan* y) {
+              return x->start_byte < y->start_byte;
+            });
+  long first = 0;
+  bool have = false, mixed = false;
+  unsigned cur = a;
+  auto note = [&](long v) {
+    if (!have) { first = v; have = true; }
+    else if (v != first) mixed = true;
+  };
+  for (auto* s : sp) {
+    unsigned ss = std::max((unsigned)s->start_byte, a);
+    unsigned se = std::min((unsigned)s->end_byte, b);
+    if (ss > cur) note(def);
+    note(s->ivalue);
+    cur = std::max(cur, se);
+    if (mixed) break;
+  }
+  if (!mixed && cur < b) note(def);
+  out = have ? first : def;
+  return !mixed;
+}
+} // namespace
+
+bool Canvas::text_style_query_family(Glib::ustring& out_family,
+                                     bool& out_mixed) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  auto [a, b] = m_text_cursor->selection_range();
+  std::string fam;
+  bool uniform = sweep_family_uniform(m_text_editing->text_attr_spans,
+                                      m_text_editing->text_font_family,
+                                      (unsigned)a, (unsigned)b, fam);
+  out_mixed = !uniform;
+  out_family = fam;
+  return true;
+}
+
+bool Canvas::text_style_query_weight(long& out_weight, bool& out_mixed) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  auto [a, b] = m_text_cursor->selection_range();
+  long def = m_text_editing->text_bold ? 700 : 400;
+  long w = def;
+  bool uniform = sweep_weight_uniform(m_text_editing->text_attr_spans,
+                                      def, (unsigned)a, (unsigned)b, w);
+  out_mixed = !uniform;
+  out_weight = w;
   return true;
 }
 

@@ -629,6 +629,10 @@ static PangoAttrList* build_line_attrs(const SceneNode* text,
                 a = pango_attr_style_new((PangoStyle)s.ivalue); break;
             case PANGO_ATTR_UNDERLINE:
                 a = pango_attr_underline_new((PangoUnderline)s.ivalue); break;
+            case PANGO_ATTR_STRIKETHROUGH:
+                a = pango_attr_strikethrough_new(s.ivalue != 0); break;
+            case PANGO_ATTR_OVERLINE:  // Pango 1.46+
+                a = pango_attr_overline_new((PangoOverline)s.ivalue); break;
             case PANGO_ATTR_SIZE:
                 a = pango_attr_size_new((int)s.ivalue); break;
             case PANGO_ATTR_ABSOLUTE_SIZE:

@@ -558,6 +558,16 @@ static std::string encode_markup(const std::string& text,
                                                                  : "none")
                            + "\"";
                     break;
+                case PANGO_ATTR_STRIKETHROUGH:
+                    attrs += std::string(" strikethrough=\"")
+                           + (s.ivalue ? "true" : "false") + "\"";
+                    break;
+                case PANGO_ATTR_OVERLINE:
+                    attrs += std::string(" overline=\"")
+                           + (s.ivalue == PANGO_OVERLINE_SINGLE ? "single"
+                                                                : "none")
+                           + "\"";
+                    break;
                 case PANGO_ATTR_SIZE:
                 case PANGO_ATTR_ABSOLUTE_SIZE:
                     // Emitted as markup `size` (re-decodes as PANGO_ATTR_SIZE);

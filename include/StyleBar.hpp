@@ -61,6 +61,23 @@ public:
                                           const std::string& svalue)>;
   void set_format_toggle(FormatToggle cb) { m_format_toggle = std::move(cb); }
 
+  // s330 — the value-set counterpart. Weight (and later size / family / fill)
+  // are value axes: picking a stop SETS the attribute, it doesn't toggle it.
+  // Canvas wires this to apply_text_format_set. Same signature as the toggle;
+  // separate so the call sites read in the model's own terms (set vs toggle)
+  // and route to the right backend.
+  using FormatSet = std::function<void(int attr_type, long ivalue,
+                                       const std::string& svalue)>;
+  void set_format_set(FormatSet cb) { m_format_set = std::move(cb); }
+
+  // s330 — live face setters, driven by Canvas's text-style-changed signal
+  // (relayed by MainWindow). Family: the name, the mixed marker if the
+  // selection spans more than one family, or the axis name "Font" when
+  // unresolved (empty). Weight: the named stop, the mixed marker, or "Weight"
+  // when unresolved. The faces are read-only summaries; the popovers write.
+  void set_font_face(const Glib::ustring& family, bool mixed);
+  void set_weight_face(long weight, bool resolved, bool mixed);
+
   // s329 m1 placeholder. Later: push the effective format of the current
   // selection into the chip faces (lit / off / mixed) WITHOUT rebuilding —
   // re-read range_has_attr per axis and restyle the live chips. Stubbed now.
@@ -84,16 +101,42 @@ private:
   // "this axis lives here" structure is visible even before the real popup).
   void stub_popover(Gtk::MenuButton* chip, const std::string& axis_label);
 
-  // The one live axis in m1: weight & decoration. B/I/U wired to the backend;
-  // strike / overline / smallcaps / case are present but disabled placeholders.
+  // s330 — the Weight axis as a value picker (the first "attribute-shape is
+  // tool-shape" instance): Pango weight is a 100..900 number, so the popover
+  // is preset stops (Thin..Black) + a numeric override, exclusive-set via
+  // apply_text_format_set. Bold is simply the 700 stop — not a separate B
+  // toggle. Italic / underline / strike / overline are NOT weight; they move
+  // to the Emphasis chip in the next pass (Ctrl-I/U keep working meanwhile).
   void build_weight_popover(Gtk::MenuButton* chip);
 
+  // s330 — Emphasis: the line-decoration toggles that are NOT weight. Pango
+  // treats these as independent attributes that combine (an additive set, vs
+  // weight's exclusive scale), so they're toggles, not a picker. Italic
+  // (STYLE), underline (UNDERLINE), strikethrough (STRIKETHROUGH) and overline
+  // (OVERLINE) are all live on the span toggle path, with strikethrough/
+  // overline cases now present in all three consumers (build_line_attrs
+  // render / encode_markup save / decode_markup_into parse). Lit/mixed face
+  // state is the deferred update_state work — the toggles are momentary
+  // triggers for now, since the void m_format_toggle can't report the
+  // resulting on/off and an optimistic lit state would lie on mixed runs.
+  void build_emphasis_popover(Gtk::MenuButton* chip);
+
+  // s330 — Font family: a chip whose popover holds a search box + a scrolled
+  // list of every family the Pango font map reports, sorted. Picking a row
+  // SETS family (PANGO_ATTR_FAMILY via the value-set path; already wired through
+  // build_line_attrs / encode_markup / decode_markup_into) and writes the name
+  // onto the chip face. Per-row typeface previews and live face-follows-
+  // selection are deferred enhancements. Built once like the other popovers.
+  void build_font_popover(Gtk::MenuButton* chip);
+
   FormatToggle m_format_toggle;
+  FormatSet    m_format_set;
 
   // Persistent chips — built once, never rebuilt.
   Gtk::MenuButton* m_chip_font   = nullptr;  // character
   Gtk::MenuButton* m_chip_size   = nullptr;
   Gtk::MenuButton* m_chip_weight = nullptr;
+  Gtk::MenuButton* m_chip_emphasis = nullptr;  // italic/underline/strike/overline
   Gtk::MenuButton* m_chip_fill   = nullptr;
   Gtk::MenuButton* m_chip_stroke = nullptr;
   Gtk::MenuButton* m_chip_align  = nullptr;  // paragraph

@@ -1640,8 +1640,10 @@ void MainWindow::connect_signals() {
         // cascade can run cancel_text_edit) — see handle_text_edit_key
         // for the per-key policy.
         if (m_canvas.text_cursor_active()) {
-          if (m_canvas.handle_text_edit_key(kv, mod))
+          if (m_canvas.handle_text_edit_key(kv, mod)) {
+            m_canvas.emit_text_style_changed();  // s330 — face follows caret/edit
             return true;
+          }
         }
 
         // ── Space press — forward to canvas for Space+drag pan ──────────────

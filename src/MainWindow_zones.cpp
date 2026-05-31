@@ -1630,10 +1630,33 @@ void MainWindow::setup_layout() {
       [this](int attr_type, long ivalue, const std::string &svalue) {
         m_canvas.apply_text_format_toggle(attr_type, ivalue, svalue);
       });
+  // s330 — value axes (weight now; size / family / fill next) SET rather than
+  // toggle. Routes to the value-set backend counterpart.
+  m_style_bar.set_format_set(
+      [this](int attr_type, long ivalue, const std::string &svalue) {
+        m_canvas.apply_text_format_set(attr_type, ivalue, svalue);
+      });
   // Show/hide with the edit session — the single edit-state signal covers
   // every enter/exit path.
   m_canvas.signal_text_edit_changed().connect(
       [this](bool active) { m_style_bar.set_visible(active); });
+  // s330 — live-read relay: re-read the effective style under the caret/
+  // selection and push it onto the chip faces whenever Canvas reports a
+  // caret/selection/format change.
+  m_canvas.signal_text_style_changed().connect([this]() {
+    Glib::ustring fam;
+    bool fmix = false;
+    if (m_canvas.text_style_query_family(fam, fmix))
+      m_style_bar.set_font_face(fam, fmix);
+    else
+      m_style_bar.set_font_face("", false);
+    long w = 0;
+    bool wmix = false;
+    if (m_canvas.text_style_query_weight(w, wmix))
+      m_style_bar.set_weight_face(w, true, wmix);
+    else
+      m_style_bar.set_weight_face(0, false, false);
+  });
 
   m_canvas.set_document(m_project->active_doc());
   m_canvas.set_zoom(m_project->zoom);

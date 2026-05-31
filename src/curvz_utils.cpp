@@ -9,6 +9,7 @@
 #include "SceneNode.hpp"     // FillStyle, GradientStop, SceneNode walk
 #include "scripting/Scriptable.hpp" // s199 m1 — force_unregister_subtree pump
 
+#include <pango/pango.h>   // s330 — real PANGO_ATTR_* enum (no hardcoded ids)
 #include <algorithm>
 #include <cctype>
 #include <chrono> // s269 m2 — trim_heap elapsed-us timing
@@ -2142,11 +2143,14 @@ namespace {
 inline bool attr_value_eq(const Curvz::AttrSpan& s,
                           int type, long ivalue, const std::string& svalue) {
   if (s.type != type) return false;
-  // PANGO_ATTR_FAMILY == 1 is the only string-valued attr we carry; compare
-  // svalue for it, ivalue for all others. Using the numeric constant avoids
-  // pulling pango into this TU just for one enum.
-  constexpr int kFamily = 1;  // PANGO_ATTR_FAMILY
-  return (type == kFamily) ? (s.svalue == svalue) : (s.ivalue == ivalue);
+  // Family is the only string-valued attr we carry: compare svalue for it,
+  // ivalue for all others. s330 — use the real PANGO_ATTR_FAMILY enum (== 2),
+  // NOT a hardcoded id; a prior `kFamily = 1` mis-transcription made this
+  // branch never fire, so every family span compared equal by ivalue (always
+  // 0) and abutting different-font spans wrongly coalesced -> set-on-a-range
+  // got swallowed by its neighbour (the "all or nothing" font bug).
+  return (type == PANGO_ATTR_FAMILY) ? (s.svalue == svalue)
+                                     : (s.ivalue == ivalue);
 }
 
 } // namespace

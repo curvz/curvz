@@ -1504,6 +1504,21 @@ button.tb-type-btn.tb-type-btn-active {
 .curvz-style-sep {
     margin: 2px 4px;
 }
+/* s330 — Weight popover preset stops: full-width left-aligned menu rows with
+   hover feedback so the flat (frameless) buttons still read as a pickable
+   list, not plain text. Normal case + normal weight here (unlike the chip
+   faces) since these are menu entries, not chrome labels. */
+.curvz-style-weight-stop {
+    padding: 2px 10px;
+    min-height: 0;
+    font-size: 13px;
+    text-transform: none;
+    letter-spacing: 0;
+}
+.curvz-style-weight-stop:hover {
+    background-color: var(--hover-bg);
+    color: var(--fg-primary);
+}
 
 /* s148 m2 fix3: indent the body of a nested disclosure (e.g. the
    "Motif" disclosure in the Document group, which contains Canvas /

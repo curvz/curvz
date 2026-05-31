@@ -48,6 +48,8 @@ static void decode_markup_into(Curvz::SceneNode* mgr, const std::string& payload
                     case PANGO_ATTR_WEIGHT:
                     case PANGO_ATTR_STYLE:
                     case PANGO_ATTR_UNDERLINE:
+                    case PANGO_ATTR_STRIKETHROUGH:
+                    case PANGO_ATTR_OVERLINE:
                     case PANGO_ATTR_SIZE:
                     case PANGO_ATTR_ABSOLUTE_SIZE:
                     case PANGO_ATTR_LETTER_SPACING:
