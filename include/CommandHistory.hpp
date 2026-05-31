@@ -1,6 +1,5 @@
 #pragma once
 #include "SceneNode.hpp"
-#include "CurvzLog.hpp"   // s326 SPANLIFE (TEMPORARY) — lifecycle probe
 #include "color/SwatchLibrary.hpp"
 #include "style/StyleLibrary.hpp"   // BindStyleCommand / UnbindStyleCommand (S79 m4a)
 #include "style/StyleInterop.hpp"   // materialise_from_style on redo (S79 m4a)
@@ -420,8 +419,6 @@ struct TextEditCommand : CurvzCommand {
         c.before_margin_right  = o->text_margin_right;
         // s326 m1 — per-run formatting spine
         c.before_attr_spans    = o->text_attr_spans;
-        LOG_INFO("[SPANLIFE] snapshot_before captured {} spans (node iid='{}')",
-                 o->text_attr_spans.size(), o->internal_id);
         // s307 m6 — Caret position. Reads off text_caret_byte, which
         //   the caller is responsible for keeping current: at edit
         //   entry the persisted byte is correct (last edit's caret);
@@ -462,8 +459,6 @@ struct TextEditCommand : CurvzCommand {
         after_margin_right  = o->text_margin_right;
         // s326 m1 — per-run formatting spine
         after_attr_spans    = o->text_attr_spans;
-        LOG_INFO("[SPANLIFE] record_after captured {} spans (node iid='{}')",
-                 o->text_attr_spans.size(), o->internal_id);
         // s307 m6 — Caret position; same convention as snapshot_before.
         //   Caller writes m_text_cursor->byte_index() into
         //   text_caret_byte before calling record_after.
@@ -500,10 +495,6 @@ struct TextEditCommand : CurvzCommand {
         o->text_margin_right  = after ? after_margin_right  : before_margin_right;
         // s326 m1 — per-run formatting spine
         o->text_attr_spans    = after ? after_attr_spans    : before_attr_spans;
-        LOG_INFO("[SPANLIFE] apply(after={}) wrote {} spans onto node iid='{}' "
-                 "(before={} after={})",
-                 after, o->text_attr_spans.size(), o->internal_id,
-                 before_attr_spans.size(), after_attr_spans.size());
     }
     void execute() override;  // see CommandHistory.cpp
     void undo()    override;  // see CommandHistory.cpp

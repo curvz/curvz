@@ -727,12 +727,6 @@ bool Canvas::flush_text_segment() {
   if (!m_text_has_snapshot) return false;
   if (!m_history) return false;
 
-  // s326 SPANLIFE (TEMPORARY) — node span count at flush entry, and whether
-  //   the content-only guard is about to early-out (span-only edits skip push).
-  LOG_INFO("[SPANLIFE] flush_text_segment ENTER spans={} content_changed={}",
-           m_text_editing->text_attr_spans.size(),
-           (m_text_snapshot.before_content != m_text_editing->text_content));
-
   // Empty delta? Don't push. Activate-and-deactivate-without-typing
   // produces no history entry — Ctrl+Z won't roll back to an unrelated
   // earlier state of this textbox.

@@ -4514,30 +4514,12 @@ bool Canvas::apply_text_format_toggle(int attr_type, long ivalue,
            attr_type, (unsigned)a, (unsigned)b, (a < b));
   if (a >= b) return false;  // selection-only in m2
 
-  // s326 SPANDUMP (TEMPORARY) — print the live formatting state as a readable
-  //   span list so the pango codes are visible, not just their rendered result.
-  //   Each line: one AttrSpan {type=(int)PangoAttrType iv=ivalue sv='svalue'
-  //   [start,end)}. Compare BEFORE vs AFTER to see exactly what the toggle did.
-  auto dump_spans = [this](const char* when) {
-    const auto& spans = m_text_editing->text_attr_spans;
-    LOG_INFO("[SPANDUMP] {} — text.size={} span_count={}",
-             when, m_text_editing->text_content.size(), spans.size());
-    for (size_t i = 0; i < spans.size(); ++i) {
-      const auto& s = spans[i];
-      LOG_INFO("[SPANDUMP]   [{}] type={} iv={} sv='{}' [{},{})",
-               i, s.type, s.ivalue, s.svalue, s.start_byte, s.end_byte);
-    }
-  };
-  dump_spans("BEFORE");
-
   // Close any in-flight typing run as its own undo step.
   flush_text_segment();
 
   bool now_on = curvz::utils::toggle_attr_over_range(
       m_text_editing->text_attr_spans, attr_type, ivalue, svalue,
       (unsigned)a, (unsigned)b);
-
-  dump_spans("AFTER");
 
   // Push the span delta. (flush's content-only guard would skip it.)
   if (m_text_has_snapshot && m_history) {

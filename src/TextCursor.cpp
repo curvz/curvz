@@ -615,32 +615,12 @@ static PangoAttrList* build_line_attrs(const SceneNode* text,
         return nullptr;
     const size_t lo = chunk_start;
     const size_t hi = chunk_start + (size_t)chunk_len;
-    // s326 ATTRPROBE (TEMPORARY) — does the per-run attr actually get built for
-    //   the painted line? Logs the line window + every span's overlap decision
-    //   and rebased local indices. span_count=0 here would mean the spans
-    //   aren't on the node the renderer sees; "no overlap" would mean wrong
-    //   chunk_start; a produced attr means the bug is downstream of here.
-    static int s_attrprobe_n = 0;
-    const bool probe = (s_attrprobe_n < 40);
-    if (probe) {
-        ++s_attrprobe_n;
-        LOG_INFO("[ATTRPROBE] line window [{},{}) chunk_len={} span_count={}",
-                 lo, hi, chunk_len, text->text_attr_spans.size());
-    }
     PangoAttrList* list = nullptr;
     for (const AttrSpan& s : text->text_attr_spans) {
-        if (s.end_byte <= lo || s.start_byte >= hi) {
-            if (probe)
-                LOG_INFO("[ATTRPROBE]   span type={} [{},{}) — NO overlap",
-                         s.type, s.start_byte, s.end_byte);
-            continue;  // no overlap
-        }
+        if (s.end_byte <= lo || s.start_byte >= hi) continue;  // no overlap
         guint ls = (guint)(std::max((size_t)s.start_byte, lo) - lo);
         guint le = (guint)(std::min((size_t)s.end_byte,   hi) - lo);
         if (le <= ls) continue;
-        if (probe)
-            LOG_INFO("[ATTRPROBE]   span type={} [{},{}) -> LOCAL [{},{}) "
-                     "iv={}", s.type, s.start_byte, s.end_byte, ls, le, s.ivalue);
         PangoAttribute* a = nullptr;
         switch ((PangoAttrType)s.type) {
             case PANGO_ATTR_WEIGHT:
