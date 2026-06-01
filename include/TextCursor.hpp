@@ -121,6 +121,13 @@ TextLayout compute_text_layout(const SceneNode* boundary,
                                const SceneNode* text,
                                size_t byte_start = 0);
 
+// s331 — the auto/metric leading (doc-px) for a text node's BASE font: the
+// exact value compute_text_layout uses as the per-line stride when no explicit
+// leading applies — (ascent + descent) * 1.2 from real Pango metrics. The
+// style-bar read-out calls this so "Auto" shows the true leading rather than a
+// font-size * 1.2 approximation.
+double metric_leading_px(const SceneNode* text);
+
 // s320 m1 — Frame basis for a text boundary. Derives the boundary's
 // orientation (radians) from its first edge (node[0] -> node[1], which for
 // a rect-built TextBox boundary is the text-flow axis) and its centroid

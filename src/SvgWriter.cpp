@@ -525,6 +525,7 @@ static std::string encode_markup(const std::string& text,
 
     std::vector<size_t> bounds{0, text.size()};
     for (const auto& s : spans) {
+        if (s.type == curvz::utils::kCurvzLeadingAttr) continue;  // s331 — not a Pango attr
         if (s.start_byte <= text.size()) bounds.push_back(s.start_byte);
         if (s.end_byte   <= text.size()) bounds.push_back(s.end_byte);
     }
@@ -646,6 +647,22 @@ static void write_textbox_mgr_def(std::ostringstream& out,
     //   pre-s326 boxes stay byte-identical and load with the derived 1.2x.
     if (mgr.text_line_height > 0.0)
         out << " data-curvz-line-height=\"" << fmt2(mgr.text_line_height) << "\"";
+    // s331 — per-paragraph leading runs (kCurvzLeadingAttr). Can't ride the
+    //   Pango span markup (not a Pango attr), so they persist as a flat
+    //   "start:end:ivalue;..." list on the mgr (ivalue = doc-px x PANGO_SCALE).
+    //   Only emitted when present so unmarked boxes stay byte-identical.
+    {
+        std::string lead;
+        for (const auto& s : mgr.text_attr_spans) {
+            if (s.type != curvz::utils::kCurvzLeadingAttr) continue;
+            if (!lead.empty()) lead += ";";
+            lead += std::to_string(s.start_byte) + ":" +
+                    std::to_string(s.end_byte) + ":" +
+                    std::to_string(s.ivalue);
+        }
+        if (!lead.empty())
+            out << " data-curvz-leading=\"" << lead << "\"";
+    }
     // s327 m1 — baseline flow angle (radians). Default 0 omits cleanly so
     //   pre-s327 / un-rotated boxes stay byte-identical. fmt6 matches the
     //   guide-angle precision precedent; fmt2 would snap free-rotated text on

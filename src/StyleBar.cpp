@@ -9,6 +9,7 @@
 #include "StyleBar.hpp"
 #include "curvz_utils.hpp"
 #include "CurvzSpinButton.hpp"
+#include "UnitSystem.hpp"   // s331 — Unit::Pt + px<->pt for the Size chip
 
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
@@ -21,6 +22,8 @@
 #include <pango/pango.h>        // PangoAttrType / weight consts
 #include <pango/pangocairo.h>   // pango_cairo_font_map_get_default
 #include <algorithm>
+#include <cmath>                // s331 — std::lround for point<->scale
+#include <cstdio>
 #include <vector>
 
 namespace Curvz {
@@ -30,6 +33,22 @@ namespace Curvz {
 // pango-free per its contract.
 namespace {
 constexpr int kAttrWeight = PANGO_ATTR_WEIGHT;
+constexpr int kAttrSize   = PANGO_ATTR_SIZE;   // s331 — per-run size (point)
+
+// s331 — common font-size presets, in points. The spin (steppers + parser)
+// covers everything between/around these; the list is the quick-jump.
+constexpr double kSizePresets[] = {6, 8, 9, 10, 11, 12, 14, 18, 24, 36, 48, 72};
+
+// Format a point value for the chip face / preset label: one decimal, but
+// drop a trailing ".0" so whole sizes read "12" not "12.0".
+std::string fmt_pt(double pt) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.1f", pt);
+  std::string s(buf);
+  if (s.size() >= 2 && s.compare(s.size() - 2, 2, ".0") == 0)
+    s.erase(s.size() - 2);
+  return s;
+}
 
 // Emphasis (line-decoration) attrs — all live on the span toggle path, with
 // strikethrough/overline cases present in build_line_attrs / encode_markup /
@@ -108,9 +127,8 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 2) {
                                "curvz-align-left-symbolic",
                                "Justification (placeholder)",
                                /*face_is_icon=*/true);
-  m_chip_para = add_icon_chip("sty_para", "style_bar_paragraph_chip",
-                              "\u00B6", "Paragraph: leading / spacing (placeholder)",
-                              /*face_is_icon=*/false);
+  m_chip_para = add_label_chip("sty_para", "style_bar_linespacing_chip",
+                               "Line spacing", "Line spacing");
   m_chip_style = add_label_chip("sty_named", "style_bar_style_chip",
                                 "Body", "Named paragraph style (placeholder)");
 
@@ -118,14 +136,33 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 2) {
   build_weight_popover(m_chip_weight);
   build_emphasis_popover(m_chip_emphasis);
   build_font_popover(m_chip_font);
+  build_size_popover(m_chip_size);
+  build_paragraph_popover(m_chip_para);
 
   // Stub popovers for the chips whose real popups aren't built yet.
-  stub_popover(m_chip_size,   "Size stepper + presets");
   stub_popover(m_chip_fill,   "Fill colour picker");
   stub_popover(m_chip_stroke, "Stroke colour + width");
   stub_popover(m_chip_align,  "Left / Center / Right / Justified");
-  stub_popover(m_chip_para,   "Leading / space before-after / anchor / hyphenation");
   stub_popover(m_chip_style,  "Style chooser + override + verbs");
+
+  // s331 — far-right Reset button. An expanding spacer pushes it to the end
+  // of the bar (the chips stay left-clumped per §9; centering them is a
+  // separate cosmetic pass). Direct action — no popover. Strips all per-run
+  // formatting on the active text back to defaults via the reset callback.
+  auto* spacer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
+  spacer->set_hexpand(true);
+  append(*spacer);
+  auto* reset = Gtk::make_managed<Gtk::Button>("Reset");
+  curvz::utils::set_name(reset, "sty_reset", "style_bar_reset_button");
+  reset->set_has_frame(false);
+  reset->set_can_focus(false);  // don't steal focus from the active text edit
+  reset->set_tooltip_text("Reset text to default formatting");
+  reset->add_css_class("curvz-style-chip");
+  reset->add_css_class("curvz-style-chip-label");
+  reset->signal_clicked().connect([this]() {
+    if (m_reset_request) m_reset_request();
+  });
+  append(*reset);
 }
 
 Gtk::MenuButton* StyleBar::add_label_chip(const std::string& abbrev,
@@ -260,40 +297,199 @@ void StyleBar::build_weight_popover(Gtk::MenuButton* chip) {
   chip->set_popover(*pop);
 }
 
+void StyleBar::build_size_popover(Gtk::MenuButton* chip) {
+  if (!chip) return;
+  auto* pop = Gtk::make_managed<Gtk::Popover>();
+  auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+  col->set_margin(6);
+
+  // Apply a size in points over the selection: SET PANGO_ATTR_SIZE (point x
+  // PANGO_SCALE). The set-path emits text_style_changed, so the face + spin
+  // refresh via the live-read; we don't write the face here.
+  auto apply_pt = [this](double pt) {
+    if (m_format_set)
+      m_format_set(kAttrSize, std::lround(pt * (double)PANGO_SCALE), "");
+  };
+
+  // ── The pt-locked editable field (steppers + math/units parser). Width
+  // type (non-negative) with the unit override pinned to points, so it owns
+  // its unit regardless of the document unit and "2in" commits as 144 pt.
+  auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+  m_size_spin = Gtk::make_managed<CurvzSpinButton>("sty_sz_num", SpinType::Width);
+  m_size_spin->with_unit_override(Unit::Pt)
+      ->with_value(UnitSystem::to_px(12.0, Unit::Pt))  // 12 pt default
+      ->with_width_chars(5)
+      ->with_tooltip("Font size in points (type 2in, 10mm, 12pt, ...)");
+  m_size_spin->set_can_focus(true);  // the field takes focus to type into
+  // Steppers nudge and typed-commits apply live (one apply per change).
+  m_size_spin->on_changed([this, apply_pt](double internal_px) {
+    apply_pt(m_size_spin->to_display(internal_px));  // px -> pt (override)
+  });
+  row->append(*m_size_spin);
+  row->append(*m_size_spin->get_unit_label());
+  col->append(*row);
+
+  auto* sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+  sep->set_margin_top(2);
+  sep->set_margin_bottom(2);
+  col->append(*sep);
+
+  // ── Preset jumps — common sizes in a scrolled column, like the weight
+  // stops. Each SETS that point size and closes the popover.
+  auto* scroller = Gtk::make_managed<Gtk::ScrolledWindow>();
+  scroller->set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+  scroller->set_min_content_height(180);
+  auto* presets = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+  for (double pt : kSizePresets) {
+    auto* b = Gtk::make_managed<Gtk::Button>(fmt_pt(pt) + " pt");
+    b->set_has_frame(false);
+    b->set_can_focus(false);  // don't steal focus from the active text edit
+    b->add_css_class("curvz-style-weight-stop");  // reuse the menu-row look
+    if (auto* lbl = dynamic_cast<Gtk::Label*>(b->get_child()))
+      lbl->set_xalign(0.0f);
+    b->signal_clicked().connect([apply_pt, pop, pt]() {
+      apply_pt(pt);
+      pop->popdown();
+    });
+    presets->append(*b);
+  }
+  scroller->set_child(*presets);
+  col->append(*scroller);
+
+  pop->set_child(*col);
+  chip->set_popover(*pop);
+}
+
+void StyleBar::set_size_face(double pt, bool resolved, bool mixed) {
+  if (!m_chip_size) return;
+  Glib::ustring next = mixed ? "\u2014"
+                             : (resolved ? Glib::ustring(fmt_pt(pt) + " pt")
+                                         : "Size");
+  if (m_chip_size->get_label() != next)
+    m_chip_size->set_label(next);
+  // Sync the popover spin to a resolved single size (no apply re-fired —
+  // set_internal_value is guarded against emitting).
+  if (resolved && !mixed && m_size_spin)
+    m_size_spin->set_internal_value(UnitSystem::to_px(pt, Unit::Pt));
+}
+
+void StyleBar::build_paragraph_popover(Gtk::MenuButton* chip) {
+  if (!chip) return;
+  auto* pop = Gtk::make_managed<Gtk::Popover>();
+  auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+  col->set_margin(6);
+
+  // ── Leading row: label + pt-locked spin + unit label. Buffer-global, so a
+  // change requests Canvas::set_text_leading (not a span op). The spin reuses
+  // the size chip's unit override (owns pt regardless of doc unit).
+  auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+  auto* lbl = Gtk::make_managed<Gtk::Label>("Line spacing");
+  lbl->set_xalign(0.0f);
+  lbl->add_css_class("dim-label");
+  m_leading_spin = Gtk::make_managed<CurvzSpinButton>("sty_lead_num",
+                                                      SpinType::Width);
+  m_leading_spin->with_unit_override(Unit::Pt)
+      ->with_value(UnitSystem::to_px(14.0, Unit::Pt))  // 14 pt default look
+      ->with_width_chars(5)
+      ->with_tooltip("Line spacing in points (type 2in, 10mm, 14pt, ...)");
+  m_leading_spin->set_can_focus(true);
+  m_leading_spin->on_changed([this](double internal_px) {
+    if (m_leading_request)
+      m_leading_request(m_leading_spin->to_display(internal_px));  // px -> pt
+  });
+  row->append(*lbl);
+  row->append(*m_leading_spin);
+  row->append(*m_leading_spin->get_unit_label());
+  col->append(*row);
+
+  // Auto: hand leading back to the metric-derived default (line_height = 0).
+  // Signalled as pt = 0, which Canvas reads as auto.
+  auto* autob = Gtk::make_managed<Gtk::Button>("Auto");
+  autob->set_has_frame(false);
+  autob->set_can_focus(false);
+  autob->add_css_class("curvz-style-weight-stop");  // reuse the menu-row look
+  if (auto* al = dynamic_cast<Gtk::Label*>(autob->get_child()))
+    al->set_xalign(0.0f);
+  autob->set_tooltip_text("Auto line spacing (derive from the font metrics)");
+  autob->signal_clicked().connect([this, pop]() {
+    if (m_leading_request) m_leading_request(0.0);  // <= 0 = auto
+    pop->popdown();
+  });
+  col->append(*autob);
+
+  pop->set_child(*col);
+  chip->set_popover(*pop);
+}
+
+void StyleBar::set_leading(double pt, bool is_auto) {
+  if (!m_leading_spin) return;
+  m_leading_spin->set_tooltip_text(
+      is_auto ? "Line spacing — Auto (from font metrics); type a value to pin it"
+              : "Line spacing in points (type 2in, 10mm, 14pt, ...)");
+  m_leading_spin->set_internal_value(UnitSystem::to_px(pt, Unit::Pt));  // no emit
+}
+
 void StyleBar::build_emphasis_popover(Gtk::MenuButton* chip) {
   if (!chip) return;
   auto* pop = Gtk::make_managed<Gtk::Popover>();
   auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
   box->set_margin(6);
 
-  // Each decoration is an independent toggle over the selection (additive set,
-  // not exclusive) routed through the s326 toggle backend. Momentary triggers
-  // for now: the void callback can't report on/off, so lit/mixed face state is
-  // the deferred update_state work — better no lit state than a lying one.
-  auto add_trigger = [&](const std::string& face, const std::string& tip,
-                         int attr, long value, bool live) {
-    auto* b = Gtk::make_managed<Gtk::Button>(face);
+  // s331 — each decoration is an independent ToggleButton over the selection
+  // (additive set, not exclusive) routed through the s326 toggle backend.
+  // The toggle now READS as well as writes: the live-read pushes its lit/off/
+  // mixed state via set_emphasis_state on each signal_text_style_changed, and
+  // a click toggles the attribute. The format-apply emits text_style_changed,
+  // so the resulting state flows straight back onto the toggle — the click's
+  // own active value isn't authoritative, the re-read corrects it. The
+  // m_suppress_emphasis guard stops that programmatic set from re-firing here.
+  auto add_toggle = [&](const std::string& face, const std::string& tip,
+                        int attr, long value) -> Gtk::ToggleButton* {
+    auto* b = Gtk::make_managed<Gtk::ToggleButton>(face);
     b->set_tooltip_text(tip);
     b->set_has_frame(false);
     b->set_can_focus(false);  // don't steal focus from the active text edit
     b->add_css_class("curvz-style-trigger");
-    if (live) {
-      b->signal_clicked().connect([this, attr, value]() {
-        if (m_format_toggle) m_format_toggle(attr, value, "");
-      });
-    } else {
-      b->set_sensitive(false);  // gated until its span consumers learn the case
-    }
+    b->signal_toggled().connect([this, attr, value]() {
+      if (m_suppress_emphasis) return;  // programmatic state push, not a click
+      if (m_format_toggle) m_format_toggle(attr, value, "");
+    });
     box->append(*b);
+    return b;
   };
 
-  add_trigger("I", "Italic (Ctrl+I)",       kAttrStyle,         kStyleItalic,     true);
-  add_trigger("U", "Underline (Ctrl+U)",    kAttrUnderline,     kUnderlineSingle, true);
-  add_trigger("S", "Strikethrough",          kAttrStrikethrough, kStrikeOn,        true);
-  add_trigger("O", "Overline",               kAttrOverline,      kOverlineSingle,  true);
+  m_emph_italic    = add_toggle("I", "Italic (Ctrl+I)",
+                                kAttrStyle,         kStyleItalic);
+  m_emph_underline = add_toggle("U", "Underline (Ctrl+U)",
+                                kAttrUnderline,     kUnderlineSingle);
+  m_emph_strike    = add_toggle("S", "Strikethrough",
+                                kAttrStrikethrough, kStrikeOn);
+  m_emph_overline  = add_toggle("O", "Overline",
+                                kAttrOverline,      kOverlineSingle);
 
   pop->set_child(*box);
   chip->set_popover(*pop);
+}
+
+void StyleBar::set_emphasis_state(int italic, int underline, int strike,
+                                  int overline) {
+  // Apply one tri-state to one toggle: 0 = off, 1 = on, 2 = mixed. GTK4's
+  // Gtk::ToggleButton has no set_inconsistent() (that's CheckButton), so the
+  // mixed look rides a CSS class (.curvz-trigger-mixed) instead; on/off ride
+  // the :checked state via set_active. Guarded so set_active() doesn't re-fire
+  // the click handler when the value actually changes.
+  m_suppress_emphasis = true;
+  auto apply = [](Gtk::ToggleButton* t, int state) {
+    if (!t) return;
+    if (state == 2) t->add_css_class("curvz-trigger-mixed");
+    else            t->remove_css_class("curvz-trigger-mixed");
+    t->set_active(state == 1);
+  };
+  apply(m_emph_italic,    italic);
+  apply(m_emph_underline, underline);
+  apply(m_emph_strike,    strike);
+  apply(m_emph_overline,  overline);
+  m_suppress_emphasis = false;
 }
 
 void StyleBar::build_font_popover(Gtk::MenuButton* chip) {

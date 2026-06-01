@@ -321,6 +321,15 @@ bool toggle_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
                             int type, long ivalue, const std::string& svalue,
                             unsigned a, unsigned b);
 
+// s331 — Curvz-private attribute type for PER-PARAGRAPH LEADING, carried as a
+// run in text_attr_spans (so the set/clear/sweep byte-maintenance applies for
+// free across edits). Deliberately outside the PangoAttrType range: it never
+// collides with a real Pango attr, and the Pango-markup encoder drops it (it
+// rides its own data-curvz-leading persistence attribute instead of the span
+// markup). ivalue is leading in doc-px x PANGO_SCALE (same fixed-point as the
+// per-run size spans), so fractional leadings (14 pt = 18.667 px) survive.
+constexpr int kCurvzLeadingAttr = 0x4C454144;  // 'LEAD'
+
 // ── Layer-index resolver (s171 m1) ───────────────────────────────────
 // Layers live at the top of the document tree (`doc->layers`) and are
 // identified by index for insertion / erasure / reorder operations.

@@ -490,8 +490,15 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
   for (const auto& bl : tl.baselines) {
     if (!bl.pango) continue;
     cr->save();
-    // Pango layout origin is top-left; place at (x_start, y - ascent).
-    cr->move_to(bl.x_start, bl.y - bl.ascent);
+    // s331 — anchor by the line's ACTUAL baseline, not the node's uniform
+    // ascent. With per-run sizes a line's real ascent is its tallest run, so
+    // bl.ascent (uniform) would drop the whole line below its fixed leading-
+    // stride baseline. pango_layout_get_baseline gives the true baseline; the
+    // tall run then overlaps the line above while every baseline stays put.
+    // For a uniform line this equals bl.ascent, so unchanged.
+    double base_px = pango_layout_get_baseline(bl.pango.get())
+                     / (double)PANGO_SCALE;
+    cr->move_to(bl.x_start, bl.y - base_px);
     pango_cairo_show_layout(cr->cobj(), bl.pango.get());
     cr->restore();
   }
@@ -501,7 +508,9 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
     for (const auto& bl : tl.baselines) {
       if (!bl.pango) continue;
       cr->save();
-      cr->move_to(bl.x_start, bl.y - bl.ascent);
+      double base_px = pango_layout_get_baseline(bl.pango.get())
+                       / (double)PANGO_SCALE;
+      cr->move_to(bl.x_start, bl.y - base_px);
       pango_cairo_layout_path(cr->cobj(), bl.pango.get());
       apply_stroke_style(cr, text_obj.stroke);
       cr->stroke();

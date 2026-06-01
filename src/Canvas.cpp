@@ -841,6 +841,7 @@ Canvas::Canvas() {
             mm_mgr && mm_view) {
           auto menu = Gio::Menu::create();
           menu->append("Reset to Rectangle", "tbmemberctx.reset");
+          menu->append("Reset Text Format", "tbmemberctx.text-reset");
           menu->append("Delete text box", "tbmemberctx.delete");
 
           auto ag = Gio::SimpleActionGroup::create();
@@ -875,6 +876,20 @@ Canvas::Canvas() {
                 });
               });
           ag->add_action(act_reset);
+
+          // s331 — Reset Text Format: strip every per-run span and return the
+          // Mgr's character style to defaults (content kept). Passes the Mgr
+          // directly to reset_text_to_default, so no selection side-effect.
+          // Deferred one idle like its siblings so the popover dismisses first.
+          auto act_text_reset = Gio::SimpleAction::create("text-reset");
+          act_text_reset->signal_activate().connect(
+              [this, cap_mgr](const Glib::VariantBase&) {
+                Glib::signal_idle().connect_once([this, cap_mgr]() {
+                  if (is_node_alive(cap_mgr))
+                    reset_text_to_default(cap_mgr);
+                });
+              });
+          ag->add_action(act_text_reset);
           insert_action_group("tbmemberctx", ag);
 
           auto* popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
@@ -4684,6 +4699,81 @@ bool sweep_weight_uniform(const std::vector<Curvz::AttrSpan>& spans,
   out = have ? first : def;
   return !mixed;
 }
+
+// s331 — per-decoration lit-state sweep. Returns a tri-state over [a,b):
+// 0 = off everywhere, 1 = on everywhere, 2 = mixed. A byte is "on" iff the
+// last span of `type` covering it has a non-zero value, OR (no span covers
+// it AND def_on) — i.e. gaps inherit the node default. "Non-zero" rather
+// than a specific value so any underline variant / oblique-or-italic counts
+// as on, matching the user's "is this emphasised?" reading. A bare caret
+// (a==b) samples the byte before it and reports off(0)/on(1), never mixed.
+int sweep_decoration(const std::vector<Curvz::AttrSpan>& spans, int type,
+                     bool def_on, unsigned a, unsigned b) {
+  auto byte_on = [&](unsigned p) -> bool {
+    bool covered = false; long v = 0;
+    for (const auto& s : spans)
+      if (s.type == type &&
+          (unsigned)s.start_byte <= p && (unsigned)s.end_byte > p) {
+        covered = true; v = s.ivalue;  // last covering span wins
+      }
+    return covered ? (v != 0) : def_on;
+  };
+  if (a == b) {  // caret: sample the byte just before it
+    unsigned p = (a > 0) ? a - 1 : 0;
+    return byte_on(p) ? 1 : 0;
+  }
+  bool any_on = false, any_off = false;
+  for (unsigned p = a; p < b; ++p) {
+    if (byte_on(p)) any_on = true; else any_off = true;
+    if (any_on && any_off) return 2;  // mixed — stop early
+  }
+  return any_on ? 1 : 0;
+}
+
+// s331 — size lit-read. Per-run sizes live as PANGO_ATTR_SIZE in Pango units
+// (point x PANGO_SCALE) so they round-trip cleanly through the markup `size`
+// wire form. Sweep clipped to [a,b): uniform value (counting `def` in gaps)
+// or mixed. `def` is the node default already expressed in the same point-
+// scaled units. Mirrors sweep_weight_uniform.
+bool sweep_size_uniform(const std::vector<Curvz::AttrSpan>& spans,
+                        long def, unsigned a, unsigned b, long& out) {
+  if (a == b) {
+    unsigned p = (a > 0) ? a - 1 : 0;
+    out = def;
+    for (const auto& s : spans)
+      if (s.type == PANGO_ATTR_SIZE &&
+          (unsigned)s.start_byte <= p && (unsigned)s.end_byte > p)
+        out = s.ivalue;
+    return true;
+  }
+  std::vector<const Curvz::AttrSpan*> sp;
+  for (const auto& s : spans)
+    if (s.type == PANGO_ATTR_SIZE &&
+        (unsigned)s.end_byte > a && (unsigned)s.start_byte < b)
+      sp.push_back(&s);
+  std::sort(sp.begin(), sp.end(),
+            [](const Curvz::AttrSpan* x, const Curvz::AttrSpan* y) {
+              return x->start_byte < y->start_byte;
+            });
+  long first = 0;
+  bool have = false, mixed = false;
+  unsigned cur = a;
+  auto note = [&](long v) {
+    if (!have) { first = v; have = true; }
+    else if (v != first) mixed = true;
+  };
+  for (auto* s : sp) {
+    unsigned ss = std::max((unsigned)s->start_byte, a);
+    unsigned se = std::min((unsigned)s->end_byte, b);
+    if (ss > cur) note(def);
+    note(s->ivalue);
+    cur = std::max(cur, se);
+    if (mixed) break;
+  }
+  if (!mixed && cur < b) note(def);
+  out = have ? first : def;
+  return !mixed;
+}
 } // namespace
 
 bool Canvas::text_style_query_family(Glib::ustring& out_family,
@@ -4708,6 +4798,67 @@ bool Canvas::text_style_query_weight(long& out_weight, bool& out_mixed) const {
                                       def, (unsigned)a, (unsigned)b, w);
   out_mixed = !uniform;
   out_weight = w;
+  return true;
+}
+
+bool Canvas::text_style_query_emphasis(int& out_italic, int& out_underline,
+                                       int& out_strike, int& out_overline) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  auto [a, b] = m_text_cursor->selection_range();
+  const auto& spans = m_text_editing->text_attr_spans;
+  // Italic gaps inherit the node's scalar italic default; the other three
+  // decorations have no node-level scalar, so their gaps are off.
+  out_italic    = sweep_decoration(spans, PANGO_ATTR_STYLE,
+                                   m_text_editing->text_italic,
+                                   (unsigned)a, (unsigned)b);
+  out_underline = sweep_decoration(spans, PANGO_ATTR_UNDERLINE,     false,
+                                   (unsigned)a, (unsigned)b);
+  out_strike    = sweep_decoration(spans, PANGO_ATTR_STRIKETHROUGH, false,
+                                   (unsigned)a, (unsigned)b);
+  out_overline  = sweep_decoration(spans, PANGO_ATTR_OVERLINE,      false,
+                                   (unsigned)a, (unsigned)b);
+  return true;
+}
+
+bool Canvas::text_style_query_size(double& out_pt, bool& out_mixed) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  auto [a, b] = m_text_cursor->selection_range();
+  // Node default: text_font_size is doc-px (user units); the spans are point-
+  // scaled, so express the default in the same units for an apples-to-apples
+  // sweep. 1 pt = 96/72 px, via UnitSystem (pure typographic, doc-independent).
+  long def = std::lround(
+      UnitSystem::from_px(m_text_editing->text_font_size, Unit::Pt) * PANGO_SCALE);
+  long v = def;
+  bool uniform = sweep_size_uniform(m_text_editing->text_attr_spans,
+                                    def, (unsigned)a, (unsigned)b, v);
+  out_mixed = !uniform;
+  out_pt = (double)v / (double)PANGO_SCALE;
+  return true;
+}
+
+bool Canvas::text_style_query_leading(double& out_pt, bool& out_auto) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  const std::string& buf = m_text_editing->text_content;
+  auto [a, b] = m_text_cursor->selection_range();
+  // Snap to the caret paragraph (run between '\n' breaks); sample its start.
+  unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
+  while (pa > 0 && buf[pa - 1] != '\n') --pa;
+  // A per-paragraph leading run covering the paragraph start wins.
+  for (const auto& s : m_text_editing->text_attr_spans) {
+    if (s.type == curvz::utils::kCurvzLeadingAttr &&
+        (unsigned)s.start_byte <= pa && (unsigned)s.end_byte > pa) {
+      out_auto = false;
+      out_pt = UnitSystem::from_px((double)s.ivalue / (double)PANGO_SCALE,
+                                   Unit::Pt);
+      return true;
+    }
+  }
+  // No run: legacy buffer-global scalar, else the true metric-derived auto
+  // leading (same (ascent+descent)*1.2 the flow strides — not font x 1.2).
+  double lh = m_text_editing->text_line_height;
+  out_auto = !(lh > 0.0);
+  double px = (lh > 0.0) ? lh : metric_leading_px(m_text_editing);
+  out_pt = UnitSystem::from_px(px, Unit::Pt);
   return true;
 }
 

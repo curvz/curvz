@@ -25,6 +25,7 @@
 #include "Canvas.hpp"
 #include "SceneNode.hpp"
 #include "CurvzLog.hpp"
+#include "curvz_utils.hpp"                  // s331 — kCurvzLeadingAttr (per-para leading)
 #include "math/TextFlowGeometry.hpp"   // s323 — form-fit reflow geometry pumps
 
 #include <pango/pangocairo.h>
@@ -873,6 +874,50 @@ void text_frame_basis(const SceneNode* boundary, const SceneNode* text,
     angle = text ? text->text_baseline_angle : 0.0;
 }
 
+// s331 — per-paragraph leading: the stride below a given line. A leading run
+// (kCurvzLeadingAttr) covering `byte` (the line's start byte, which sits in
+// the owning paragraph) wins; otherwise the buffer default (metric or legacy
+// scalar) applies. ivalue is doc-px x PANGO_SCALE.
+static double leading_for_byte(const SceneNode* text, double default_leading,
+                               size_t byte) {
+  if (!text) return default_leading;
+  for (const auto& s : text->text_attr_spans)
+    if (s.type == curvz::utils::kCurvzLeadingAttr &&
+        (size_t)s.start_byte <= byte && (size_t)s.end_byte > byte)
+      return (double)s.ivalue / (double)PANGO_SCALE;
+  return default_leading;
+}
+
+// s331 — see header. Mirrors compute_text_layout's base-font metric block
+// (lines ~970-1012) so the read-out and the stride agree by construction.
+double metric_leading_px(const SceneNode* text) {
+    if (!text) return 0.0;
+    const double font_size = text->text_font_size > 0.0
+                                 ? text->text_font_size : 24.0;
+    cairo_surface_t* surf = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
+    cairo_t* cr = cairo_create(surf);
+    PangoLayout* layout = pango_cairo_create_layout(cr);
+    PangoFontDescription* desc = pango_font_description_new();
+    pango_font_description_set_family(desc, text->text_font_family.c_str());
+    pango_font_description_set_absolute_size(desc, font_size * PANGO_SCALE);
+    if (text->text_bold)
+        pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
+    if (text->text_italic)
+        pango_font_description_set_style(desc, PANGO_STYLE_ITALIC);
+    PangoContext* pctx = pango_layout_get_context(layout);
+    PangoFontMetrics* fm = pango_context_get_metrics(pctx, desc, nullptr);
+    double ascent  = pango_font_metrics_get_ascent(fm)  / (double)PANGO_SCALE;
+    double descent = pango_font_metrics_get_descent(fm) / (double)PANGO_SCALE;
+    double leading = (ascent + descent) * 1.2;
+    if (leading <= 0.0) leading = font_size * 1.2;
+    pango_font_metrics_unref(fm);
+    pango_font_description_free(desc);
+    g_object_unref(layout);
+    cairo_destroy(cr);
+    cairo_surface_destroy(surf);
+    return leading;
+}
+
 TextLayout compute_text_layout(const SceneNode* boundary,
                                const SceneNode* text,
                                size_t byte_start) {
@@ -1044,6 +1089,9 @@ TextLayout compute_text_layout(const SceneNode* boundary,
     const std::string& buf = text->text_content;
     int safety = 0;
     while (baseline_y <= eroded_bottom && cursor <= buf.size() && safety++ < 10000) {
+        // s331 — the byte that starts this line; sits in the owning paragraph,
+        // so it resolves the per-paragraph leading for the stride below.
+        const size_t line_start = cursor;
         // s323 (Arc E) — per-baseline span from the outline intersection.
         // M1 takes the single leftmost run (concave multi-span gap-flow is
         // deferred). dy is measured from the base baseline (line 0) so it
@@ -1054,7 +1102,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         std::vector<BaselineSpan> spans =
             intervals_for_baseline(eroded, base_baseline, dy);
         if (spans.empty()) {
-            baseline_y += leading;
+            baseline_y += leading_for_byte(text, leading, line_start);
             continue;
         }
         double x_start = spans.front().start.x;
@@ -1087,7 +1135,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
             bl.byte_end = cursor;
             out.baselines.push_back(std::move(bl));
             out.bytes_consumed = cursor;
-            baseline_y += leading;
+            baseline_y += leading_for_byte(text, leading, line_start);
             continue;
         }
 
@@ -1106,7 +1154,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
             bl.pango.reset(empty);
             bl.byte_end = cursor;          // empty line; owns no bytes
             out.baselines.push_back(std::move(bl));
-            baseline_y += leading;         // cursor NOT advanced
+            baseline_y += leading_for_byte(text, leading, line_start);  // cursor NOT advanced
             continue;
         }
 
@@ -1128,7 +1176,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
             out.baselines.push_back(std::move(bl));
             cursor += 1;  // consume the '\n'
             out.bytes_consumed = cursor;
-            baseline_y += leading;
+            baseline_y += leading_for_byte(text, leading, line_start);
             continue;
         }
         if (consumed_on_line == 0) {
@@ -1236,7 +1284,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         }
         out.bytes_consumed = cursor;
 
-        baseline_y += leading;
+        baseline_y += leading_for_byte(text, leading, line_start);
     }
 
     return out;

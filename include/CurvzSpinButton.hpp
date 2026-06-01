@@ -140,6 +140,21 @@ public:
   CurvzSpinButton *with_width_chars(int n);
   CurvzSpinButton *on_changed(std::function<void(double)> cb);
 
+  // s331 — unit override. By default a distance/width spinner converts its
+  // internal (doc-px) value against the DOCUMENT's display unit, routed
+  // through DocUnits' intent-aware scaling. Some fields are type-domain: font
+  // size is conventionally points regardless of the doc unit. Setting an
+  // override makes THIS spinner own its unit — display, label, bare-number
+  // default, and step/page/digits all use the pinned unit, and conversion
+  // bypasses DocUnits for the pure UnitSystem 96/72-style math (so it doesn't
+  // need a CanvasModel at all). The default path is untouched: unset = exactly
+  // the prior behaviour. Only meaningful for Length-domain types (Distance /
+  // Width / Position); ignored elsewhere. Reusable by leading later.
+  CurvzSpinButton *with_unit_override(Unit u);
+  void set_unit_override(Unit u);
+  void clear_unit_override();
+  bool has_unit_override() const { return m_has_unit_override; }
+
   // ── Model ─────────────────────────────────────────────────────────────────
 
   void set_model(const CanvasModel *model);
@@ -206,6 +221,11 @@ private:
   double m_internal = 0.0;
   double m_ruler_origin = 0.0; // PositionX/Y only
   bool m_updating = false;
+
+  // s331 — type-domain unit override (see with_unit_override). When set, this
+  // spinner pins to m_unit_override instead of the doc display unit.
+  bool m_has_unit_override = false;
+  Unit m_unit_override = Unit::Pt;
 
   Glib::RefPtr<Gtk::Adjustment> m_adj;
   Gtk::Label *m_unit_label = nullptr;

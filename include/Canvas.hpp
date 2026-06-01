@@ -469,6 +469,34 @@ public:
   bool text_style_query_family(Glib::ustring &out_family, bool &out_mixed) const;
   bool text_style_query_weight(long &out_weight, bool &out_mixed) const;
 
+  // s331 — emphasis lit-state. Each out param is a tri-state for one line
+  // decoration over the current selection/caret: 0 = off everywhere,
+  // 1 = on everywhere, 2 = mixed. Order: italic (STYLE), underline,
+  // strikethrough, overline. "On" means the byte's effective value for that
+  // attr is non-zero (any italic/oblique, any underline variant, strike,
+  // overline) — gaps inherit the node default, which is `text_italic` for
+  // italic and OFF for the other three (they have no node-level scalar).
+  // Returns false when no edit is active (the popover toggles reset to off).
+  bool text_style_query_emphasis(int &out_italic, int &out_underline,
+                                  int &out_strike, int &out_overline) const;
+
+  // s331 — size lit-state. Effective font size over the selection/caret, in
+  // POINTS (the chip's unit). Returns false when no edit is active; otherwise
+  // out_mixed flags a selection spanning more than one size, else out_pt is
+  // the single effective size (node default folded into gaps). Per-run sizes
+  // live as PANGO_ATTR_SIZE (point) spans; the node default (text_font_size,
+  // doc-px) is converted to pt for the sweep.
+  bool text_style_query_size(double &out_pt, bool &out_mixed) const;
+
+  // s331 — leading (line height). Buffer-global, not per-run: one value on the
+  // text node (text_line_height, doc-px; 0 = auto/metric-derived). Setter takes
+  // POINTS (pt <= 0 -> auto). Operates on the edited/selected text node,
+  // undoable (TextEditCommand snapshots line_height). The query returns the
+  // effective leading in pt and whether it's currently auto (when auto, out_pt
+  // is the approximate metric leading so the field shows a sensible number).
+  void set_text_leading(double pt);
+  bool text_style_query_leading(double &out_pt, bool &out_auto) const;
+
   // s158 m1 — SelectionContext is the canonical answer to "what's
   // selected and what can it do?" Refreshed automatically whenever
   // m_sig_selection emits (Canvas wires the recompute internally).
@@ -720,6 +748,12 @@ public:
   // the specific member to reset (the right-clicked one); nullptr resets the
   // first member of the current selection.
   void reset_textbox_transform(SceneNode* boundary = nullptr);
+
+  // s331 — recovery valve: strip ALL per-run formatting from the target text
+  // node (explicit, else the edited/selected one) and return its character/
+  // paragraph style to the defaults (Sans, 12 pt, 14 pt leading, no bold/
+  // italic, no tracking). Content is preserved. Undoable (one TextEditCommand).
+  void reset_text_to_default(SceneNode* node = nullptr);
 
   // Scale selection by factors around bbox centre
   void scale_selection_by(double sx, double sy);

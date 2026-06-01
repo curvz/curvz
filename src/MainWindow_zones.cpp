@@ -1636,6 +1636,14 @@ void MainWindow::setup_layout() {
       [this](int attr_type, long ivalue, const std::string &svalue) {
         m_canvas.apply_text_format_set(attr_type, ivalue, svalue);
       });
+  // s331 — the bar's far-right Reset button strips all per-run formatting on
+  // the active text back to defaults (canvas resolves the edited/selected
+  // text node itself).
+  m_style_bar.set_reset_request(
+      [this]() { m_canvas.reset_text_to_default(); });
+  // s331 — Paragraph Leading (buffer-global): pt <= 0 means auto.
+  m_style_bar.set_leading_request(
+      [this](double pt) { m_canvas.set_text_leading(pt); });
   // Show/hide with the edit session — the single edit-state signal covers
   // every enter/exit path.
   m_canvas.signal_text_edit_changed().connect(
@@ -1656,6 +1664,26 @@ void MainWindow::setup_layout() {
       m_style_bar.set_weight_face(w, true, wmix);
     else
       m_style_bar.set_weight_face(0, false, false);
+    // s331 — emphasis lit-state: per-decoration 0=off / 1=on / 2=mixed pushed
+    // into the popover toggles. No active edit -> all off.
+    int ital = 0, undl = 0, strk = 0, ovrl = 0;
+    if (m_canvas.text_style_query_emphasis(ital, undl, strk, ovrl))
+      m_style_bar.set_emphasis_state(ital, undl, strk, ovrl);
+    else
+      m_style_bar.set_emphasis_state(0, 0, 0, 0);
+    // s331 — size lit-state: effective point size (or mixed) onto the face +
+    // popover spin.
+    double pt = 0.0;
+    bool smix = false;
+    if (m_canvas.text_style_query_size(pt, smix))
+      m_style_bar.set_size_face(pt, true, smix);
+    else
+      m_style_bar.set_size_face(0.0, false, false);
+    // s331 — leading (buffer-global) onto the Paragraph popover spin.
+    double lead_pt = 0.0;
+    bool lead_auto = false;
+    if (m_canvas.text_style_query_leading(lead_pt, lead_auto))
+      m_style_bar.set_leading(lead_pt, lead_auto);
   });
 
   m_canvas.set_document(m_project->active_doc());

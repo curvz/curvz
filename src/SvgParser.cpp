@@ -1331,6 +1331,7 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
     std::set<std::string> placed_mgrs;
     SceneNode* in_textbox_mgr_def = nullptr;
     bool mgr_def_is_markup = false;  // s325 — current Mgr def's CDATA is Pango markup
+    std::string mgr_def_leading;     // s331 — data-curvz-leading, applied post-decode
 
     // Push a freshly-built SceneNode into the correct destination:
     //   - When in_clip_def_id is active we're inside <clipPath id="X">;
@@ -1406,6 +1407,38 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                              in_textbox_mgr_def->name,
                              in_textbox_mgr_def->text_content.size());
                 }
+                // s331 — inject per-paragraph leading runs now, AFTER decode
+                //   (which clears text_attr_spans). Format: "start:end:ival;..."
+                //   ival = doc-px x PANGO_SCALE. Bad triples are skipped.
+                if (!mgr_def_leading.empty() && in_textbox_mgr_def) {
+                    const std::string& ls = mgr_def_leading;
+                    size_t i = 0;
+                    while (i < ls.size()) {
+                        size_t semi = ls.find(';', i);
+                        std::string tok = ls.substr(i, semi == std::string::npos
+                                                            ? std::string::npos
+                                                            : semi - i);
+                        size_t c1 = tok.find(':');
+                        size_t c2 = (c1 == std::string::npos)
+                                        ? std::string::npos
+                                        : tok.find(':', c1 + 1);
+                        if (c1 != std::string::npos && c2 != std::string::npos) {
+                            try {
+                                Curvz::AttrSpan sp;
+                                sp.type = curvz::utils::kCurvzLeadingAttr;
+                                sp.start_byte = (unsigned)std::stoul(tok.substr(0, c1));
+                                sp.end_byte = (unsigned)std::stoul(
+                                    tok.substr(c1 + 1, c2 - c1 - 1));
+                                sp.ivalue = std::stol(tok.substr(c2 + 1));
+                                if (sp.end_byte > sp.start_byte)
+                                    in_textbox_mgr_def->text_attr_spans.push_back(sp);
+                            } catch (...) { /* skip malformed triple */ }
+                        }
+                        if (semi == std::string::npos) break;
+                        i = semi + 1;
+                    }
+                    mgr_def_leading.clear();
+                }
             }
             continue;
         }
@@ -1464,6 +1497,7 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                          mgr->text_caret_byte);
                 in_textbox_mgr_def = nullptr;
                 mgr_def_is_markup = false;  // s325
+                mgr_def_leading.clear();    // s331
                 continue;
             }
             if ((tag == "/g" || tag.rfind("/g", 0) == 0) && !stack.empty()) {
@@ -2392,6 +2426,9 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     auto lh = attr(tag, "data-curvz-line-height");
                     if (!lh.empty()) mgr->text_line_height = dbl(lh,
                                                   mgr->text_line_height);
+                    // s331 — per-paragraph leading runs; stashed now, injected
+                    //   after the CDATA markup decode (which clears spans).
+                    mgr_def_leading = attr(tag, "data-curvz-leading");
                     // s327 m1 — baseline flow angle (absent -> stays 0 -> horizontal)
                     auto ba = attr(tag, "data-curvz-baseline-angle");
                     if (!ba.empty()) mgr->text_baseline_angle = dbl(ba,

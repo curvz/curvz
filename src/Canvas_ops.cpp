@@ -1,4 +1,5 @@
 #include "Canvas.hpp"
+#include "TextCursor.hpp"   // s331 — selection_range() for per-paragraph leading
 #include "CommandHistory.hpp"
 #include "CurvzLog.hpp"
 #include "CurvzProject.hpp"  // s116 m6 — m_project field reads workspace appearance
@@ -7573,6 +7574,168 @@ void Canvas::reset_textbox_transform(SceneNode *boundary) {
         project(), std::move(snaps), "Reset text box"));
   }
   m_sig_doc_changed.emit();
+  queue_draw();
+}
+
+void Canvas::reset_text_to_default(SceneNode* node) {
+  if (!m_doc)
+    return;
+
+  // Target precedence: an explicit node (the live-member right-click passes
+  // the Mgr directly), else the node being edited (the bar's Reset button
+  // fires mid-edit), else the first text-bearing node in the selection.
+  if (node && !(node->is_text_box_mgr() ||
+                node->type == SceneNode::Type::Text))
+    node = nullptr;  // explicit but not text-bearing -> ignore, fall through
+  if (!node && m_text_editing &&
+      (m_text_editing->is_text_box_mgr() ||
+       m_text_editing->type == SceneNode::Type::Text))
+    node = m_text_editing;
+  if (!node) {
+    for (SceneNode *obj : m_selection) {
+      if (obj && (obj->is_text_box_mgr() ||
+                  obj->type == SceneNode::Type::Text)) {
+        node = obj;
+        break;
+      }
+    }
+  }
+  if (!node)
+    return;
+
+  // If this node is mid-edit, close any in-flight typing run first so the
+  // reset lands as its own undo step rather than folding into the segment.
+  if (m_text_editing == node)
+    flush_text_segment();
+
+  // Snapshot the full text state (TextEditCommand captures family / size /
+  // line-height / bold / italic / spans / caret), reset to defaults, record,
+  // push. Content is untouched.
+  TextEditCommand snap = TextEditCommand::snapshot_before(project(), node);
+
+  node->text_attr_spans.clear();      // drop every per-run span
+  // Defaults: 12 pt Sans on 14 pt leading. Stored in doc-px (1 pt = 96/72 px),
+  // so the size chip's pt read-out shows 12 and the line stride is 14 pt.
+  node->text_font_family = "Sans";
+  node->text_font_size   = UnitSystem::to_px(12.0, Unit::Pt);  // -> 16 px = 12 pt
+  node->text_line_height = UnitSystem::to_px(14.0, Unit::Pt);  // -> 18.667 px = 14 pt
+  node->text_bold        = false;
+  node->text_italic      = false;
+  node->text_letter_spacing = 0.0;
+
+  if (m_history) {
+    snap.record_after(node);
+    m_history->push(std::make_unique<TextEditCommand>(std::move(snap)));
+  }
+
+  // If we were editing this node, re-open a fresh edit segment from the clean
+  // state so subsequent typing snapshots against it, not the stale before.
+  if (m_text_editing == node && m_text_has_snapshot)
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), node);
+
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();  // refresh the style-bar faces if visible
+  queue_draw();
+}
+
+// s331 — snap [a,b) out to the whole paragraph(s) it touches (paragraphs are
+// the '\n'-delimited runs of the buffer): pa back to just after the previous
+// '\n' (or 0), pb forward to just past the next '\n' at/after b (or end).
+static void snap_to_paragraphs(const std::string& buf, unsigned a, unsigned b,
+                               unsigned& pa, unsigned& pb) {
+  unsigned n = (unsigned)buf.size();
+  if (a > n) a = n;
+  if (b > n) b = n;
+  pa = a;
+  while (pa > 0 && buf[pa - 1] != '\n') --pa;
+  pb = b;
+  while (pb < n && buf[pb - 1] != '\n') ++pb;  // include through the next '\n'
+  if (pb < b) pb = b;
+  if (pb == pa) pb = std::min(n, pa + 1);  // ensure non-empty for a bare caret
+}
+
+void Canvas::set_text_leading(double pt) {
+  if (!m_doc)
+    return;
+
+  // Same target precedence as the reset: edited node, else first text-bearing
+  // selection member.
+  SceneNode *node = nullptr;
+  if (m_text_editing && (m_text_editing->is_text_box_mgr() ||
+                         m_text_editing->type == SceneNode::Type::Text))
+    node = m_text_editing;
+  if (!node) {
+    for (SceneNode *obj : m_selection) {
+      if (obj && (obj->is_text_box_mgr() ||
+                  obj->type == SceneNode::Type::Text)) {
+        node = obj;
+        break;
+      }
+    }
+  }
+  if (!node)
+    return;
+
+  const bool is_auto = (pt <= 0.0);
+
+  // Range: while editing, the selection's paragraph(s); otherwise the whole
+  // buffer (no caret to scope by).
+  unsigned a = 0, b = (unsigned)node->text_content.size();
+  if (m_text_editing == node && m_text_cursor) {
+    auto [sa, sb] = m_text_cursor->selection_range();
+    a = (unsigned)sa;
+    b = (unsigned)sb;
+  }
+  unsigned pa = 0, pb = (unsigned)node->text_content.size();
+  if (!is_auto)
+    snap_to_paragraphs(node->text_content, a, b, pa, pb);
+
+  // No-op guard: skip if the targeted paragraph(s) already carry exactly this
+  // leading (keeps redundant pushes off the undo stack).
+  long next_iv = is_auto ? 0
+                         : std::lround(UnitSystem::to_px(pt, Unit::Pt)
+                                       * (double)PANGO_SCALE);
+  if (!is_auto &&
+      curvz::utils::range_has_attr(node->text_attr_spans,
+                                   curvz::utils::kCurvzLeadingAttr, next_iv, "",
+                                   pa, pb))
+    return;
+  if (is_auto) {
+    // Auto = global reset: every paragraph back to metric leading. Nothing to
+    // do if there are no leading runs and the legacy scalar is already clear.
+    bool had = node->text_line_height > 0.0;
+    for (const auto& s : node->text_attr_spans)
+      if (s.type == curvz::utils::kCurvzLeadingAttr) { had = true; break; }
+    if (!had) return;
+  }
+
+  if (m_text_editing == node)
+    flush_text_segment();
+
+  TextEditCommand snap = TextEditCommand::snapshot_before(project(), node);
+
+  if (is_auto) {
+    // Clear ALL leading runs (Scott: Auto resets every paragraph), and drop
+    // the legacy buffer-global scalar so nothing lingers as a default.
+    curvz::utils::clear_attr_over_range(
+        node->text_attr_spans, curvz::utils::kCurvzLeadingAttr,
+        0, (unsigned)node->text_content.size());
+    node->text_line_height = 0.0;
+  } else {
+    curvz::utils::set_attr_over_range(
+        node->text_attr_spans, curvz::utils::kCurvzLeadingAttr, next_iv, "",
+        pa, pb);
+  }
+
+  if (m_history) {
+    snap.record_after(node);
+    m_history->push(std::make_unique<TextEditCommand>(std::move(snap)));
+  }
+  if (m_text_editing == node && m_text_has_snapshot)
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), node);
+
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();
   queue_draw();
 }
 

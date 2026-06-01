@@ -261,6 +261,34 @@ CurvzSpinButton *CurvzSpinButton::with_value(double internal) {
   return this;
 }
 
+CurvzSpinButton *CurvzSpinButton::with_unit_override(Unit u) {
+  set_unit_override(u);
+  return this;
+}
+
+void CurvzSpinButton::set_unit_override(Unit u) {
+  m_has_unit_override = true;
+  m_unit_override = u;
+  // Re-apply the unit-derived params/label, then re-project the held internal
+  // value into the new display unit so the visible value stays consistent.
+  apply_unit_params();
+  update_unit_label();
+  m_updating = true;
+  m_adj->set_value(to_display(m_internal));
+  m_updating = false;
+}
+
+void CurvzSpinButton::clear_unit_override() {
+  if (!m_has_unit_override)
+    return;
+  m_has_unit_override = false;
+  apply_unit_params();
+  update_unit_label();
+  m_updating = true;
+  m_adj->set_value(to_display(m_internal));
+  m_updating = false;
+}
+
 CurvzSpinButton *CurvzSpinButton::with_tooltip(const char *tip) {
   set_tooltip_text(tip);
   return this;
@@ -337,7 +365,8 @@ void CurvzSpinButton::apply_unit_params() {
   case SpinType::Width:
   case SpinType::PositionX:
   case SpinType::PositionY: {
-    Unit u = m_model ? m_model->display_unit : Unit::Px;
+    Unit u = m_has_unit_override ? m_unit_override
+                                 : (m_model ? m_model->display_unit : Unit::Px);
     double lo, hi, step, page;
     int digits;
     // s268: step/page sized for per-click usefulness, not maximum
@@ -375,6 +404,10 @@ void CurvzSpinButton::apply_unit_params() {
     }
     // Width is always positive; Distance and Position allow negative
     lo = (m_type == SpinType::Width) ? 0.0 : -hi;
+    // s331 — a unit-override spinner is type-domain (font size, leading), where
+    // a fine 0.1-unit nudge is wanted, not the doc-unit per-click step. Scoped
+    // to override spinners so plain doc-unit fields keep their coarser step.
+    if (m_has_unit_override) { step = 0.1; page = 1.0; }
     m_adj->configure(m_adj->get_value(), lo, hi, step, page, 0.0);
     set_digits(digits);
     break;
@@ -407,7 +440,8 @@ void CurvzSpinButton::update_unit_label() {
     m_unit_label->set_text("");
     return;
   }
-  Unit u = m_model ? m_model->display_unit : Unit::Px;
+  Unit u = m_has_unit_override ? m_unit_override
+                               : (m_model ? m_model->display_unit : Unit::Px);
   m_unit_label->set_text(UnitSystem::label(u));
 }
 
@@ -427,6 +461,11 @@ void CurvzSpinButton::update_unit_label() {
 // PositionY:        scale + ruler-origin offset + Y-flip.
 
 double CurvzSpinButton::to_display(double internal) const {
+  // s331 — type-domain override: pure UnitSystem conversion, no DocUnits and
+  // no model needed (font-size pt is independent of the doc's working plane).
+  if (m_has_unit_override)
+    return UnitSystem::from_px(internal, m_unit_override);
+
   if (!m_model)
     return internal;
 
@@ -468,6 +507,10 @@ double CurvzSpinButton::to_display(double internal) const {
 }
 
 double CurvzSpinButton::to_internal(double display) const {
+  // s331 — inverse of the override branch in to_display.
+  if (m_has_unit_override)
+    return UnitSystem::to_px(display, m_unit_override);
+
   if (!m_model)
     return display;
 
@@ -520,6 +563,8 @@ bool CurvzSpinButton::type_allows_units() const { return is_distance_type(); }
 Unit CurvzSpinButton::type_default_unit() const {
   if (!type_allows_units())
     return Unit::Px;
+  if (m_has_unit_override)
+    return m_unit_override;  // bare numbers are the pinned unit (e.g. pt)
   return m_model ? m_model->display_unit : Unit::Px;
 }
 

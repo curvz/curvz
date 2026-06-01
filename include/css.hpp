@@ -1520,6 +1520,30 @@ button.tb-type-btn.tb-type-btn-active {
     color: var(--fg-primary);
 }
 
+/* s331 — Emphasis popover toggles (I / U / S / O). The :checked state is the
+   "on everywhere" lit look; the .curvz-trigger-mixed class stands in for GTK4
+   ToggleButton's missing set_inconsistent(), giving the "some-on" runs a
+   distinct dashed, half-tone face so mixed never reads as either fully on or
+   fully off. Normal case (these are glyph faces, not chrome words). */
+.curvz-style-trigger {
+    padding: 2px 8px;
+    min-height: 0;
+    min-width: 0;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 13px;
+}
+.curvz-style-trigger:checked {
+    background-color: var(--accent-bg, var(--hover-bg));
+    color: var(--fg-primary);
+    font-weight: bold;
+}
+.curvz-style-trigger.curvz-trigger-mixed {
+    background-color: var(--hover-bg);
+    color: var(--fg-muted);
+    border: 1px dashed var(--fg-muted);
+}
+
 /* s148 m2 fix3: indent the body of a nested disclosure (e.g. the
    "Motif" disclosure in the Document group, which contains Canvas /
    Margins / Grid / Guides as inner sections). 12px reads as a
