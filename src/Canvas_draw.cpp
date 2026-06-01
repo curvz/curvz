@@ -503,18 +503,71 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
     cr->restore();
   }
 
-  // Optional stroke — re-walk and stroke each line's outline.
-  if (text_obj.stroke.paint.type != FillStyle::Type::None) {
-    for (const auto& bl : tl.baselines) {
-      if (!bl.pango) continue;
-      cr->save();
-      double base_px = pango_layout_get_baseline(bl.pango.get())
-                       / (double)PANGO_SCALE;
-      cr->move_to(bl.x_start, bl.y - base_px);
-      pango_cairo_layout_path(cr->cobj(), bl.pango.get());
-      apply_stroke_style(cr, text_obj.stroke);
-      cr->stroke();
-      cr->restore();
+  // s332 — text stroke render valve. Pango has no stroke attr, so text stroke
+  // rides Curvz-private spans (kCurvzStrokeColorAttr: packed 0xRRGGBB or
+  // kCurvzStrokeNone; kCurvzStrokeWidthAttr: width doc-px x PANGO_SCALE) and is
+  // painted here, per-run. Text stroke is the StyleBar's domain ONLY -- the
+  // node's object stroke (node->stroke, the inspector's "box" stroke) is NOT
+  // applied to text glyphs, so Reset / None fully clear it and a stale object
+  // stroke never paints text it shouldn't. Walk each line's runs+glyphs and
+  // stroke only glyphs carrying a real colour span. Runs don't split on the
+  // private attrs, so the boundary is resolved PER GLYPH via log_clusters.
+  // Reuses the proven glyph-path stroke from the text-on-path painter.
+  {
+    const auto& spans = text_obj.text_attr_spans;
+    bool any_stroke_span = false;
+    for (const auto& s : spans)
+      if (s.type == curvz::utils::kCurvzStrokeColorAttr) { any_stroke_span = true; break; }
+    if (any_stroke_span) {
+      const double def_w = UnitSystem::to_px(1.0, Unit::Pt);
+      for (const auto& bl : tl.baselines) {
+        if (!bl.pango) continue;
+        const double baseline_y = bl.y;  // show_layout put the baseline here
+        PangoLayoutIter* it = pango_layout_get_iter(bl.pango.get());
+        do {
+          PangoLayoutRun* run = pango_layout_iter_get_run(it);
+          if (!run) continue;
+          PangoGlyphString* gs = run->glyphs;
+          PangoFont* pf = run->item->analysis.font;
+          PangoRectangle rext;
+          pango_layout_iter_get_run_extents(it, nullptr, &rext);
+          double gx = bl.x_start + rext.x / (double)PANGO_SCALE;
+          for (int gi = 0; gi < gs->num_glyphs; ++gi) {
+            PangoGlyphInfo& info = gs->glyphs[gi];
+            double adv = info.geometry.width / (double)PANGO_SCALE;
+            size_t abyte = bl.byte_start + (size_t)run->item->offset +
+                           (size_t)gs->log_clusters[gi];
+            long color = -2, wscaled = -1;  // -2 = no colour span on this glyph
+            for (const auto& s : spans) {
+              if ((unsigned)s.start_byte <= abyte && (unsigned)s.end_byte > abyte) {
+                if      (s.type == curvz::utils::kCurvzStrokeColorAttr) color   = s.ivalue;
+                else if (s.type == curvz::utils::kCurvzStrokeWidthAttr) wscaled = s.ivalue;
+              }
+            }
+            // Only a real colour span strokes; kCurvzStrokeNone (-1) and "no
+            // span" (-2) both mean no stroke (no object-stroke fallback).
+            if (color >= 0 && info.glyph != PANGO_GLYPH_EMPTY &&
+                !(info.glyph & PANGO_GLYPH_UNKNOWN_FLAG)) {
+              double sr = (double)((color >> 16) & 0xFF) / 255.0;
+              double sg = (double)((color >>  8) & 0xFF) / 255.0;
+              double sb = (double)( color        & 0xFF) / 255.0;
+              double sw = (wscaled >= 0) ? (double)wscaled / (double)PANGO_SCALE
+                                         : def_w;
+              cr->save();
+              cr->move_to(gx, baseline_y);
+              PangoGlyphString single; int lc = 0;
+              single.num_glyphs = 1; single.glyphs = &info; single.log_clusters = &lc;
+              pango_cairo_glyph_string_path(cr->cobj(), pf, &single);
+              cr->set_source_rgb(sr, sg, sb);
+              cr->set_line_width(sw);
+              cr->stroke();
+              cr->restore();
+            }
+            gx += adv;
+          }
+        } while (pango_layout_iter_next_run(it));
+        pango_layout_iter_free(it);
+      }
     }
   }
 

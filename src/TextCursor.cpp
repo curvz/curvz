@@ -1287,6 +1287,39 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         baseline_y += leading_for_byte(text, leading, line_start);
     }
 
+    // ── s332 — per-paragraph alignment ──────────────────────────────────────
+    // Shift each baseline's x_start within its available span [x_start, x_end]
+    // by (avail - text_width) * factor, where the factor is the line's
+    // paragraph alignment (kCurvzAlignAttr at the line's first byte; 0 = left =
+    // no shift, 1 = centre, 2 = right). Done as a post-pass on the finished
+    // baselines: every consumer that keys off x_start — glyph draw, caret,
+    // selection highlight, click hit-test, the stroke valve — inherits the
+    // alignment automatically, so there's exactly one place to get right and
+    // the visible text never drifts from the caret/selection geometry. avail
+    // varies per line inside a curvy boundary, so each line aligns within its
+    // own width (centre text in a vase outline -> each line centres in its
+    // own span). Justify (3) is the follow-up; clamped to <=2 on set for now.
+    if (text) {
+        for (auto& bl : out.baselines) {
+            if (!bl.pango) continue;
+            int align = 0;
+            for (const auto& s : text->text_attr_spans) {
+                if (s.type == curvz::utils::kCurvzAlignAttr &&
+                    (unsigned)s.start_byte <= bl.byte_start &&
+                    (unsigned)s.end_byte > bl.byte_start) {
+                    align = (int)s.ivalue;
+                    break;
+                }
+            }
+            if (align <= 0) continue;  // left default — no shift
+            int wpx = 0;
+            pango_layout_get_pixel_size(bl.pango.get(), &wpx, nullptr);
+            double slack = (bl.x_end - bl.x_start) - (double)wpx;
+            if (slack <= 0.0) continue;  // text fills/overflows the span
+            bl.x_start += slack * ((align == 1) ? 0.5 : 1.0);  // centre / right
+        }
+    }
+
     return out;
 }
 

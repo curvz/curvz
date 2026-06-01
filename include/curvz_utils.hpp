@@ -330,6 +330,30 @@ bool toggle_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
 // per-run size spans), so fractional leadings (14 pt = 18.667 px) survive.
 constexpr int kCurvzLeadingAttr = 0x4C454144;  // 'LEAD'
 
+// s332 — per-run text STROKE. Pango has no stroke attr, so per-run stroke
+// rides text_attr_spans under these Curvz-private types (same span machinery
+// as leading: set/clear/sweep/offset-maintenance for free). Painted by a
+// render valve in the boundary glyph painter, NOT by Pango; dropped from the
+// Pango-markup encode (persisted via their own data-curvz-stroke-* attrs).
+//   kCurvzStrokeColorAttr.ivalue = packed 0xRRGGBB, OR kCurvzStrokeNone (-1)
+//       for an explicit "no stroke" (which also suppresses the object-level
+//       stroke on the covered glyphs).
+//   kCurvzStrokeWidthAttr.ivalue = width in doc-px x PANGO_SCALE (same fixed-
+//       point as the size / leading spans).
+constexpr int  kCurvzStrokeColorAttr = 0x53545243;  // 'STRC'
+constexpr int  kCurvzStrokeWidthAttr = 0x53545257;  // 'STRW'
+constexpr long kCurvzStrokeNone      = -1;          // explicit no-stroke
+
+// s332 — per-paragraph text ALIGNMENT. A paragraph property (like leading), so
+// it rides text_attr_spans under this Curvz-private type, paragraph-snapped on
+// set. Pango exposes alignment at the PangoLayout level, but the boundary flow
+// lays each line as its own single-line layout and places it by hand, so the
+// alignment is applied as a per-line x-origin shift in the painter, not via
+// Pango. ivalue: 0 = left (also the default = no span), 1 = centre, 2 = right
+// (3 = justify reserved for the follow-up). Persisted via data-curvz-align,
+// same flat run-list shape as leading.
+constexpr int kCurvzAlignAttr = 0x414C4747;  // 'ALGG'
+
 // ── Layer-index resolver (s171 m1) ───────────────────────────────────
 // Layers live at the top of the document tree (`doc->layers`) and are
 // identified by index for insertion / erasure / reorder operations.

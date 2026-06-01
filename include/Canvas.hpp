@@ -488,6 +488,28 @@ public:
   // doc-px) is converted to pt for the sweep.
   bool text_style_query_size(double &out_pt, bool &out_mixed) const;
 
+  // s332 — fill lit-state. Effective text colour over the selection/caret as a
+  // packed 0xRRGGBB. Per-run fill rides PANGO_ATTR_FOREGROUND spans (packed
+  // 0xRRGGBB ivalue, already wired through render/encode/decode); gaps inherit
+  // the text node's own fill paint. Returns false when no edit is active.
+  // out_mixed flags a selection spanning more than one colour. out_none is set
+  // when the effective fill is the node default AND that default is a None /
+  // fully-transparent paint (no per-run span overrides it) -> the face shows
+  // the red-slash rather than a swatch. out_rgb is the single effective colour
+  // otherwise.
+  bool text_style_query_fill(unsigned long &out_rgb, bool &out_mixed,
+                             bool &out_none) const;
+
+  // s332 — per-run text STROKE. Pango has no stroke attr, so the StyleBar
+  // STROKE chip rides Curvz-private spans (kCurvzStrokeColorAttr /
+  // kCurvzStrokeWidthAttr) on the SELECTED text, set through the generic
+  // value-set span path (apply_text_format_set), and painted by a render
+  // valve in draw_text_in_boundary. The query samples the selection/caret:
+  // out_has_color + packed 0xRRGGBB + width (doc-px). A glyph with no stroke
+  // span falls back to the node's object stroke (the inspector's box stroke).
+  bool text_style_query_stroke(unsigned long &out_rgb, bool &out_has_color,
+                               double &out_width_px) const;
+
   // s331 — leading (line height). Buffer-global, not per-run: one value on the
   // text node (text_line_height, doc-px; 0 = auto/metric-derived). Setter takes
   // POINTS (pt <= 0 -> auto). Operates on the edited/selected text node,
@@ -496,6 +518,14 @@ public:
   // is the approximate metric leading so the field shows a sensible number).
   void set_text_leading(double pt);
   bool text_style_query_leading(double &out_pt, bool &out_auto) const;
+
+  // s332 — per-paragraph alignment (left/centre/right; justify is a follow-up).
+  // Paragraph property like leading: the setter paragraph-snaps the selection
+  // (or whole buffer when not editing) and writes a kCurvzAlignAttr run;
+  // align 0 (left) clears the run back to the default. Undoable. The query
+  // samples the caret paragraph's effective alignment (0=left default).
+  void set_text_alignment(int align);
+  bool text_style_query_alignment(int &out_align) const;
 
   // s158 m1 — SelectionContext is the canonical answer to "what's
   // selected and what can it do?" Refreshed automatically whenever

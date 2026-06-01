@@ -75,6 +75,10 @@
     <file preprocess="xml-stripblanks" alias="curvz-align-left-symbolic.svg">icons/curvz-align-left-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-align-center-h-symbolic.svg">icons/curvz-align-center-h-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-align-right-symbolic.svg">icons/curvz-align-right-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-text-left-symbolic.svg">icons/curvz-text-left-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-text-center-symbolic.svg">icons/curvz-text-center-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-text-right-symbolic.svg">icons/curvz-text-right-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="curvz-text-justified-symbolic.svg">icons/curvz-text-justified-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-align-top-symbolic.svg">icons/curvz-align-top-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-align-center-v-symbolic.svg">icons/curvz-align-center-v-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="curvz-align-bottom-symbolic.svg">icons/curvz-align-bottom-symbolic.svg</file>

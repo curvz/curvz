@@ -39,6 +39,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <gtkmm/box.h>
+#include <gtkmm/drawingarea.h>
+#include <gtkmm/image.h>
 #include <gtkmm/menubutton.h>
 #include <gtkmm/popover.h>
 #include <gtkmm/separator.h>
@@ -49,6 +51,7 @@
 namespace Curvz {
 
 class CurvzSpinButton;  // s331 — held by the Size popover (fwd decl, pt-locked)
+class CurvzColorPicker; // s332 — embedded in the Fill popover (fwd decl)
 
 class StyleBar : public Gtk::Box {
 public:
@@ -86,6 +89,11 @@ public:
   using LeadingRequest = std::function<void(double pt)>;
   void set_leading_request(LeadingRequest cb) { m_leading_request = std::move(cb); }
 
+  // s332 — Alignment (per-paragraph): 0=left, 1=centre, 2=right. Wired to
+  // Canvas::set_text_alignment.
+  using AlignRequest = std::function<void(int align)>;
+  void set_align_request(AlignRequest cb) { m_align_request = std::move(cb); }
+
   // s330 — live face setters, driven by Canvas's text-style-changed signal
   // (relayed by MainWindow). Family: the name, the mixed marker if the
   // selection spans more than one family, or the axis name "Font" when
@@ -100,10 +108,30 @@ public:
   // resolved, the popover spin is set to match (no apply re-fired).
   void set_size_face(double pt, bool resolved, bool mixed);
 
+  // s332 — Fill face + popover sync. The chip is named ("Fill") like the rest,
+  // with a small colour square prefixed in front of the name. The square shows
+  // the effective text colour under the cursor: a solid fill, a red diagonal
+  // slash when the fill is None/transparent, or a two-tone diagonal split when
+  // the selection spans more than one colour. rgb is packed 0xRRGGBB. When
+  // resolved & single, the embedded picker is synced to match (no apply
+  // re-fired — set_initial does not emit signal_changed).
+  void set_fill_face(unsigned long rgb, bool resolved, bool mixed, bool is_none);
+
+  // s332 — Stroke face + popover sync. Like the Fill chip: named ("Stroke")
+  // with a small square in front, but the square is drawn as an outline ring
+  // in the stroke colour (a stroke reads as an edge, not a fill), or the red
+  // none-slash when there's no visible stroke. rgb is packed 0xRRGGBB;
+  // has_color=false draws the slash. The width arg syncs the popover spin
+  // (points). When has_color, the embedded picker is synced to match.
+  void set_stroke_face(unsigned long rgb, bool has_color);
+  void set_stroke_width(double pt);
+
   // s331 — sync the Paragraph popover's Leading spin to the current effective
   // leading (points). is_auto only annotates the tooltip; the spin shows the
   // value either way. No apply re-fired (set_internal_value is guarded).
   void set_leading(double pt, bool is_auto);
+  // s332 — reflect the caret paragraph's alignment on the chip face.
+  void set_align_face(int align);
 
   // s331 — push the selection's per-decoration lit state into the emphasis
   // popover toggles. Each arg is a tri-state: 0 = off everywhere,
@@ -153,11 +181,27 @@ private:
   // and the spin both follow the selection on the live-read.
   void build_size_popover(Gtk::MenuButton* chip);
 
+  // s332 — Fill: a chip whose face is a colour swatch and whose popover hosts
+  // the CurvzColorPicker. Per-run text fill rides PANGO_ATTR_FOREGROUND (a
+  // solid colour — Pango foreground has no gradient/swatch form), so the
+  // colour-only picker is the right surface; picking SETS the foreground over
+  // the selection via the value-set path. The swatch face follows the
+  // selection on the live-read (set_fill_face). Built once like the others.
+  void build_fill_popover(Gtk::MenuButton* chip);
+
+  // s332 — Stroke: object-level (Pango has no stroke attr). The popover hosts
+  // the CurvzColorPicker for the stroke colour, a pt-locked width spin, and a
+  // None button to clear the stroke. Picking a colour / changing the width
+  // routes to the object-stroke requests; the square face follows the edited
+  // node on the live-read. Built once like the others.
+  void build_stroke_popover(Gtk::MenuButton* chip);
+
   // s331 — Paragraph popover (the ¶ chip). First control: Leading — a pt-locked
   // CurvzSpinButton (steppers + units parser, reusing the size chip's unit
   // override) plus an Auto button that hands leading back to the metric default.
   // Space-before/after and the rest of the paragraph set come later.
   void build_paragraph_popover(Gtk::MenuButton* chip);
+  void build_align_popover(Gtk::MenuButton* chip);  // s332
 
   // s330 — Emphasis: the line-decoration toggles that are NOT weight. Pango
   // treats these as independent attributes that combine (an additive set, vs
@@ -185,6 +229,7 @@ private:
   FormatSet    m_format_set;
   ResetRequest m_reset_request;  // s331 — far-right Reset button callback
   LeadingRequest m_leading_request;  // s331 — Paragraph Leading callback
+  AlignRequest   m_align_request;    // s332 — Alignment callback
 
   // Persistent chips — built once, never rebuilt.
   Gtk::MenuButton* m_chip_font   = nullptr;  // character
@@ -193,6 +238,7 @@ private:
   Gtk::MenuButton* m_chip_fill   = nullptr;
   Gtk::MenuButton* m_chip_stroke = nullptr;
   Gtk::MenuButton* m_chip_align  = nullptr;  // paragraph
+  Gtk::Image*      m_align_icon   = nullptr;  // s332 — chip prefix = current alignment
   Gtk::MenuButton* m_chip_para   = nullptr;
   Gtk::MenuButton* m_chip_style  = nullptr;
 
@@ -210,6 +256,32 @@ private:
   CurvzSpinButton* m_size_spin = nullptr;
   // s331 — the Paragraph popover's pt-locked Leading spin (held for live-sync).
   CurvzSpinButton* m_leading_spin = nullptr;
+
+  // s332 — Fill chip. The chip is named ("Fill") like the rest; a small
+  // colour square (DrawingArea) is prefixed in front of the name in the chip's
+  // child box, and its draw func reads the cached state below. m_fill_picker is
+  // the embedded colour picker, held so the live-read can sync its colour.
+  // m_suppress_fill guards that programmatic sync from re-firing the picker's
+  // changed handler.
+  Gtk::DrawingArea* m_fill_face   = nullptr;
+  CurvzColorPicker* m_fill_picker = nullptr;
+  double m_fill_r = 0.0, m_fill_g = 0.0, m_fill_b = 0.0;  // resolved colour
+  bool   m_fill_resolved = false;  // an edit is active and a colour resolved
+  bool   m_fill_mixed    = false;  // selection spans more than one colour
+  bool   m_fill_none     = false;  // effective fill is None/transparent
+  bool   m_suppress_fill = false;
+
+  // s332 — Stroke chip. Same shape as Fill (named chip + square prefix), but
+  // the square draws as an outline ring (a stroke reads as an edge). Per-run
+  // (selection-scoped) stroke set rides the generic m_format_set span path
+  // under the Curvz-private stroke attrs. Picker + width spin held for the
+  // live-read sync; m_suppress_stroke guards the programmatic picker sync.
+  Gtk::DrawingArea* m_stroke_face       = nullptr;
+  CurvzColorPicker* m_stroke_picker     = nullptr;
+  CurvzSpinButton*  m_stroke_width_spin = nullptr;
+  double m_stroke_r = 0.0, m_stroke_g = 0.0, m_stroke_b = 0.0;
+  bool   m_stroke_has   = false;  // a visible stroke colour is present
+  bool   m_suppress_stroke = false;
 };
 
 } // namespace Curvz

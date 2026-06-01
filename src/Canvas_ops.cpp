@@ -7739,6 +7739,77 @@ void Canvas::set_text_leading(double pt) {
   queue_draw();
 }
 
+// ── s332 — per-paragraph alignment ──────────────────────────────────────────
+// Mirrors set_text_leading: resolve the text node, scope to the selection's
+// paragraph(s) (or the whole buffer when not editing), and write/clear a
+// kCurvzAlignAttr run. align 0 (left) is the default, stored as NO span
+// (clear), so the common case stays span-free; 1 (centre) / 2 (right) store a
+// run. Undoable via TextEditCommand. The painter reads the run per line and
+// shifts the line's x-origin; nothing here touches geometry.
+void Canvas::set_text_alignment(int align) {
+  if (!m_doc) return;
+  SceneNode* node = nullptr;
+  if (m_text_editing && (m_text_editing->is_text_box_mgr() ||
+                         m_text_editing->type == SceneNode::Type::Text))
+    node = m_text_editing;
+  if (!node) {
+    for (SceneNode* obj : m_selection) {
+      if (obj && (obj->is_text_box_mgr() ||
+                  obj->type == SceneNode::Type::Text)) { node = obj; break; }
+    }
+  }
+  if (!node) return;
+
+  if (align < 0) align = 0;
+  if (align > 2) align = 2;  // justify (3) is a follow-up; clamp for now
+
+  unsigned a = 0, b = (unsigned)node->text_content.size();
+  if (m_text_editing == node && m_text_cursor) {
+    auto [sa, sb] = m_text_cursor->selection_range();
+    a = (unsigned)sa; b = (unsigned)sb;
+  }
+  unsigned pa = 0, pb = (unsigned)node->text_content.size();
+  snap_to_paragraphs(node->text_content, a, b, pa, pb);
+
+  // No-op guards keep redundant pushes off the undo stack.
+  if (align == 0) {
+    bool had = false;
+    for (const auto& s : node->text_attr_spans)
+      if (s.type == curvz::utils::kCurvzAlignAttr &&
+          (unsigned)s.end_byte > pa && (unsigned)s.start_byte < pb) { had = true; break; }
+    if (!had) return;  // already left everywhere in range
+  } else if (curvz::utils::range_has_attr(node->text_attr_spans,
+                                          curvz::utils::kCurvzAlignAttr,
+                                          (long)align, "", pa, pb)) {
+    return;
+  }
+
+  if (m_text_editing == node)
+    flush_text_segment();
+
+  TextEditCommand snap = TextEditCommand::snapshot_before(project(), node);
+
+  if (align == 0) {
+    curvz::utils::clear_attr_over_range(
+        node->text_attr_spans, curvz::utils::kCurvzAlignAttr, pa, pb);
+  } else {
+    curvz::utils::set_attr_over_range(
+        node->text_attr_spans, curvz::utils::kCurvzAlignAttr, (long)align, "",
+        pa, pb);
+  }
+
+  if (m_history) {
+    snap.record_after(node);
+    m_history->push(std::make_unique<TextEditCommand>(std::move(snap)));
+  }
+  if (m_text_editing == node && m_text_has_snapshot)
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), node);
+
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();
+  queue_draw();
+}
+
 void Canvas::scale_selection_by(double sx, double sy) {
   if (m_selection.empty() || !m_doc)
     return;

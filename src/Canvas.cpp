@@ -4774,6 +4774,53 @@ bool sweep_size_uniform(const std::vector<Curvz::AttrSpan>& spans,
   out = have ? first : def;
   return !mixed;
 }
+
+// s332 — foreground (text fill) lit-read. Per-run fill lives as
+// PANGO_ATTR_FOREGROUND spans carrying a packed 0xRRGGBB ivalue (the same
+// fixed form render/encode/decode round-trip). `def` is the node's own fill
+// colour packed the same way, folded into any gap. Sweep clipped to [a,b):
+// uniform value or mixed. Structurally identical to sweep_size_uniform — only
+// the attr type differs — but kept as its own function to stay readable
+// alongside the other per-type sweeps.
+bool sweep_foreground_uniform(const std::vector<Curvz::AttrSpan>& spans,
+                              long def, unsigned a, unsigned b, long& out) {
+  if (a == b) {
+    unsigned p = (a > 0) ? a - 1 : 0;
+    out = def;
+    for (const auto& s : spans)
+      if (s.type == PANGO_ATTR_FOREGROUND &&
+          (unsigned)s.start_byte <= p && (unsigned)s.end_byte > p)
+        out = s.ivalue;
+    return true;
+  }
+  std::vector<const Curvz::AttrSpan*> sp;
+  for (const auto& s : spans)
+    if (s.type == PANGO_ATTR_FOREGROUND &&
+        (unsigned)s.end_byte > a && (unsigned)s.start_byte < b)
+      sp.push_back(&s);
+  std::sort(sp.begin(), sp.end(),
+            [](const Curvz::AttrSpan* x, const Curvz::AttrSpan* y) {
+              return x->start_byte < y->start_byte;
+            });
+  long first = 0;
+  bool have = false, mixed = false;
+  unsigned cur = a;
+  auto note = [&](long v) {
+    if (!have) { first = v; have = true; }
+    else if (v != first) mixed = true;
+  };
+  for (auto* s : sp) {
+    unsigned ss = std::max((unsigned)s->start_byte, a);
+    unsigned se = std::min((unsigned)s->end_byte, b);
+    if (ss > cur) note(def);
+    note(s->ivalue);
+    cur = std::max(cur, se);
+    if (mixed) break;
+  }
+  if (!mixed && cur < b) note(def);
+  out = have ? first : def;
+  return !mixed;
+}
 } // namespace
 
 bool Canvas::text_style_query_family(Glib::ustring& out_family,
@@ -4836,6 +4883,72 @@ bool Canvas::text_style_query_size(double& out_pt, bool& out_mixed) const {
   return true;
 }
 
+bool Canvas::text_style_query_fill(unsigned long& out_rgb, bool& out_mixed,
+                                   bool& out_none) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  auto [a, b] = m_text_cursor->selection_range();
+  // Node default: the text object's own fill paint, packed 0xRRGGBB the same
+  // way the FOREGROUND spans are. (Foreground spans carry only a solid colour;
+  // gradient / swatch object fills collapse to their stored solid r/g/b for
+  // this read, which is what the swatch face shows when no run overrides.)
+  const FillStyle& f = m_text_editing->fill;
+  auto pack = [](double r, double g, double b) -> long {
+    auto ch = [](double v) {
+      return (long)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
+    };
+    return (ch(r) << 16) | (ch(g) << 8) | ch(b);
+  };
+  long def = pack(f.r, f.g, f.b);
+  long v = def;
+  bool uniform = sweep_foreground_uniform(m_text_editing->text_attr_spans,
+                                          def, (unsigned)a, (unsigned)b, v);
+  out_mixed = !uniform;
+  out_rgb = (unsigned long)(v & 0xFFFFFF);
+  // "None" only when the effective colour is the node default AND that default
+  // is a None / fully-transparent paint with no per-run override in range. A
+  // per-run FOREGROUND span is always a real colour, so a resolved span never
+  // reads as none.
+  bool def_is_none = (f.type == FillStyle::Type::None) || (f.a <= 0.0);
+  out_none = !out_mixed && def_is_none && (v == def);
+  return true;
+}
+
+bool Canvas::text_style_query_stroke(unsigned long& out_rgb,
+                                     bool& out_has_color,
+                                     double& out_width_px) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  auto [a, b] = m_text_cursor->selection_range();
+  // Representative byte: selection start, or the byte before a bare caret.
+  unsigned p = (a < b) ? (unsigned)a : (a > 0 ? (unsigned)a - 1 : 0);
+  long color = -2;     // -2 = no stroke-colour span here
+  long wscaled = -1;   // no width span here
+  for (const auto& s : m_text_editing->text_attr_spans) {
+    if ((unsigned)s.start_byte <= p && (unsigned)s.end_byte > p) {
+      if      (s.type == curvz::utils::kCurvzStrokeColorAttr) color   = s.ivalue;
+      else if (s.type == curvz::utils::kCurvzStrokeWidthAttr) wscaled = s.ivalue;
+    }
+  }
+  if (color == -2) {
+    // No per-run span here: text has no stroke (the object/box stroke is the
+    // inspector's domain and does not apply to text glyphs).
+    out_has_color = false;
+    out_rgb = 0;
+    out_width_px = 0.0;
+    return true;
+  }
+  if (color == curvz::utils::kCurvzStrokeNone) {  // explicit no-stroke
+    out_has_color = false;
+    out_rgb = 0;
+    out_width_px = (wscaled >= 0) ? (double)wscaled / (double)PANGO_SCALE : 0.0;
+    return true;
+  }
+  out_has_color = true;
+  out_rgb = (unsigned long)(color & 0xFFFFFF);
+  out_width_px = (wscaled >= 0) ? (double)wscaled / (double)PANGO_SCALE
+                                : UnitSystem::to_px(1.0, Unit::Pt);
+  return true;
+}
+
 bool Canvas::text_style_query_leading(double& out_pt, bool& out_auto) const {
   if (!m_text_cursor || !m_text_editing) return false;
   const std::string& buf = m_text_editing->text_content;
@@ -4859,6 +4972,25 @@ bool Canvas::text_style_query_leading(double& out_pt, bool& out_auto) const {
   out_auto = !(lh > 0.0);
   double px = (lh > 0.0) ? lh : metric_leading_px(m_text_editing);
   out_pt = UnitSystem::from_px(px, Unit::Pt);
+  return true;
+}
+
+bool Canvas::text_style_query_alignment(int& out_align) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  const std::string& buf = m_text_editing->text_content;
+  auto [a, b] = m_text_cursor->selection_range();
+  (void)b;
+  // Sample the caret paragraph start (run between '\n' breaks), like leading.
+  unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
+  while (pa > 0 && buf[pa - 1] != '\n') --pa;
+  out_align = 0;  // default = left (no align run)
+  for (const auto& s : m_text_editing->text_attr_spans) {
+    if (s.type == curvz::utils::kCurvzAlignAttr &&
+        (unsigned)s.start_byte <= pa && (unsigned)s.end_byte > pa) {
+      out_align = (int)s.ivalue;
+      break;
+    }
+  }
   return true;
 }
 

@@ -526,6 +526,13 @@ static std::string encode_markup(const std::string& text,
     std::vector<size_t> bounds{0, text.size()};
     for (const auto& s : spans) {
         if (s.type == curvz::utils::kCurvzLeadingAttr) continue;  // s331 — not a Pango attr
+        // s332 — per-run stroke private attrs aren't Pango markup either; skip
+        // them from the bounds so they don't fragment the text into empty
+        // spans. (Their own data-curvz-stroke-* persistence is a follow-up;
+        // for now they're in-session only.)
+        if (s.type == curvz::utils::kCurvzStrokeColorAttr ||
+            s.type == curvz::utils::kCurvzStrokeWidthAttr) continue;
+        if (s.type == curvz::utils::kCurvzAlignAttr) continue;  // s332 — not a Pango attr
         if (s.start_byte <= text.size()) bounds.push_back(s.start_byte);
         if (s.end_byte   <= text.size()) bounds.push_back(s.end_byte);
     }
@@ -662,6 +669,47 @@ static void write_textbox_mgr_def(std::ostringstream& out,
         }
         if (!lead.empty())
             out << " data-curvz-leading=\"" << lead << "\"";
+    }
+    // s332 — per-run stroke colour + width runs (kCurvzStrokeColorAttr /
+    //   kCurvzStrokeWidthAttr). Same persistence shape as leading: flat
+    //   "start:end:ivalue;..." lists on the mgr, since they're not Pango
+    //   attrs. Colour ivalue is packed 0xRRGGBB or -1 (explicit none); width
+    //   ivalue is doc-px x PANGO_SCALE. Only emitted when present.
+    {
+        std::string sc, sw;
+        for (const auto& s : mgr.text_attr_spans) {
+            if (s.type == curvz::utils::kCurvzStrokeColorAttr) {
+                if (!sc.empty()) sc += ";";
+                sc += std::to_string(s.start_byte) + ":" +
+                      std::to_string(s.end_byte) + ":" +
+                      std::to_string(s.ivalue);
+            } else if (s.type == curvz::utils::kCurvzStrokeWidthAttr) {
+                if (!sw.empty()) sw += ";";
+                sw += std::to_string(s.start_byte) + ":" +
+                      std::to_string(s.end_byte) + ":" +
+                      std::to_string(s.ivalue);
+            }
+        }
+        if (!sc.empty())
+            out << " data-curvz-stroke-color=\"" << sc << "\"";
+        if (!sw.empty())
+            out << " data-curvz-stroke-width=\"" << sw << "\"";
+    }
+    // s332 — per-paragraph alignment runs (kCurvzAlignAttr). Same flat
+    //   "start:end:ivalue;..." shape; ivalue = 1 (centre) / 2 (right). Left
+    //   (0) is stored as no run, so it never appears here. Only emitted when
+    //   present (left-only boxes stay byte-identical).
+    {
+        std::string al;
+        for (const auto& s : mgr.text_attr_spans) {
+            if (s.type != curvz::utils::kCurvzAlignAttr) continue;
+            if (!al.empty()) al += ";";
+            al += std::to_string(s.start_byte) + ":" +
+                  std::to_string(s.end_byte) + ":" +
+                  std::to_string(s.ivalue);
+        }
+        if (!al.empty())
+            out << " data-curvz-align=\"" << al << "\"";
     }
     // s327 m1 — baseline flow angle (radians). Default 0 omits cleanly so
     //   pre-s327 / un-rotated boxes stay byte-identical. fmt6 matches the

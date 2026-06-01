@@ -33,6 +33,30 @@ namespace {
 // gives the "shoulder" clip zone that's visually useful as a reference.
 constexpr double C_MAX = 0.37;
 
+// s332 — gamut-relative chroma. The in-gamut sRGB region at a fixed hue is a
+// wedge in the (C, L) plane, not a rectangle: dark and very light rows hold
+// far less chroma than the mid-lights. Mapping the spectrum's X axis to
+// absolute chroma 0..C_MAX therefore leaves a dead triangle (high chroma +
+// low/high lightness) where every point clamps to one flat gamut-edge colour
+// -- the "diagonal wall" that blocks selection. Instead we make X a FRACTION
+// of the in-gamut chroma edge at the current row: the right edge always tracks
+// the boundary, so the whole rectangle is live and selectable (the way every
+// other picker behaves). max_chroma_at finds that edge by bisection up to the
+// C_MAX ceiling; grey (c=0) is always in gamut, so the low end starts valid.
+double max_chroma_at(double L, double h) {
+  color::OKLCH probe;
+  probe.l = L; probe.h = h; probe.a = 1.0;
+  probe.c = C_MAX;
+  if (color::oklch_in_gamut(probe)) return C_MAX;  // whole row fits
+  double lo = 0.0, hi = C_MAX;
+  for (int i = 0; i < 24; ++i) {
+    double mid = 0.5 * (lo + hi);
+    probe.c = mid;
+    if (color::oklch_in_gamut(probe)) lo = mid; else hi = mid;
+  }
+  return lo;
+}
+
 // Hue strip preview colour. L and C are fixed; h sweeps 0..360.
 // Chroma is at the sRGB gamut boundary (C_MAX) so each row lands on its
 // most-saturated in-gamut representative — matches the bright strip
@@ -123,7 +147,8 @@ void CurvzColorPicker::set_initial(const color::Color& c) {
     // the canonical OKLCH position for it.
     auto oklch = color::to_oklch(c);
     if (oklch.c > 1e-6) m_hue = oklch.h;
-    m_spectrum_nx = std::clamp(oklch.c / C_MAX, 0.0, 1.0);
+    double cm = max_chroma_at(oklch.l, oklch.h);
+    m_spectrum_nx = (cm > 1e-9) ? std::clamp(oklch.c / cm, 0.0, 1.0) : 0.0;
     m_spectrum_ny = std::clamp(1.0 - oklch.l, 0.0, 1.0);
 
     refresh_from_current();
@@ -378,12 +403,14 @@ void CurvzColorPicker::draw_spectrum(const Cairo::RefPtr<Cairo::Context>& cr,
     // per redraw, well within Cairo's comfort zone.
     const int step = 3;
     for (int y = 0; y < h; y += step) {
+        double ny = static_cast<double>(y) / h;
+        double Lr = 1.0 - ny;
+        double cmax = max_chroma_at(Lr, m_hue);  // gamut edge for this row
         for (int x = 0; x < w; x += step) {
             double nx = static_cast<double>(x) / w;
-            double ny = static_cast<double>(y) / h;
             color::OKLCH ok;
-            ok.c = nx * C_MAX;
-            ok.l = 1.0 - ny;
+            ok.c = nx * cmax;
+            ok.l = Lr;
             ok.h = m_hue;
             ok.a = 1.0;
             auto rgb = color::from_oklch(ok);
@@ -510,8 +537,8 @@ void CurvzColorPicker::set_from_spectrum(double nx, double ny) {
     m_spectrum_ny = ny;
 
     color::OKLCH ok;
-    ok.c = nx * C_MAX;
     ok.l = 1.0 - ny;
+    ok.c = nx * max_chroma_at(ok.l, m_hue);  // X = fraction of the gamut edge
     ok.h = m_hue;
     ok.a = m_current.a;
 
@@ -532,8 +559,8 @@ void CurvzColorPicker::set_from_hue(double ny) {
     // cursor is drawn. This way hue-strip drags keep the crosshair in
     // place and only swap the hue, exactly like Affinity.
     color::OKLCH ok;
-    ok.c = m_spectrum_nx * C_MAX;
     ok.l = 1.0 - m_spectrum_ny;
+    ok.c = m_spectrum_nx * max_chroma_at(ok.l, m_hue);  // re-edge for new hue
     ok.h = m_hue;
     ok.a = m_current.a;
     auto rgb = color::from_oklch(ok);
@@ -597,7 +624,8 @@ void CurvzColorPicker::sync_hue_from_current() {
     // didn't click in the spectrum, so the OKLCH round-trip is the
     // best position we have. Users who then drag in the spectrum
     // overwrite this via set_from_spectrum.
-    m_spectrum_nx = std::clamp(ok.c / C_MAX, 0.0, 1.0);
+    double cm = max_chroma_at(ok.l, ok.h);
+    m_spectrum_nx = (cm > 1e-9) ? std::clamp(ok.c / cm, 0.0, 1.0) : 0.0;
     m_spectrum_ny = std::clamp(1.0 - ok.l, 0.0, 1.0);
 }
 

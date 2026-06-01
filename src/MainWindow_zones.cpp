@@ -1644,6 +1644,9 @@ void MainWindow::setup_layout() {
   // s331 — Paragraph Leading (buffer-global): pt <= 0 means auto.
   m_style_bar.set_leading_request(
       [this](double pt) { m_canvas.set_text_leading(pt); });
+  // s332 — Alignment (per-paragraph): 0=left, 1=centre, 2=right.
+  m_style_bar.set_align_request(
+      [this](int align) { m_canvas.set_text_alignment(align); });
   // Show/hide with the edit session — the single edit-state signal covers
   // every enter/exit path.
   m_canvas.signal_text_edit_changed().connect(
@@ -1679,11 +1682,35 @@ void MainWindow::setup_layout() {
       m_style_bar.set_size_face(pt, true, smix);
     else
       m_style_bar.set_size_face(0.0, false, false);
+    // s332 — fill (text colour) onto the swatch face + embedded picker.
+    // Packed 0xRRGGBB; none flags a None/transparent object fill with no
+    // per-run override (face shows the red-slash).
+    unsigned long frgb = 0;
+    bool fmixc = false, fnone = false;
+    if (m_canvas.text_style_query_fill(frgb, fmixc, fnone))
+      m_style_bar.set_fill_face(frgb, true, fmixc, fnone);
+    else
+      m_style_bar.set_fill_face(0, false, false, false);
+    // s332 — object-level stroke: colour swatch (outline) + width spin.
+    unsigned long srgb = 0;
+    bool shas = false;
+    double swidth_px = 0.0;
+    if (m_canvas.text_style_query_stroke(srgb, shas, swidth_px)) {
+      m_style_bar.set_stroke_face(srgb, shas);
+      m_style_bar.set_stroke_width(
+          UnitSystem::from_px(swidth_px, Unit::Pt));
+    } else {
+      m_style_bar.set_stroke_face(0, false);
+    }
     // s331 — leading (buffer-global) onto the Paragraph popover spin.
     double lead_pt = 0.0;
     bool lead_auto = false;
     if (m_canvas.text_style_query_leading(lead_pt, lead_auto))
       m_style_bar.set_leading(lead_pt, lead_auto);
+    // s332 — alignment (per-paragraph) onto the Align chip face.
+    int align = 0;
+    if (m_canvas.text_style_query_alignment(align))
+      m_style_bar.set_align_face(align);
   });
 
   m_canvas.set_document(m_project->active_doc());

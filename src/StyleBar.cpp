@@ -9,10 +9,14 @@
 #include "StyleBar.hpp"
 #include "curvz_utils.hpp"
 #include "CurvzSpinButton.hpp"
+#include "CurvzColorPicker.hpp"  // s332 — embedded in the Fill popover
+#include "color/Color.hpp"       // s332 — color::Color for the picker round-trip
 #include "UnitSystem.hpp"   // s331 — Unit::Pt + px<->pt for the Size chip
 
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
+#include <gtkmm/drawingarea.h>   // s332 — the Fill chip's swatch face
+#include <gtkmm/image.h>         // s332 — the Alignment chip's prefix icon
 #include <gtkmm/label.h>
 #include <gtkmm/separator.h>
 #include <gtkmm/searchentry.h>
@@ -21,6 +25,7 @@
 #include <gtkmm/listboxrow.h>
 #include <pango/pango.h>        // PangoAttrType / weight consts
 #include <pango/pangocairo.h>   // pango_cairo_font_map_get_default
+#include <cairomm/context.h>    // s332 — Cairo::Context for the swatch draw
 #include <algorithm>
 #include <cmath>                // s331 — std::lround for point<->scale
 #include <cstdio>
@@ -34,6 +39,7 @@ namespace Curvz {
 namespace {
 constexpr int kAttrWeight = PANGO_ATTR_WEIGHT;
 constexpr int kAttrSize   = PANGO_ATTR_SIZE;   // s331 — per-run size (point)
+constexpr int kAttrForeground = PANGO_ATTR_FOREGROUND;  // s332 — per-run fill
 
 // s331 — common font-size presets, in points. The spin (steppers + parser)
 // covers everything between/around these; the list is the quick-jump.
@@ -79,6 +85,103 @@ std::string weight_face(long w) {
     if (s.value == w) return s.name;
   return std::to_string(w);
 }
+
+// s332 — the Fill chip's swatch face. Draws a small rounded square in the
+// effective text colour, OR a red diagonal slash on white when the fill is
+// None/transparent, OR a two-tone diagonal split (colour over neutral grey)
+// when the selection spans more than one colour. When no edit is active /
+// unresolved, draws a hollow neutral square so the chip still reads as "fill".
+void draw_swatch_face(const Cairo::RefPtr<Cairo::Context>& cr, int w, int h,
+                      double r, double g, double b,
+                      bool resolved, bool mixed, bool is_none,
+                      bool outline = false) {
+  const double rad = 3.0;
+  const double x0 = 1.5, y0 = 1.5;
+  const double x1 = (double)w - 1.5, y1 = (double)h - 1.5;
+  auto rounded = [&]() {
+    cr->begin_new_path();
+    cr->move_to(x0 + rad, y0);
+    cr->line_to(x1 - rad, y0);
+    cr->arc(x1 - rad, y0 + rad, rad, -M_PI / 2, 0);
+    cr->line_to(x1, y1 - rad);
+    cr->arc(x1 - rad, y1 - rad, rad, 0, M_PI / 2);
+    cr->line_to(x0 + rad, y1);
+    cr->arc(x0 + rad, y1 - rad, rad, M_PI / 2, M_PI);
+    cr->line_to(x0, y0 + rad);
+    cr->arc(x0 + rad, y0 + rad, rad, M_PI, 3 * M_PI / 2);
+    cr->close_path();
+  };
+
+  if (!resolved) {
+    // Hollow neutral square — no active selection to read from.
+    rounded();
+    cr->set_source_rgba(0.6, 0.6, 0.6, 0.6);
+    cr->set_line_width(1.0);
+    cr->stroke();
+    return;
+  }
+
+  if (is_none) {
+    // White ground + red diagonal slash (the canonical "no paint").
+    rounded();
+    cr->set_source_rgb(1.0, 1.0, 1.0);
+    cr->fill_preserve();
+    cr->set_source_rgba(0.55, 0.55, 0.55, 1.0);
+    cr->set_line_width(1.0);
+    cr->stroke();
+    cr->move_to(x0 + 1.0, y1 - 1.0);
+    cr->line_to(x1 - 1.0, y0 + 1.0);
+    cr->set_source_rgb(0.85, 0.15, 0.15);
+    cr->set_line_width(1.6);
+    cr->stroke();
+    return;
+  }
+
+  if (mixed) {
+    // Two-tone diagonal split: the representative colour over neutral grey,
+    // signalling the selection holds more than one fill. Reuses the picker's
+    // new-over-old split idiom.
+    rounded();
+    cr->clip();
+    cr->move_to(x0, y0); cr->line_to(x1, y0); cr->line_to(x0, y1);
+    cr->close_path();
+    cr->set_source_rgb(r, g, b);
+    cr->fill();
+    cr->move_to(x1, y0); cr->line_to(x1, y1); cr->line_to(x0, y1);
+    cr->close_path();
+    cr->set_source_rgb(0.62, 0.62, 0.62);
+    cr->fill();
+    cr->reset_clip();
+    rounded();
+    cr->set_source_rgba(0.45, 0.45, 0.45, 1.0);
+    cr->set_line_width(1.0);
+    cr->stroke();
+    return;
+  }
+
+  // Resolved single colour — solid swatch with a subtle border.
+  if (outline) {
+    // Stroke chip: a hollow square ringed in the colour (a stroke reads as an
+    // edge, not a fill). A faint keyline underneath keeps a near-white stroke
+    // colour legible against the chip.
+    rounded();
+    cr->set_source_rgb(r, g, b);
+    cr->set_line_width(2.6);
+    cr->stroke();
+    rounded();
+    cr->set_source_rgba(0.45, 0.45, 0.45, 0.5);
+    cr->set_line_width(0.75);
+    cr->stroke();
+    return;
+  }
+  rounded();
+  cr->set_source_rgb(r, g, b);
+  cr->fill_preserve();
+  double luma = 0.299 * r + 0.587 * g + 0.114 * b;
+  cr->set_source_rgba(0.45, 0.45, 0.45, luma > 0.7 ? 1.0 : 0.5);
+  cr->set_line_width(1.0);
+  cr->stroke();
+}
 } // namespace
 
 StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 2) {
@@ -114,19 +217,90 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 2) {
   m_chip_emphasis = add_label_chip(
       "sty_emph", "style_bar_emphasis_chip", "Emphasis",
       "Emphasis: italic / underline / strike / overline");
-  m_chip_fill = add_label_chip("sty_fill", "style_bar_fill_chip",
-                               "Fill", "Text fill colour (placeholder)");
-  m_chip_stroke = add_label_chip("sty_strk", "style_bar_stroke_chip",
-                                 "Stroke", "Text stroke + width (placeholder)");
+  // FILL — a named chip like the rest (label "Fill", uppercased to FILL by the
+  // chip chrome, plus the dropdown arrow), with a small colour square prefixed
+  // in front of the name showing the current fill under the cursor. The square
+  // is a Cairo-drawn DrawingArea inside the chip's child box; the name and the
+  // arrow stay so FILL reads consistently with FONT / SIZE / WEIGHT.
+  m_chip_fill = Gtk::make_managed<Gtk::MenuButton>();
+  curvz::utils::set_name(m_chip_fill, "sty_fill", "style_bar_fill_chip");
+  m_chip_fill->set_has_frame(false);
+  m_chip_fill->set_always_show_arrow(true);  // keep the dropdown arrow (a child
+                                             // MenuButton hides it otherwise)
+  m_chip_fill->set_tooltip_text("Text fill colour");
+  m_chip_fill->add_css_class("curvz-style-chip");
+  m_chip_fill->add_css_class("curvz-style-chip-label");
+  {
+    auto* face = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 5);
+    m_fill_face = Gtk::make_managed<Gtk::DrawingArea>();
+    m_fill_face->set_content_width(14);
+    m_fill_face->set_content_height(14);
+    m_fill_face->set_valign(Gtk::Align::CENTER);
+    m_fill_face->set_draw_func(
+        [this](const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) {
+          draw_swatch_face(cr, w, h, m_fill_r, m_fill_g, m_fill_b,
+                           m_fill_resolved, m_fill_mixed, m_fill_none);
+        });
+    auto* name = Gtk::make_managed<Gtk::Label>("Fill");
+    face->append(*m_fill_face);
+    face->append(*name);
+    m_chip_fill->set_child(*face);
+  }
+  append(*m_chip_fill);
+
+  // STROKE — same shape as FILL (named chip + square prefix + arrow), but the
+  // square draws as an outline ring (a stroke reads as an edge). Object-level.
+  m_chip_stroke = Gtk::make_managed<Gtk::MenuButton>();
+  curvz::utils::set_name(m_chip_stroke, "sty_strk", "style_bar_stroke_chip");
+  m_chip_stroke->set_has_frame(false);
+  m_chip_stroke->set_always_show_arrow(true);
+  m_chip_stroke->set_tooltip_text("Text stroke colour + width");
+  m_chip_stroke->add_css_class("curvz-style-chip");
+  m_chip_stroke->add_css_class("curvz-style-chip-label");
+  {
+    auto* face = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 5);
+    m_stroke_face = Gtk::make_managed<Gtk::DrawingArea>();
+    m_stroke_face->set_content_width(14);
+    m_stroke_face->set_content_height(14);
+    m_stroke_face->set_valign(Gtk::Align::CENTER);
+    m_stroke_face->set_draw_func(
+        [this](const Cairo::RefPtr<Cairo::Context>& cr, int w, int h) {
+          draw_swatch_face(cr, w, h, m_stroke_r, m_stroke_g, m_stroke_b,
+                           /*resolved=*/true, /*mixed=*/false,
+                           /*is_none=*/!m_stroke_has, /*outline=*/true);
+        });
+    auto* name = Gtk::make_managed<Gtk::Label>("Stroke");
+    face->append(*m_stroke_face);
+    face->append(*name);
+    m_chip_stroke->set_child(*face);
+  }
+  append(*m_chip_stroke);
 
   add_sep();  // the character/paragraph scope seam, made visible
 
   // ── Paragraph scope ──────────────────────────────────────────────────────
-  // Alignment has a real glyph already in the icon set.
-  m_chip_align = add_icon_chip("sty_aln", "style_bar_align_chip",
-                               "curvz-align-left-symbolic",
-                               "Justification (placeholder)",
-                               /*face_is_icon=*/true);
+  // ALIGNMENT — same shape as FILL / STROKE (prefix + name + arrow). The prefix
+  // is the CURRENT paragraph alignment's glyph (curvz-text-*), updated by
+  // set_align_face as the caret/selection moves; the name + arrow keep it
+  // reading consistently with FILL / STROKE / FONT.
+  m_chip_align = Gtk::make_managed<Gtk::MenuButton>();
+  curvz::utils::set_name(m_chip_align, "sty_aln", "style_bar_align_chip");
+  m_chip_align->set_has_frame(false);
+  m_chip_align->set_always_show_arrow(true);  // keep the dropdown arrow
+  m_chip_align->set_tooltip_text("Alignment");
+  m_chip_align->add_css_class("curvz-style-chip");
+  m_chip_align->add_css_class("curvz-style-chip-label");
+  {
+    auto* face = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 5);
+    m_align_icon = Gtk::make_managed<Gtk::Image>();
+    m_align_icon->set_from_icon_name("curvz-text-left-symbolic");
+    m_align_icon->set_valign(Gtk::Align::CENTER);
+    auto* name = Gtk::make_managed<Gtk::Label>("Alignment");
+    face->append(*m_align_icon);
+    face->append(*name);
+    m_chip_align->set_child(*face);
+  }
+  append(*m_chip_align);
   m_chip_para = add_label_chip("sty_para", "style_bar_linespacing_chip",
                                "Line spacing", "Line spacing");
   m_chip_style = add_label_chip("sty_named", "style_bar_style_chip",
@@ -137,12 +311,11 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 2) {
   build_emphasis_popover(m_chip_emphasis);
   build_font_popover(m_chip_font);
   build_size_popover(m_chip_size);
-  build_paragraph_popover(m_chip_para);
+  build_paragraph_popover(m_chip_para);  build_fill_popover(m_chip_fill);  // s332
+  build_stroke_popover(m_chip_stroke);  // s332
+  build_align_popover(m_chip_align);    // s332
 
   // Stub popovers for the chips whose real popups aren't built yet.
-  stub_popover(m_chip_fill,   "Fill colour picker");
-  stub_popover(m_chip_stroke, "Stroke colour + width");
-  stub_popover(m_chip_align,  "Left / Center / Right / Justified");
   stub_popover(m_chip_style,  "Style chooser + override + verbs");
 
   // s331 — far-right Reset button. An expanding spacer pushes it to the end
@@ -373,6 +546,142 @@ void StyleBar::set_size_face(double pt, bool resolved, bool mixed) {
     m_size_spin->set_internal_value(UnitSystem::to_px(pt, Unit::Pt));
 }
 
+void StyleBar::build_fill_popover(Gtk::MenuButton* chip) {
+  if (!chip) return;
+  auto* pop = Gtk::make_managed<Gtk::Popover>();
+  auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+  col->set_margin(6);
+
+  m_fill_picker = Gtk::make_managed<CurvzColorPicker>();
+  m_fill_picker->set_with_alpha(false);  // Pango foreground is opaque RGB
+  m_fill_picker->set_initial(color::Color(0.0, 0.0, 0.0, 1.0));
+  // Live: every interactive edit SETS the foreground over the selection. The
+  // set-path emits text_style_changed, so the swatch face refreshes via the
+  // live-read; we don't write the face here. set_initial (used by the live-
+  // read sync) does not emit signal_changed, so there's no feedback loop;
+  // m_suppress_fill guards it anyway as belt-and-braces.
+  m_fill_picker->signal_changed().connect([this](color::Color c) {
+    if (m_suppress_fill) return;
+    auto ch = [](double v) {
+      return (long)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
+    };
+    long packed = (ch(c.r) << 16) | (ch(c.g) << 8) | ch(c.b);
+    if (m_format_set) m_format_set(kAttrForeground, packed, "");
+  });
+  col->append(*m_fill_picker);
+
+  pop->set_child(*col);
+  chip->set_popover(*pop);
+}
+
+void StyleBar::set_fill_face(unsigned long rgb, bool resolved, bool mixed,
+                             bool is_none) {
+  m_fill_resolved = resolved;
+  m_fill_mixed    = mixed;
+  m_fill_none     = is_none;
+  m_fill_r = (double)((rgb >> 16) & 0xFF) / 255.0;
+  m_fill_g = (double)((rgb >>  8) & 0xFF) / 255.0;
+  m_fill_b = (double)( rgb        & 0xFF) / 255.0;
+  if (m_fill_face) m_fill_face->queue_draw();
+  // Sync the picker to a resolved single colour so re-opening the popover
+  // starts from the current value (no apply re-fired — set_initial does not
+  // emit signal_changed; the guard is held anyway for safety).
+  if (resolved && !mixed && !is_none && m_fill_picker) {
+    m_suppress_fill = true;
+    m_fill_picker->set_initial(color::Color(m_fill_r, m_fill_g, m_fill_b, 1.0));
+    m_suppress_fill = false;
+  }
+}
+
+void StyleBar::build_stroke_popover(Gtk::MenuButton* chip) {
+  if (!chip) return;
+  auto* pop = Gtk::make_managed<Gtk::Popover>();
+  auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+  col->set_margin(6);
+
+  // Colour picker — picking SETS the per-run stroke colour over the selection
+  // via the generic value-set span path (kCurvzStrokeColorAttr). The set
+  // re-emits text_style_changed, so the face/spin refresh via the live-read;
+  // set_initial doesn't emit, so syncing from the live-read can't loop
+  // (m_suppress_stroke guards anyway).
+  m_stroke_picker = Gtk::make_managed<CurvzColorPicker>();
+  m_stroke_picker->set_with_alpha(false);  // stroke paint is opaque RGB here
+  m_stroke_picker->set_initial(color::Color(0.0, 0.0, 0.0, 1.0));
+  m_stroke_picker->signal_changed().connect([this](color::Color c) {
+    if (m_suppress_stroke) return;
+    auto ch = [](double v) {
+      return (long)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
+    };
+    long packed = (ch(c.r) << 16) | (ch(c.g) << 8) | ch(c.b);
+    if (m_format_set)
+      m_format_set(curvz::utils::kCurvzStrokeColorAttr, packed, "");
+  });
+  col->append(*m_stroke_picker);
+
+  // Width row — pt-locked spin (reuses the size chip's unit override). SETS a
+  // per-run width span (doc-px x PANGO_SCALE). Plain input for now; the finer
+  // per-instance step + modifier x10 stepping is noted/parked.
+  auto* wrow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+  auto* wlbl = Gtk::make_managed<Gtk::Label>("Width");
+  wlbl->set_xalign(0.0f);
+  wlbl->add_css_class("dim-label");
+  m_stroke_width_spin = Gtk::make_managed<CurvzSpinButton>("sty_strk_w",
+                                                           SpinType::Width);
+  m_stroke_width_spin->with_unit_override(Unit::Pt)
+      ->with_value(UnitSystem::to_px(1.0, Unit::Pt))  // 1 pt default
+      ->with_width_chars(5)
+      ->with_tooltip("Stroke width in points (type 2pt, 1mm, ...)");
+  m_stroke_width_spin->set_can_focus(true);
+  m_stroke_width_spin->on_changed([this](double internal_px) {
+    if (m_format_set)
+      m_format_set(curvz::utils::kCurvzStrokeWidthAttr,
+                   std::lround(internal_px * (double)PANGO_SCALE), "");
+  });
+  wrow->append(*wlbl);
+  wrow->append(*m_stroke_width_spin);
+  wrow->append(*m_stroke_width_spin->get_unit_label());
+  col->append(*wrow);
+
+  // None — set an explicit no-stroke span over the selection (face shows the
+  // red-slash; also suppresses the object stroke on those glyphs).
+  auto* noneb = Gtk::make_managed<Gtk::Button>("None");
+  noneb->set_has_frame(false);
+  noneb->set_can_focus(false);
+  noneb->add_css_class("curvz-style-weight-stop");
+  if (auto* nl = dynamic_cast<Gtk::Label*>(noneb->get_child()))
+    nl->set_xalign(0.0f);
+  noneb->set_tooltip_text("No stroke");
+  noneb->signal_clicked().connect([this, pop]() {
+    if (m_format_set)
+      m_format_set(curvz::utils::kCurvzStrokeColorAttr,
+                   curvz::utils::kCurvzStrokeNone, "");
+    pop->popdown();
+  });
+  col->append(*noneb);
+
+  pop->set_child(*col);
+  chip->set_popover(*pop);
+}
+
+void StyleBar::set_stroke_face(unsigned long rgb, bool has_color) {
+  m_stroke_has = has_color;
+  m_stroke_r = (double)((rgb >> 16) & 0xFF) / 255.0;
+  m_stroke_g = (double)((rgb >>  8) & 0xFF) / 255.0;
+  m_stroke_b = (double)( rgb        & 0xFF) / 255.0;
+  if (m_stroke_face) m_stroke_face->queue_draw();
+  if (has_color && m_stroke_picker) {
+    m_suppress_stroke = true;
+    m_stroke_picker->set_initial(
+        color::Color(m_stroke_r, m_stroke_g, m_stroke_b, 1.0));
+    m_suppress_stroke = false;
+  }
+}
+
+void StyleBar::set_stroke_width(double pt) {
+  if (!m_stroke_width_spin) return;
+  m_stroke_width_spin->set_internal_value(UnitSystem::to_px(pt, Unit::Pt));  // no emit
+}
+
 void StyleBar::build_paragraph_popover(Gtk::MenuButton* chip) {
   if (!chip) return;
   auto* pop = Gtk::make_managed<Gtk::Popover>();
@@ -427,6 +736,49 @@ void StyleBar::set_leading(double pt, bool is_auto) {
       is_auto ? "Line spacing — Auto (from font metrics); type a value to pin it"
               : "Line spacing in points (type 2in, 10mm, 14pt, ...)");
   m_leading_spin->set_internal_value(UnitSystem::to_px(pt, Unit::Pt));  // no emit
+}
+
+// s332 — Alignment popover: Left / Centre / Right as a small icon row. Each
+// requests Canvas::set_text_alignment(0/1/2), which paragraph-snaps and writes
+// the kCurvzAlignAttr run. Justify (3) is the follow-up (no icon yet, needs the
+// Pango justify path). The chip face mirrors the caret paragraph's alignment.
+void StyleBar::build_align_popover(Gtk::MenuButton* chip) {
+  if (!chip) return;
+  auto* pop = Gtk::make_managed<Gtk::Popover>();
+  auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 2);
+  row->set_margin(6);
+
+  struct Opt { const char* icon; const char* tip; int val; };
+  const Opt opts[] = {
+      {"curvz-text-left-symbolic",   "Align left",   0},
+      {"curvz-text-center-symbolic", "Align centre", 1},
+      {"curvz-text-right-symbolic",  "Align right",  2},
+  };
+  for (const auto& o : opts) {
+    auto* b = Gtk::make_managed<Gtk::Button>();
+    b->set_icon_name(o.icon);
+    b->set_has_frame(false);
+    b->set_can_focus(false);
+    b->set_tooltip_text(o.tip);
+    b->add_css_class("curvz-style-chip-icon");
+    int val = o.val;
+    b->signal_clicked().connect([this, pop, val]() {
+      if (m_align_request) m_align_request(val);
+      set_align_face(val);  // last-look face follows the pick (like Weight)
+      pop->popdown();
+    });
+    row->append(*b);
+  }
+  pop->set_child(*row);
+  chip->set_popover(*pop);
+}
+
+void StyleBar::set_align_face(int align) {
+  if (!m_align_icon) return;
+  const char* icon = (align == 1) ? "curvz-text-center-symbolic"
+                   : (align == 2) ? "curvz-text-right-symbolic"
+                                  : "curvz-text-left-symbolic";
+  m_align_icon->set_from_icon_name(icon);
 }
 
 void StyleBar::build_emphasis_popover(Gtk::MenuButton* chip) {

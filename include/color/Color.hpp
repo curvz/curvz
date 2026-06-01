@@ -156,5 +156,12 @@ struct OKLCH {
 OKLCH to_oklch(const Color& c);
 Color from_oklch(const OKLCH& oklch);
 
+// True when the OKLCH triple lies inside the sRGB gamut -- i.e. from_oklch
+// would return it without clamping any channel. Lets callers (a colour picker,
+// say) find the in-gamut chroma edge at a given lightness+hue and present a
+// fully-selectable spectrum, instead of a rectangle whose far corners all
+// clamp to one flat dead colour.
+bool oklch_in_gamut(const OKLCH& oklch);
+
 } // namespace color
 } // namespace Curvz

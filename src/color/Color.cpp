@@ -266,10 +266,12 @@ OKLCH to_oklch(const Color& c) {
     return out;
 }
 
-Color from_oklch(const OKLCH& lch) {
-    Color out;
-    out.a = lch.a;
-
+// Shared OKLCH -> *linear* RGB block (no sRGB transfer, no clamp). Source of
+// truth for both from_oklch (which clamps after the sRGB transfer) and
+// oklch_in_gamut (which tests these unclamped linear values). Factored so the
+// two cannot drift.
+static void oklch_to_linear_rgb(const OKLCH& lch,
+                                double& lr, double& lg, double& lb) {
     // OKLCH -> oklab
     const double h_rad = lch.h * M_PI / 180.0;
     const double a_lab = lch.c * std::cos(h_rad);
@@ -287,9 +289,17 @@ Color from_oklch(const OKLCH& lch) {
     const double s_ = s * s * s;
 
     // LMS -> linear RGB (inverse of M1)
-    const double lr =  4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_;
-    const double lg = -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_;
-    const double lb = -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_;
+    lr =  4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_;
+    lg = -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_;
+    lb = -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_;
+}
+
+Color from_oklch(const OKLCH& lch) {
+    Color out;
+    out.a = lch.a;
+
+    double lr, lg, lb;
+    oklch_to_linear_rgb(lch, lr, lg, lb);
 
     // linear -> sRGB, then clamp to gamut.
     // See header note: OKLCH can represent out-of-gamut colors. We clamp.
@@ -298,6 +308,19 @@ Color from_oklch(const OKLCH& lch) {
     out.g = clamp01(linear_to_srgb(lg));
     out.b = clamp01(linear_to_srgb(lb));
     return out;
+}
+
+// In-gamut test: the OKLCH triple is inside sRGB iff its UNCLAMPED linear-RGB
+// channels all fall within [0,1] (linear_to_srgb is monotonic on [0,1], so
+// testing the linear values is equivalent to testing the sRGB ones). A small
+// epsilon keeps the exact boundary inclusive against float noise.
+bool oklch_in_gamut(const OKLCH& lch) {
+    double lr, lg, lb;
+    oklch_to_linear_rgb(lch, lr, lg, lb);
+    const double eps = 1e-6;
+    return lr >= -eps && lr <= 1.0 + eps &&
+           lg >= -eps && lg <= 1.0 + eps &&
+           lb >= -eps && lb <= 1.0 + eps;
 }
 
 } // namespace color
