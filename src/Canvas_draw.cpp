@@ -612,15 +612,24 @@ bool Canvas::compute_tab_bar_layout(double ox, double oy, TabBarLayout& out) {
   out.band_bot = band_bot;
   out.mid_y = std::floor((band_top + band_bot) * 0.5) + 0.5;
 
-  // Type-selector box: a square just past the right edge of the measuring span.
-  out.sel_w = BAND_H;
-  out.sel_x = out.right_sx + 4.0;
+  // Type-selector cell: shape on the left, type-name hint on the right, both on
+  // the themed band so the name is always legible (s336 INT-2). Wider than the
+  // old square to fit the longest label ("Decimal").
+  out.sel_w = 72.0;
+  out.sel_x = out.right_sx + 6.0;
   out.band_right_sx = out.sel_x + out.sel_w;
 
   double il = 0.0, ir = 0.0, ifst = 0.0;
   text_style_query_indents(il, ir, ifst);
+  // s336 INT-2 — while an indent handle is being dragged, the layout reflects
+  // the live (ghost) value so paint and hit-test track the cursor in register.
+  // First-line is semi-locked to the left indent (drawn at il+ifst), so a LEFT
+  // drag carries the first-line marker along for free — no special case needed.
+  if      (m_tab_drag_kind == 2) il   = m_tab_drag_il;
+  else if (m_tab_drag_kind == 3) ir   = m_tab_drag_ir;
+  else if (m_tab_drag_kind == 4) ifst = m_tab_drag_ifst;
   out.indent_left = il; out.indent_right = ir; out.indent_first = ifst;
-  out.has_first = (ifst != 0.0);
+  out.has_first = true;  // s336 — first-line handle is ALWAYS drawn (grabbable at 0)
 
   out.valid = true;
   return true;
@@ -651,9 +660,13 @@ void Canvas::draw_tab_bar(const Cairo::RefPtr<Cairo::Context>& cr,
   const double BAND_H = band_bot - band_top;
   auto SX = [&](double x) { return L.sx_of(x); };
 
-  // Caret paragraph's stops + indents.
+  // Caret paragraph's stops + indents. While a stop is being dragged it is held
+  // OUT of the spec (in m_tab_drag_type/_pos) and the band shows the remaining
+  // stops from the ghost; the dragged stop is overlaid separately below so it
+  // can be drawn at its live position without churning the spec each motion.
   std::string spec;
-  text_style_query_tabs(spec);
+  if (m_tab_drag_kind == 1) spec = m_tab_drag_others;
+  else text_style_query_tabs(spec);
   auto stops = curvz::utils::parse_tab_spec(spec);
   const double il = L.indent_left, ir = L.indent_right, ifst = L.indent_first;
 
@@ -661,8 +674,7 @@ void Canvas::draw_tab_bar(const Cairo::RefPtr<Cairo::Context>& cr,
   // the tab ruler matches the main rulers in either theme.
   const bool light = (doc_motif() == Motif::Light);
   const double bg_r   = light ? 0.866 : 0.145;
-  const double tick_r = light ? 0.290 : 0.550;       // grey ticks/labels
-  const double ink_r  = light ? 0.150 : 0.880;       // marker ink
+  const double tick_r = light ? 0.290 : 0.550;       // grey ticks/labels/marks
   const double accent[3] = {0.31, 0.60, 0.94};
 
   // Shape codec for a tab type — shared by the stop markers and the selector,
@@ -734,7 +746,7 @@ void Canvas::draw_tab_bar(const Cairo::RefPtr<Cairo::Context>& cr,
     double sx = SX(doc_x);
     if (sx < left_sx - 1 || sx > right_sx + 1) return;
     cr->set_source_rgba(tick_r, tick_r, tick_r, 0.95);
-    const double s = 5.5;
+    const double s = 7.5;  // s336 — larger indent triangles (easier grab targets)
     if (down) {  // first-line, hanging from the top
       cr->move_to(sx - s, band_top + 1.0);
       cr->line_to(sx + s, band_top + 1.0);
@@ -749,43 +761,66 @@ void Canvas::draw_tab_bar(const Cairo::RefPtr<Cairo::Context>& cr,
     cr->fill();
   };
   tri(origin_doc + il, false);                 // left indent
-  if (ifst != 0.0) tri(origin_doc + il + ifst, true);  // first-line (from left indent)
+  tri(origin_doc + il + ifst, true);           // first-line — ALWAYS (grab handle, even at 0)
   tri(right_doc - ir, false);                  // right indent (from right margin)
 
-  // Tab stops — drop-line + shape-coded marker on the midline.
+  // Tab stops — drop-line + shape-coded marker on the midline. Shared lambda so
+  // the dragged-stop overlay (below) renders identically to a committed stop.
   std::vector<double> dash = {3.0, 3.0};
-  for (const auto& s : stops) {
-    const double sx = SX(origin_doc + s.pos);
-    if (sx < left_sx - 1 || sx > right_sx + 1) continue;
+  auto draw_stop_marker = [&](double pos_from_origin, curvz::utils::TabAlign t,
+                              double drop_alpha) {
+    const double sx = SX(origin_doc + pos_from_origin);
+    if (sx < left_sx - 1 || sx > right_sx + 1) return;
     const double mx = std::floor(sx) + 0.5;
-
     // Drop-line into the text — the "what the text is supposed to be" cue.
     cr->save();
-    cr->set_source_rgba(accent[0], accent[1], accent[2], 0.40);
+    cr->set_source_rgba(accent[0], accent[1], accent[2], drop_alpha);
     cr->set_line_width(1.0);
     cr->set_dash(dash, 0);
     cr->move_to(mx, band_bot);
     cr->line_to(mx, bot_sy);
     cr->stroke();
     cr->restore();
+    // Shape filled in the same grey as the indent triangles (s336) so the stop
+    // markers and the indent handles read as one family.
+    cr->set_source_rgba(tick_r, tick_r, tick_r, 0.95);
+    draw_shape(mx, mid_y, 5.0, t);
+  };
+  for (const auto& s : stops) draw_stop_marker(s.pos, s.type, 0.40);
 
-    // Shape encodes the type. Filled in the ink colour (dark on a light ruler,
-    // light on a dark one) so the stops read as the primary marks.
-    cr->set_source_rgb(ink_r, ink_r, ink_r);
-    draw_shape(mx, mid_y, 5.0, s.type);
+  // s336 INT-2 — the live dragged stop. Held out of `stops`, drawn here at its
+  // cursor-tracked position with a brighter drop-line. When the pointer is off
+  // the band (drag-off-to-remove armed) the marker is suppressed so the user
+  // sees it will be dropped on release.
+  if (m_tab_drag_kind == 1 && !m_tab_drag_off) {
+    draw_stop_marker(m_tab_drag_pos,
+                     static_cast<curvz::utils::TabAlign>(m_tab_drag_type), 0.70);
   }
 
-  // Type selector — square at the right end of the band, showing the active
-  // type's shape (what a click on the ruler will place). A separator divides it
-  // from the measuring span. Clicking it cycles the type (tab_bar_press).
+  // Type selector — a cell at the right end of the band: the active type's
+  // shape on the left (what a press on the ruler will place) and a persistent
+  // type-NAME hint on the right, both sitting on the themed band so the name is
+  // legible in either motif. The name updates the instant the selector cycles,
+  // so it assists the choice every time rather than only on hover. A separator
+  // divides the cell from the measuring span. (s336 INT-2.)
   cr->set_source_rgba(tick_r, tick_r, tick_r, 0.9);
   cr->set_line_width(1.0);
   cr->move_to(std::floor(L.sel_x) + 0.5, band_top + 2.0);
   cr->line_to(std::floor(L.sel_x) + 0.5, band_bot - 2.0);
   cr->stroke();
-  cr->set_source_rgb(ink_r, ink_r, ink_r);
-  draw_shape(L.sel_x + L.sel_w * 0.5, mid_y, 5.0,
-             static_cast<curvz::utils::TabAlign>(m_tab_active_type));
+  const auto active = static_cast<curvz::utils::TabAlign>(m_tab_active_type);
+  cr->set_source_rgba(tick_r, tick_r, tick_r, 0.95);  // s336 — match the indent grey
+  draw_shape(L.sel_x + 11.0, mid_y, 5.0, active);
+  const char* type_name =
+      active == curvz::utils::TabAlign::Left   ? "Left"   :
+      active == curvz::utils::TabAlign::Center ? "Center" :
+      active == curvz::utils::TabAlign::Right  ? "Right"  : "Decimal";
+  cr->select_font_face("Sans", Cairo::ToyFontFace::Slant::NORMAL,
+                       Cairo::ToyFontFace::Weight::NORMAL);
+  cr->set_font_size(10.0);
+  Cairo::TextExtents te; cr->get_text_extents(type_name, te);
+  cr->move_to(L.sel_x + 22.0, mid_y - (te.y_bearing + te.height * 0.5));
+  cr->show_text(type_name);
 
   cr->restore();
 }

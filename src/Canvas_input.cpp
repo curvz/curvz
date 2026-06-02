@@ -2712,66 +2712,178 @@ void Canvas::on_pan_update(double dx, double dy) {
 void Canvas::on_pan_end(double /*dx*/, double /*dy*/) {}
 
 // ── Input: left-drag — route by tool ─────────────────────────────────────────
-// ── s335 INT-1 — tab-bar press handler ────────────────────────────────────────
+// ── s335 INT-1 / s336 INT-2 — tab-bar press handler ──────────────────────────
 // Hit-tests the on-canvas tab ruler in screen coords against the shared layout
 // (compute_tab_bar_layout — same source the draw uses, so click and paint stay
-// in register). Three outcomes, in priority order:
-//   1. selector box  → cycle the active type (L -> C -> R -> D)
-//   2. existing stop  → cycle THAT stop's type
-//   3. bare measuring span → place a new stop of the active type
-// Returns true if the press was consumed. Move / drag-off-remove / indent
-// sliders are the INT-2 milestone (they add update/end handling).
+// in register). Outcomes, in priority order:
+//   1. selector cell   → cycle the active type (pure click, no drag; L->C->R->D)
+//   2. indent handle   → arm a live indent drag (first-line top / left+right bot)
+//   3. existing stop   → grab it (held out of the spec, tracked live)
+//   4. bare span       → mint a new stop and track it from the press
+// Cases 2–4 arm m_tab_drag_kind; on_draw_update/_end track and commit. There is
+// no click-to-cycle on a stop anymore: type lives at the selector. Returns true
+// if the press was consumed (caller must not fall through to tool dispatch).
 bool Canvas::tab_bar_press(double sx, double sy) {
   if (!m_text_editing || !m_text_cursor) return false;
+  m_tab_drag_kind = 0;   // defensive: no drag may survive into a fresh press
+  m_tab_drag_off = false;
   TabBarLayout L;
   if (!compute_tab_bar_layout(doc_origin_x(), doc_origin_y(), L)) return false;
 
   // Vertical hit: within the band (small slop).
   if (sy < L.band_top - 2.0 || sy > L.band_bot + 2.0) return false;
 
-  static const curvz::utils::TabAlign kCycle[4] = {
-      curvz::utils::TabAlign::Left, curvz::utils::TabAlign::Center,
-      curvz::utils::TabAlign::Right, curvz::utils::TabAlign::Decimal};
-  auto next_type = [](curvz::utils::TabAlign t) {
-    int idx = 0;
-    for (int k = 0; k < 4; ++k) if (kCycle[k] == t) { idx = k; break; }
-    return kCycle[(idx + 1) % 4];
-  };
+  m_tab_drag_press_sx = sx;
+  m_tab_drag_press_sy = sy;
 
-  // 1. Selector box → cycle the active (to-be-placed) type.
+  // 1. Selector cell → cycle the active (to-be-placed) type. The CYCLE is the
+  //    visual order L->C->R->D, not the enum's numeric order (Left=0, Right=1,
+  //    Center=2, Decimal=3) — so step via an explicit next-table. Pure click,
+  //    no drag armed.
   if (sx >= L.sel_x && sx <= L.sel_x + L.sel_w) {
-    m_tab_active_type =
-        static_cast<int>(next_type(static_cast<curvz::utils::TabAlign>(m_tab_active_type)));
+    static const int kNext[4] = {2, 3, 1, 0};  // L->C, R->D, C->R, D->L
+    m_tab_active_type = kNext[m_tab_active_type & 3];
     queue_draw();
     return true;
   }
 
-  // Outside the measuring span (and not the selector) → not ours.
+  const double TOL = 6.0;
+  const double IND_TOL = 9.0;  // s336 — matches the enlarged indent triangles
+
+  // 2. Indent handles. First-line hangs from the band TOP (drawn at il+ifst);
+  //    left/right sit on the band BOTTOM. Gate to a vertical band near each edge
+  //    so the midline channel stays clear for stop hits. Snapshot ALL three
+  //    indents so the live clamp has the siblings; the dragged one is then
+  //    overwritten each motion.
+  const bool near_top = (sy <= L.band_top + 12.0);
+  const bool near_bot = (sy >= L.band_bot - 12.0);
+  auto arm_indent = [&](int kind) {
+    m_tab_drag_kind = kind;
+    m_tab_drag_il = L.indent_left;
+    m_tab_drag_ir = L.indent_right;
+    m_tab_drag_ifst = L.indent_first;
+  };
+  const double first_hx = L.sx_of(L.origin_doc + L.indent_left + L.indent_first);
+  const double left_hx  = L.sx_of(L.origin_doc + L.indent_left);
+  const double right_hx = L.sx_of(L.right_doc - L.indent_right);
+  if (near_top && std::abs(sx - first_hx) <= IND_TOL) { arm_indent(4); return true; }
+  if (near_bot && std::abs(sx - left_hx)  <= IND_TOL) { arm_indent(2); return true; }
+  if (near_bot && std::abs(sx - right_hx) <= IND_TOL) { arm_indent(3); return true; }
+
+  // Outside the measuring span (and not selector/handle) → not ours.
   if (sx < L.left_sx - 4.0 || sx > L.right_sx + 4.0) return false;
 
   std::string spec;
   text_style_query_tabs(spec);
   auto stops = curvz::utils::parse_tab_spec(spec);
 
-  // 2. Hit an existing stop (within tolerance) → cycle its type.
-  const double TOL = 6.0;
-  for (auto& st : stops) {
-    double stx = L.sx_of(L.origin_doc + st.pos);
+  // 3. Existing stop within tolerance → grab it: hold it OUT of the spec (so a
+  //    sort crossing a peer can't shift its index) and track it live.
+  for (size_t i = 0; i < stops.size(); ++i) {
+    double stx = L.sx_of(L.origin_doc + stops[i].pos);
     if (std::abs(sx - stx) <= TOL) {
-      st.type = next_type(st.type);
-      set_text_tabs(curvz::utils::format_tab_spec(stops));
+      m_tab_drag_kind = 1;
+      m_tab_drag_type = static_cast<int>(stops[i].type);
+      m_tab_drag_pos  = stops[i].pos;
+      stops.erase(stops.begin() + static_cast<long>(i));
+      m_tab_drag_others = curvz::utils::format_tab_spec(stops);
       return true;
     }
   }
 
-  // 3. Bare span → place a new stop of the active type at the clicked position.
+  // 4. Bare span → mint a new stop of the active type at the press position and
+  //    track it. Releasing without moving drops it where pressed (old click-to-
+  //    place behaviour); releasing off the band cancels it.
   double pos = L.doc_of(sx) - L.origin_doc;
   pos = std::max(0.0, std::min(pos, L.right_doc - L.origin_doc));
-  curvz::utils::TabStop ns;
-  ns.pos = pos;
-  ns.type = static_cast<curvz::utils::TabAlign>(m_tab_active_type);
-  stops.push_back(ns);
-  set_text_tabs(curvz::utils::format_tab_spec(stops));
+  m_tab_drag_kind   = 1;
+  m_tab_drag_type   = m_tab_active_type;
+  m_tab_drag_pos    = pos;
+  m_tab_drag_others = curvz::utils::format_tab_spec(stops);  // existing stops stay
+  return true;
+}
+
+// ── s336 INT-2 — tab-bar drag update ─────────────────────────────────────────
+// Recompute the grabbed element from the current pointer (screen coords),
+// clamp, update the ghost, redraw. Commits nothing — set_text_* fires once on
+// release, so a whole drag is one undo entry. Returns true while a drag is live
+// (caller early-returns to keep tool dispatch defused for the gesture).
+bool Canvas::tab_bar_drag_update(double sx, double sy) {
+  if (m_tab_drag_kind == 0) return false;
+  TabBarLayout L;
+  if (!compute_tab_bar_layout(doc_origin_x(), doc_origin_y(), L)) return true;
+  const double span = L.right_doc - L.origin_doc;
+  const double pdoc = L.doc_of(sx) - L.origin_doc;  // pointer, doc-px from origin
+
+  switch (m_tab_drag_kind) {
+    case 1: {  // move / new stop
+      m_tab_drag_pos = std::max(0.0, std::min(pdoc, span));
+      // Off the band vertically → armed for removal; draw suppresses the marker.
+      m_tab_drag_off = (sy < L.band_top - 2.0 || sy > L.band_bot + 2.0);
+      break;
+    }
+    case 2: {  // left indent: [0 .. right edge), and keep first-line (il+ifst)>=0
+      double il = std::max(0.0, std::min(pdoc, span - m_tab_drag_ir));
+      // First-line is semi-locked (offset preserved): don't shove it past the
+      // margin to the left as the left handle carries it down.
+      if (il + m_tab_drag_ifst < 0.0) il = -m_tab_drag_ifst;
+      if (il < 0.0) il = 0.0;
+      m_tab_drag_il = il;
+      break;
+    }
+    case 3: {  // right indent: measured IN from the right margin
+      double ir = L.right_doc - L.doc_of(sx);
+      ir = std::max(0.0, std::min(ir, span - m_tab_drag_il));
+      m_tab_drag_ir = ir;
+      break;
+    }
+    case 4: {  // first-line offset (relative to left); il+ifst clamped to [0..span]
+      double ifst = pdoc - m_tab_drag_il;
+      ifst = std::max(-m_tab_drag_il, std::min(ifst, span - m_tab_drag_il));
+      m_tab_drag_ifst = ifst;
+      break;
+    }
+    default: break;
+  }
+  queue_draw();
+  return true;
+}
+
+// ── s336 INT-2 — tab-bar drag end ────────────────────────────────────────────
+// Commit the live value through the undoable apply (one command per drag), or,
+// for a stop released off the band, drop it. Then disarm. Returns true if a
+// drag was live.
+bool Canvas::tab_bar_drag_end(double sx, double sy) {
+  if (m_tab_drag_kind == 0) return false;
+  const int kind = m_tab_drag_kind;
+  tab_bar_drag_update(sx, sy);  // fold in the final pointer (GTK may skip a last update)
+
+  switch (kind) {
+    case 1: {
+      auto stops = curvz::utils::parse_tab_spec(m_tab_drag_others);
+      if (!m_tab_drag_off) {
+        curvz::utils::TabStop ns;
+        ns.pos = m_tab_drag_pos;
+        ns.type = static_cast<curvz::utils::TabAlign>(m_tab_drag_type);
+        stops.push_back(ns);
+      }
+      // Commit only on a real change: a NEW stop dragged off the band (cancelled)
+      // leaves the spec untouched, so re-committing it would be a dead undo step.
+      std::string result = curvz::utils::format_tab_spec(stops);
+      std::string current; text_style_query_tabs(current);
+      if (result != current) set_text_tabs(result);
+      break;
+    }
+    case 2: set_text_indent(0, m_tab_drag_il);   break;
+    case 3: set_text_indent(1, m_tab_drag_ir);   break;
+    case 4: set_text_indent(2, m_tab_drag_ifst); break;
+    default: break;
+  }
+
+  m_tab_drag_kind = 0;
+  m_tab_drag_off = false;
+  m_tab_drag_others.clear();
+  queue_draw();
   return true;
 }
 
@@ -3572,6 +3684,16 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
   if (!m_doc)
     return;
 
+  // s336 INT-2 — tab-bar slider drag. If the press armed a stop/indent drag,
+  //   track it live and consume the event so tool dispatch stays defused for
+  //   the whole gesture. delta is screen-px from the press point; reconstruct
+  //   the absolute pointer the layout/hit-test expect.
+  if (m_tab_drag_kind != 0) {
+    tab_bar_drag_update(m_tab_drag_press_sx + delta_x,
+                        m_tab_drag_press_sy + delta_y);
+    return;
+  }
+
   // s314 m1 — Overlay grip drag. If the press armed a grip drag, update
   //   overlay_w / overlay_h on the Popover view from the cursor's
   //   current doc position relative to the press point's doc position.
@@ -4057,6 +4179,15 @@ void Canvas::on_draw_update(double delta_x, double delta_y) {
 void Canvas::on_draw_end(double delta_x, double delta_y) {
   if (!m_doc)
     return;
+
+  // s336 INT-2 — tab-bar slider release. Commit the live value (one undoable
+  //   set_text_tabs / set_text_indent per drag) or drop a stop dragged off the
+  //   band, then disarm. Reconstruct the absolute pointer from press + delta.
+  if (m_tab_drag_kind != 0) {
+    tab_bar_drag_end(m_tab_drag_press_sx + delta_x,
+                     m_tab_drag_press_sy + delta_y);
+    return;
+  }
 
   // s314 m1 — Overlay grip drag end. Just clear the armed Mgr; the
   //   geometry was committed via direct field writes during update.

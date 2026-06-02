@@ -1170,6 +1170,29 @@ private:
   // the type the selector will place.
   bool tab_bar_press(double sx, double sy);
   int  m_tab_active_type = 0;
+
+  // s336 INT-2 — tab-bar drag state (the "sliders"). Mirrors the m_overlay_grip
+  // loose-member pattern: tab_bar_press arms a drag, on_draw_update tracks it
+  // live, on_draw_end commits (one undoable set_text_tabs / set_text_indent per
+  // drag) or removes. Kept curvz_utils-free so this widely-included header stays
+  // light: the dragged stop's type rides as an int enum value, the OTHER stops
+  // ride as a canonical spec string, everything else is plain doubles. The
+  // dragged stop is HELD OUT of the spec during the drag (in m_tab_drag_type /
+  // _pos) so sorting can't shift an index out from under us as it crosses peers.
+  //   kind: 0=none 1=move/new stop 2=indent left 3=indent right 4=first-line
+  int    m_tab_drag_kind = 0;
+  double m_tab_drag_press_sx = 0.0, m_tab_drag_press_sy = 0.0;
+  std::string m_tab_drag_others;        // all stops EXCEPT the dragged one (sorted spec)
+  int    m_tab_drag_type = 0;           // dragged stop's TabAlign as int (0=L 1=C 2=R 3=D)
+  double m_tab_drag_pos = 0.0;          // dragged stop live pos (doc-px from origin)
+  double m_tab_drag_il = 0.0, m_tab_drag_ir = 0.0, m_tab_drag_ifst = 0.0;  // live indents (doc-px)
+  bool   m_tab_drag_off = false;        // pointer off the band → remove on release (stop drags)
+  // Live tracking: recompute the grabbed element from the current pointer,
+  // clamp, update the ghost, redraw. Commit/remove on release. Returns whether
+  // the event was consumed (a drag was live).
+  bool tab_bar_drag_update(double sx, double sy);
+  bool tab_bar_drag_end(double sx, double sy);
+
   void draw_text_compass(const Cairo::RefPtr<Cairo::Context> &cr); // s328 m4a
   void draw_guides(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h);
   void draw_ruler_overlay(const Cairo::RefPtr<Cairo::Context> &cr, int w,
