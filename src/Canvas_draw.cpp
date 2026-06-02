@@ -575,6 +575,221 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
   return tl.bytes_consumed;
 }
 
+// ── s335 — tab-bar geometry pump ──────────────────────────────────────────────
+// THE SEAM. Computes every screen-space coordinate the tab ruler needs, from
+// the current edit state. draw_tab_bar renders from it; tab_bar_press hit-tests
+// against it — one source of truth, so the ruler and its interaction stay in
+// register. Returns false (out.valid == false) when there is nothing to draw.
+bool Canvas::compute_tab_bar_layout(double ox, double oy, TabBarLayout& out) {
+  out = TabBarLayout{};
+  out.zoom = m_zoom; out.ox = ox; out.oy = oy;
+  if (!m_text_editing || !m_text_cursor) return false;
+  SceneNode* boundary = m_text_boundary_editing;
+  if (!boundary && !m_text_editing->text_boundary_ids.empty())
+    boundary = find_text_boundary(m_text_editing->text_boundary_ids.front());
+  if (!boundary || !boundary->path || boundary->path->nodes.size() < 3) return false;
+
+  const auto& bp = boundary->path->nodes;
+  double minx = bp[0].x, maxx = bp[0].x, miny = bp[0].y, maxy = bp[0].y;
+  for (const auto& n : bp) {
+    minx = std::min(minx, n.x); maxx = std::max(maxx, n.x);
+    miny = std::min(miny, n.y); maxy = std::max(maxy, n.y);
+  }
+  auto mg = effective_text_margins(m_text_editing, boundary);
+  out.origin_doc = minx + mg.left;
+  out.right_doc  = maxx - mg.right;
+  out.left_sx  = out.sx_of(out.origin_doc);
+  out.right_sx = out.sx_of(out.right_doc);
+  if (out.right_sx - out.left_sx < 4.0) return false;
+
+  const double top_sy = miny * m_zoom + oy;
+  out.bot_sy = maxy * m_zoom + oy;
+  const double BAND_H = 30.0;
+  double band_bot = top_sy - 1.0;
+  double band_top = band_bot - BAND_H;
+  if (band_top < 1.0) { band_top = top_sy + 1.0; band_bot = band_top + BAND_H; }
+  out.band_top = band_top;
+  out.band_bot = band_bot;
+  out.mid_y = std::floor((band_top + band_bot) * 0.5) + 0.5;
+
+  // Type-selector box: a square just past the right edge of the measuring span.
+  out.sel_w = BAND_H;
+  out.sel_x = out.right_sx + 4.0;
+  out.band_right_sx = out.sel_x + out.sel_w;
+
+  double il = 0.0, ir = 0.0, ifst = 0.0;
+  text_style_query_indents(il, ir, ifst);
+  out.indent_left = il; out.indent_right = ir; out.indent_first = ifst;
+  out.has_first = (ifst != 0.0);
+
+  out.valid = true;
+  return true;
+}
+
+
+// Affinity model). Themed off the same palette as the main Ruler (motif-keyed,
+// mirroring the css.hpp tokens) so it reads as "our ruler". Zero is the box's
+// TEXT MARGIN (the content-area left edge); ticks gradate rightward from there.
+// Shows the caret paragraph's tab stops as shape-coded markers (Left=square,
+// Centre=up-triangle, Right=down-triangle, Decimal=diamond) on the midline, the
+// paragraph's indent markers as light-grey triangles, and a faint drop-line per
+// stop down through the text so the intended alignment target is visible against
+// the actual flow. v1: head boundary, axis-aligned (frame rotation deferred).
+// Display only — the type selector + click-drag place / drag-off remove land in
+// the interaction milestone. Called from the screen-space overlay pass; cr has
+// NO doc transform active, so positions map by hand: screen_x = doc_x*m_zoom+ox.
+void Canvas::draw_tab_bar(const Cairo::RefPtr<Cairo::Context>& cr,
+                          double ox, double oy) {
+  TabBarLayout L;
+  if (!compute_tab_bar_layout(ox, oy, L)) return;
+
+  // Local aliases — the render code below reads these short names.
+  const double origin_doc = L.origin_doc, right_doc = L.right_doc;
+  const double left_sx = L.left_sx, right_sx = L.right_sx;
+  const double band_top = L.band_top, band_bot = L.band_bot;
+  const double mid_y = L.mid_y, bot_sy = L.bot_sy;
+  const double BAND_H = band_bot - band_top;
+  auto SX = [&](double x) { return L.sx_of(x); };
+
+  // Caret paragraph's stops + indents.
+  std::string spec;
+  text_style_query_tabs(spec);
+  auto stops = curvz::utils::parse_tab_spec(spec);
+  const double il = L.indent_left, ir = L.indent_right, ifst = L.indent_first;
+
+  // Motif palette — mirrors src/Ruler.cpp's RulerPalette (css.hpp tokens) so
+  // the tab ruler matches the main rulers in either theme.
+  const bool light = (doc_motif() == Motif::Light);
+  const double bg_r   = light ? 0.866 : 0.145;
+  const double tick_r = light ? 0.290 : 0.550;       // grey ticks/labels
+  const double ink_r  = light ? 0.150 : 0.880;       // marker ink
+  const double accent[3] = {0.31, 0.60, 0.94};
+
+  // Shape codec for a tab type — shared by the stop markers and the selector,
+  // so "what the selector shows" and "what a stop looks like" can't diverge.
+  auto draw_shape = [&](double cx, double cy, double r, curvz::utils::TabAlign t) {
+    switch (t) {
+      case curvz::utils::TabAlign::Left:                  // square
+        cr->rectangle(cx - r, cy - r, 2 * r, 2 * r); cr->fill(); break;
+      case curvz::utils::TabAlign::Center:                // triangle up
+        cr->move_to(cx, cy - r); cr->line_to(cx + r, cy + r);
+        cr->line_to(cx - r, cy + r); cr->close_path(); cr->fill(); break;
+      case curvz::utils::TabAlign::Right:                 // triangle down
+        cr->move_to(cx, cy + r); cr->line_to(cx + r, cy - r);
+        cr->line_to(cx - r, cy - r); cr->close_path(); cr->fill(); break;
+      case curvz::utils::TabAlign::Decimal:               // diamond
+        cr->move_to(cx, cy - r); cr->line_to(cx + r, cy);
+        cr->line_to(cx, cy + r); cr->line_to(cx - r, cy);
+        cr->close_path(); cr->fill(); break;
+    }
+  };
+
+  cr->save();
+
+  // Band background + 1px border (border guarantees visibility on any canvas).
+  // Background spans the whole band, including the selector area on the right.
+  cr->set_source_rgb(bg_r, bg_r, bg_r);
+  cr->rectangle(left_sx, band_top, L.band_right_sx - left_sx, BAND_H);
+  cr->fill();
+  cr->set_source_rgba(tick_r, tick_r, tick_r, 0.9);
+  cr->set_line_width(1.0);
+  cr->rectangle(std::floor(left_sx) + 0.5, std::floor(band_top) + 0.5,
+                std::floor(L.band_right_sx - left_sx), std::floor(BAND_H));
+  cr->stroke();
+  // Midline across the measuring span.
+  cr->move_to(left_sx, mid_y);
+  cr->line_to(right_sx, mid_y);
+  cr->stroke();
+
+  // Tick gradations from zero (origin) rightward. "Nice" minor step targeting
+  // ~7 screen px; every 5th is a major (taller + label).
+  {
+    double raw  = 7.0 / std::max(m_zoom, 0.01);
+    double mag  = std::pow(10.0, std::floor(std::log10(std::max(raw, 1e-6))));
+    double norm = raw / mag;
+    double minor = (norm <= 1.0 ? 1.0 : norm <= 2.0 ? 2.0 : norm <= 5.0 ? 5.0 : 10.0) * mag;
+    const int major_every = 5;
+    cr->select_font_face("Sans", Cairo::ToyFontFace::Slant::NORMAL,
+                         Cairo::ToyFontFace::Weight::NORMAL);
+    cr->set_font_size(8.0);
+    int i = 0;
+    for (double d = 0.0; origin_doc + d <= right_doc + 0.01 && i < 4000; d += minor, ++i) {
+      double sx = std::floor(SX(origin_doc + d)) + 0.5;
+      bool major = (i % major_every == 0);
+      cr->set_source_rgba(tick_r, tick_r, tick_r, major ? 0.95 : 0.6);
+      cr->move_to(sx, major ? band_top + 2.0 : mid_y - 3.0);
+      cr->line_to(sx, mid_y + 3.0);
+      cr->stroke();
+      if (major && i > 0) {
+        char lbl[24]; std::snprintf(lbl, sizeof(lbl), "%g", d);
+        cr->move_to(sx + 1.5, band_top + 8.0);
+        cr->show_text(lbl);
+      }
+    }
+  }
+
+  // Indent markers — light-grey triangles. Left + right point up from the band
+  // bottom; first-line points down from the band top (InDesign placement).
+  auto tri = [&](double doc_x, bool down) {
+    double sx = SX(doc_x);
+    if (sx < left_sx - 1 || sx > right_sx + 1) return;
+    cr->set_source_rgba(tick_r, tick_r, tick_r, 0.95);
+    const double s = 5.5;
+    if (down) {  // first-line, hanging from the top
+      cr->move_to(sx - s, band_top + 1.0);
+      cr->line_to(sx + s, band_top + 1.0);
+      cr->line_to(sx, band_top + 1.0 + s);
+    } else {     // left / right, sitting on the bottom
+      double y = band_bot - 1.0;
+      cr->move_to(sx - s, y);
+      cr->line_to(sx + s, y);
+      cr->line_to(sx, y - s);
+    }
+    cr->close_path();
+    cr->fill();
+  };
+  tri(origin_doc + il, false);                 // left indent
+  if (ifst != 0.0) tri(origin_doc + il + ifst, true);  // first-line (from left indent)
+  tri(right_doc - ir, false);                  // right indent (from right margin)
+
+  // Tab stops — drop-line + shape-coded marker on the midline.
+  std::vector<double> dash = {3.0, 3.0};
+  for (const auto& s : stops) {
+    const double sx = SX(origin_doc + s.pos);
+    if (sx < left_sx - 1 || sx > right_sx + 1) continue;
+    const double mx = std::floor(sx) + 0.5;
+
+    // Drop-line into the text — the "what the text is supposed to be" cue.
+    cr->save();
+    cr->set_source_rgba(accent[0], accent[1], accent[2], 0.40);
+    cr->set_line_width(1.0);
+    cr->set_dash(dash, 0);
+    cr->move_to(mx, band_bot);
+    cr->line_to(mx, bot_sy);
+    cr->stroke();
+    cr->restore();
+
+    // Shape encodes the type. Filled in the ink colour (dark on a light ruler,
+    // light on a dark one) so the stops read as the primary marks.
+    cr->set_source_rgb(ink_r, ink_r, ink_r);
+    draw_shape(mx, mid_y, 5.0, s.type);
+  }
+
+  // Type selector — square at the right end of the band, showing the active
+  // type's shape (what a click on the ruler will place). A separator divides it
+  // from the measuring span. Clicking it cycles the type (tab_bar_press).
+  cr->set_source_rgba(tick_r, tick_r, tick_r, 0.9);
+  cr->set_line_width(1.0);
+  cr->move_to(std::floor(L.sel_x) + 0.5, band_top + 2.0);
+  cr->line_to(std::floor(L.sel_x) + 0.5, band_bot - 2.0);
+  cr->stroke();
+  cr->set_source_rgb(ink_r, ink_r, ink_r);
+  draw_shape(L.sel_x + L.sel_w * 0.5, mid_y, 5.0,
+             static_cast<curvz::utils::TabAlign>(m_tab_active_type));
+
+  cr->restore();
+}
+
 void Canvas::draw_text_node(const Cairo::RefPtr<Cairo::Context> &cr,
                             const SceneNode &obj) {
   // ── s301 m1c — Bound text routes to draw_text_in_boundary ─────────────
@@ -1007,6 +1222,11 @@ void Canvas::on_draw(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h) {
       cr->restore();
     }
   }
+
+  // ── s335 — on-canvas tab bar (screen space) ───────────────────────────
+  // Shown while a text edit is active; reads the caret paragraph's stops.
+  if (m_text_editing && m_text_cursor)
+    draw_tab_bar(cr, ox, oy);
 
   // ── Pen tool WIP — document space ─────────────────────────────────────
   if (m_tool == ActiveTool::Pen && m_pen_tool.has_wip) {

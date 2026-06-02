@@ -1496,13 +1496,13 @@ button.tb-type-btn.tb-type-btn-active {
 }
 .curvz-style-chip {
     min-height: 0;
-    padding: 1px 6px;
+    padding: 1px 3px;
 }
 .curvz-style-chip image {
     -gtk-icon-size: 14px;
 }
 .curvz-style-sep {
-    margin: 2px 4px;
+    margin: 2px 0;
 }
 /* s330 — Weight popover preset stops: full-width left-aligned menu rows with
    hover feedback so the flat (frameless) buttons still read as a pickable
@@ -1542,6 +1542,17 @@ button.tb-type-btn.tb-type-btn-active {
     background-color: var(--hover-bg);
     color: var(--fg-muted);
     border: 1px dashed var(--fg-muted);
+}
+/* s334 — Emphasis as a written-out vertical list (Italic / Underline / ... /
+   Superscript / Subscript). Full-width left-aligned rows so the popover reads
+   as a menu, not a glyph cluster; the :checked / mixed faces above still carry
+   the lit state. */
+.curvz-style-emph-row {
+    padding: 2px 10px;
+    min-width: 120px;
+}
+.curvz-style-emph-row:hover {
+    background-color: var(--hover-bg);
 }
 
 /* s148 m2 fix3: indent the body of a nested disclosure (e.g. the

@@ -533,6 +533,7 @@ static std::string encode_markup(const std::string& text,
         if (s.type == curvz::utils::kCurvzStrokeColorAttr ||
             s.type == curvz::utils::kCurvzStrokeWidthAttr) continue;
         if (s.type == curvz::utils::kCurvzAlignAttr) continue;  // s332 — not a Pango attr
+        if (s.type == curvz::utils::kCurvzTabsAttr) continue;   // s335 — not a Pango attr
         if (s.start_byte <= text.size()) bounds.push_back(s.start_byte);
         if (s.end_byte   <= text.size()) bounds.push_back(s.end_byte);
     }
@@ -584,6 +585,16 @@ static std::string encode_markup(const std::string& text,
                     break;
                 case PANGO_ATTR_LETTER_SPACING:
                     attrs += " letter_spacing=\"" + std::to_string(s.ivalue) + "\"";
+                    break;
+                case PANGO_ATTR_RISE:
+                    attrs += " rise=\"" + std::to_string(s.ivalue) + "\"";
+                    break;
+                case PANGO_ATTR_FONT_SCALE:
+                    attrs += std::string(" font_scale=\"")
+                           + (s.ivalue == PANGO_FONT_SCALE_SUPERSCRIPT ? "superscript"
+                            : s.ivalue == PANGO_FONT_SCALE_SUBSCRIPT   ? "subscript"
+                                                                       : "none")
+                           + "\"";
                     break;
                 case PANGO_ATTR_FAMILY:
                     attrs += " font_family=\"" + esc(s.svalue, true) + "\"";
@@ -710,6 +721,46 @@ static void write_textbox_mgr_def(std::ostringstream& out,
         }
         if (!al.empty())
             out << " data-curvz-align=\"" << al << "\"";
+    }
+    // s334 — per-paragraph indent runs (left / right / first-line). Same flat
+    //   "start:end:ivalue;..." shape as alignment; ivalue = doc-px x PANGO_SCALE.
+    //   0 is stored as no run, so un-indented boxes stay byte-identical.
+    {
+        struct { int type; const char* attr; } kinds[] = {
+            { curvz::utils::kCurvzIndentLeftAttr,  "data-curvz-indent-left"  },
+            { curvz::utils::kCurvzIndentRightAttr, "data-curvz-indent-right" },
+            { curvz::utils::kCurvzIndentFirstAttr, "data-curvz-indent-first" },
+        };
+        for (const auto& k : kinds) {
+            std::string runs;
+            for (const auto& s : mgr.text_attr_spans) {
+                if (s.type != k.type) continue;
+                if (!runs.empty()) runs += ";";
+                runs += std::to_string(s.start_byte) + ":" +
+                        std::to_string(s.end_byte) + ":" +
+                        std::to_string(s.ivalue);
+            }
+            if (!runs.empty())
+                out << " " << k.attr << "=\"" << runs << "\"";
+        }
+    }
+    // s335 — per-paragraph TAB STOPS (kCurvzTabsAttr). STRING-valued, unlike the
+    //   int run-lists above: the value is the "pos,type;..." spec, which itself
+    //   uses ';' and ',', so the run separator here is '|' (which can never
+    //   appear in a tab spec) instead of ';'. Shape: "start:end:spec|...". The
+    //   spec contains no XML-special chars by construction, so it rides raw (no
+    //   xml_escape). 0 runs -> attribute omitted (byte-identical to no tabs).
+    {
+        std::string runs;
+        for (const auto& s : mgr.text_attr_spans) {
+            if (s.type != curvz::utils::kCurvzTabsAttr) continue;
+            if (s.svalue.empty()) continue;
+            if (!runs.empty()) runs += "|";
+            runs += std::to_string(s.start_byte) + ":" +
+                    std::to_string(s.end_byte) + ":" + s.svalue;
+        }
+        if (!runs.empty())
+            out << " data-curvz-tabs=\"" << runs << "\"";
     }
     // s327 m1 — baseline flow angle (radians). Default 0 omits cleanly so
     //   pre-s327 / un-rotated boxes stay byte-identical. fmt6 matches the

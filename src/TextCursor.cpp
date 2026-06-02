@@ -36,6 +36,26 @@
 
 namespace Curvz {
 
+// ── s333 — justify spill knobs (TEMP: live-tunable via the StyleBar slider) ──
+// Comfort = extra width (in em) a word-space may gain under justify before the
+// overflow spills into letter-spacing. Track = ceiling (em) on that letter-
+// spacing so it never reads "spacey." These are file-scope statics, not
+// compile-time consts, so the temp tuning slider can sweep them live without a
+// recompile (the slider writes them via curvz_set_justify_knobs and forces a
+// canvas redraw; compute_text_layout re-runs on draw and reads the new values).
+// When the values are dialed in, fold the winners back to consts and delete the
+// slider + these globals.
+static double g_justify_comfort_em = 0.18;
+static double g_justify_track_em   = 0.05;
+void curvz_set_justify_knobs(double comfort_em, double track_em) {
+    g_justify_comfort_em = comfort_em;
+    g_justify_track_em   = track_em;
+}
+void curvz_get_justify_knobs(double& comfort_em, double& track_em) {
+    comfort_em = g_justify_comfort_em;
+    track_em   = g_justify_track_em;
+}
+
 // s305 m4f — Find the last baseline with content (byte_start < byte_end).
 //   compute_text_layout emits empty baselines below the content to show
 //   the user the textbox's full line capacity. End-of-buffer caret /
@@ -640,6 +660,10 @@ static PangoAttrList* build_line_attrs(const SceneNode* text,
                 a = pango_attr_size_new_absolute((int)s.ivalue); break;
             case PANGO_ATTR_LETTER_SPACING:
                 a = pango_attr_letter_spacing_new((int)s.ivalue); break;
+            case PANGO_ATTR_RISE:
+                a = pango_attr_rise_new((int)s.ivalue); break;
+            case PANGO_ATTR_FONT_SCALE:
+                a = pango_attr_font_scale_new((PangoFontScale)s.ivalue); break;
             case PANGO_ATTR_FAMILY:
                 a = pango_attr_family_new(s.svalue.c_str()); break;
             case PANGO_ATTR_FOREGROUND: {
@@ -888,6 +912,19 @@ static double leading_for_byte(const SceneNode* text, double default_leading,
   return default_leading;
 }
 
+// s334 — per-paragraph indent (doc units). Same shape as leading_for_byte: a
+// private indent run covering the line's start byte (which sits in the owning
+// paragraph) wins; default 0 = no inset. ivalue is doc-px x PANGO_SCALE.
+static double indent_for_byte(const SceneNode* text, int attr, size_t byte) {
+  if (!text) return 0.0;
+  double v = 0.0;
+  for (const auto& s : text->text_attr_spans)
+    if (s.type == attr &&
+        (size_t)s.start_byte <= byte && (size_t)s.end_byte > byte)
+      v = (double)s.ivalue / (double)PANGO_SCALE;
+  return v;
+}
+
 // s331 — see header. Mirrors compute_text_layout's base-font metric block
 // (lines ~970-1012) so the read-out and the stride agree by construction.
 double metric_leading_px(const SceneNode* text) {
@@ -1107,6 +1144,29 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         }
         double x_start = spans.front().start.x;
         double x_end   = spans.front().end.x;
+        // s334 — per-paragraph indents inset the line's span BEFORE wrap and
+        // alignment (so breaking, L/C/R and justify all operate on the inset
+        // width). Left/right inset every line of the paragraph; first-line adds
+        // to the left inset only on the paragraph's first visual line — a hard
+        // boundary (buffer start or just after '\n'); soft-wrap continuations
+        // are not paragraph starts, so they keep the plain left inset. Negative
+        // first-line is a hanging indent. Clamp so an over-large inset never
+        // inverts the span.
+        {
+          const bool para_start =
+              (line_start == 0) || (buf[line_start - 1] == '\n');
+          const double ind_l = indent_for_byte(
+              text, curvz::utils::kCurvzIndentLeftAttr,  line_start);
+          const double ind_r = indent_for_byte(
+              text, curvz::utils::kCurvzIndentRightAttr, line_start);
+          const double ind_f = para_start
+              ? indent_for_byte(text, curvz::utils::kCurvzIndentFirstAttr,
+                                line_start)
+              : 0.0;
+          x_start += ind_l + ind_f;
+          x_end   -= ind_r;
+          if (x_end < x_start) x_end = x_start;
+        }
         double avail   = x_end - x_start;
 
         // Build a single-line layout for the remaining buffer.
@@ -1275,6 +1335,13 @@ TextLayout compute_text_layout(const SceneNode* boundary,
             bl.byte_end = line_consumed_end;
             cursor = line_consumed_end;
         }
+        // s333 — paragraph-end detection for justify. cursor now points at the
+        // first byte NOT on this line (the hard-'\n' consume below hasn't run
+        // yet). The line ended by a SOFT wrap iff more non-newline content
+        // follows: buffer not exhausted AND the next byte isn't a hard '\n'.
+        // A pending '\n' (hard paragraph break) or end-of-buffer means this is
+        // the paragraph's last line -> stays left under justify.
+        bl.ended_by_wrap = (cursor < buf.size()) && (buf[cursor] != '\n');
         out.baselines.push_back(std::move(bl));
 
         // If we broke at a '\n', consume that newline byte too (it
@@ -1298,7 +1365,9 @@ TextLayout compute_text_layout(const SceneNode* boundary,
     // the visible text never drifts from the caret/selection geometry. avail
     // varies per line inside a curvy boundary, so each line aligns within its
     // own width (centre text in a vase outline -> each line centres in its
-    // own span). Justify (3) is the follow-up; clamped to <=2 on set for now.
+    // own span). Justify (3) is handled here too as of s333: it is NOT an
+    // x-shift -- the line stays at its span's left edge and Pango stretches
+    // the glyphs to fill the span by widening inter-word gaps.
     if (text) {
         for (auto& bl : out.baselines) {
             if (!bl.pango) continue;
@@ -1312,6 +1381,131 @@ TextLayout compute_text_layout(const SceneNode* boundary,
                 }
             }
             if (align <= 0) continue;  // left default — no shift
+
+            if (align == 3) {
+                // s333 — Justify. Only soft-wrapped lines with content stretch;
+                // a paragraph's final line (ended_by_wrap == false) and empty
+                // lines stay left-natural. x_start is unchanged (the line still
+                // begins at its span's left edge); Pango spreads within `width`.
+                //
+                // Each baseline is its OWN single-line layout, so this one line
+                // is the layout's "last line" — Pango won't justify the last
+                // line unless told to. set_justify_last_line(TRUE) (Pango 1.50+,
+                // pango 1.54 in the build) forces the stretch; our ended_by_wrap
+                // gate above is what enforces the real paragraph-last-line rule.
+                if (!bl.ended_by_wrap) continue;
+                if (bl.byte_end <= bl.byte_start) continue;  // empty line
+                double avail = bl.x_end - bl.x_start;
+                if (avail <= 0.0) continue;
+
+                // ── s333 — letter-spacing SPILL (river suppression) ──────────
+                // Plain Pango justify widens only the inter-word SPACES, equally
+                // (Bresenham-rounded). On short lines with few words that yawns
+                // the gaps into "rivers." We cap how far a space may stretch and
+                // spill the OVERFLOW into a small, bounded letter-spacing — which
+                // Pango is NOT allowed to count as expandable, so it composes
+                // cleanly: we widen letters by a fixed amount, Pango then
+                // recomputes the (now larger) natural width and distributes only
+                // the REMAINING slack across the spaces. Result: spaces carry the
+                // load up to a comfort ceiling, letters quietly absorb the rest.
+                //
+                // CRITICAL — this is NOT a stored property. It is a transient
+                // layout output, computed here from THIS line's bytes and THIS
+                // line's `avail`, applied to the freshly-built `bl.pango`, and
+                // never written back to text_attr_spans. compute_text_layout
+                // re-runs on every draw / caret move / box resize / edit, so a
+                // tb resize or an added word re-breaks the line and recomputes
+                // the spill from scratch. The only durable thing is the INTENT
+                // (kCurvzAlignAttr ivalue=3). Do NOT "optimize" by caching the
+                // letter-spacing on the node or as a span — that reintroduces the
+                // staleness bug (a value computed for a line that no longer
+                // exists). The spill must die with the layout object every frame.
+                //
+                // The two knobs are live-tunable (TEMP slider) — see the file-
+                // scope g_justify_* statics. comfort = extra a space may gain
+                // before letters help; track = letter-spacing ceiling.
+                const double kComfortSpaceEm = g_justify_comfort_em;
+                const double kMaxTrackEm     = g_justify_track_em;
+                int w0px = 0;
+                pango_layout_get_pixel_size(bl.pango.get(), &w0px, nullptr);
+                double slack = avail - (double)w0px;
+                if (slack > 0.0) {
+                    gint n_attrs = 0;
+                    const PangoLogAttr* la =
+                        pango_layout_get_log_attrs_readonly(bl.pango.get(),
+                                                            &n_attrs);
+                    int n_spaces = 0;
+                    for (int i = 0; i < n_attrs; ++i)
+                        if (la[i].is_expandable_space) ++n_spaces;
+                    int n_chars = pango_layout_get_character_count(bl.pango.get());
+                    int gaps    = std::max(1, n_chars - 1);
+
+                    double comfort = font_size * kComfortSpaceEm;
+                    double max_ls  = font_size * kMaxTrackEm;
+                    double ls_doc  = 0.0;
+                    if (n_spaces > 0) {
+                        // Spill only the excess beyond what spaces can carry
+                        // comfortably; if spaces alone stay under the ceiling,
+                        // leave letters untouched and let plain justify run.
+                        double per_space = slack / (double)n_spaces;
+                        if (per_space > comfort) {
+                            double excess = slack - comfort * (double)n_spaces;
+                            ls_doc = excess / (double)gaps;
+                        }
+                    } else {
+                        // Single word, no expandable spaces — letters are the
+                        // ONLY stretch path (Pango won't cluster-justify Latin).
+                        ls_doc = slack / (double)gaps;
+                    }
+                    if (ls_doc > max_ls) ls_doc = max_ls;
+
+                    // ── STRUCTURAL anti-rewrap clamp (belt-and-braces) ──────
+                    // Pango decides WRAPPING from the line's natural width; we
+                    // set the layout width to `avail` below. If letter-spacing
+                    // inflates the natural width to >= avail, Pango re-wraps the
+                    // single-line layout into TWO lines and the renderer stacks
+                    // them at one baseline -> shattered glyphs. So letter-spacing
+                    // must never push the natural width up to avail. Pango can
+                    // apply spacing to EVERY cluster (incl. edges), so bound the
+                    // growth conservatively by n_chars (not interior gaps) and
+                    // leave a 2px margin of slack for the word-gaps. Justify then
+                    // fills that residual into the spaces. This makes a re-wrap
+                    // impossible at ANY knob value -- the knob affects looks, not
+                    // correctness.
+                    double max_ls_fit =
+                        (slack - 2.0) / (double)std::max(1, n_chars);
+                    if (max_ls_fit < 0.0) max_ls_fit = 0.0;
+                    if (ls_doc > max_ls_fit) ls_doc = max_ls_fit;
+
+                    int ls_pango = (int)(ls_doc * PANGO_SCALE + 0.5);
+                    if (ls_pango > 0) {
+                        // Add a whole-line letter-spacing attr ON TOP of the
+                        // existing per-run attrs; copy + set_attributes forces
+                        // Pango to re-shape (mutating the cached list in place
+                        // would not invalidate the layout). end_index G_MAXUINT
+                        // = "to end of text," so no byte-length bookkeeping.
+                        PangoAttrList* base =
+                            pango_layout_get_attributes(bl.pango.get());
+                        PangoAttrList* nl = base ? pango_attr_list_copy(base)
+                                                 : pango_attr_list_new();
+                        PangoAttribute* a = pango_attr_letter_spacing_new(ls_pango);
+                        a->start_index = 0;
+                        a->end_index   = G_MAXUINT;
+                        pango_attr_list_insert(nl, a);  // takes ownership of `a`
+                        pango_layout_set_attributes(bl.pango.get(), nl);
+                        pango_attr_list_unref(nl);
+                    }
+                }
+                // ─────────────────────────────────────────────────────────────
+
+                pango_layout_set_width(bl.pango.get(),
+                                       (int)(avail * PANGO_SCALE));
+                pango_layout_set_justify(bl.pango.get(), TRUE);
+                pango_layout_set_justify_last_line(bl.pango.get(), TRUE);
+                continue;
+            }
+
+            // centre (1) / right (2) — measure the natural width and shift.
             int wpx = 0;
             pango_layout_get_pixel_size(bl.pango.get(), &wpx, nullptr);
             double slack = (bl.x_end - bl.x_start) - (double)wpx;

@@ -478,7 +478,8 @@ public:
   // italic and OFF for the other three (they have no node-level scalar).
   // Returns false when no edit is active (the popover toggles reset to off).
   bool text_style_query_emphasis(int &out_italic, int &out_underline,
-                                  int &out_strike, int &out_overline) const;
+                                  int &out_strike, int &out_overline,
+                                  int &out_super, int &out_sub) const;
 
   // s331 — size lit-state. Effective font size over the selection/caret, in
   // POINTS (the chip's unit). Returns false when no edit is active; otherwise
@@ -525,7 +526,21 @@ public:
   // align 0 (left) clears the run back to the default. Undoable. The query
   // samples the caret paragraph's effective alignment (0=left default).
   void set_text_alignment(int align);
+  void set_text_indent(int which, double doc_value);  // s334 — 0=L 1=R 2=first
   bool text_style_query_alignment(int &out_align) const;
+
+  // s335 — per-paragraph TAB STOPS. String-valued paragraph property: `spec`
+  // is the canonical "pos,type;..." list (curvz::utils tab-spec grammar). The
+  // setter paragraph-snaps the selection like alignment/indents and writes a
+  // kCurvzTabsAttr run carrying the spec in svalue; an empty spec clears the
+  // run (back to the default tab interval). Undoable. The query returns the
+  // caret paragraph's effective spec (empty when none).
+  void set_text_tabs(const std::string& spec);
+  bool text_style_query_tabs(std::string& out_spec) const;
+
+  // s335 — caret paragraph's indents (doc-px) for the live-read; 0 when none.
+  bool text_style_query_indents(double& out_left, double& out_right,
+                                double& out_first) const;
 
   // s158 m1 — SelectionContext is the canonical answer to "what's
   // selected and what can it do?" Refreshed automatically whenever
@@ -1119,6 +1134,42 @@ private:
   void draw_eyedropper_loupe(const Cairo::RefPtr<Cairo::Context> &cr);
   void refresh_loupe_buffer();
   void draw_selection_handles(const Cairo::RefPtr<Cairo::Context> &cr);
+
+  // s335 — on-canvas tab bar. A thin SCREEN-SPACE ruler butted to the top edge
+  // of the edited textbox, showing the caret paragraph's tab stops (+ indent
+  // markers) in the box's coordinate frame, with a faint drop-line per stop so
+  // the intended alignment target is visible against the actual text flow.
+  // v1: the first TB / axis-aligned box (frame rotation deferred). ox/oy are
+  // the draw pass's pan offsets (doc x -> screen: x*m_zoom + ox).
+  void draw_tab_bar(const Cairo::RefPtr<Cairo::Context> &cr, double ox, double oy);
+
+  // s335 — shared tab-bar geometry. THE SEAM: draw_tab_bar and the input
+  // hit-test both read this one layout, so the ruler and its interaction can
+  // never drift apart. Pure screen-space geometry (no TabAlign here, to keep
+  // curvz_utils out of this widely-included header). doc -> screen is
+  // sx = doc_x * zoom + ox.
+  struct TabBarLayout {
+    bool   valid = false;
+    double zoom = 1.0, ox = 0.0, oy = 0.0;
+    double origin_doc = 0.0, right_doc = 0.0;    // ruler zero + right bound (doc-px)
+    double left_sx = 0.0, right_sx = 0.0;        // measuring span (screen x)
+    double band_top = 0.0, band_bot = 0.0, mid_y = 0.0;
+    double bot_sy = 0.0;                          // box bottom edge (screen y)
+    double band_right_sx = 0.0;                  // band right edge incl. selector
+    double sel_x = 0.0, sel_w = 0.0;             // type-selector box (screen rect)
+    double indent_left = 0.0, indent_right = 0.0, indent_first = 0.0;  // doc-px
+    bool   has_first = false;
+    double sx_of(double doc_x) const { return doc_x * zoom + ox; }
+    double doc_of(double sx) const { return zoom > 1e-9 ? (sx - ox) / zoom : 0.0; }
+  };
+  bool compute_tab_bar_layout(double ox, double oy, TabBarLayout &out);
+  // s335 INT-1 — tab-bar press handler. Hit-tests the ruler in screen coords;
+  // cycles the selector type, cycles a stop's type, or places a new stop.
+  // Returns true if the press was consumed (caller must not fall through to
+  // tool dispatch). m_tab_active_type is the enum value (0=L,1=R,2=C,3=D) of
+  // the type the selector will place.
+  bool tab_bar_press(double sx, double sy);
+  int  m_tab_active_type = 0;
   void draw_text_compass(const Cairo::RefPtr<Cairo::Context> &cr); // s328 m4a
   void draw_guides(const Cairo::RefPtr<Cairo::Context> &cr, int w, int h);
   void draw_ruler_overlay(const Cairo::RefPtr<Cairo::Context> &cr, int w,

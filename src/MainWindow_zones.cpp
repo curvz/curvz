@@ -10,6 +10,7 @@
 #include "SvgOptimiser.hpp"
 #include "SvgParser.hpp"
 #include "SvgWriter.hpp"
+#include "TextCursor.hpp"  // s333 TEMP — curvz_set_justify_knobs (tuning slider)
 #include "TemplateLibrary.hpp"
 #include "ThemeEditDialog.hpp" // s183 m2 — Edit-theme dialog wiring
 #include "widgets/ToggleButton.hpp" // s190 m2 / s219 m1 — substrate-routed Scripter toggle
@@ -1647,6 +1648,16 @@ void MainWindow::setup_layout() {
   // s332 — Alignment (per-paragraph): 0=left, 1=centre, 2=right.
   m_style_bar.set_align_request(
       [this](int align) { m_canvas.set_text_alignment(align); });
+  m_style_bar.set_indent_request(  // s334
+      [this](int which, double v) { m_canvas.set_text_indent(which, v); });
+  m_style_bar.set_tabs_request(  // s335
+      [this](const std::string& spec) { m_canvas.set_text_tabs(spec); });
+  // s333 TEMP — justify tuning slider drives the live spill knobs and redraws.
+  m_style_bar.set_justify_knob_request(
+      [this](double comfort_em, double track_em) {
+        curvz_set_justify_knobs(comfort_em, track_em);
+        m_canvas.queue_draw();
+      });
   // Show/hide with the edit session — the single edit-state signal covers
   // every enter/exit path.
   m_canvas.signal_text_edit_changed().connect(
@@ -1669,11 +1680,11 @@ void MainWindow::setup_layout() {
       m_style_bar.set_weight_face(0, false, false);
     // s331 — emphasis lit-state: per-decoration 0=off / 1=on / 2=mixed pushed
     // into the popover toggles. No active edit -> all off.
-    int ital = 0, undl = 0, strk = 0, ovrl = 0;
-    if (m_canvas.text_style_query_emphasis(ital, undl, strk, ovrl))
-      m_style_bar.set_emphasis_state(ital, undl, strk, ovrl);
+    int ital = 0, undl = 0, strk = 0, ovrl = 0, sup = 0, sub = 0;
+    if (m_canvas.text_style_query_emphasis(ital, undl, strk, ovrl, sup, sub))
+      m_style_bar.set_emphasis_state(ital, undl, strk, ovrl, sup, sub);
     else
-      m_style_bar.set_emphasis_state(0, 0, 0, 0);
+      m_style_bar.set_emphasis_state(0, 0, 0, 0, 0, 0);
     // s331 — size lit-state: effective point size (or mixed) onto the face +
     // popover spin.
     double pt = 0.0;
@@ -1711,6 +1722,20 @@ void MainWindow::setup_layout() {
     int align = 0;
     if (m_canvas.text_style_query_alignment(align))
       m_style_bar.set_align_face(align);
+    // s335 — caret paragraph's tab spec into the Tabs popover's cache (the
+    // popover reads it on show to build the row list).
+    std::string tabspec;
+    if (m_canvas.text_style_query_tabs(tabspec))
+      m_style_bar.set_tabs_state(tabspec);
+    else
+      m_style_bar.set_tabs_state("");
+    // s335 — caret paragraph's indents onto the Indents popover spins (live-
+    // read; clicking into a paragraph reflects its indents). Doc-px.
+    double ind_l = 0.0, ind_r = 0.0, ind_f = 0.0;
+    if (m_canvas.text_style_query_indents(ind_l, ind_r, ind_f))
+      m_style_bar.set_indent_values(ind_l, ind_r, ind_f);
+    else
+      m_style_bar.set_indent_values(0.0, 0.0, 0.0);
   });
 
   m_canvas.set_document(m_project->active_doc());

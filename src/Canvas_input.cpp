@@ -2712,9 +2712,80 @@ void Canvas::on_pan_update(double dx, double dy) {
 void Canvas::on_pan_end(double /*dx*/, double /*dy*/) {}
 
 // ── Input: left-drag — route by tool ─────────────────────────────────────────
+// ── s335 INT-1 — tab-bar press handler ────────────────────────────────────────
+// Hit-tests the on-canvas tab ruler in screen coords against the shared layout
+// (compute_tab_bar_layout — same source the draw uses, so click and paint stay
+// in register). Three outcomes, in priority order:
+//   1. selector box  → cycle the active type (L -> C -> R -> D)
+//   2. existing stop  → cycle THAT stop's type
+//   3. bare measuring span → place a new stop of the active type
+// Returns true if the press was consumed. Move / drag-off-remove / indent
+// sliders are the INT-2 milestone (they add update/end handling).
+bool Canvas::tab_bar_press(double sx, double sy) {
+  if (!m_text_editing || !m_text_cursor) return false;
+  TabBarLayout L;
+  if (!compute_tab_bar_layout(doc_origin_x(), doc_origin_y(), L)) return false;
+
+  // Vertical hit: within the band (small slop).
+  if (sy < L.band_top - 2.0 || sy > L.band_bot + 2.0) return false;
+
+  static const curvz::utils::TabAlign kCycle[4] = {
+      curvz::utils::TabAlign::Left, curvz::utils::TabAlign::Center,
+      curvz::utils::TabAlign::Right, curvz::utils::TabAlign::Decimal};
+  auto next_type = [](curvz::utils::TabAlign t) {
+    int idx = 0;
+    for (int k = 0; k < 4; ++k) if (kCycle[k] == t) { idx = k; break; }
+    return kCycle[(idx + 1) % 4];
+  };
+
+  // 1. Selector box → cycle the active (to-be-placed) type.
+  if (sx >= L.sel_x && sx <= L.sel_x + L.sel_w) {
+    m_tab_active_type =
+        static_cast<int>(next_type(static_cast<curvz::utils::TabAlign>(m_tab_active_type)));
+    queue_draw();
+    return true;
+  }
+
+  // Outside the measuring span (and not the selector) → not ours.
+  if (sx < L.left_sx - 4.0 || sx > L.right_sx + 4.0) return false;
+
+  std::string spec;
+  text_style_query_tabs(spec);
+  auto stops = curvz::utils::parse_tab_spec(spec);
+
+  // 2. Hit an existing stop (within tolerance) → cycle its type.
+  const double TOL = 6.0;
+  for (auto& st : stops) {
+    double stx = L.sx_of(L.origin_doc + st.pos);
+    if (std::abs(sx - stx) <= TOL) {
+      st.type = next_type(st.type);
+      set_text_tabs(curvz::utils::format_tab_spec(stops));
+      return true;
+    }
+  }
+
+  // 3. Bare span → place a new stop of the active type at the clicked position.
+  double pos = L.doc_of(sx) - L.origin_doc;
+  pos = std::max(0.0, std::min(pos, L.right_doc - L.origin_doc));
+  curvz::utils::TabStop ns;
+  ns.pos = pos;
+  ns.type = static_cast<curvz::utils::TabAlign>(m_tab_active_type);
+  stops.push_back(ns);
+  set_text_tabs(curvz::utils::format_tab_spec(stops));
+  return true;
+}
+
 void Canvas::on_draw_begin(double x, double y) {
   if (!m_doc)
     return;
+
+  // s335 — tab-bar interaction takes priority while editing text. A press on
+  // the on-canvas tab ruler is consumed here; we must not fall through to tool
+  // dispatch, which would start a marquee or move the selection.
+  if (m_text_editing && m_text_cursor && tab_bar_press(x, y)) {
+    queue_draw();
+    return;
+  }
 
   // Space+left-drag → pan regardless of active tool.
   // Capture pan origin and early-return — no tool action.

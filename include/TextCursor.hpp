@@ -78,6 +78,14 @@ struct BaselineLayout {
     double height     = 0.0;   // full line height including leading (doc units)
     size_t byte_start = 0;     // inclusive, into text_content
     size_t byte_end   = 0;     // exclusive
+    bool   ended_by_wrap = false;  // s333 — true if this line ended at a SOFT
+                               // wrap (more content follows on the next line
+                               // within the same paragraph), false if it ended
+                               // at a hard '\n' / buffer end (the paragraph's
+                               // last line). Justify keys off this: only
+                               // soft-wrapped lines stretch edge to edge; a
+                               // paragraph's final line stays left. Set in
+                               // compute_text_layout at the content-line push.
     struct PangoDeleter { void operator()(PangoLayout* p) const { if (p) g_object_unref(p); } };
     std::unique_ptr<PangoLayout, PangoDeleter> pango;
 };
@@ -120,6 +128,13 @@ struct TextLayout {
 TextLayout compute_text_layout(const SceneNode* boundary,
                                const SceneNode* text,
                                size_t byte_start = 0);
+
+// ── s333 — justify spill knobs (TEMP, live-tunable via StyleBar slider) ──────
+// Comfort/track in em (see TextCursor.cpp). The tuning slider writes these and
+// forces a canvas redraw; compute_text_layout reads them on the next layout.
+// Fold the dialed-in values back to consts and delete this when tuned.
+void curvz_set_justify_knobs(double comfort_em, double track_em);
+void curvz_get_justify_knobs(double& comfort_em, double& track_em);
 
 // s331 — the auto/metric leading (doc-px) for a text node's BASE font: the
 // exact value compute_text_layout uses as the per-line stride when no explicit

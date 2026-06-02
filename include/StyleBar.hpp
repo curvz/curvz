@@ -41,9 +41,13 @@
 #include <gtkmm/box.h>
 #include <gtkmm/drawingarea.h>
 #include <gtkmm/image.h>
+#include <gtkmm/label.h>
+#include <gtkmm/listbox.h>
 #include <gtkmm/menubutton.h>
 #include <gtkmm/popover.h>
+#include <gtkmm/scale.h>
 #include <gtkmm/separator.h>
+#include <gtkmm/spinbutton.h>
 #include <gtkmm/togglebutton.h>
 #include <functional>
 #include <string>
@@ -94,6 +98,25 @@ public:
   using AlignRequest = std::function<void(int align)>;
   void set_align_request(AlignRequest cb) { m_align_request = std::move(cb); }
 
+  // s334 — Indents (per-paragraph), doc units. which: 0 = left, 1 = right,
+  // 2 = first-line. Wired to Canvas::set_text_indent.
+  using IndentRequest = std::function<void(int which, double value)>;
+  void set_indent_request(IndentRequest cb) { m_indent_request = std::move(cb); }
+
+  // s335 — Tabs (per-paragraph). The whole stop list is one request: `spec` is
+  // the canonical "pos,type;..." string the popover builds from its row list.
+  // Wired to Canvas::set_text_tabs (which paragraph-snaps + canonicalises).
+  using TabsRequest = std::function<void(const std::string& spec)>;
+  void set_tabs_request(TabsRequest cb) { m_tabs_request = std::move(cb); }
+
+  // s333 TEMP — justify spill tuning slider. Fires (comfort_em, track_em) as the
+  // user drags; MainWindow writes the knobs and redraws the canvas. Remove with
+  // the slider once the values are dialed in.
+  using JustifyKnobRequest = std::function<void(double comfort_em, double track_em)>;
+  void set_justify_knob_request(JustifyKnobRequest cb) {
+    m_justify_knob_request = std::move(cb);
+  }
+
   // s330 — live face setters, driven by Canvas's text-style-changed signal
   // (relayed by MainWindow). Family: the name, the mixed marker if the
   // selection spans more than one family, or the axis name "Font" when
@@ -133,6 +156,18 @@ public:
   // s332 — reflect the caret paragraph's alignment on the chip face.
   void set_align_face(int align);
 
+  // s335 — sync the Indents popover spins to the caret paragraph's values
+  // (doc-px), pushed on the text-style-changed relay so clicking into a
+  // paragraph shows its indents. Guarded (set_internal_value does not emit,
+  // so this never re-fires the apply).
+  void set_indent_values(double left_px, double right_px, double first_px);
+
+  // s335 — cache the caret paragraph's tab spec (pushed on text-style-changed,
+  // same relay as set_align_face). The Tabs popover reads this cache to build
+  // its row list when it opens; we don't rebuild widgets here (the popover may
+  // be closed). Empty spec = no tab stops on this paragraph.
+  void set_tabs_state(const std::string& spec);
+
   // s331 — push the selection's per-decoration lit state into the emphasis
   // popover toggles. Each arg is a tri-state: 0 = off everywhere,
   // 1 = on everywhere, 2 = mixed (rendered with GTK's inconsistent look).
@@ -140,7 +175,8 @@ public:
   // so the programmatic set doesn't re-fire the toggle handlers (which would
   // re-apply the format). The popover toggles are the bar's first chip that
   // both reads and writes; the EMPHASIS chip face stays the static word.
-  void set_emphasis_state(int italic, int underline, int strike, int overline);
+  void set_emphasis_state(int italic, int underline, int strike, int overline,
+                          int superscript, int subscript);
 
   // s329 m1 placeholder. Later: push the effective format of the current
   // selection into the chip faces (lit / off / mixed) WITHOUT rebuilding —
@@ -203,6 +239,36 @@ private:
   void build_paragraph_popover(Gtk::MenuButton* chip);
   void build_align_popover(Gtk::MenuButton* chip);  // s332
 
+  // s334 — Indents popover (paragraph scope): Left / Right doc-unit spins with
+  // the inspector link-lock between them (engaged = the two stay equal, the
+  // aspect-link idiom), plus a First-line spin (negative = hanging indent).
+  void build_indent_popover(Gtk::MenuButton* chip);
+
+  // s335 — Tabs popover (paragraph scope, its own chip): a master-detail
+  // editor. The master is a ListBox of the paragraph's stops (sorted by
+  // position, each row "Type   pos unit"); the detail is a position spin
+  // (doc units, like the indent spins) + a four-way Left/Right/Centre/Decimal
+  // type chooser that edits the selected row. Add appends a stop, Remove drops
+  // the selected one, Remove-all clears. Every mutation canonicalises the list
+  // and fires m_tabs_request with the rebuilt spec. The row list is (re)built
+  // from m_tabs_spec on popover-show.
+  void build_tabs_popover(Gtk::MenuButton* chip);
+  void rebuild_tabs_list();          // master list <- m_tabs
+  void load_tabs_editor(int index);  // detail <- m_tabs[index] (guarded)
+  void commit_tabs();                // fire m_tabs_request(format(m_tabs))
+  int  reselect_after_sort(double pos);  // index of the stop nearest `pos`
+
+  // s334 — Tracking: a character/selection axis grouping the two horizontal-
+  // and-vertical glyph-displacement knobs that share a use (e.g. stacking a
+  // fraction: heavy negative tracking + a rise split). Horizontal = letter-
+  // spacing in em (resolved to PANGO_ATTR_LETTER_SPACING units against the
+  // selection's point size at apply — a snapshot, not a live-rescaling em).
+  // Vertical = baseline displacement in pt (PANGO_ATTR_RISE, positive = up).
+  // Both SET over the selection via the value-set path. The range is wide on
+  // purpose (display work treats tracking as placement, not spacing) with a
+  // spin, not a scale, so the fine zone stays usable across the whole range.
+  void build_tracking_popover(Gtk::MenuButton* chip);
+
   // s330 — Emphasis: the line-decoration toggles that are NOT weight. Pango
   // treats these as independent attributes that combine (an additive set, vs
   // weight's exclusive scale), so they're toggles, not a picker. Italic
@@ -230,17 +296,54 @@ private:
   ResetRequest m_reset_request;  // s331 — far-right Reset button callback
   LeadingRequest m_leading_request;  // s331 — Paragraph Leading callback
   AlignRequest   m_align_request;    // s332 — Alignment callback
+  IndentRequest  m_indent_request;   // s334 — Indents callback
+  bool           m_indent_locked = false;  // s334 — left/right indent link state
+  TabsRequest    m_tabs_request;     // s335 — Tabs callback
+  // s335 — Tabs popover state. m_tabs_spec is the canonical, sorted source of
+  // truth for the open popover (re-parsed in the handlers, never holding a
+  // parallel vector in the header). m_tabs_sel is the selected row in the
+  // sorted list; m_tabs_loading guards programmatic editor/list updates from
+  // re-firing their own change handlers.
+  std::string    m_tabs_spec;
+  int            m_tabs_sel     = -1;
+  bool           m_tabs_loading = false;
+  JustifyKnobRequest m_justify_knob_request;  // s333 TEMP — justify tuning slider
 
   // Persistent chips — built once, never rebuilt.
   Gtk::MenuButton* m_chip_font   = nullptr;  // character
   Gtk::MenuButton* m_chip_size   = nullptr;  Gtk::MenuButton* m_chip_weight = nullptr;
   Gtk::MenuButton* m_chip_emphasis = nullptr;  // italic/underline/strike/overline
+  Gtk::MenuButton* m_chip_track  = nullptr;  // s334 — tracking (letter-spacing) + rise
   Gtk::MenuButton* m_chip_fill   = nullptr;
   Gtk::MenuButton* m_chip_stroke = nullptr;
   Gtk::MenuButton* m_chip_align  = nullptr;  // paragraph
+  Gtk::MenuButton* m_chip_indent = nullptr;  // s334 — indents + first-line
+  CurvzSpinButton* m_ind_left   = nullptr;   // s335 — indent spins (live-read sync)
+  CurvzSpinButton* m_ind_right  = nullptr;
+  CurvzSpinButton* m_ind_first  = nullptr;
+  Gtk::MenuButton* m_chip_tabs   = nullptr;  // s335 — tab stops
+  Gtk::ListBox*    m_tabs_list   = nullptr;  // s335 — master list of stops
+  CurvzSpinButton* m_tabs_pos    = nullptr;  // s335 — detail: position spin
+  Gtk::ToggleButton* m_tabs_type[4] = { nullptr, nullptr, nullptr, nullptr };  // s335 L/R/C/D
   Gtk::Image*      m_align_icon   = nullptr;  // s332 — chip prefix = current alignment
   Gtk::MenuButton* m_chip_para   = nullptr;
   Gtk::MenuButton* m_chip_style  = nullptr;
+
+  // s334 — the justify spill knobs (comfort / track) now live inside the
+  // ALIGNMENT popover, revealed only when Justify is the active choice
+  // (controls live where the feature lives). m_justify_box is shown/hidden on
+  // popover-open from m_cur_align; the scales keep firing m_justify_knob_request
+  // to MainWindow exactly as the old temp row did (still the live globals — the
+  // promotion to persisted node fields is separate, unchanged this pass).
+  Gtk::Box* m_justify_box = nullptr;
+  int       m_cur_align   = 0;
+
+  // s334 — last resolved selection point-size, cached from set_size_face so the
+  // tracking spin can turn its em value into PANGO_ATTR_LETTER_SPACING units
+  // (1024ths of a point, like PANGO_ATTR_SIZE) at apply. Default 12 pt until a
+  // selection resolves one. Snapshot: a later size change does not rescale an
+  // already-applied tracking span (the rides-with-size em attr is a follow-up).
+  double m_size_ref_pt = 12.0;
 
   // s331 — the four emphasis popover toggles, held so the live-read can push
   // their lit/off/mixed state in. m_suppress_emphasis guards the programmatic
@@ -249,6 +352,8 @@ private:
   Gtk::ToggleButton* m_emph_underline = nullptr;
   Gtk::ToggleButton* m_emph_strike    = nullptr;
   Gtk::ToggleButton* m_emph_overline  = nullptr;
+  Gtk::ToggleButton* m_emph_super     = nullptr;  // s334 — font-scale superscript
+  Gtk::ToggleButton* m_emph_sub       = nullptr;  // s334 — font-scale subscript
   bool m_suppress_emphasis = false;
 
   // s331 — the Size popover's pt-locked spin, held so the live-read can sync

@@ -7649,7 +7649,12 @@ static void snap_to_paragraphs(const std::string& buf, unsigned a, unsigned b,
   pa = a;
   while (pa > 0 && buf[pa - 1] != '\n') --pa;
   pb = b;
-  while (pb < n && buf[pb - 1] != '\n') ++pb;  // include through the next '\n'
+  // Extend pb forward to just past the paragraph's terminating '\n'. Guard
+  // pb == 0: buf[pb - 1] would underflow (unsigned) to SIZE_MAX and index OOB
+  // when the caret/selection-end sits at byte 0 of a non-empty buffer — a
+  // hardened-libstdc++ abort. A paragraph starting at 0 has no preceding '\n',
+  // so pb == 0 simply advances.
+  while (pb < n && (pb == 0 || buf[pb - 1] != '\n')) ++pb;  // include through next '\n'
   if (pb < b) pb = b;
   if (pb == pa) pb = std::min(n, pa + 1);  // ensure non-empty for a bare caret
 }
@@ -7761,7 +7766,7 @@ void Canvas::set_text_alignment(int align) {
   if (!node) return;
 
   if (align < 0) align = 0;
-  if (align > 2) align = 2;  // justify (3) is a follow-up; clamp for now
+  if (align > 3) align = 3;  // s333 — 3 = justify (was clamped to 2)
 
   unsigned a = 0, b = (unsigned)node->text_content.size();
   if (m_text_editing == node && m_text_cursor) {
@@ -7797,6 +7802,143 @@ void Canvas::set_text_alignment(int align) {
         node->text_attr_spans, curvz::utils::kCurvzAlignAttr, (long)align, "",
         pa, pb);
   }
+
+  if (m_history) {
+    snap.record_after(node);
+    m_history->push(std::make_unique<TextEditCommand>(std::move(snap)));
+  }
+  if (m_text_editing == node && m_text_has_snapshot)
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), node);
+
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();
+  queue_draw();
+}
+
+// s334 — per-paragraph indents. which: 0 = left, 1 = right, 2 = first-line.
+// doc_value in document units; 0 clears the run (default), non-zero stores
+// ivalue = value x PANGO_SCALE (the private-span fixed-point). Paragraph-snaps
+// the selection exactly like set_text_alignment and is undoable the same way;
+// the fitter (indent_for_byte in compute_text_layout) reads the run per line.
+void Canvas::set_text_indent(int which, double doc_value) {
+  if (!m_doc) return;
+  SceneNode* node = nullptr;
+  if (m_text_editing && (m_text_editing->is_text_box_mgr() ||
+                         m_text_editing->type == SceneNode::Type::Text))
+    node = m_text_editing;
+  if (!node) {
+    for (SceneNode* obj : m_selection) {
+      if (obj && (obj->is_text_box_mgr() ||
+                  obj->type == SceneNode::Type::Text)) { node = obj; break; }
+    }
+  }
+  if (!node) return;
+
+  const int attr = (which == 1) ? curvz::utils::kCurvzIndentRightAttr
+                 : (which == 2) ? curvz::utils::kCurvzIndentFirstAttr
+                                : curvz::utils::kCurvzIndentLeftAttr;
+
+  unsigned a = 0, b = (unsigned)node->text_content.size();
+  if (m_text_editing == node && m_text_cursor) {
+    auto [sa, sb] = m_text_cursor->selection_range();
+    a = (unsigned)sa; b = (unsigned)sb;
+  }
+  unsigned pa = 0, pb = (unsigned)node->text_content.size();
+  snap_to_paragraphs(node->text_content, a, b, pa, pb);
+
+  const long iv = (long)std::lround(doc_value * (double)PANGO_SCALE);
+
+  // No-op guards keep redundant pushes off the undo stack.
+  if (iv == 0) {
+    bool had = false;
+    for (const auto& s : node->text_attr_spans)
+      if (s.type == attr &&
+          (unsigned)s.end_byte > pa && (unsigned)s.start_byte < pb) { had = true; break; }
+    if (!had) return;  // already default everywhere in range
+  } else if (curvz::utils::range_has_attr(node->text_attr_spans, attr,
+                                          iv, "", pa, pb)) {
+    return;
+  }
+
+  if (m_text_editing == node)
+    flush_text_segment();
+
+  TextEditCommand snap = TextEditCommand::snapshot_before(project(), node);
+
+  if (iv == 0)
+    curvz::utils::clear_attr_over_range(node->text_attr_spans, attr, pa, pb);
+  else
+    curvz::utils::set_attr_over_range(node->text_attr_spans, attr, iv, "",
+                                      pa, pb);
+
+  if (m_history) {
+    snap.record_after(node);
+    m_history->push(std::make_unique<TextEditCommand>(std::move(snap)));
+  }
+  if (m_text_editing == node && m_text_has_snapshot)
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), node);
+
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();
+  queue_draw();
+}
+
+// s335 — per-paragraph tab stops. `spec` is the canonical "pos,type;..." list
+// (curvz::utils grammar). Stored as a kCurvzTabsAttr run carrying the spec in
+// svalue; an empty spec clears the run (default tab interval). Paragraph-snaps
+// and is undoable exactly like set_text_alignment / set_text_indent — the only
+// difference is the value channel (svalue, not ivalue). The fitter
+// (compute_text_layout) reads the run per line and builds a PangoTabArray.
+void Canvas::set_text_tabs(const std::string& spec) {
+  if (!m_doc) return;
+  SceneNode* node = nullptr;
+  if (m_text_editing && (m_text_editing->is_text_box_mgr() ||
+                         m_text_editing->type == SceneNode::Type::Text))
+    node = m_text_editing;
+  if (!node) {
+    for (SceneNode* obj : m_selection) {
+      if (obj && (obj->is_text_box_mgr() ||
+                  obj->type == SceneNode::Type::Text)) { node = obj; break; }
+    }
+  }
+  if (!node) return;
+
+  // Canonicalise so the stored svalue and the no-op compare are stable
+  // regardless of the order/precision the UI handed us.
+  const std::string canon =
+      curvz::utils::format_tab_spec(curvz::utils::parse_tab_spec(spec));
+  const int attr = curvz::utils::kCurvzTabsAttr;
+
+  unsigned a = 0, b = (unsigned)node->text_content.size();
+  if (m_text_editing == node && m_text_cursor) {
+    auto [sa, sb] = m_text_cursor->selection_range();
+    a = (unsigned)sa; b = (unsigned)sb;
+  }
+  unsigned pa = 0, pb = (unsigned)node->text_content.size();
+  snap_to_paragraphs(node->text_content, a, b, pa, pb);
+
+  // No-op guards keep redundant pushes off the undo stack.
+  if (canon.empty()) {
+    bool had = false;
+    for (const auto& s : node->text_attr_spans)
+      if (s.type == attr &&
+          (unsigned)s.end_byte > pa && (unsigned)s.start_byte < pb) { had = true; break; }
+    if (!had) return;  // already default everywhere in range
+  } else if (curvz::utils::range_has_attr(node->text_attr_spans, attr,
+                                          0, canon, pa, pb)) {
+    return;
+  }
+
+  if (m_text_editing == node)
+    flush_text_segment();
+
+  TextEditCommand snap = TextEditCommand::snapshot_before(project(), node);
+
+  if (canon.empty())
+    curvz::utils::clear_attr_over_range(node->text_attr_spans, attr, pa, pb);
+  else
+    curvz::utils::set_attr_over_range(node->text_attr_spans, attr, 0, canon,
+                                      pa, pb);
 
   if (m_history) {
     snap.record_after(node);

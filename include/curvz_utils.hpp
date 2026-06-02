@@ -354,6 +354,67 @@ constexpr long kCurvzStrokeNone      = -1;          // explicit no-stroke
 // same flat run-list shape as leading.
 constexpr int kCurvzAlignAttr = 0x414C4747;  // 'ALGG'
 
+// s334 — per-paragraph indents (private spans, paragraph-snapped like align).
+// ivalue = doc-px x PANGO_SCALE (the kCurvzStrokeWidthAttr fixed-point
+// precedent) so fractional indents round-trip. 0 = default, stored as NO span,
+// so un-indented paragraphs stay span-free. First-line applies only to a
+// paragraph's first visual line (a hard boundary, not a soft-wrap continuation).
+constexpr int kCurvzIndentLeftAttr  = 0x494E444C;  // 'INDL'
+constexpr int kCurvzIndentRightAttr = 0x494E4452;  // 'INDR'
+constexpr int kCurvzIndentFirstAttr = 0x494E4446;  // 'INDF'
+
+// s335 — per-paragraph TAB STOPS. A paragraph property like alignment/indents,
+// so it rides text_attr_spans, paragraph-snapped on set. Unlike the others it
+// is STRING-valued: the whole stop list lives in one span's svalue (ivalue is
+// unused), because a paragraph has an ordered LIST of stops, not a single
+// scalar. Default = no span (the fitter then uses Pango's default tab interval).
+// The fitter (TextCursor) parses the svalue into a PangoTabArray per line.
+//
+// svalue grammar (the canonical in-memory + storage form):
+//   "pos,type;pos,type;..."   pos = doc-px (decimal), type = one of L R C D
+//   (Left / Right / Centre / Decimal). Empty list -> no span.
+// The persistence transport wraps this as start:end:svalue runs joined by '|'
+// (NOT ';', which the spec itself uses) — see SvgWriter / SvgParser data-curvz-
+// tabs. '|' can never appear in a tab spec, so the run boundary is unambiguous.
+constexpr int kCurvzTabsAttr = 0x54414253;  // 'TABS'
+
+enum class TabAlign { Left, Right, Center, Decimal };
+
+struct TabStop {
+  double   pos  = 0.0;                 // doc-px from the line's text start
+  TabAlign type = TabAlign::Left;
+};
+
+// Type-char codec. Bidirectional, kept adjacent so a grammar change forces
+// seeing both sides. Tolerant on input (case-insensitive); canonical upper out.
+inline char tab_align_to_char(TabAlign t) {
+  switch (t) {
+    case TabAlign::Right:   return 'R';
+    case TabAlign::Center:  return 'C';
+    case TabAlign::Decimal: return 'D';
+    case TabAlign::Left:
+    default:                return 'L';
+  }
+}
+inline TabAlign tab_align_from_char(char c) {
+  switch (c) {
+    case 'R': case 'r': return TabAlign::Right;
+    case 'C': case 'c': return TabAlign::Center;
+    case 'D': case 'd': return TabAlign::Decimal;
+    case 'L': case 'l':
+    default:            return TabAlign::Left;
+  }
+}
+
+// Spec-string <-> stop-list pumps. parse tolerates whitespace and malformed
+// tokens (skips them); format sorts ascending by position, drops duplicates at
+// the same position (last wins), and emits the canonical "pos,type;..." form so
+// format(parse(x)) is idempotent. Both live here, next to each other, so the
+// round-trip stays honest. Used by the UI (build/read the row list), the apply
+// path (store the svalue), and the fitter (build the PangoTabArray).
+std::vector<TabStop> parse_tab_spec(const std::string& spec);
+std::string          format_tab_spec(std::vector<TabStop> stops);
+
 // ── Layer-index resolver (s171 m1) ───────────────────────────────────
 // Layers live at the top of the document tree (`doc->layers`) and are
 // identified by index for insertion / erasure / reorder operations.

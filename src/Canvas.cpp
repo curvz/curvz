@@ -4730,6 +4730,33 @@ int sweep_decoration(const std::vector<Curvz::AttrSpan>& spans, int type,
   return any_on ? 1 : 0;
 }
 
+// s334 — like sweep_decoration but "on" means the covering span carries a
+// specific value (not merely non-zero). Used for font-scale, where one attr
+// type holds three values (none / super / sub) and each toggle wants its own
+// lit/off/mixed read. No node-level default — an uncovered byte is "off".
+int sweep_value_eq(const std::vector<Curvz::AttrSpan>& spans, int type,
+                   long target, unsigned a, unsigned b) {
+  auto byte_on = [&](unsigned p) -> bool {
+    bool covered = false; long v = 0;
+    for (const auto& s : spans)
+      if (s.type == type &&
+          (unsigned)s.start_byte <= p && (unsigned)s.end_byte > p) {
+        covered = true; v = s.ivalue;  // last covering span wins
+      }
+    return covered && v == target;
+  };
+  if (a == b) {  // caret: sample the byte just before it
+    unsigned p = (a > 0) ? a - 1 : 0;
+    return byte_on(p) ? 1 : 0;
+  }
+  bool any_on = false, any_off = false;
+  for (unsigned p = a; p < b; ++p) {
+    if (byte_on(p)) any_on = true; else any_off = true;
+    if (any_on && any_off) return 2;
+  }
+  return any_on ? 1 : 0;
+}
+
 // s331 — size lit-read. Per-run sizes live as PANGO_ATTR_SIZE in Pango units
 // (point x PANGO_SCALE) so they round-trip cleanly through the markup `size`
 // wire form. Sweep clipped to [a,b): uniform value (counting `def` in gaps)
@@ -4849,7 +4876,8 @@ bool Canvas::text_style_query_weight(long& out_weight, bool& out_mixed) const {
 }
 
 bool Canvas::text_style_query_emphasis(int& out_italic, int& out_underline,
-                                       int& out_strike, int& out_overline) const {
+                                       int& out_strike, int& out_overline,
+                                       int& out_super, int& out_sub) const {
   if (!m_text_cursor || !m_text_editing) return false;
   auto [a, b] = m_text_cursor->selection_range();
   const auto& spans = m_text_editing->text_attr_spans;
@@ -4864,6 +4892,13 @@ bool Canvas::text_style_query_emphasis(int& out_italic, int& out_underline,
                                    (unsigned)a, (unsigned)b);
   out_overline  = sweep_decoration(spans, PANGO_ATTR_OVERLINE,      false,
                                    (unsigned)a, (unsigned)b);
+  // s334 — font-scale super/sub: same attr type, distinct values.
+  out_super     = sweep_value_eq(spans, PANGO_ATTR_FONT_SCALE,
+                                 PANGO_FONT_SCALE_SUPERSCRIPT,
+                                 (unsigned)a, (unsigned)b);
+  out_sub       = sweep_value_eq(spans, PANGO_ATTR_FONT_SCALE,
+                                 PANGO_FONT_SCALE_SUBSCRIPT,
+                                 (unsigned)a, (unsigned)b);
   return true;
 }
 
@@ -4990,6 +5025,49 @@ bool Canvas::text_style_query_alignment(int& out_align) const {
       out_align = (int)s.ivalue;
       break;
     }
+  }
+  return true;
+}
+
+// s335 — caret paragraph's tab spec (svalue). Mirrors query_alignment: sample
+// the paragraph start byte, return the covering kCurvzTabsAttr run's svalue, or
+// empty when none. Drives the Tabs popover's row list on text-style-changed.
+bool Canvas::text_style_query_tabs(std::string& out_spec) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  const std::string& buf = m_text_editing->text_content;
+  auto [a, b] = m_text_cursor->selection_range();
+  (void)b;
+  unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
+  while (pa > 0 && buf[pa - 1] != '\n') --pa;
+  out_spec.clear();
+  for (const auto& s : m_text_editing->text_attr_spans) {
+    if (s.type == curvz::utils::kCurvzTabsAttr &&
+        (unsigned)s.start_byte <= pa && (unsigned)s.end_byte > pa) {
+      out_spec = s.svalue;
+      break;
+    }
+  }
+  return true;
+}
+
+// s335 — caret paragraph's indents (doc-px) for the live-read. Mirrors
+// query_tabs/query_alignment: sample the paragraph start byte, read each
+// indent run's ivalue (doc-px x PANGO_SCALE) covering it, default 0.
+bool Canvas::text_style_query_indents(double& out_left, double& out_right,
+                                      double& out_first) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  const std::string& buf = m_text_editing->text_content;
+  auto [a, b] = m_text_cursor->selection_range();
+  (void)b;
+  unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
+  while (pa > 0 && buf[pa - 1] != '\n') --pa;
+  out_left = out_right = out_first = 0.0;
+  for (const auto& s : m_text_editing->text_attr_spans) {
+    if ((unsigned)s.start_byte > pa || (unsigned)s.end_byte <= pa) continue;
+    const double v = (double)s.ivalue / (double)PANGO_SCALE;
+    if (s.type == curvz::utils::kCurvzIndentLeftAttr)  out_left  = v;
+    else if (s.type == curvz::utils::kCurvzIndentRightAttr) out_right = v;
+    else if (s.type == curvz::utils::kCurvzIndentFirstAttr) out_first = v;
   }
   return true;
 }
@@ -5591,6 +5669,31 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
         }
       }
       queue_draw();
+      return true;
+
+    case GDK_KEY_Tab:
+      // s335 — Tab inserts a literal '\t' so tab stops can actually be typed
+      //   into the text and tested. The CAPTURE-phase key controller routes
+      //   keystrokes here before GTK's focus traversal, so consuming Tab
+      //   (return true) keeps it out of the focus chain. Ctrl/Alt+Tab fall
+      //   through to the cascade. Shift+Tab arrives as GDK_KEY_ISO_Left_Tab
+      //   (a different keyval) and is intentionally not caught here. Tab is a
+      //   whitespace boundary, so it flushes the typing segment like a space —
+      //   Ctrl+Z peels the tab back as its own step.
+      if (ctrl || alt) return false;
+      if (m_text_cursor->has_selection()) {
+        flush_text_segment();
+        m_text_cursor->delete_selection();
+        if (m_text_cursor->insert_char((gunichar)'\t')) {
+          flush_text_segment();
+          m_sig_doc_changed.emit();
+          queue_draw();
+        }
+      } else if (m_text_cursor->insert_char((gunichar)'\t')) {
+        flush_text_segment();
+        m_sig_doc_changed.emit();
+        queue_draw();
+      }
       return true;
 
     default: {

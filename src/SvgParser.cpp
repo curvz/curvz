@@ -53,6 +53,8 @@ static void decode_markup_into(Curvz::SceneNode* mgr, const std::string& payload
                     case PANGO_ATTR_SIZE:
                     case PANGO_ATTR_ABSOLUTE_SIZE:
                     case PANGO_ATTR_LETTER_SPACING:
+                    case PANGO_ATTR_RISE:
+                    case PANGO_ATTR_FONT_SCALE:
                         s.ivalue = ((PangoAttrInt*)a)->value;
                         break;
                     case PANGO_ATTR_FAMILY:
@@ -1335,6 +1337,8 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
     std::string mgr_def_stroke_color; // s332 — data-curvz-stroke-color, post-decode
     std::string mgr_def_stroke_width; // s332 — data-curvz-stroke-width, post-decode
     std::string mgr_def_align;       // s332 — data-curvz-align, post-decode
+    std::string mgr_def_indent_l, mgr_def_indent_r, mgr_def_indent_f;  // s334
+    std::string mgr_def_tabs;        // s335 — data-curvz-tabs, post-decode
 
     // Push a freshly-built SceneNode into the correct destination:
     //   - When in_clip_def_id is active we're inside <clipPath id="X">;
@@ -1446,10 +1450,49 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                     inject_runs(mgr_def_stroke_color, curvz::utils::kCurvzStrokeColorAttr);
                     inject_runs(mgr_def_stroke_width, curvz::utils::kCurvzStrokeWidthAttr);
                     inject_runs(mgr_def_align,        curvz::utils::kCurvzAlignAttr);
+                    inject_runs(mgr_def_indent_l, curvz::utils::kCurvzIndentLeftAttr);   // s334
+                    inject_runs(mgr_def_indent_r, curvz::utils::kCurvzIndentRightAttr);  // s334
+                    inject_runs(mgr_def_indent_f, curvz::utils::kCurvzIndentFirstAttr);  // s334
+                    // s335 — string-valued sibling of inject_runs for tabs. Runs
+                    // are separated by '|' (the spec uses ';'), and the value
+                    // after start:end: is the WHOLE remainder of the run token
+                    // (the spec, which may contain ':' nowhere but ';'/',' yes),
+                    // assigned to svalue instead of ivalue.
+                    auto inject_runs_str = [&](const std::string& ls, int type) {
+                        size_t i = 0;
+                        while (i < ls.size()) {
+                            size_t bar = ls.find('|', i);
+                            std::string tok = ls.substr(i, bar == std::string::npos
+                                                                ? std::string::npos
+                                                                : bar - i);
+                            size_t c1 = tok.find(':');
+                            size_t c2 = (c1 == std::string::npos)
+                                            ? std::string::npos
+                                            : tok.find(':', c1 + 1);
+                            if (c1 != std::string::npos && c2 != std::string::npos) {
+                                try {
+                                    Curvz::AttrSpan sp;
+                                    sp.type = type;
+                                    sp.start_byte = (unsigned)std::stoul(tok.substr(0, c1));
+                                    sp.end_byte = (unsigned)std::stoul(
+                                        tok.substr(c1 + 1, c2 - c1 - 1));
+                                    sp.svalue = tok.substr(c2 + 1);
+                                    if (sp.end_byte > sp.start_byte && !sp.svalue.empty())
+                                        in_textbox_mgr_def->text_attr_spans.push_back(sp);
+                                } catch (...) { /* skip malformed run */ }
+                            }
+                            if (bar == std::string::npos) break;
+                            i = bar + 1;
+                        }
+                    };
+                    inject_runs_str(mgr_def_tabs, curvz::utils::kCurvzTabsAttr);  // s335
                     mgr_def_leading.clear();
                     mgr_def_stroke_color.clear();
                     mgr_def_stroke_width.clear();
                     mgr_def_align.clear();
+                    mgr_def_indent_l.clear(); mgr_def_indent_r.clear();
+                    mgr_def_indent_f.clear();
+                    mgr_def_tabs.clear();  // s335
                 }
             }
             continue;
@@ -1513,6 +1556,9 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                 mgr_def_stroke_color.clear();  // s332
                 mgr_def_stroke_width.clear();  // s332
                 mgr_def_align.clear();         // s332
+                mgr_def_indent_l.clear(); mgr_def_indent_r.clear();  // s334
+                mgr_def_indent_f.clear();
+                mgr_def_tabs.clear();  // s335
                 continue;
             }
             if ((tag == "/g" || tag.rfind("/g", 0) == 0) && !stack.empty()) {
@@ -2449,6 +2495,10 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     mgr_def_stroke_color = attr(tag, "data-curvz-stroke-color");
                     mgr_def_stroke_width = attr(tag, "data-curvz-stroke-width");
                     mgr_def_align        = attr(tag, "data-curvz-align");
+                    mgr_def_indent_l = attr(tag, "data-curvz-indent-left");   // s334
+                    mgr_def_indent_r = attr(tag, "data-curvz-indent-right");  // s334
+                    mgr_def_indent_f = attr(tag, "data-curvz-indent-first");  // s334
+                    mgr_def_tabs     = attr(tag, "data-curvz-tabs");          // s335
                     // s327 m1 — baseline flow angle (absent -> stays 0 -> horizontal)
                     auto ba = attr(tag, "data-curvz-baseline-angle");
                     if (!ba.empty()) mgr->text_baseline_angle = dbl(ba,

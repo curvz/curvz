@@ -2143,14 +2143,18 @@ namespace {
 inline bool attr_value_eq(const Curvz::AttrSpan& s,
                           int type, long ivalue, const std::string& svalue) {
   if (s.type != type) return false;
-  // Family is the only string-valued attr we carry: compare svalue for it,
-  // ivalue for all others. s330 — use the real PANGO_ATTR_FAMILY enum (== 2),
-  // NOT a hardcoded id; a prior `kFamily = 1` mis-transcription made this
-  // branch never fire, so every family span compared equal by ivalue (always
-  // 0) and abutting different-font spans wrongly coalesced -> set-on-a-range
-  // got swallowed by its neighbour (the "all or nothing" font bug).
-  return (type == PANGO_ATTR_FAMILY) ? (s.svalue == svalue)
-                                     : (s.ivalue == ivalue);
+  // String-valued attrs compare svalue; everything else compares ivalue.
+  // Family is the original string attr (s330 — the real PANGO_ATTR_FAMILY enum
+  // == 2, NOT a hardcoded id; a prior `kFamily = 1` mis-transcription made this
+  // branch never fire, so every family span compared equal by ivalue (always 0)
+  // and abutting different-font spans wrongly coalesced -> set-on-a-range got
+  // swallowed by its neighbour, the "all or nothing" font bug). s335 — tabs is
+  // the second string attr: its whole stop list rides svalue (ivalue always 0),
+  // so it MUST compare svalue or the same coalesce bug recurs (two paragraphs
+  // with different tab lists would read as one).
+  const bool is_string = (type == PANGO_ATTR_FAMILY) ||
+                         (type == curvz::utils::kCurvzTabsAttr);
+  return is_string ? (s.svalue == svalue) : (s.ivalue == ivalue);
 }
 
 } // namespace
@@ -2259,6 +2263,76 @@ bool toggle_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
   }
   set_attr_over_range(spans, type, ivalue, svalue, a, b);
   return true;     // toggled on
+}
+
+// ── s335 — tab-spec codec ─────────────────────────────────────────────────────
+// Bidirectional, defined together. The spec grammar is "pos,type;pos,type;..."
+// (see curvz_utils.hpp kCurvzTabsAttr). parse is the tolerant reader; format is
+// the canonicalising writer (sort, de-dupe, fixed precision) so a UI round-trip
+// — format(parse(spec)) — is idempotent and stable across save/load.
+std::vector<TabStop> parse_tab_spec(const std::string& spec) {
+  std::vector<TabStop> out;
+  size_t i = 0;
+  while (i < spec.size()) {
+    size_t semi = spec.find(';', i);
+    std::string tok = spec.substr(i, semi == std::string::npos
+                                         ? std::string::npos
+                                         : semi - i);
+    size_t comma = tok.find(',');
+    if (comma != std::string::npos) {
+      // Trim leading whitespace off the number for strtod's sake.
+      std::string num = tok.substr(0, comma);
+      std::string ty  = tok.substr(comma + 1);
+      char* endp = nullptr;
+      double pos = std::strtod(num.c_str(), &endp);
+      // Accept only if at least one digit parsed (endp moved past a digit).
+      if (endp != num.c_str()) {
+        // First non-space char of the type field decides the alignment.
+        char tc = 'L';
+        for (char c : ty) { if (!std::isspace((unsigned char)c)) { tc = c; break; } }
+        out.push_back({ pos, tab_align_from_char(tc) });
+      }
+    }
+    if (semi == std::string::npos) break;
+    i = semi + 1;
+  }
+  return out;
+}
+
+std::string format_tab_spec(std::vector<TabStop> stops) {
+  // Sort ascending by position; on a tie keep the LAST written (a re-set at the
+  // same position replaces the earlier type) by stable-sorting then collapsing.
+  std::stable_sort(stops.begin(), stops.end(),
+                   [](const TabStop& a, const TabStop& b) { return a.pos < b.pos; });
+  std::string out;          // separators BETWEEN tokens only, no trailing ';'
+  double last_pos = 0.0;
+  bool   have_last = false;
+  for (const auto& s : stops) {
+    // Format the position: %.4f then trim trailing zeros / dot — compact,
+    // idempotent, sub-thousandth-px.
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "%.4f", s.pos);
+    std::string num(buf);
+    size_t dot = num.find('.');
+    if (dot != std::string::npos) {
+      size_t last_nz = num.find_last_not_of('0');
+      if (last_nz == dot) last_nz = (dot == 0 ? 0 : dot - 1);  // strip the dot too
+      num.erase(last_nz + 1);
+    }
+    std::string tok = num + "," + tab_align_to_char(s.type);
+    if (have_last && std::fabs(s.pos - last_pos) < 1e-4) {
+      // Same position as the previous emitted stop — replace its token.
+      size_t semi = out.rfind(';');
+      out.erase(semi == std::string::npos ? 0 : semi + 1);
+      out += tok;
+    } else {
+      if (have_last) out += ';';
+      out += tok;
+    }
+    last_pos = s.pos;
+    have_last = true;
+  }
+  return out;
 }
 
 } // namespace curvz::utils
