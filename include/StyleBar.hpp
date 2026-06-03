@@ -52,10 +52,13 @@
 #include <functional>
 #include <string>
 
+namespace curvz::widgets { class DropDown; }  // s339 — Type/Leader dropdowns
+
 namespace Curvz {
 
 class CurvzSpinButton;  // s331 — held by the Size popover (fwd decl, pt-locked)
 class CurvzColorPicker; // s332 — embedded in the Fill popover (fwd decl)
+struct CanvasModel;     // s338 — doc model feed so Distance spins honor user units
 
 class StyleBar : public Gtk::Box {
 public:
@@ -108,6 +111,13 @@ public:
   // Wired to Canvas::set_text_tabs (which paragraph-snaps + canonicalises).
   using TabsRequest = std::function<void(const std::string& spec)>;
   void set_tabs_request(TabsRequest cb) { m_tabs_request = std::move(cb); }
+
+  // s338 — Show-invisibles view toggle. Fires the toggle's new active state;
+  // MainWindow sets Canvas::m_show_invisibles and redraws. Pure view state.
+  using ShowInvisiblesRequest = std::function<void(bool on)>;
+  void set_show_invisibles_request(ShowInvisiblesRequest cb) {
+    m_show_invisibles_request = std::move(cb);
+  }
 
   // s333 TEMP — justify spill tuning slider. Fires (comfort_em, track_em) as the
   // user drags; MainWindow writes the knobs and redraws the canvas. Remove with
@@ -167,6 +177,16 @@ public:
   // its row list when it opens; we don't rebuild widgets here (the popover may
   // be closed). Empty spec = no tab stops on this paragraph.
   void set_tabs_state(const std::string& spec);
+
+  // s338 — Feed the active document's CanvasModel so the layout-domain Distance
+  // spins (indents + the tab-stop position) and the tab-stop row labels report
+  // in the doc's display unit instead of raw px. The spins were built with no
+  // model (to_display returned px unchanged); this wires it. Call on doc-
+  // activate (pointer changes with the active doc) and on display-unit change
+  // (same pointer, but the unit moved). Pass nullptr when there's no active doc.
+  // The pointer is borrowed -- it lives on the active CurvzDocument, so it MUST
+  // be re-set on every doc switch and never outlive the doc.
+  void set_doc_model(const CanvasModel* model);
 
   // s331 — push the selection's per-decoration lit state into the emphasis
   // popover toggles. Each arg is a tri-state: 0 = off everywhere,
@@ -257,6 +277,16 @@ private:
   void load_tabs_editor(int index);  // detail <- m_tabs[index] (guarded)
   void commit_tabs();                // fire m_tabs_request(format(m_tabs))
   int  reselect_after_sort(double pos);  // index of the stop nearest `pos`
+  // s338 — defer the post-commit list teardown OUT of the signal dispatch.
+  // GDB proved the hang: a ListBox row's click gesture fires the Remove/etc.
+  // handler on PRESS, which freed the rows synchronously; the SAME gesture's
+  // RELEASE phase then ran gtk_list_box_row_grab_focus ->
+  // synthesize_focus_change_events -> gtk_widget_get_parent on the freed row
+  // (GTK_IS_WIDGET assertion). Posting rebuild_tabs_list() + load_tabs_editor()
+  // to an idle lets the gesture settle its focus walk against the LIVE old rows
+  // first; the teardown then happens on a clean stack. Coalesced via the
+  // pending latch so a burst of edits rebuilds once with the latest selection.
+  void schedule_tabs_refresh();
 
   // s334 — Tracking: a character/selection axis grouping the two horizontal-
   // and-vertical glyph-displacement knobs that share a use (e.g. stacking a
@@ -294,6 +324,7 @@ private:
   FormatToggle m_format_toggle;
   FormatSet    m_format_set;
   ResetRequest m_reset_request;  // s331 — far-right Reset button callback
+  ShowInvisiblesRequest m_show_invisibles_request;  // s338 — show-invisibles toggle
   LeadingRequest m_leading_request;  // s331 — Paragraph Leading callback
   AlignRequest   m_align_request;    // s332 — Alignment callback
   IndentRequest  m_indent_request;   // s334 — Indents callback
@@ -307,6 +338,7 @@ private:
   std::string    m_tabs_spec;
   int            m_tabs_sel     = -1;
   bool           m_tabs_loading = false;
+  bool           m_tabs_refresh_pending = false;  // s338 — coalesces deferred refresh
   JustifyKnobRequest m_justify_knob_request;  // s333 TEMP — justify tuning slider
 
   // Persistent chips — built once, never rebuilt.
@@ -322,9 +354,12 @@ private:
   CurvzSpinButton* m_ind_right  = nullptr;
   CurvzSpinButton* m_ind_first  = nullptr;
   Gtk::MenuButton* m_chip_tabs   = nullptr;  // s335 — tab stops
+  Gtk::ToggleButton* m_chip_invis = nullptr; // s338 — show-invisibles view toggle
   Gtk::ListBox*    m_tabs_list   = nullptr;  // s335 — master list of stops
   CurvzSpinButton* m_tabs_pos    = nullptr;  // s335 — detail: position spin
-  Gtk::ToggleButton* m_tabs_type[4] = { nullptr, nullptr, nullptr, nullptr };  // s335 L/R/C/D
+  curvz::widgets::DropDown* m_tabs_type   = nullptr;  // s339 — detail: L/R/C/D
+  curvz::widgets::DropDown* m_tabs_leader = nullptr;  // s339 — detail: dot leader
+  const CanvasModel* m_doc_model = nullptr;  // s338 — borrowed; feeds spin/row units
   Gtk::Image*      m_align_icon   = nullptr;  // s332 — chip prefix = current alignment
   Gtk::MenuButton* m_chip_para   = nullptr;
   Gtk::MenuButton* m_chip_style  = nullptr;

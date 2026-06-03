@@ -169,6 +169,8 @@ bool TextCursor::insert_char(gunichar codepoint) {
     int n = g_unichar_to_utf8(codepoint, buf);
     if (n <= 0) return false;
     m_text->text_content.insert(m_byte_index, buf, (size_t)n);
+    curvz::utils::shift_spans_on_insert(
+        m_text->text_attr_spans, (unsigned)m_byte_index, (unsigned)n);
     m_byte_index += (size_t)n;
     on_horizontal_motion();  // s306 m6 — collapse anchor + drop preferred_x
     return true;
@@ -184,6 +186,8 @@ bool TextCursor::insert_string(const std::string& utf8) {
         m_anchor_byte = m_byte_index;
     }
     m_text->text_content.insert(m_byte_index, utf8);
+    curvz::utils::shift_spans_on_insert(
+        m_text->text_attr_spans, (unsigned)m_byte_index, (unsigned)utf8.size());
     m_byte_index += utf8.size();
     on_horizontal_motion();  // s306 m6 — collapse anchor + drop preferred_x
     return true;
@@ -201,6 +205,8 @@ bool TextCursor::insert_newline() {
         m_anchor_byte = m_byte_index;
     }
     m_text->text_content.insert(m_byte_index, "\n");
+    curvz::utils::shift_spans_on_insert(
+        m_text->text_attr_spans, (unsigned)m_byte_index, 1u);
     m_byte_index += 1;
     on_horizontal_motion();  // s306 m6 — collapse anchor + drop preferred_x
     return true;
@@ -229,6 +235,9 @@ bool TextCursor::backspace() {
     const char* prev = g_utf8_prev_char(here);
     size_t prev_idx = (size_t)(prev - base);
     m_text->text_content.erase(prev_idx, m_byte_index - prev_idx);
+    curvz::utils::shift_spans_on_delete(
+        m_text->text_attr_spans, (unsigned)prev_idx,
+        (unsigned)(m_byte_index - prev_idx));
     m_byte_index = prev_idx;
     on_horizontal_motion();  // s306 m6 — collapse anchor + drop preferred_x
     return true;
@@ -252,6 +261,9 @@ bool TextCursor::delete_forward() {
     const char* next = g_utf8_next_char(here);
     size_t next_idx = (size_t)(next - base);
     m_text->text_content.erase(m_byte_index, next_idx - m_byte_index);
+    curvz::utils::shift_spans_on_delete(
+        m_text->text_attr_spans, (unsigned)m_byte_index,
+        (unsigned)(next_idx - m_byte_index));
     on_horizontal_motion();  // s306 m6 — collapse anchor + drop preferred_x
     return true;
 }
@@ -655,15 +667,42 @@ static PangoAttrList* build_line_attrs(const SceneNode* text,
             case PANGO_ATTR_OVERLINE:  // Pango 1.46+
                 a = pango_attr_overline_new((PangoOverline)s.ivalue); break;
             case PANGO_ATTR_SIZE:
-                a = pango_attr_size_new((int)s.ivalue); break;
+                // s339 — belt-and-braces: a non-positive size must never reach
+                // pango_attr_size_new (it asserts size>=0 and spams CRITICAL).
+                // The span pumps are the structural fix; this is the floor under
+                // it so a stray malformed span degrades to "inherit base size"
+                // instead of crashing the layout.
+                if (s.ivalue > 0) a = pango_attr_size_new((int)s.ivalue);
+                break;
             case PANGO_ATTR_ABSOLUTE_SIZE:
-                a = pango_attr_size_new_absolute((int)s.ivalue); break;
+                if (s.ivalue > 0) a = pango_attr_size_new_absolute((int)s.ivalue);
+                break;
             case PANGO_ATTR_LETTER_SPACING:
                 a = pango_attr_letter_spacing_new((int)s.ivalue); break;
             case PANGO_ATTR_RISE:
                 a = pango_attr_rise_new((int)s.ivalue); break;
             case PANGO_ATTR_FONT_SCALE:
-                a = pango_attr_font_scale_new((PangoFontScale)s.ivalue); break;
+                a = pango_attr_font_scale_new((PangoFontScale)s.ivalue);
+                // s339 — font_scale only RESIZES; the vertical lift is a separate
+                // attribute (Pango's own <sup>/<sub> markup pairs the two). Super/
+                // sub is stored as a single font_scale span (so apply/sweep/query/
+                // serialize stay single-attr); we DERIVE the matching baseline
+                // shift here at render time. Without this the glyph shrinks but
+                // stays on the baseline -- the reported bug, for both super & sub.
+                // PangoBaselineShift superscript/subscript: Pango 1.50+ (build 1.54).
+                if (s.ivalue == PANGO_FONT_SCALE_SUPERSCRIPT ||
+                    s.ivalue == PANGO_FONT_SCALE_SUBSCRIPT) {
+                    PangoBaselineShift bs =
+                        (s.ivalue == PANGO_FONT_SCALE_SUPERSCRIPT)
+                            ? PANGO_BASELINE_SHIFT_SUPERSCRIPT
+                            : PANGO_BASELINE_SHIFT_SUBSCRIPT;
+                    PangoAttribute* shift = pango_attr_baseline_shift_new(bs);
+                    shift->start_index = ls;
+                    shift->end_index   = le;
+                    if (!list) list = pango_attr_list_new();
+                    pango_attr_list_insert(list, shift);  // takes ownership
+                }
+                break;
             case PANGO_ATTR_FAMILY:
                 a = pango_attr_family_new(s.svalue.c_str()); break;
             case PANGO_ATTR_FOREGROUND: {
@@ -685,10 +724,86 @@ static PangoAttrList* build_line_attrs(const SceneNode* text,
     return list;
 }
 
+// s337 m2 — build a PangoTabArray for one line from the paragraph's canonical
+// tab spec. Locations are LAYOUT-LOCAL: a stop's stored pos is doc-px from the
+// content-area left edge (the tab bar's origin_doc = box-left + margin-left, the
+// same frame the indent handles live in), and the per-line layout is placed at
+// the indented x_start, so the layout-local location is pos - indent_offset
+// (clamped >= 0; a stop left of the text start collapses onto the origin). This
+// makes a glyph after a '\t' land on exactly the doc-x the bar draws the stop's
+// drop-line at — the convergent-evidence point (target and actual on one screen).
+//
+static PangoTabAlign pango_align_for(curvz::utils::TabAlign a) {
+  switch (a) {
+    case curvz::utils::TabAlign::Right:   return PANGO_TAB_RIGHT;
+    case curvz::utils::TabAlign::Center:  return PANGO_TAB_CENTER;
+    case curvz::utils::TabAlign::Decimal: return PANGO_TAB_DECIMAL;
+    case curvz::utils::TabAlign::Left:
+    default:                              return PANGO_TAB_LEFT;
+  }
+}
+
+// s339 — THE seam. One drop-filter, two consumers: the PangoTabArray
+// (build_line_tab_array) and the per-line leader-mark list (compute_text_layout).
+// Computing the surviving stops once here guarantees the leader draw matches
+// where tabs actually land — if these diverged, a leader would tile to a stop
+// the layout doesn't use. Locations are PANGO units, layout-local (pos minus
+// the line's indent offset); leader/align ride along.
+//
+// s337 m2a HARDENING (kept): a PangoTabArray needs strictly-increasing,
+// strictly-positive locations or Pango can spin forever in tab expansion
+// (inside pango_layout_get_size, past compute_text_layout's safety counter --
+// an un-catchable hang). Keep only stops that advance past the previous
+// accepted stop by >= 1 pango unit; drop the rest. The happy path (ascending
+// positive stops, no indent) keeps every stop.
+struct SurvivingTabStop {
+  int                     loc_pango;   // layout-local, PANGO units
+  curvz::utils::TabAlign  align;
+  curvz::utils::TabLeader leader;
+};
+static std::vector<SurvivingTabStop>
+surviving_tab_stops(const char* spec, double indent_offset) {
+  std::vector<SurvivingTabStop> out;
+  if (!spec || !*spec) return out;
+  std::vector<curvz::utils::TabStop> stops = curvz::utils::parse_tab_spec(spec);
+  out.reserve(stops.size());
+  const int kMinStepPango = 1;  // >= 1 pango unit forward; never 0 or backward
+  int prev = 0;
+  for (const auto& s : stops) {
+    double loc_doc = s.pos - indent_offset;
+    int    loc     = (loc_doc > 0.0) ? (int)(loc_doc * PANGO_SCALE + 0.5) : 0;
+    if (loc < prev + kMinStepPango) continue;   // can't advance — drop it
+    out.push_back({ loc, s.type, s.leader });
+    prev = loc;
+  }
+  return out;
+}
+
+// s339 — R/C/D + decimal point. Each surviving stop's TabAlign maps to its
+// Pango alignment (LEFT/RIGHT/CENTER/DECIMAL; Pango 1.50+, build is 1.54); a
+// DECIMAL stop is pinned to '.' (else it aligns on a locale default). Returns
+// nullptr (Pango falls back to its default tab interval) when nothing survives,
+// leaving the no-tab path byte-identical.
+static PangoTabArray* build_line_tab_array(const char* spec,
+                                           double indent_offset) {
+  std::vector<SurvivingTabStop> surv = surviving_tab_stops(spec, indent_offset);
+  if (surv.empty()) return nullptr;
+  PangoTabArray* ta = pango_tab_array_new((gint)surv.size(), FALSE);
+  for (gint i = 0; i < (gint)surv.size(); ++i) {
+    const PangoTabAlign pa = pango_align_for(surv[(size_t)i].align);
+    pango_tab_array_set_tab(ta, i, pa, surv[(size_t)i].loc_pango);
+    if (pa == PANGO_TAB_DECIMAL)
+      pango_tab_array_set_decimal_point(ta, i, (gunichar)'.');
+  }
+  return ta;
+}
+
 static PangoLayout* make_single_line_layout(const SceneNode* text,
                                              const char* chunk,
                                              int chunk_len,
-                                             size_t chunk_byte_start = 0) {
+                                             size_t chunk_byte_start = 0,
+                                             const char* tab_spec = nullptr,
+                                             double tab_indent_offset = 0.0) {
     // Tiny temp cairo context so PangoCairo can build a layout.
     cairo_surface_t* surf = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
     cairo_t* tmp = cairo_create(surf);
@@ -714,6 +829,15 @@ static PangoLayout* make_single_line_layout(const SceneNode* text,
     if (PangoAttrList* la = build_line_attrs(text, chunk_byte_start, chunk_len)) {
         pango_layout_set_attributes(layout, la);
         pango_attr_list_unref(la);
+    }
+    // s337 m2 — per-paragraph tab stops for this line. set_tabs COPIES the
+    // array into the layout (independent), so we free it immediately. With the
+    // array set, Pango treats '\t' as a stop-advance and the width/position
+    // measurements (get_size, index_to_pos) account for it — which is why the
+    // MEASUREMENT layouts need it too, not just the render layout.
+    if (PangoTabArray* ta = build_line_tab_array(tab_spec, tab_indent_offset)) {
+        pango_layout_set_tabs(layout, ta);
+        pango_tab_array_free(ta);
     }
     return layout;
 }
@@ -923,6 +1047,21 @@ static double indent_for_byte(const SceneNode* text, int attr, size_t byte) {
         (size_t)s.start_byte <= byte && (size_t)s.end_byte > byte)
       v = (double)s.ivalue / (double)PANGO_SCALE;
   return v;
+}
+
+// s337 m2 — per-paragraph tab spec (canonical "pos,type;..." string). Same
+// shape as indent_for_byte / leading_for_byte: the kCurvzTabsAttr run covering
+// the line's start byte (which sits in the owning paragraph) wins; empty when
+// none, so Pango falls back to its default tab interval. The fitter parses this
+// into a per-line PangoTabArray (build_line_tab_array) so a '\t' advances to the
+// next stop instead of being a plain break opportunity.
+static std::string tabs_for_byte(const SceneNode* text, size_t byte) {
+  if (!text) return std::string();
+  for (const auto& s : text->text_attr_spans)
+    if (s.type == curvz::utils::kCurvzTabsAttr &&
+        (size_t)s.start_byte <= byte && (size_t)s.end_byte > byte)
+      return s.svalue;
+  return std::string();
 }
 
 // s331 — see header. Mirrors compute_text_layout's base-font metric block
@@ -1152,21 +1291,32 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         // are not paragraph starts, so they keep the plain left inset. Negative
         // first-line is a hanging indent. Clamp so an over-large inset never
         // inverts the span.
-        {
-          const bool para_start =
-              (line_start == 0) || (buf[line_start - 1] == '\n');
-          const double ind_l = indent_for_byte(
-              text, curvz::utils::kCurvzIndentLeftAttr,  line_start);
-          const double ind_r = indent_for_byte(
-              text, curvz::utils::kCurvzIndentRightAttr, line_start);
-          const double ind_f = para_start
-              ? indent_for_byte(text, curvz::utils::kCurvzIndentFirstAttr,
-                                line_start)
-              : 0.0;
-          x_start += ind_l + ind_f;
-          x_end   -= ind_r;
-          if (x_end < x_start) x_end = x_start;
-        }
+        //
+        // s337 m2 — ind_l / ind_f are lifted to loop-body scope (was an inner
+        // block) because the per-line PangoTabArray needs the indent offset: a
+        // stop's pos is doc-px from the content-area left edge, the layout is
+        // placed at the indented x_start, so layout-local tab loc = pos
+        // - (ind_l [+ ind_f]). See build_line_tab_array.
+        const bool para_start =
+            (line_start == 0) || (buf[line_start - 1] == '\n');
+        const double ind_l = indent_for_byte(
+            text, curvz::utils::kCurvzIndentLeftAttr,  line_start);
+        const double ind_r = indent_for_byte(
+            text, curvz::utils::kCurvzIndentRightAttr, line_start);
+        const double ind_f = para_start
+            ? indent_for_byte(text, curvz::utils::kCurvzIndentFirstAttr,
+                              line_start)
+            : 0.0;
+        x_start += ind_l + ind_f;
+        x_end   -= ind_r;
+        if (x_end < x_start) x_end = x_start;
+        // s337 m2 — offset from the tab-spec origin (content-area left edge) to
+        // this line's layout origin (x_start). ind_f is already 0 on
+        // continuation lines, so this is ind_l there and ind_l+ind_f on a
+        // paragraph's first line. Resolve the paragraph's tab spec once per line.
+        const double tab_indent_offset = ind_l + ind_f;
+        const std::string line_tabs = tabs_for_byte(text, line_start);
+        const char* line_tabs_c = line_tabs.empty() ? nullptr : line_tabs.c_str();
         double avail   = x_end - x_start;
 
         // Build a single-line layout for the remaining buffer.
@@ -1182,6 +1332,26 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         bl.descent    = descent;  // s301 m1h: caret height needs descent separately
         bl.height     = leading;
         bl.byte_start = cursor;
+
+        // s339 — if any stop on this line carries a leader, record ALL its
+        // surviving stops in layout-local doc-px (ascending), each with its
+        // leader. The draw needs the full set, not just leadered ones: a tab
+        // consumes the first stop PAST its pen (Pango's tab rule), so to know
+        // whether THAT stop has a leader we must see the no-leader stops too --
+        // otherwise a leadered stop further right would be mis-attributed to a
+        // tab that actually landed on an earlier no-leader stop. Same filter the
+        // PangoTabArray uses, so the locations match where tabs land. No-leader
+        // lines stay empty (cheap skip in the draw pass).
+        {
+          auto surv = surviving_tab_stops(line_tabs_c, tab_indent_offset);
+          bool any_leader = false;
+          for (const auto& st : surv)
+            if (st.leader != curvz::utils::TabLeader::None) { any_leader = true; break; }
+          if (any_leader)
+            for (const auto& st : surv)
+              bl.tab_locs.push_back(
+                  { (double)st.loc_pango / (double)PANGO_SCALE, st.leader });
+        }
 
         if (remaining_n == 0) {
             // s301 m1e — Buffer exhausted. Emit this baseline empty and
@@ -1221,7 +1391,9 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         PangoLayout* layout = make_single_line_layout(text,
                                                        remaining,
                                                        (int)remaining_n,
-                                                       cursor);
+                                                       cursor,
+                                                       line_tabs_c,
+                                                       tab_indent_offset);
         size_t consumed_on_line = fit_chunk_to_width(remaining, remaining_n,
                                                       layout, avail);
         // Special case: a leading '\n' makes fit_chunk_to_width return 0,
@@ -1256,7 +1428,9 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         PangoLayout* line_layout = make_single_line_layout(text,
                                                             remaining,
                                                             (int)consumed_on_line,
-                                                            cursor);
+                                                            cursor,
+                                                            line_tabs_c,
+                                                            tab_indent_offset);
         // s317 — Belt-and-braces: the chosen break is verified against the
         //   ACTUAL rendered width. If the line is still wider than the
         //   interior (the index_to_pos estimate over-reached by a word),
@@ -1293,7 +1467,9 @@ TextLayout compute_text_layout(const SceneNode* boundary,
                 g_object_unref(line_layout);
                 line_layout = make_single_line_layout(text, remaining,
                                                        (int)consumed_on_line,
-                                                       cursor);
+                                                       cursor,
+                                                       line_tabs_c,
+                                                       tab_indent_offset);
                 pango_layout_get_size(line_layout, &lw, &lh);
             }
         }
@@ -1353,6 +1529,11 @@ TextLayout compute_text_layout(const SceneNode* boundary,
 
         baseline_y += leading_for_byte(text, leading, line_start);
     }
+
+    // s339 — the s337 m2a safety-cap diagnostic was stripped here; the popover
+    // hang it was armed for is confirmed closed (s338). The `safety` counter on
+    // the wrap loop above stays as the geometry-loop guard; only its WARN report
+    // is gone.
 
     // ── s332 — per-paragraph alignment ──────────────────────────────────────
     // Shift each baseline's x_start within its available span [x_start, x_end]
@@ -1570,7 +1751,24 @@ TextCursor::Geometry TextCursor::position_on_canvas() const {
         bool empty_owns = (bl.byte_start == bl.byte_end &&
                            m_byte_index == bl.byte_start &&
                            (crossed_newline || buffer_empty));
-        if (in_range || empty_owns) {
+        // s338 — hard-return line-end ownership. A line ended by a hard '\n'
+        // has byte_end == the '\n' index (the newline is consumed, NOT part of
+        // the next line's range), so the caret AT that line's end
+        // (m_byte_index == byte_end) is owned by NO baseline under the strict
+        // `< byte_end` test: the content line rejects it and the next line
+        // starts at byte_end+1. The caret then fell through to the
+        // last_content_baseline fallback and drew on the LAST line of the flow
+        // (clamped to its first char) -- the reported "click at a return jumps
+        // to the last line" bug. Claim it for THIS line when its end is a hard
+        // return. Soft wraps keep ended_by_wrap == true, so they retain the
+        // s305 m4d "boundary belongs to the later line" behaviour; true EOF has
+        // byte_end == buf.size(), and the buf[byte_end] guard preserves the
+        // end-of-buffer fallback (and avoids an out-of-range read).
+        bool hard_end = (m_byte_index == bl.byte_end &&
+                         !bl.ended_by_wrap &&
+                         bl.byte_end < buf.size() &&
+                         buf[bl.byte_end] == '\n');
+        if (in_range || empty_owns || hard_end) {
             target = &bl;
             break;
         }
@@ -1944,6 +2142,8 @@ bool TextCursor::delete_selection() {
         return false;
     }
     m_text->text_content.erase(s, e - s);
+    curvz::utils::shift_spans_on_delete(
+        m_text->text_attr_spans, (unsigned)s, (unsigned)(e - s));
     m_byte_index = s;
     m_anchor_byte = s;
     // s306 m6 — Buffer mutated, caret moved; drop preferred_x so the

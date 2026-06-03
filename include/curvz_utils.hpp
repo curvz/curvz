@@ -79,6 +79,7 @@
 #include <gtkmm/window.h>
 #include <map>         // s125 m2a — result map for show_form
 #include <string>
+#include <utility>     // s339-cont — std::pair (snap_range_to_paragraphs)
 #include <variant>     // s125 m2a v2 — FormFieldSpec / FormFieldValue::Value
 #include <vector>      // s125 m2a — buttons + fields lists
 
@@ -321,6 +322,111 @@ bool toggle_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
                             int type, long ivalue, const std::string& svalue,
                             unsigned a, unsigned b);
 
+// s339 — the MISSING edit-path pumps. The set/clear/toggle pumps above maintain
+// spans when a FORMAT is applied over a range; nothing maintained them when the
+// TEXT ITSELF grew or shrank. Inserting/deleting bytes shifts every byte offset
+// after the edit point, so span boundaries must move with the text or they
+// desync — the tail of a run falls outside its span (renders at the node
+// default), formats land on the wrong characters, and a clipped span can invert
+// into a negative size. These two pumps are bidirectional and live together;
+// every edit primitive (insert_char/string/newline, backspace, delete_forward,
+// delete_selection — and paste, which composes the last two) calls the matching
+// one right where it mutates text_content.
+//
+// Insert n bytes at `pos`: spans entirely after pos slide +n; a span STRADDLING
+// pos grows by n (typed text inherits the run it lands in); a span ending
+// exactly at pos extends (+n) so text typed at a run's right edge joins that
+// left run (left-inherit, the Word convention); a span starting exactly at pos
+// shifts (it does not absorb the new text). n == 0 is a no-op.
+void shift_spans_on_insert(std::vector<Curvz::AttrSpan>& spans,
+                           unsigned pos, unsigned n);
+
+// Delete [pos, pos+n): every byte offset is remapped through the deletion
+// (x <= pos unchanged; x >= pos+n shifts -n; inside collapses to pos). Spans
+// that collapse to zero width are dropped. n == 0 is a no-op.
+void shift_spans_on_delete(std::vector<Curvz::AttrSpan>& spans,
+                           unsigned pos, unsigned n);
+
+// s339-cont — clipboard char-carry pumps (the Styles-Manager M1 seam). The edit
+// primitives above maintain spans as text grows/shrinks IN PLACE; these two
+// move character formatting ACROSS a copy/paste. Bidirectional and adjacent so a
+// grammar change forces seeing both sides (the curvz::utils house rule).
+//
+//   capture_char_runs(spans, a, b) — clip every CHARACTER span overlapping the
+//     selection [a,b) to that window and rebase it so the selection start is
+//     byte 0. Paragraph-snapped types (is_paragraph_attr) are dropped: the
+//     destination paragraph supplies leading/align/indent/tabs, not the source.
+//     Returns a self-contained run list (plain AttrSpan values) ready to stash
+//     on the clipboard side-channel; empty range or empty result is fine.
+//
+//   apply_char_runs(spans, runs, at, len) — stamp captured runs onto a paste
+//     landing at [at, at+len). Two steps: (1) STRIP the character formatting the
+//     insert pump's left-inherit dragged across [at,at+len) (paragraph spans
+//     survive untouched), so the pasted bytes start from the destination tb
+//     default — the cascade floor; (2) replay each run rebased by +at through
+//     set_attr_over_range (which clips + merges, keeping the bag canonical). Net
+//     effect: pasted text reads as it did at the source (source wins over
+//     default), with the destination default filling any attribute the source
+//     never carried. len == 0 or empty runs is a no-op.
+//
+// Caller contract: apply only when the clipboard bytes are known to be the SAME
+// bytes that were captured (exact plain-text match) — otherwise the run offsets
+// describe a different string. A miss falls back to plain insert (the pre-s339
+// "plain-text-in conforms" path), which is correct for cross-app pastes.
+std::vector<Curvz::AttrSpan>
+capture_char_runs(const std::vector<Curvz::AttrSpan>& spans,
+                  unsigned a, unsigned b);
+
+void apply_char_runs(std::vector<Curvz::AttrSpan>& spans,
+                     const std::vector<Curvz::AttrSpan>& runs,
+                     unsigned at, unsigned len);
+
+// s339-cont — the PARAGRAPH half of clipboard carry. Character runs (above)
+// travel per-byte; paragraph formatting (leading / align / indents / tabs) is
+// per-paragraph and paragraph-snapped, so it gets its own pair. The split is
+// the is_paragraph_attr seam: capture_char_runs keeps the non-paragraph spans,
+// capture_para_runs keeps the paragraph ones, over the same selection.
+//
+//   capture_para_runs(buf, spans, global_leading_px, a, b) — clip+rebase the
+//     PARAGRAPH spans overlapping [a,b) to byte 0 (mirror of capture_char_runs,
+//     opposite filter). AND fold the source's RESOLVED leading: line spacing is
+//     usually implicit -- a node-wide metric default (no span, scalar == 0), or
+//     the node scalar `text_line_height` (doc-px) -- never a span unless set
+//     per-paragraph. The caller resolves the effective stride the source
+//     renders (scalar if > 0, else metric_leading_px) and passes it here; for
+//     each selected paragraph WITHOUT an explicit leading span, a leading run is
+//     SYNTHESIZED from it. Without this the destination substitutes its OWN
+//     spacing (its scalar or its metric default) and the source's line spacing
+//     never travels (Scott's report: source uses metric default, dest had a
+//     14px scalar, paste showed 14px). global_leading_px <= 0 folds nothing.
+//
+//   apply_para_runs(buf, spans, runs, at, len) — for each carried paragraph run,
+//     rebase by +at, SNAP to the destination paragraph(s) it lands in (buf is
+//     the POST-insert buffer), and set. Deliberately NO strip, unlike the
+//     character apply: a paragraph property the source didn't carry stays as the
+//     destination paragraph had it, so pasting a fragment into a formatted
+//     paragraph keeps that paragraph's leading/justify; source wins only where
+//     it carried an explicit value. Whole pasted paragraphs reproduce the source
+//     exactly (the common case: paste a block into a fresh textbox).
+//
+// snap_range_to_paragraphs(buf, a, b) — expand [a,b) to the '\n'-delimited
+//   paragraph(s) it touches (pa back to just after the previous '\n' or 0; pb
+//   forward to just past the next '\n' or end). The clipboard-path twin of the
+//   set_text_* snap in Canvas_ops (consolidation backlogged — see HANDOFF).
+std::vector<Curvz::AttrSpan>
+capture_para_runs(const std::string& buf,
+                  const std::vector<Curvz::AttrSpan>& spans,
+                  double global_leading_px,
+                  unsigned a, unsigned b);
+
+void apply_para_runs(const std::string& buf,
+                     std::vector<Curvz::AttrSpan>& spans,
+                     const std::vector<Curvz::AttrSpan>& runs,
+                     unsigned at, unsigned len);
+
+std::pair<unsigned, unsigned>
+snap_range_to_paragraphs(const std::string& buf, unsigned a, unsigned b);
+
 // s331 — Curvz-private attribute type for PER-PARAGRAPH LEADING, carried as a
 // run in text_attr_spans (so the set/clear/sweep byte-maintenance applies for
 // free across edits). Deliberately outside the PangoAttrType range: it never
@@ -378,11 +484,37 @@ constexpr int kCurvzIndentFirstAttr = 0x494E4446;  // 'INDF'
 // tabs. '|' can never appear in a tab spec, so the run boundary is unambiguous.
 constexpr int kCurvzTabsAttr = 0x54414253;  // 'TABS'
 
+// s339-cont — the character/paragraph seam, named once. The flat span bag mixes
+// two populations: CHARACTER attrs (real Pango types — weight/style/underline/
+// size/scale/family/colour — plus the Curvz per-run stroke pair) and PARAGRAPH
+// attrs (the six Curvz-private constants above: leading, align, the three
+// indents, tabs). They behave differently on a clipboard char-carry: character
+// runs travel WITH the copied bytes; paragraph formatting is supplied by the
+// DESTINATION paragraph the bytes land in (it's paragraph-snapped, already
+// covering the paste point). This predicate is the single place that knows the
+// difference, so capture/apply below never re-enumerate the constant list.
+inline bool is_paragraph_attr(int type) {
+  return type == kCurvzLeadingAttr
+      || type == kCurvzAlignAttr
+      || type == kCurvzIndentLeftAttr
+      || type == kCurvzIndentRightAttr
+      || type == kCurvzIndentFirstAttr
+      || type == kCurvzTabsAttr;
+}
+
 enum class TabAlign { Left, Right, Center, Decimal };
 
+// s339 — dot-leader spacing. The only leader KIND is dots (the real-world
+// vocabulary is small; dashes/lines/glyphs were considered and dropped). None
+// is the absence of a leader; Tight/Normal/Loose are dot spacings. The draw
+// pass (next milestone) tiles dots across a tab's advance gap at the chosen
+// spacing; None draws nothing (the pre-s339 behaviour, byte-identical).
+enum class TabLeader { None, Tight, Normal, Loose };
+
 struct TabStop {
-  double   pos  = 0.0;                 // doc-px from the line's text start
-  TabAlign type = TabAlign::Left;
+  double    pos    = 0.0;               // doc-px from the line's text start
+  TabAlign  type   = TabAlign::Left;
+  TabLeader leader = TabLeader::None;   // s339 — dot-leader spacing
 };
 
 // Type-char codec. Bidirectional, kept adjacent so a grammar change forces
@@ -403,6 +535,31 @@ inline TabAlign tab_align_from_char(char c) {
     case 'D': case 'd': return TabAlign::Decimal;
     case 'L': case 'l':
     default:            return TabAlign::Left;
+  }
+}
+
+// s339 — leader-char codec, adjacent to the type codec for the same reason.
+// Codes are lowercase t/n/o, distinct from the uppercase L/R/C/D type codes and
+// free of the ',' / ';' spec separators, so the leader rides as an OPTIONAL
+// third spec field needing no escaping. None returns 0 (a sentinel): the
+// formatter omits the field entirely for None, keeping leaderless specs
+// byte-identical to pre-s339 and the no-leader round-trip exact. 'o' (not 'l')
+// for Loose so it never reads as the type code 'L'; input is tolerant of both.
+inline char tab_leader_to_char(TabLeader l) {
+  switch (l) {
+    case TabLeader::Tight:  return 't';
+    case TabLeader::Normal: return 'n';
+    case TabLeader::Loose:  return 'o';
+    case TabLeader::None:
+    default:                return 0;   // sentinel — formatter omits the field
+  }
+}
+inline TabLeader tab_leader_from_char(char c) {
+  switch (c) {
+    case 't': case 'T': return TabLeader::Tight;
+    case 'n': case 'N': return TabLeader::Normal;
+    case 'o': case 'O': case 'l': case 'L': return TabLeader::Loose;
+    default:            return TabLeader::None;
   }
 }
 

@@ -2265,6 +2265,213 @@ bool toggle_attr_over_range(std::vector<Curvz::AttrSpan>& spans,
   return true;     // toggled on
 }
 
+// s339 — edit-path span maintenance (see header for the why). Bidirectional,
+// defined together so a change to one forces seeing the other.
+void shift_spans_on_insert(std::vector<Curvz::AttrSpan>& spans,
+                           unsigned pos, unsigned n) {
+  if (n == 0) return;
+  for (auto& s : spans) {
+    if (s.end_byte <= pos) {
+      // Before the caret, or ending exactly at it. A span ending exactly at
+      // pos EXTENDS, so text typed/pasted at a run's right edge joins that run
+      // (left-inherit, the Word convention). Ending strictly before: untouched.
+      if (s.end_byte == pos) s.end_byte += n;
+    } else if (s.start_byte >= pos) {
+      // At/after the caret. A span starting exactly at pos shifts rather than
+      // absorbs — the new bytes belong to the left run, not this one.
+      s.start_byte += n;
+      s.end_byte   += n;
+    } else {
+      // Straddles (start < pos < end): grow to cover the inserted bytes, so
+      // they inherit the run the caret sits inside. This is the whole of
+      // "paste/typing remembers the destination format" — no extra lookup.
+      s.end_byte += n;
+    }
+  }
+}
+
+void shift_spans_on_delete(std::vector<Curvz::AttrSpan>& spans,
+                           unsigned pos, unsigned n) {
+  if (n == 0) return;
+  const unsigned d1 = pos + n;  // exclusive end of the deleted range
+  // Remap a byte offset through the deletion: before -> unchanged; after ->
+  // slides back by n; inside -> collapses to the deletion point. Unsigned-safe
+  // because the (x >= d1) branch guarantees x - n >= pos >= 0.
+  auto remap = [pos, n, d1](unsigned x) -> unsigned {
+    if (x <= pos) return x;
+    if (x >= d1)  return x - n;
+    return pos;
+  };
+  std::vector<Curvz::AttrSpan> kept;
+  kept.reserve(spans.size());
+  for (auto& s : spans) {
+    unsigned ns = remap(s.start_byte);
+    unsigned ne = remap(s.end_byte);
+    if (ne > ns) {                 // survived with positive width
+      s.start_byte = ns;
+      s.end_byte   = ne;
+      kept.push_back(s);
+    }
+    // ne <= ns: the span lay entirely within the deleted range — drop it.
+  }
+  spans.swap(kept);
+}
+
+// ── s339-cont — clipboard char-carry pumps ───────────────────────────────────
+// Contract in curvz_utils.hpp. capture clips+rebases the character spans over a
+// selection; apply strips the destination's dragged-in character formatting and
+// replays the captured runs at the paste point. Paragraph-snapped spans are
+// invisible to both (the destination paragraph owns them).
+
+std::vector<Curvz::AttrSpan>
+capture_char_runs(const std::vector<Curvz::AttrSpan>& spans,
+                  unsigned a, unsigned b) {
+  std::vector<Curvz::AttrSpan> out;
+  if (a >= b) return out;
+  out.reserve(spans.size());
+  for (const auto& s : spans) {
+    if (is_paragraph_attr(s.type)) continue;       // destination supplies these
+    const unsigned ss = std::max(s.start_byte, a);
+    const unsigned se = std::min(s.end_byte,   b);
+    if (ss >= se) continue;                         // no overlap with selection
+    Curvz::AttrSpan c = s;
+    c.start_byte = ss - a;                          // rebase: selection start = 0
+    c.end_byte   = se - a;
+    out.push_back(c);
+  }
+  return out;
+}
+
+void apply_char_runs(std::vector<Curvz::AttrSpan>& spans,
+                     const std::vector<Curvz::AttrSpan>& runs,
+                     unsigned at, unsigned len) {
+  if (len == 0) return;
+  const unsigned a = at;
+  const unsigned b = at + len;
+
+  // (1) Strip character formatting the insert pump's left-inherit dragged across
+  //     the pasted range. Same clip shape as clear_attr_over_range but spanning
+  //     ALL character types at once; paragraph spans pass through untouched so
+  //     the destination paragraph keeps its leading/align/indent/tabs.
+  std::vector<Curvz::AttrSpan> kept;
+  kept.reserve(spans.size() + 4);
+  for (const auto& s : spans) {
+    if (is_paragraph_attr(s.type) || s.end_byte <= a || s.start_byte >= b) {
+      kept.push_back(s);
+      continue;
+    }
+    if (s.start_byte < a) { Curvz::AttrSpan l = s; l.end_byte   = a; kept.push_back(l); }
+    if (s.end_byte   > b) { Curvz::AttrSpan r = s; r.start_byte = b; kept.push_back(r); }
+    // the [a,b) overlap is dropped — pasted bytes reset to the tb default floor.
+  }
+  spans.swap(kept);
+
+  // (2) Replay the captured runs, rebased to the paste point. set_attr_over_range
+  //     re-clips and merges per type, so the bag stays canonical and source wins
+  //     wherever the source carried an explicit value.
+  for (const auto& r : runs) {
+    unsigned rs = a + r.start_byte;
+    unsigned re = a + r.end_byte;
+    if (rs >= b) continue;                          // run starts past the paste
+    if (re > b)  re = b;                            // clamp a run that overshoots
+    if (rs >= re) continue;
+    set_attr_over_range(spans, r.type, r.ivalue, r.svalue, rs, re);
+  }
+}
+
+std::pair<unsigned, unsigned>
+snap_range_to_paragraphs(const std::string& buf, unsigned a, unsigned b) {
+  const unsigned n = (unsigned)buf.size();
+  if (a > n) a = n;
+  if (b > n) b = n;
+  unsigned pa = a;
+  while (pa > 0 && buf[pa - 1] != '\n') --pa;
+  unsigned pb = b;
+  // Guard pb == 0 (buf[pb-1] would underflow unsigned and index OOB); a
+  // paragraph starting at 0 has no preceding '\n', so pb == 0 just advances.
+  while (pb < n && (pb == 0 || buf[pb - 1] != '\n')) ++pb;
+  if (pb < b) pb = b;
+  if (pb == pa) pb = std::min(n, pa + 1);   // non-empty for a bare caret
+  return {pa, pb};
+}
+
+std::vector<Curvz::AttrSpan>
+capture_para_runs(const std::string& buf,
+                  const std::vector<Curvz::AttrSpan>& spans,
+                  double global_leading_px,
+                  unsigned a, unsigned b) {
+  std::vector<Curvz::AttrSpan> out;
+  if (a >= b) return out;
+
+  // (1) Explicit paragraph spans (leading / align / indents / tabs): clip to
+  //     the selection and rebase to byte 0. Mirror of capture_char_runs.
+  for (const auto& s : spans) {
+    if (!is_paragraph_attr(s.type)) continue;
+    const unsigned ss = std::max(s.start_byte, a);
+    const unsigned se = std::min(s.end_byte,   b);
+    if (ss >= se) continue;
+    Curvz::AttrSpan c = s;
+    c.start_byte = ss - a;
+    c.end_byte   = se - a;
+    out.push_back(c);
+  }
+
+  // (2) Fold the GLOBAL leading. A textbox-wide line spacing lives in the node
+  //     scalar (text_line_height), not in a span; without this, a fragment that
+  //     isn't under an explicit leading run carries no spacing. For each
+  //     selected paragraph segment lacking an explicit leading span in the
+  //     SOURCE, synthesize a leading run carrying the global value, rebased.
+  if (global_leading_px > 0.0) {
+    const long gl = std::lround(global_leading_px * (double)PANGO_SCALE);
+    auto has_explicit_lead = [&](unsigned byte) -> bool {
+      for (const auto& s : spans)
+        if (s.type == kCurvzLeadingAttr &&
+            s.start_byte <= byte && s.end_byte > byte)
+          return true;
+      return false;
+    };
+    unsigned seg = a;
+    while (seg < b) {
+      unsigned nl = seg;
+      while (nl < b && buf[nl] != '\n') ++nl;          // next '\n' or b
+      const unsigned seg_end = (nl < b) ? nl + 1 : b;  // include the '\n'
+      if (!has_explicit_lead(seg)) {
+        Curvz::AttrSpan run;
+        run.type       = kCurvzLeadingAttr;
+        run.ivalue     = gl;
+        run.start_byte = seg - a;                      // rebase
+        run.end_byte   = seg_end - a;
+        out.push_back(run);
+      }
+      seg = seg_end;
+    }
+  }
+  return out;
+}
+
+void apply_para_runs(const std::string& buf,
+                     std::vector<Curvz::AttrSpan>& spans,
+                     const std::vector<Curvz::AttrSpan>& runs,
+                     unsigned at, unsigned len) {
+  if (len == 0 || runs.empty()) return;
+  const unsigned lo = at;
+  const unsigned hi = at + len;
+  for (const auto& r : runs) {
+    unsigned rs = at + r.start_byte;
+    unsigned re = at + r.end_byte;
+    if (rs < lo) rs = lo;
+    if (re > hi) re = hi;
+    if (rs >= re) continue;
+    // Snap to the destination paragraph(s) the run lands in, then set. No
+    // strip: source wins only where it carried a value; a paragraph the paste
+    // merged into keeps its own unspecified paragraph attrs. set_attr_over_range
+    // clears+sets its own type, so re-pasting is idempotent and the bag stays
+    // canonical.
+    auto [pa, pb] = snap_range_to_paragraphs(buf, rs, re);
+    set_attr_over_range(spans, r.type, r.ivalue, r.svalue, pa, pb);
+  }
+}
+
 // ── s335 — tab-spec codec ─────────────────────────────────────────────────────
 // Bidirectional, defined together. The spec grammar is "pos,type;pos,type;..."
 // (see curvz_utils.hpp kCurvzTabsAttr). parse is the tolerant reader; format is
@@ -2283,14 +2490,25 @@ std::vector<TabStop> parse_tab_spec(const std::string& spec) {
       // Trim leading whitespace off the number for strtod's sake.
       std::string num = tok.substr(0, comma);
       std::string ty  = tok.substr(comma + 1);
+      // s339 — an optional THIRD field (leader code) may follow a second comma:
+      // "pos,type,leader". Split it off before reading the type; absent in
+      // pre-s339 specs, so two-field tokens parse exactly as before.
+      std::string ld;
+      size_t comma2 = ty.find(',');
+      if (comma2 != std::string::npos) {
+        ld = ty.substr(comma2 + 1);
+        ty = ty.substr(0, comma2);
+      }
       char* endp = nullptr;
       double pos = std::strtod(num.c_str(), &endp);
       // Accept only if at least one digit parsed (endp moved past a digit).
       if (endp != num.c_str()) {
-        // First non-space char of the type field decides the alignment.
+        // First non-space char of each field decides type / leader.
         char tc = 'L';
         for (char c : ty) { if (!std::isspace((unsigned char)c)) { tc = c; break; } }
-        out.push_back({ pos, tab_align_from_char(tc) });
+        char lc = 0;
+        for (char c : ld) { if (!std::isspace((unsigned char)c)) { lc = c; break; } }
+        out.push_back({ pos, tab_align_from_char(tc), tab_leader_from_char(lc) });
       }
     }
     if (semi == std::string::npos) break;
@@ -2320,6 +2538,9 @@ std::string format_tab_spec(std::vector<TabStop> stops) {
       num.erase(last_nz + 1);
     }
     std::string tok = num + "," + tab_align_to_char(s.type);
+    // s339 — append the leader code only when set; None omits the field so
+    // leaderless stops serialize identically to pre-s339.
+    if (char lc = tab_leader_to_char(s.leader)) { tok += ','; tok += lc; }
     if (have_last && std::fabs(s.pos - last_pos) < 1e-4) {
       // Same position as the previous emitted stop — replace its token.
       size_t semi = out.rfind(';');

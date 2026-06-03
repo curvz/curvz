@@ -856,6 +856,11 @@ void MainWindow::connect_signals() {
     update_rulers();
     m_properties.refresh(&doc->canvas, nullptr);
     m_toolbar.set_document(doc);
+    // s338 — re-apply the model (same pointer, unit moved): reconverts the
+    // StyleBar spins and relabels the tab-stop rows into the new unit, and
+    // repaints the on-canvas tab ruler (it reads display_unit live at draw).
+    m_style_bar.set_doc_model(&doc->canvas);
+    m_canvas.queue_draw();
     m_corner.set_unit(u);
     {
       Unit cu = (doc->canvas.display_mode == DisplayMode::Physical)

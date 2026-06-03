@@ -47,6 +47,11 @@
 #include <utility>    // std::pair (s305 m2 — selection_range return type)
 #include <vector>
 
+// s339 — opaque-enum fwd decl (underlying type is fixed, so this is a complete
+// type and can be a by-value member) keeps the heavy curvz_utils.hpp out of
+// this widely-included header. Used by BaselineLayout::tab_locs below.
+namespace curvz::utils { enum class TabLeader; }
+
 namespace Curvz {
 
 struct SceneNode;
@@ -88,6 +93,16 @@ struct BaselineLayout {
                                // compute_text_layout at the content-line push.
     struct PangoDeleter { void operator()(PangoLayout* p) const { if (p) g_object_unref(p); } };
     std::unique_ptr<PangoLayout, PangoDeleter> pango;
+
+    // s339 — tab stops on THIS line that carry a dot leader, in LAYOUT-LOCAL
+    // doc-px (the same frame pango_layout_index_to_pos reports, so the draw pass
+    // matches a tab's landing x directly without re-deriving the indent offset).
+    // Only leadered stops are recorded (None contributes nothing); empty on the
+    // common no-leader line, so the leader pass is a cheap skip. Populated in
+    // compute_text_layout from the same surviving-stops filter the PangoTabArray
+    // is built from, so the locations can't drift from where tabs actually land.
+    struct TabLeaderMark { double loc = 0.0; curvz::utils::TabLeader leader{}; };
+    std::vector<TabLeaderMark> tab_locs;
 };
 
 // Result of laying out a buffer into a boundary. Overflow (bytes not

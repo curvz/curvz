@@ -794,6 +794,10 @@ void MainWindow::on_doc_activated(int index) {
   m_preview.set_document(doc);
   m_layers.set_document(doc);
   m_library.set_document(doc);
+  // s338 — feed the active doc's model so the StyleBar's layout-domain Distance
+  // spins (indents + tab-stop position) and the tab-stop row labels report in
+  // the doc's display unit. nullptr when no active doc.
+  m_style_bar.set_doc_model(doc ? &doc->canvas : nullptr);
   if (doc) {
     CanvasModel *cm = &doc->canvas;
     Glib::signal_idle().connect_once([this, cm]() {

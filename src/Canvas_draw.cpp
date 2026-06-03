@@ -3,6 +3,7 @@
 #include "CommandHistory.hpp"
 #include "CurvzLog.hpp"
 #include "CurvzProject.hpp"  // s116 m6 — m_project field reads workspace appearance
+#include "DocUnits.hpp"      // s338 — doc-px <-> display-unit pump for the tab ruler
 #include "CurvzSpinButton.hpp"
 #include "MacroSystem.hpp"
 #include "SvgParser.hpp"
@@ -503,6 +504,181 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
     cr->restore();
   }
 
+  // ── s339 — Dot leaders ───────────────────────────────────────────────────
+  // Fill a tab's advance gap with tiled dots when the stop it lands on carries
+  // a leader. Real content (not gated on show-invisibles): uses the fill source
+  // set above, so the dots are the text ink. Per line that carries leadered
+  // stops (bl.tab_locs non-empty), walk its '\t' bytes; for each, the stop it
+  // consumed is the first surviving stop PAST the tab's pen (gap left edge) --
+  // Pango's tab rule, and the one match that holds for L/R/C/D alike (the gap's
+  // RIGHT edge equals the stop only for left tabs). If that stop has a leader,
+  // tile dots across the gap, anchored at the right (flush to the following
+  // content) and marching left. The interior clip from the glyph pass is still
+  // in effect, so dots can't spill past the margins.
+  for (const auto& bl : tl.baselines) {
+    if (bl.tab_locs.empty() || !bl.pango) continue;
+    const std::string& buf = text_obj.text_content;
+    const double fs = (bl.ascent > 0.0) ? bl.ascent : 10.0;
+    const double r  = std::max(fs * 0.055, 0.4);  // dot radius
+    const double cy = bl.y - fs * 0.10;           // dot row, just above baseline
+    const size_t bs = bl.byte_start, be = bl.byte_end;
+    for (size_t b = bs; b < be && b < buf.size(); ++b) {
+      if (buf[b] != '\t') continue;
+      PangoRectangle pr;
+      pango_layout_index_to_pos(bl.pango.get(), (int)(b - bs), &pr);
+      double gx0 = bl.x_start + (double)pr.x / (double)PANGO_SCALE;
+      double gw  = (double)pr.width / (double)PANGO_SCALE;
+      if (gw < 0.0) { gx0 += gw; gw = -gw; }       // RTL safety
+      const double pen_local = (double)pr.x / (double)PANGO_SCALE;  // gap left edge
+      // First surviving stop strictly past the pen == the stop this tab used.
+      bool found = false;
+      curvz::utils::TabLeader lead = curvz::utils::TabLeader::None;
+      for (const auto& m : bl.tab_locs)
+        if (m.loc > pen_local + 0.25) { lead = m.leader; found = true; break; }
+      if (!found || lead == curvz::utils::TabLeader::None) continue;
+      double cell;
+      switch (lead) {
+        case curvz::utils::TabLeader::Tight: cell = fs * 0.28; break;
+        case curvz::utils::TabLeader::Loose: cell = fs * 0.60; break;
+        case curvz::utils::TabLeader::Normal:
+        default:                             cell = fs * 0.42; break;
+      }
+      if (cell < 0.5) continue;                    // degenerate-cell guard
+      const double gx1 = gx0 + gw;
+      double cx = gx1 - cell * 0.5;                // first dot near the content
+      while (cx > gx0 + r) {
+        cr->arc(cx, cy, r, 0, 2 * M_PI);
+        cr->fill();
+        cx -= cell;
+      }
+    }
+  }
+
+
+  // s338 — Show invisibles. Diagnostic-grade overlay (a hidden \t was
+  // confounding tab-stop testing) that doubles as a real "show formatting"
+  // view. Draw-only, gated on m_show_invisibles, in the same doc-space frame
+  // as the glyphs above. Per baseline we walk its byte slice and mark:
+  //   tab           -> arrow spanning the tab's advance gap
+  //   space         -> centred dot
+  //   no-break space-> centred dot inside a tinted box (it has width)
+  //   word-joiner   -> thin vertical tick at the seam (zero-width, no glyph)
+  //   hard return   -> pilcrow at the line end
+  // Positions come from pango_layout_index_to_pos against each line's own
+  // layout (byte indices are layout-relative, so subtract bl.byte_start).
+  // The hard-return test uses bl.ended_by_wrap (the same paragraph-end signal
+  // justify uses) rather than poking buffer bytes: ended_by_wrap == false means
+  // the line ended on a hard '\n' or EOF; gating on a trailing '\n' excludes
+  // the EOF case (no newline char = no pilcrow). NBSP (U+00A0 = C2 A0) and
+  // word-joiner (U+2060 = E2 81 A0) are multi-byte, so we match the lead bytes
+  // and pass the START index to index_to_pos.
+  if (m_show_invisibles) {
+    const std::string& buf = text_obj.text_content;
+    auto is_nbsp = [&](size_t i) {
+      return i + 1 < buf.size() &&
+             (unsigned char)buf[i] == 0xC2 && (unsigned char)buf[i + 1] == 0xA0;
+    };
+    auto is_wj = [&](size_t i) {
+      return i + 2 < buf.size() &&
+             (unsigned char)buf[i] == 0xE2 && (unsigned char)buf[i + 1] == 0x81 &&
+             (unsigned char)buf[i + 2] == 0xA0;
+    };
+    cr->save();
+    for (const auto& bl : tl.baselines) {
+      if (!bl.pango) continue;
+      const double asc = (bl.ascent > 0.0) ? bl.ascent : 10.0;
+      const double lw  = std::max(asc * 0.05, 0.4);
+      const double midy = bl.y - asc * 0.34;        // a touch above the baseline
+      const size_t bs = bl.byte_start, be = bl.byte_end;
+      auto pos_x = [&](size_t b, double& x, double& w) {
+        PangoRectangle pr;
+        pango_layout_index_to_pos(bl.pango.get(), (int)(b - bs), &pr);
+        x = bl.x_start + (double)pr.x / (double)PANGO_SCALE;
+        w = (double)pr.width / (double)PANGO_SCALE;
+        if (w < 0.0) { x += w; w = -w; }             // RTL safety
+      };
+      for (size_t b = bs; b < be && b < buf.size(); ++b) {
+        const unsigned char c = (unsigned char)buf[b];
+        double x0, w;
+        if (c == ' ') {                               // space — dot
+          cr->set_source_rgba(0.40, 0.62, 0.92, 0.70);
+          pos_x(b, x0, w);
+          cr->arc(x0 + w * 0.5, midy, std::max(asc * 0.06, 0.4), 0, 2 * M_PI);
+          cr->fill();
+        } else if (c == '\t') {                       // tab — arrow across gap
+          cr->set_source_rgba(0.40, 0.62, 0.92, 0.70);
+          cr->set_line_width(lw);
+          pos_x(b, x0, w);
+          const double pad = asc * 0.12;
+          const double ax0 = x0 + pad;
+          double ax1 = x0 + w - pad;
+          if (ax1 - ax0 < asc * 0.25) ax1 = ax0 + asc * 0.5;
+          const double head = asc * 0.18;
+          cr->move_to(ax0, midy); cr->line_to(ax1, midy);
+          cr->move_to(ax1, midy); cr->line_to(ax1 - head, midy - head * 0.7);
+          cr->move_to(ax1, midy); cr->line_to(ax1 - head, midy + head * 0.7);
+          cr->stroke();
+        } else if (is_nbsp(b)) {                      // NBSP — dot on a tinted box
+          pos_x(b, x0, w);
+          cr->set_source_rgba(0.40, 0.62, 0.92, 0.22);   // faint fill box
+          cr->rectangle(x0, bl.y - asc * 0.72, w, asc * 0.82);
+          cr->fill();
+          cr->set_source_rgba(0.40, 0.62, 0.92, 0.85);
+          cr->arc(x0 + w * 0.5, midy, std::max(asc * 0.06, 0.4), 0, 2 * M_PI);
+          cr->fill();
+          ++b;                                          // skip the trailing A0 byte
+        } else if (is_wj(b)) {                        // word-joiner — vertical tick
+          pos_x(b, x0, w);                              // zero-width: w ~ 0
+          cr->set_source_rgba(0.85, 0.45, 0.30, 0.85);  // warm tick, distinct
+          cr->set_line_width(std::max(asc * 0.05, 0.4));
+          cr->move_to(x0, bl.y - asc * 0.70);
+          cr->line_to(x0, bl.y + asc * 0.10);
+          cr->stroke();
+          b += 2;                                       // skip the 81 A0 bytes
+        }
+      }
+      // Pilcrow at a hard paragraph break: ended_by_wrap == false means the
+      // line ended on '\n' or EOF; require a trailing '\n' so EOF gets none.
+      if (!bl.ended_by_wrap && be < buf.size() && buf[be] == '\n') {
+        // Drawn as geometry, OVER the last glyph (overlay, no reflow). The
+        // earlier show_text version placed it past bl.x_end, which on a line
+        // that reaches the margin lands outside draw_text_in_boundary's
+        // interior clip -> painted then clipped away (the "pilcrow never
+        // shows" bug). Centring it on the last character keeps it inside the
+        // clip and doesn't perturb the layout being inspected. Geometry also
+        // sidesteps the toy-font path the dots/arrows already avoid.
+        double cx;
+        if (be > bs) {
+          PangoRectangle lr;
+          pango_layout_index_to_pos(bl.pango.get(), (int)(be - 1 - bs), &lr);
+          // Anchor just past the last glyph's RIGHT edge (not its centre) so
+          // the pilcrow overlays the trailing gap and leaves the character
+          // itself visible. Hard-return lines have slack before the margin
+          // (they broke on '\n', not width), so the small overhang stays in
+          // the interior clip.
+          cx = bl.x_start +
+               ((double)lr.x + (double)lr.width) / (double)PANGO_SCALE +
+               asc * 0.10;
+        } else {
+          cx = bl.x_end + asc * 0.10;
+        }
+        const double lwp     = std::max(asc * 0.07, 0.5);
+        const double stem_dx = asc * 0.11;
+        const double rb      = stem_dx + lwp;       // bowl radius joins stems
+        const double gtop    = bl.y - asc * 0.60;
+        const double gbot    = bl.y + asc * 0.04;
+        cr->set_source_rgba(0.40, 0.62, 0.92, 0.80);
+        cr->set_line_width(lwp);
+        cr->move_to(cx - stem_dx, gtop + rb); cr->line_to(cx - stem_dx, gbot);
+        cr->move_to(cx + stem_dx, gtop + rb); cr->line_to(cx + stem_dx, gbot);
+        cr->stroke();
+        cr->arc(cx, gtop + rb, rb, 0, 2 * M_PI);    // filled bowl
+        cr->fill();
+      }
+    }
+    cr->restore();
+  }
+
   // s332 — text stroke render valve. Pango has no stroke attr, so text stroke
   // rides Curvz-private spans (kCurvzStrokeColorAttr: packed 0xRRGGBB or
   // kCurvzStrokeNone; kCurvzStrokeWidthAttr: width doc-px x PANGO_SCALE) and is
@@ -714,26 +890,46 @@ void Canvas::draw_tab_bar(const Cairo::RefPtr<Cairo::Context>& cr,
   cr->stroke();
 
   // Tick gradations from zero (origin) rightward. "Nice" minor step targeting
-  // ~7 screen px; every 5th is a major (taller + label).
+  // ~7 screen px; every 5th is a major (taller + label). s338 — the gradation
+  // and labels honor the doc's display unit: we pick a nice round step in
+  // DISPLAY units (so majors land on 0.25in / 12pt / 10mm, not on round px),
+  // then convert each tick back to doc-px for placement. The DocUnits X pump
+  // with ruler_origin=0 is a pure scale (linear through 0, all display modes),
+  // so a display-unit value `d_disp` maps to a doc-px length with len_of(), and
+  // the inverse names the label. Mirrors the main HRuler's unit-aware ticks so
+  // the tab ruler reads in the same unit as the rest of the chrome.
   {
-    double raw  = 7.0 / std::max(m_zoom, 0.01);
-    double mag  = std::pow(10.0, std::floor(std::log10(std::max(raw, 1e-6))));
-    double norm = raw / mag;
-    double minor = (norm <= 1.0 ? 1.0 : norm <= 2.0 ? 2.0 : norm <= 5.0 ? 5.0 : 10.0) * mag;
+    const CanvasModel* cm = m_doc ? &m_doc->canvas : nullptr;
+    // px length -> display-unit length, and back. ruler_origin=0 => pure scale.
+    auto disp_of = [&](double len_px) {
+      return cm ? DocUnits::doc_to_display_x(len_px, cm, 0.0) : len_px;
+    };
+    auto len_of = [&](double d_disp) {
+      return cm ? DocUnits::display_to_doc_x(d_disp, cm, 0.0) : d_disp;
+    };
+    // Target ~7 screen px, expressed in display units, then snapped to 1/2/5.
+    double raw_px = 7.0 / std::max(m_zoom, 0.01);
+    double raw    = std::fabs(disp_of(raw_px));
+    double mag    = std::pow(10.0, std::floor(std::log10(std::max(raw, 1e-6))));
+    double norm   = raw / mag;
+    double minor  = (norm <= 1.0 ? 1.0 : norm <= 2.0 ? 2.0 : norm <= 5.0 ? 5.0 : 10.0) * mag;
+    if (minor <= 0.0) minor = 1.0;  // belt-and-braces against a degenerate scale
     const int major_every = 5;
     cr->select_font_face("Sans", Cairo::ToyFontFace::Slant::NORMAL,
                          Cairo::ToyFontFace::Weight::NORMAL);
     cr->set_font_size(8.0);
     int i = 0;
-    for (double d = 0.0; origin_doc + d <= right_doc + 0.01 && i < 4000; d += minor, ++i) {
-      double sx = std::floor(SX(origin_doc + d)) + 0.5;
+    for (double d_disp = 0.0; i < 4000; d_disp += minor, ++i) {
+      double len_px = len_of(d_disp);              // display value -> doc-px
+      if (origin_doc + len_px > right_doc + 0.01) break;
+      double sx = std::floor(SX(origin_doc + len_px)) + 0.5;
       bool major = (i % major_every == 0);
       cr->set_source_rgba(tick_r, tick_r, tick_r, major ? 0.95 : 0.6);
       cr->move_to(sx, major ? band_top + 2.0 : mid_y - 3.0);
       cr->line_to(sx, mid_y + 3.0);
       cr->stroke();
       if (major && i > 0) {
-        char lbl[24]; std::snprintf(lbl, sizeof(lbl), "%g", d);
+        char lbl[24]; std::snprintf(lbl, sizeof(lbl), "%.4g", d_disp);
         cr->move_to(sx + 1.5, band_top + 8.0);
         cr->show_text(lbl);
       }

@@ -9,9 +9,15 @@
 #include "StyleBar.hpp"
 #include "curvz_utils.hpp"
 #include "CurvzSpinButton.hpp"
+#include <glibmm/main.h>         // s337 m2e — Glib::signal_idle (deferred row select)
 #include "CurvzColorPicker.hpp"  // s332 — embedded in the Fill popover
 #include "color/Color.hpp"       // s332 — color::Color for the picker round-trip
 #include "UnitSystem.hpp"   // s331 — Unit::Pt + px<->pt for the Size chip
+#include "DocUnits.hpp"     // s338 — doc-px -> display-unit pump for row labels
+#include "widgets/DropDown.hpp"          // s339 — Type/Leader detail dropdowns
+#include <gtkmm/stringlist.h>            // s339 — dropdown models
+#include <gtkmm/eventcontrollerkey.h>    // s339 — Esc dismissal (popover off autohide)
+#include "CurvzDocument.hpp" // s338 — CanvasModel (display_unit) behind set_doc_model
 
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
@@ -353,6 +359,26 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 1) {
   // of the bar (the chips stay left-clumped per §9; centering them is a
   // separate cosmetic pass). Direct action — no popover. Strips all per-run
   // formatting on the active text back to defaults via the reset callback.
+  // s338 — Show invisibles: a view toggle that draws tab / space / paragraph
+  // markers in the edited text, like a word processor's "show formatting." It
+  // sits with the chips (left of the right-pushed Reset). Diagnostic first --
+  // hidden tabs were confounding tab-stop testing -- but it's a real editor
+  // feature, so it lives on the bar, not buried. Fires a request callback;
+  // Canvas owns the m_show_invisibles draw flag. set_can_focus(false) keeps it
+  // out of the text edit's focus chain (the s338 cross-root-focus lesson).
+  m_chip_invis = Gtk::make_managed<Gtk::ToggleButton>("\xC2\xB6");  // pilcrow label
+  curvz::utils::set_name(m_chip_invis, "sty_invis", "style_bar_invisibles_toggle");
+  m_chip_invis->set_has_frame(false);
+  m_chip_invis->set_can_focus(false);
+  m_chip_invis->set_tooltip_text("Show invisibles (tabs, spaces, paragraph marks)");
+  m_chip_invis->add_css_class("curvz-style-chip");
+  m_chip_invis->add_css_class("curvz-style-trigger");
+  m_chip_invis->signal_toggled().connect([this]() {
+    if (m_show_invisibles_request)
+      m_show_invisibles_request(m_chip_invis->get_active());
+  });
+  append(*m_chip_invis);
+
   auto* spacer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
   spacer->set_hexpand(true);
   append(*spacer);
@@ -1048,11 +1074,19 @@ void StyleBar::build_tabs_popover(Gtk::MenuButton* chip) {
   auto* scroller = Gtk::make_managed<Gtk::ScrolledWindow>();
   scroller->set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
   scroller->set_propagate_natural_width(false);  // s334 gotcha — scroll fires
-  scroller->set_min_content_height(84);
-  scroller->set_max_content_height(168);
-  scroller->set_size_request(216, -1);
+  scroller->set_min_content_height(120);  // s339 — was 84; taller resting list
+  scroller->set_max_content_height(300);  // s339 — was 168 (~6 rows); ~10 rows
+                                          // now show before scroll kicks in
+  scroller->set_size_request(248, -1);  // s339 — widened with the position spin
+  scroller->set_hexpand(true);          // s339 — the type+leader dropdown row is
+                                        // now the widest child; let the list fill
+                                        // the popover width rather than sit at 248
   m_tabs_list = Gtk::make_managed<Gtk::ListBox>();
   m_tabs_list->set_selection_mode(Gtk::SelectionMode::SINGLE);
+  // s338 — belt-and-braces with the per-row opt-out below: the ListBox is in
+  // the popover's root, so it must not pull focus out of the main window's
+  // text editor either. Selection is gesture-driven, not focus-driven.
+  m_tabs_list->set_can_focus(false);
   scroller->set_child(*m_tabs_list);
   // (Appended at the BOTTOM of the column — controls sit on top, list below.)
 
@@ -1062,30 +1096,41 @@ void StyleBar::build_tabs_popover(Gtk::MenuButton* chip) {
   pl->set_xalign(0.0); pl->set_size_request(56, -1);
   m_tabs_pos = Gtk::make_managed<CurvzSpinButton>("sty_tab_pos", SpinType::Distance);
   m_tabs_pos->with_value(48.0)
-      ->with_width_chars(6)
+      ->with_width_chars(10)   // s339 — inches render at 6 decimals; 6 chars
+                               // clipped values like 12.345678. 10 shows it whole.
       ->with_tooltip("Tab-stop position — follows the document unit (12pt, 1in, 10mm, …)");
   det->append(*pl); det->append(*m_tabs_pos); det->append(*m_tabs_pos->get_unit_label());
   col->append(*det);
 
-  // Detail — type chooser. Hand-rolled exclusive toggles (not a GTK group, so
-  // the "no row selected" state can show all four off + insensitive).
-  auto* tr = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
+  // Detail — type + leader, unified as matching dropdowns on one row. Both act
+  // on the selected stop (master-detail), or stage the next Add when nothing is
+  // selected. DropDowns (not the old toggle group) so the two read alike; this
+  // is why the popover runs non-autohide (see the autohide note at attach) --
+  // a DropDown's own popup breaks an autohide popover's grab (s155 house lesson).
+  auto* tr = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
   auto* tl = Gtk::make_managed<Gtk::Label>("Type");
   tl->set_xalign(0.0); tl->set_size_request(56, -1);
-  tr->append(*tl);
-  const char* tlabels[4] = { "L", "R", "C", "D" };
-  const char* ttips[4]   = { "Left", "Right", "Centre", "Decimal" };
-  for (int i = 0; i < 4; ++i) {
-    m_tabs_type[i] = Gtk::make_managed<Gtk::ToggleButton>(tlabels[i]);
-    m_tabs_type[i]->set_tooltip_text(ttips[i]);
-    m_tabs_type[i]->add_css_class("curvz-style-trigger");
-    m_tabs_type[i]->set_can_focus(false);
-    tr->append(*m_tabs_type[i]);
-  }
-  // Seed Left active so the controls compose a usable stop from the first open.
+  auto type_model = Gtk::StringList::create({ "Left", "Right", "Centre", "Decimal" });
+  m_tabs_type = Gtk::make_managed<curvz::widgets::DropDown>("sty_tab_type", type_model);
+  m_tabs_type->set_can_focus(false);  // s338/s339 — stay out of the cross-root focus walk
+  m_tabs_type->set_focusable(false);
+  m_tabs_type->set_tooltip_text("Tab-stop alignment");
+
+  auto* ll = Gtk::make_managed<Gtk::Label>("Leaders");
+  ll->set_xalign(0.0); ll->set_size_request(56, -1); ll->set_margin_start(6);
+  auto lead_model = Gtk::StringList::create({ "None", "Tight", "Normal", "Loose" });
+  m_tabs_leader = Gtk::make_managed<curvz::widgets::DropDown>("sty_tab_lead", lead_model);
+  m_tabs_leader->set_can_focus(false);
+  m_tabs_leader->set_focusable(false);
+  m_tabs_leader->set_tooltip_text("Dot leader filling the tab's gap (None = no leader)");
+
+  // Seed Left / None so the controls compose a usable stop from the first open.
   m_tabs_loading = true;
-  if (m_tabs_type[0]) m_tabs_type[0]->set_active(true);
+  m_tabs_type->set_selected(0);
+  m_tabs_leader->set_selected(0);
   m_tabs_loading = false;
+  tr->append(*tl); tr->append(*m_tabs_type);
+  tr->append(*ll); tr->append(*m_tabs_leader);
   col->append(*tr);
 
   // Buttons.
@@ -1126,43 +1171,44 @@ void StyleBar::build_tabs_popover(Gtk::MenuButton* chip) {
     m_tabs_spec = curvz::utils::format_tab_spec(stops);
     m_tabs_sel  = reselect_after_sort(px);
     commit_tabs();
-    rebuild_tabs_list();
+    schedule_tabs_refresh();   // s338 — defer teardown off the gesture dispatch
   });
 
-  for (int i = 0; i < 4; ++i) {
-    m_tabs_type[i]->signal_toggled().connect([this, i]() {
-      if (m_tabs_loading) return;
-      if (!m_tabs_type[i]->get_active()) {
-        // Clicked the lit one — radio semantics: a stop always has a type.
-        m_tabs_loading = true; m_tabs_type[i]->set_active(true); m_tabs_loading = false;
-        return;
-      }
-      m_tabs_loading = true;
-      for (int j = 0; j < 4; ++j) if (j != i) m_tabs_type[j]->set_active(false);
-      m_tabs_loading = false;
-      if (m_tabs_sel < 0) return;
-      auto stops = curvz::utils::parse_tab_spec(m_tabs_spec);
-      if (m_tabs_sel >= (int)stops.size()) return;
-      stops[(size_t)m_tabs_sel].type = (curvz::utils::TabAlign)i;
-      m_tabs_spec = curvz::utils::format_tab_spec(stops);
-      commit_tabs();
-      rebuild_tabs_list();   // type edit doesn't move position; selection holds
-    });
-  }
+  // Type dropdown — apply alignment to the selected stop.
+  m_tabs_type->property_selected().signal_changed().connect([this]() {
+    if (m_tabs_loading || m_tabs_sel < 0) return;
+    auto stops = curvz::utils::parse_tab_spec(m_tabs_spec);
+    if (m_tabs_sel >= (int)stops.size()) return;
+    stops[(size_t)m_tabs_sel].type =
+        (curvz::utils::TabAlign)(int)m_tabs_type->get_selected();
+    m_tabs_spec = curvz::utils::format_tab_spec(stops);
+    commit_tabs();
+    schedule_tabs_refresh();   // s338 — defer teardown off the gesture dispatch
+  });
+
+  // Leader dropdown — apply dot-leader spacing to the selected stop.
+  m_tabs_leader->property_selected().signal_changed().connect([this]() {
+    if (m_tabs_loading || m_tabs_sel < 0) return;
+    auto stops = curvz::utils::parse_tab_spec(m_tabs_spec);
+    if (m_tabs_sel >= (int)stops.size()) return;
+    stops[(size_t)m_tabs_sel].leader =
+        (curvz::utils::TabLeader)(int)m_tabs_leader->get_selected();
+    m_tabs_spec = curvz::utils::format_tab_spec(stops);
+    commit_tabs();
+    schedule_tabs_refresh();
+  });
 
   add->signal_clicked().connect([this]() {
     auto stops = curvz::utils::parse_tab_spec(m_tabs_spec);
-    // Compose the new stop from the live controls (position spin + active type).
+    // Compose the new stop from the live controls (position spin + type + leader).
     double pos = m_tabs_pos ? m_tabs_pos->get_internal_value() : 48.0;
-    int ty = 0;
-    for (int i = 0; i < 4; ++i)
-      if (m_tabs_type[i] && m_tabs_type[i]->get_active()) { ty = i; break; }
-    stops.push_back({ pos, (curvz::utils::TabAlign)ty });
+    int ty = m_tabs_type   ? (int)m_tabs_type->get_selected()   : 0;
+    int ld = m_tabs_leader ? (int)m_tabs_leader->get_selected() : 0;
+    stops.push_back({ pos, (curvz::utils::TabAlign)ty, (curvz::utils::TabLeader)ld });
     m_tabs_spec = curvz::utils::format_tab_spec(stops);
     m_tabs_sel  = reselect_after_sort(pos);
     commit_tabs();
-    rebuild_tabs_list();
-    load_tabs_editor(m_tabs_sel);
+    schedule_tabs_refresh();   // s338 — defer teardown off the gesture dispatch
   });
 
   rem->signal_clicked().connect([this]() {
@@ -1173,51 +1219,121 @@ void StyleBar::build_tabs_popover(Gtk::MenuButton* chip) {
     m_tabs_spec = curvz::utils::format_tab_spec(stops);
     if (m_tabs_sel >= (int)stops.size()) m_tabs_sel = (int)stops.size() - 1;
     commit_tabs();
-    rebuild_tabs_list();
-    load_tabs_editor(m_tabs_sel);
+    schedule_tabs_refresh();   // s338 — defer teardown off the gesture dispatch
   });
 
   all->signal_clicked().connect([this]() {
     m_tabs_spec.clear();
     m_tabs_sel = -1;
     commit_tabs();
-    rebuild_tabs_list();
-    load_tabs_editor(-1);
+    schedule_tabs_refresh();   // s338 — defer teardown off the gesture dispatch
   });
 
   pop->set_child(*col);
+  // s339 — autohide OFF. The detail row now embeds Gtk::DropDowns, and a
+  // dropdown's own popup closing breaks an autohide popover's grab (s155, hit
+  // in WarpPopover; the house fix is non-autohide + explicit Esc, mirrored by
+  // StepRepeatPopover). The MenuButton chip still toggles this popover open/
+  // shut on click; Esc closes it too. Cost: an outside click no longer
+  // dismisses it (unlike the autohide Indents / Line-spacing chips beside it).
+  pop->set_autohide(false);
+  auto key = Gtk::EventControllerKey::create();
+  key->signal_key_pressed().connect(
+      [pop](guint keyval, guint, Gdk::ModifierType) -> bool {
+        if (keyval == GDK_KEY_Escape) { pop->popdown(); return true; }
+        return false;
+      }, false);
+  pop->add_controller(key);
   chip->set_popover(*pop);
 }
 
 void StyleBar::rebuild_tabs_list() {
   if (!m_tabs_list) return;
   m_tabs_loading = true;
-  while (Gtk::Widget* c = m_tabs_list->get_first_child())
-    m_tabs_list->remove(*c);
+  // s337 m2b — BOUNDED clear. The old `while (get_first_child) remove` spun
+  // forever on the popup Remove path: removing the selected/focused row while
+  // the popover is mapped left get_first_child() returning a child that
+  // remove() refused to detach (the gtk_widget_get_parent GTK-CRITICAL), so the
+  // loop never made progress -- an un-catchable hang. Snapshot the children via
+  // the sibling walk FIRST, then remove each in one forward pass: the loop is
+  // over a fixed list, so it terminates regardless of whether any single
+  // remove() no-ops, and we never re-query get_first_child mid-removal (which is
+  // what the selection-change reorder confused).
+  {
+    std::vector<Gtk::Widget*> kids;
+    for (Gtk::Widget* c = m_tabs_list->get_first_child(); c;
+         c = c->get_next_sibling())
+      kids.push_back(c);
+    for (Gtk::Widget* c : kids)
+      m_tabs_list->remove(*c);
+    // s339 — s337 m2b clear-survivor diagnostic stripped; the popover hang it
+    // was armed for is confirmed closed (s338). The snapshot-then-remove loop
+    // above stays (it's the correct teardown, not just instrumentation).
+  }
   auto stops = curvz::utils::parse_tab_spec(m_tabs_spec);
   const char* names[4] = { "Left", "Right", "Centre", "Decimal" };
   for (const auto& s : stops) {
     auto* row = Gtk::make_managed<Gtk::ListBoxRow>();
+    // s338 — keep rows OUT of the window's focus chain. GDB proved the hang:
+    // clicking a row moves focus from the main window's GtkText (canvas editor)
+    // into this row, which lives in the popover -- a SEPARATE GtkRoot. GTK's
+    // synthesize_focus_change_events then walks UP from the row looking for a
+    // common ancestor with the old focus (gtkwindow.c:5258); there is none
+    // across two roots, so the walk runs gtk_widget_get_parent off the top of
+    // the popover tree and trips GTK_IS_WIDGET. A click-to-select menu row has
+    // no business taking keyboard focus -- opting it out removes the crossing
+    // entirely. signal_row_selected still fires on click (selection != focus).
+    row->set_focusable(false);
+    row->set_can_focus(false);
     auto* hb  = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
     hb->set_margin_start(6); hb->set_margin_end(6);
     hb->set_margin_top(2);   hb->set_margin_bottom(2);
     auto* ty = Gtk::make_managed<Gtk::Label>(names[(int)s.type]);
     ty->set_xalign(0.0); ty->set_size_request(56, -1);
     char buf[48];
-    // Display position in doc-px (the internal unit). The spin below is the
-    // unit-aware editor; the row is for identification. (Row-unit conversion
-    // is a cosmetic follow-up.)
-    std::snprintf(buf, sizeof(buf), "%.1f", s.pos);
+    // s338 — honor the doc's display unit. Value via DocUnits' X length pump
+    // (ruler_origin=0 -> pure scale, all display modes), which is exactly what
+    // CurvzSpinButton::to_display(Distance) uses -- but called directly here so
+    // we don't trip that method's per-call LOG_INFO once per row. The unit
+    // suffix is read off the position spin's OWN unit label, so the row and the
+    // editor spin can never show different units. Falls back to raw doc-px when
+    // no model is wired yet (pre-first-doc-activate).
+    double disp = m_doc_model
+                      ? DocUnits::doc_to_display_x(s.pos, m_doc_model, 0.0)
+                      : s.pos;
+    std::string usuf = (m_tabs_pos && m_tabs_pos->get_unit_label())
+                           ? std::string(m_tabs_pos->get_unit_label()->get_text())
+                           : std::string();
+    if (usuf.empty())
+      std::snprintf(buf, sizeof(buf), "%.4g", disp);
+    else
+      std::snprintf(buf, sizeof(buf), "%.4g %s", disp, usuf.c_str());
     auto* po = Gtk::make_managed<Gtk::Label>(buf);
     po->set_xalign(1.0); po->set_hexpand(true);
     hb->append(*ty); hb->append(*po);
     row->set_child(*hb);
     m_tabs_list->append(*row);
   }
-  if (m_tabs_sel >= 0 && m_tabs_sel < (int)stops.size())
-    if (auto* r = m_tabs_list->get_row_at_index(m_tabs_sel))
-      m_tabs_list->select_row(*r);
   m_tabs_loading = false;
+  // s337 m2e — DEFER the row re-selection. Breadcrumbs proved rebuild_tabs_list
+  // runs to END every time; the hang follows it ONLY when sel>=0, i.e. only when
+  // select_row() is called -- and it runs synchronously inside the spin/button
+  // signal dispatch that drove this rebuild, sending GTK into a layout/selection
+  // loop with no re-entry into our code. Posting the selection to an idle runs it
+  // on a clean stack after GTK settles the current dispatch, which breaks the
+  // re-entrancy. Index captured by value; re-validated on fire (the list/spec may
+  // have churned). m_tabs_loading guards the row-selected handler during the set.
+  if (m_tabs_sel >= 0 && m_tabs_sel < (int)stops.size()) {
+    const int want = m_tabs_sel;
+    Glib::signal_idle().connect_once([this, want]() {
+      if (!m_tabs_list) return;
+      if (auto* r = m_tabs_list->get_row_at_index(want)) {
+        m_tabs_loading = true;
+        m_tabs_list->select_row(*r);
+        m_tabs_loading = false;
+      }
+    });
+  }
 }
 
 void StyleBar::load_tabs_editor(int index) {
@@ -1230,20 +1346,39 @@ void StyleBar::load_tabs_editor(int index) {
   const bool valid = (index >= 0 && index < (int)stops.size());
   if (valid) {
     if (m_tabs_pos) m_tabs_pos->set_internal_value(stops[(size_t)index].pos);
-    const int ty = (int)stops[(size_t)index].type;
-    for (int i = 0; i < 4; ++i)
-      if (m_tabs_type[i]) m_tabs_type[i]->set_active(i == ty);
-  } else {
-    bool any = false;
-    for (int i = 0; i < 4; ++i)
-      if (m_tabs_type[i] && m_tabs_type[i]->get_active()) { any = true; break; }
-    if (!any && m_tabs_type[0]) m_tabs_type[0]->set_active(true);
+    if (m_tabs_type)
+      m_tabs_type->set_selected((guint)(int)stops[(size_t)index].type);
+    if (m_tabs_leader)
+      m_tabs_leader->set_selected((guint)(int)stops[(size_t)index].leader);
   }
+  // No selection: leave the staged type/leader/position as-is (Add reads them);
+  // both dropdowns already hold a valid value (seeded Left/None at build).
   m_tabs_loading = false;
 }
 
 void StyleBar::commit_tabs() {
   if (m_tabs_request) m_tabs_request(m_tabs_spec);
+}
+
+// s338 — Post-commit list refresh, deferred to an idle. The mutating handlers
+// (Add / Remove / Remove-all / pos / type) fire from a ListBox row's click
+// gesture; rebuilding the list synchronously frees the very row whose gesture
+// is still mid-dispatch, and the gesture's RELEASE phase then focus-walks into
+// the freed row (GTK_IS_WIDGET assertion in gtk_widget_get_parent -> hang).
+// Posting the teardown to an idle runs it on a clean stack, after the gesture
+// has settled its focus against the live rows. The pending latch coalesces a
+// burst of edits into a single rebuild; m_tabs_sel (a member) is read at
+// fire-time, so the latest selection wins. The list may be gone by then (chip
+// destroyed), so re-check m_tabs_list.
+void StyleBar::schedule_tabs_refresh() {
+  if (m_tabs_refresh_pending) return;
+  m_tabs_refresh_pending = true;
+  Glib::signal_idle().connect_once([this]() {
+    m_tabs_refresh_pending = false;
+    if (!m_tabs_list) return;
+    rebuild_tabs_list();
+    load_tabs_editor(m_tabs_sel);
+  });
 }
 
 int StyleBar::reselect_after_sort(double pos) {
@@ -1260,6 +1395,20 @@ void StyleBar::set_tabs_state(const std::string& spec) {
   // Canonicalise so the cache matches what the apply path stores; the popover
   // reads this on show.
   m_tabs_spec = curvz::utils::format_tab_spec(curvz::utils::parse_tab_spec(spec));
+}
+
+// s338 — Borrow the active doc's CanvasModel so the layout-domain Distance
+// spins (indents + tab-stop position) and the tab-stop row labels report in the
+// doc's display unit. Re-applied on every doc-activate (pointer follows the
+// active doc) and on display-unit change (same pointer, unit moved); set_model
+// reconverts the displayed value either way. The tab-stop ROW labels are
+// rebuilt so visible rows relabel into the new unit. Safe on a clean stack
+// (callers are doc-activate / unit-change, never a gesture dispatch).
+void StyleBar::set_doc_model(const CanvasModel* model) {
+  m_doc_model = model;
+  for (CurvzSpinButton* sp : { m_ind_left, m_ind_right, m_ind_first, m_tabs_pos })
+    if (sp) sp->set_model(model);
+  if (m_tabs_list) rebuild_tabs_list();
 }
 
 void StyleBar::set_align_face(int align) {

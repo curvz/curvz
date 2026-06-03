@@ -1513,6 +1513,26 @@ private:
   std::vector<std::unique_ptr<SceneNode>> m_clipboard;
   bool m_clipboard_was_cut = false;
 
+  // s339-cont — formatted-text clipboard side-channel (Styles Manager M1,
+  //   char-carry). The system clipboard only carries plain text; when Curvz
+  //   itself copies/cuts a text selection we ALSO stash the selection's
+  //   character runs here (rebased to byte 0 by capture_char_runs), keyed by
+  //   the exact plain text that went to the system clipboard. At paste, if the
+  //   bytes coming back match m_text_clip_plain byte-for-byte the runs still
+  //   describe them, so apply_char_runs stamps the source formatting; any other
+  //   bytes (another app, a stale system-clipboard change) miss the match and
+  //   fall through to plain insert. Single-process scope, which covers every
+  //   in-app paste (multi-document, multi-window) — a separate Curvz process
+  //   simply misses and pastes plain. Cleared implicitly by being overwritten
+  //   on the next Curvz text copy/cut; never needs explicit invalidation
+  //   because the text-match key is self-validating.
+  std::string                  m_text_clip_plain;
+  std::vector<Curvz::AttrSpan> m_text_clip_runs;
+  // s339-cont — paragraph half of the carry (leading / align / indents / tabs).
+  //   Captured alongside m_text_clip_runs from the same selection; applied
+  //   snap-and-stamp at paste. Same text-match key gates both.
+  std::vector<Curvz::AttrSpan> m_text_clip_para_runs;
+
   // Nudge coalescing — rapid arrow-key nudges collapse into one undo step
   std::chrono::steady_clock::time_point m_nudge_last_time;
   SceneNode *m_nudge_last_obj = nullptr;
@@ -1992,6 +2012,7 @@ private:
 
   // ── View modes ───────────────────────────────────────────────────────
   bool m_outline_mode = false;
+  bool m_show_invisibles = false;  // s338 — draw tab/space/paragraph markers
 
   // ── Boolean-op engine selector (REMOVED in S93 m7) ───────────────────
   // Boolean ops are now permanently routed through Clipper2. The
@@ -2028,6 +2049,14 @@ public:
     queue_draw();
   }
   bool is_outline_mode() const { return m_outline_mode; }
+  // s338 — show-invisibles view toggle (tabs/spaces/paragraph marks in edited
+  // text). Pure draw flag; redraws on change. Driven by the StyleBar toggle.
+  void set_show_invisibles(bool on) {
+    if (m_show_invisibles == on) return;
+    m_show_invisibles = on;
+    queue_draw();
+  }
+  bool show_invisibles() const { return m_show_invisibles; }
   // s113 m3: outline-mode change signal — see m_sig_outline_mode_changed
   // declaration. Connected by MainWindow to sync the action checkmark
   // and statusbar mode label.

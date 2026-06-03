@@ -5332,6 +5332,39 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       (keyval == GDK_KEY_c || keyval == GDK_KEY_C)) {
     if (m_text_cursor->has_selection()) {
       std::string sel = m_text_cursor->selection_text();
+      // s339-cont — char-carry: stash the selection's character runs keyed by
+      //   the exact plain text. capture_char_runs clips+rebases to byte 0 and
+      //   drops paragraph-snapped spans (the destination supplies those).
+      auto [csa, csb] = m_text_cursor->selection_range();
+      m_text_clip_plain = sel;
+      m_text_clip_runs  = curvz::utils::capture_char_runs(
+          m_text_cursor->text_node()->text_attr_spans,
+          (unsigned)csa, (unsigned)csb);
+      // s339-cont — carry the RESOLVED leading: explicit scalar if set, else
+      //   the metric default the source actually renders. Without this the
+      //   destination substitutes its OWN spacing (its scalar or its metric),
+      //   so the source's line spacing never appears on the paste.
+      {
+        SceneNode* sn = m_text_cursor->text_node();
+        double eff_lead = sn->text_line_height > 0.0
+                              ? sn->text_line_height
+                              : metric_leading_px(sn);
+        m_text_clip_para_runs = curvz::utils::capture_para_runs(
+            sn->text_content, sn->text_attr_spans, eff_lead,
+            (unsigned)csa, (unsigned)csb);
+      }
+      // s339-cont DIAG [LEADCARRY] — what leading info exists at the source.
+      {
+        SceneNode* sn = m_text_cursor->text_node();
+        LOG_INFO("[LEADCARRY] COPY sel=[{},{}) line_height={:.3f} "
+                 "font_size={:.3f} char_runs={} para_runs={}",
+                 (unsigned)csa, (unsigned)csb, sn->text_line_height,
+                 sn->text_font_size, m_text_clip_runs.size(),
+                 m_text_clip_para_runs.size());
+        for (const auto& r : m_text_clip_para_runs)
+          LOG_INFO("[LEADCARRY]   para type=0x{:08X} iv={} [{},{})",
+                   (unsigned)r.type, r.ivalue, r.start_byte, r.end_byte);
+      }
       auto disp = get_display();
       if (disp) {
         auto clip = disp->get_clipboard();
@@ -5356,6 +5389,23 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       //   again rewinds any pre-cut typing.
       flush_text_segment();
       std::string sel = m_text_cursor->selection_text();
+      // s339-cont — char-carry: capture runs before delete_selection frees the
+      //   bytes, keyed by the exact cut text (same as Ctrl+C).
+      auto [xsa, xsb] = m_text_cursor->selection_range();
+      m_text_clip_plain = sel;
+      m_text_clip_runs  = curvz::utils::capture_char_runs(
+          m_text_cursor->text_node()->text_attr_spans,
+          (unsigned)xsa, (unsigned)xsb);
+      // s339-cont — carry the RESOLVED leading (see Ctrl+C site).
+      {
+        SceneNode* sn = m_text_cursor->text_node();
+        double eff_lead = sn->text_line_height > 0.0
+                              ? sn->text_line_height
+                              : metric_leading_px(sn);
+        m_text_clip_para_runs = curvz::utils::capture_para_runs(
+            sn->text_content, sn->text_attr_spans, eff_lead,
+            (unsigned)xsa, (unsigned)xsb);
+      }
       auto disp = get_display();
       if (disp) {
         auto clip = disp->get_clipboard();
@@ -5405,7 +5455,49 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
                 if (m_text_cursor->has_selection()) {
                   m_text_cursor->delete_selection();
                 }
+                // s339-cont — char-carry: decide BEFORE insert whether the
+                //   incoming bytes are the ones we captured. The run offsets
+                //   only describe that exact string; a mismatch (another app,
+                //   or a system-clipboard change since our copy) falls through
+                //   to plain insert — the pre-s339 "plain-text-in conforms"
+                //   path. Snapshot the landing byte before insert moves it.
+                const bool curvz_src = (utf8 == m_text_clip_plain);
+                const unsigned paste_at = (unsigned)m_text_cursor->byte_index();
                 if (m_text_cursor->insert_string(utf8)) {
+                  if (curvz_src) {
+                    SceneNode* node = m_text_cursor->text_node();
+                    // Character runs: strip+stamp per byte (default floor).
+                    if (!m_text_clip_runs.empty()) {
+                      curvz::utils::apply_char_runs(
+                          node->text_attr_spans,
+                          m_text_clip_runs, paste_at, (unsigned)utf8.size());
+                    }
+                    // Paragraph runs: snap+stamp per paragraph against the
+                    //   POST-insert buffer (no strip; source wins where set).
+                    if (!m_text_clip_para_runs.empty()) {
+                      curvz::utils::apply_para_runs(
+                          node->text_content, node->text_attr_spans,
+                          m_text_clip_para_runs, paste_at,
+                          (unsigned)utf8.size());
+                    }
+                  }
+                  // s339-cont DIAG [LEADCARRY] — did leading land in the dest?
+                  {
+                    SceneNode* dn = m_text_cursor->text_node();
+                    int lead_spans = 0;
+                    for (const auto& s : dn->text_attr_spans)
+                      if (s.type == curvz::utils::kCurvzLeadingAttr) ++lead_spans;
+                    LOG_INFO("[LEADCARRY] PASTE match={} at={} len={} "
+                             "dst line_height={:.3f} font_size={:.3f} "
+                             "para_runs={} dst_lead_spans={}",
+                             curvz_src, paste_at, (unsigned)utf8.size(),
+                             dn->text_line_height, dn->text_font_size,
+                             m_text_clip_para_runs.size(), lead_spans);
+                    for (const auto& s : dn->text_attr_spans)
+                      if (s.type == curvz::utils::kCurvzLeadingAttr)
+                        LOG_INFO("[LEADCARRY]   dst LEAD iv={} [{},{})",
+                                 s.ivalue, s.start_byte, s.end_byte);
+                  }
                   // s307 m2 — Post-paste flush. The paste mutation is
                   //   now in the buffer; flush_text_segment captures it
                   //   as its own segment and opens a fresh one for any

@@ -1652,6 +1652,9 @@ void MainWindow::setup_layout() {
       [this](int which, double v) { m_canvas.set_text_indent(which, v); });
   m_style_bar.set_tabs_request(  // s335
       [this](const std::string& spec) { m_canvas.set_text_tabs(spec); });
+  // s338 — show-invisibles view toggle drives the canvas draw flag.
+  m_style_bar.set_show_invisibles_request(
+      [this](bool on) { m_canvas.set_show_invisibles(on); });
   // s333 TEMP — justify tuning slider drives the live spill knobs and redraws.
   m_style_bar.set_justify_knob_request(
       [this](double comfort_em, double track_em) {
@@ -1752,6 +1755,17 @@ void MainWindow::setup_layout() {
   // when the project had swatches. Same library reference the canvas
   // and styles panel use; non-owning pointer.
   m_toolbar.set_swatch_library(&m_project->swatches);
+
+  // s339 — feed the StyleBar's doc model at STARTUP too. on_doc_activated wires
+  // it on every later activation, but the initial doc is established by
+  // setup_project (which runs too early in construction to call the heavy
+  // on_doc_activated) and first displayed here in zone setup. The StyleBar's
+  // layout-domain Distance spins (indents + tab-stop position) and tab-stop row
+  // labels therefore never received the model until the user switched docs or
+  // toggled ruler units -- so the Tabs popover showed raw px on first open.
+  // Feeding it here, beside the other panel set_document calls, closes the gap.
+  if (auto* ad = m_project->active_doc())
+    m_style_bar.set_doc_model(&ad->canvas);
 
   // Wrap the canvas grid in an overlay so the text-tool entry can float above
   // it.
