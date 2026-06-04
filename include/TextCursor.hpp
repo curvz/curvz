@@ -55,6 +55,7 @@ namespace curvz::utils { enum class TabLeader; }
 namespace Curvz {
 
 struct SceneNode;
+namespace style { class TextStyleLibrary; }  // s340 — compute_text_layout style param
 class Canvas;
 
 // ── Layout primitive used by both the renderer and the cursor ───────────────
@@ -142,7 +143,8 @@ struct TextLayout {
 // degenerate one where every baseline has the same (x_start, x_end).
 TextLayout compute_text_layout(const SceneNode* boundary,
                                const SceneNode* text,
-                               size_t byte_start = 0);
+                               size_t byte_start = 0,
+                               const style::TextStyleLibrary* lib = nullptr);
 
 // ── s333 — justify spill knobs (TEMP, live-tunable via StyleBar slider) ──────
 // Comfort/track in em (see TextCursor.cpp). The tuning slider writes these and

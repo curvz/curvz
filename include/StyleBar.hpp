@@ -119,6 +119,47 @@ public:
     m_show_invisibles_request = std::move(cb);
   }
 
+  // s341 — the Style chip (named paragraph styles, the s340 engine's surface).
+  // Three callbacks, all wired by MainWindow to Canvas:
+  //   * provider fills the popover's list on show — every library style as
+  //     {id,name}, app then user, plus the caret paragraph's currently-bound id
+  //     (out_current, empty when unbound) so the open list can mark it.
+  //   * apply BINDS the caret/selection paragraph(s) to the id (empty unbinds).
+  //   * clear strips character direct formatting so the bound style shows.
+  // Separate apply/clear because applying layers UNDER direct formatting
+  // (Option A); clear is the deliberate second verb, beside apply in the popup.
+  struct StyleEntry { std::string id; std::string name; bool app = false; };
+  using StyleListProvider =
+      std::function<void(std::vector<StyleEntry>& out, std::string& out_current)>;
+  using StyleApplyRequest = std::function<void(const std::string& id)>;
+  using StyleClearRequest = std::function<void()>;
+  // s341 — CRUD over the library, using the StyleBar itself as the editor:
+  //   create  — capture the caret paragraph's formatting into a new style.
+  //   redefine— update a user style to match the caret paragraph (Word's
+  //             "update to match selection"). App styles are not offered it.
+  //   remove  — delete a user style.
+  using StyleCreateRequest   = std::function<void(const std::string& name)>;
+  using StyleRedefineRequest = std::function<void(const std::string& id)>;
+  using StyleDeleteRequest   = std::function<void(const std::string& id)>;
+  void set_style_list_provider(StyleListProvider cb) {
+    m_style_list_provider = std::move(cb);
+  }
+  void set_style_apply_request(StyleApplyRequest cb) {
+    m_style_apply_request = std::move(cb);
+  }
+  void set_style_clear_request(StyleClearRequest cb) {
+    m_style_clear_request = std::move(cb);
+  }
+  void set_style_create_request(StyleCreateRequest cb) {
+    m_style_create_request = std::move(cb);
+  }
+  void set_style_redefine_request(StyleRedefineRequest cb) {
+    m_style_redefine_request = std::move(cb);
+  }
+  void set_style_delete_request(StyleDeleteRequest cb) {
+    m_style_delete_request = std::move(cb);
+  }
+
   // s333 TEMP — justify spill tuning slider. Fires (comfort_em, track_em) as the
   // user drags; MainWindow writes the knobs and redraws the canvas. Remove with
   // the slider once the values are dialed in.
@@ -165,6 +206,11 @@ public:
   void set_leading(double pt, bool is_auto);
   // s332 — reflect the caret paragraph's alignment on the chip face.
   void set_align_face(int align);
+
+  // s341 — reflect the caret paragraph's bound style on the Style chip face:
+  // the style's name when bound+resolved, else the axis word "Style" (unbound
+  // or no active edit). Read-only summary; the popover does the binding.
+  void set_style_face(const Glib::ustring& name, bool resolved);
 
   // s335 — sync the Indents popover spins to the caret paragraph's values
   // (doc-px), pushed on the text-style-changed relay so clicking into a
@@ -288,6 +334,16 @@ private:
   // pending latch so a burst of edits rebuilds once with the latest selection.
   void schedule_tabs_refresh();
 
+  // s341 — Style popover (paragraph scope, its own chip): a list of every
+  // named text style (app then user, by name) the provider reports, rebuilt on
+  // each popover-show so library edits show without a teardown; the caret
+  // paragraph's bound style is marked. Activating a row fires the apply request
+  // (bind) and writes the name onto the chip face. Below a separator, a "Clear
+  // formatting" button fires the clear request (strip character direct
+  // formatting so the bound style becomes visible) -- the deliberate second
+  // verb that pairs with apply (Option A: apply layers under direct formatting).
+  void build_style_popover(Gtk::MenuButton* chip);
+
   // s334 — Tracking: a character/selection axis grouping the two horizontal-
   // and-vertical glyph-displacement knobs that share a use (e.g. stacking a
   // fraction: heavy negative tracking + a rise split). Horizontal = letter-
@@ -340,6 +396,14 @@ private:
   bool           m_tabs_loading = false;
   bool           m_tabs_refresh_pending = false;  // s338 — coalesces deferred refresh
   JustifyKnobRequest m_justify_knob_request;  // s333 TEMP — justify tuning slider
+
+  // s341 — Style chip callbacks (provider/apply/clear), wired by MainWindow.
+  StyleListProvider m_style_list_provider;
+  StyleApplyRequest m_style_apply_request;
+  StyleClearRequest m_style_clear_request;
+  StyleCreateRequest   m_style_create_request;    // s341 — New from paragraph
+  StyleRedefineRequest m_style_redefine_request;  // s341 — Redefine (edit)
+  StyleDeleteRequest   m_style_delete_request;    // s341 — Delete
 
   // Persistent chips — built once, never rebuilt.
   Gtk::MenuButton* m_chip_font   = nullptr;  // character

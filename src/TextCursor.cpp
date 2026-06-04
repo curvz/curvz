@@ -26,6 +26,8 @@
 #include "SceneNode.hpp"
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"                  // s331 — kCurvzLeadingAttr (per-para leading)
+#include "style/TextStyleLibrary.hpp"        // s340 — per-paragraph style resolve
+#include "style/TextStyleInterop.hpp"        // s340 — resolve_paragraph_baseline / box_baseline
 #include "math/TextFlowGeometry.hpp"   // s323 — form-fit reflow geometry pumps
 
 #include <pango/pangocairo.h>
@@ -803,7 +805,8 @@ static PangoLayout* make_single_line_layout(const SceneNode* text,
                                              int chunk_len,
                                              size_t chunk_byte_start = 0,
                                              const char* tab_spec = nullptr,
-                                             double tab_indent_offset = 0.0) {
+                                             double tab_indent_offset = 0.0,
+                                             const style::ResolvedTextStyle* base = nullptr) {
     // Tiny temp cairo context so PangoCairo can build a layout.
     cairo_surface_t* surf = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
     cairo_t* tmp = cairo_create(surf);
@@ -812,12 +815,19 @@ static PangoLayout* make_single_line_layout(const SceneNode* text,
     cairo_surface_destroy(surf);
 
     PangoFontDescription* desc = pango_font_description_new();
-    pango_font_description_set_family(desc, text->text_font_family.c_str());
-    pango_font_description_set_absolute_size(desc,
-        text->text_font_size * PANGO_SCALE);
-    if (text->text_bold)
+    // s340 — the per-paragraph resolved baseline (Option A) is the font default;
+    // per-run spans (build_line_attrs below) still override it per byte-range.
+    // When `base` is null (no library context / unbound), fall back to the
+    // node's loose scalars — byte-identical to pre-s340 behaviour.
+    const std::string& fam = base ? base->family : text->text_font_family;
+    const double       sz  = base ? base->size   : text->text_font_size;
+    const bool         bd  = base ? base->bold   : text->text_bold;
+    const bool         it  = base ? base->italic : text->text_italic;
+    pango_font_description_set_family(desc, fam.c_str());
+    pango_font_description_set_absolute_size(desc, sz * PANGO_SCALE);
+    if (bd)
         pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
-    if (text->text_italic)
+    if (it)
         pango_font_description_set_style(desc, PANGO_STYLE_ITALIC);
     pango_layout_set_font_description(layout, desc);
     pango_font_description_free(desc);
@@ -964,7 +974,8 @@ static size_t last_word_break_before(const char* s, size_t len) {
 // hard newline is the caller's special case; here it measures as empty (0).
 static double measure_first_word_width(const SceneNode* text,
                                        const char* chunk, size_t chunk_len,
-                                       size_t chunk_byte_start = 0) {
+                                       size_t chunk_byte_start = 0,
+                                       const style::ResolvedTextStyle* base = nullptr) {
     if (chunk_len == 0) return 0.0;
     glong nc = g_utf8_strlen(chunk, (gssize)chunk_len);
     if (nc <= 0) return 0.0;
@@ -985,7 +996,7 @@ static double measure_first_word_width(const SceneNode* text,
         --word_byte;
     if (word_byte == 0) return 0.0;
     PangoLayout* l = make_single_line_layout(text, chunk, (int)word_byte,
-                                              chunk_byte_start);
+                                              chunk_byte_start, nullptr, 0.0, base);
     int w = 0, h = 0;
     pango_layout_get_size(l, &w, &h);
     g_object_unref(l);
@@ -1022,22 +1033,8 @@ void text_frame_basis(const SceneNode* boundary, const SceneNode* text,
     angle = text ? text->text_baseline_angle : 0.0;
 }
 
-// s331 — per-paragraph leading: the stride below a given line. A leading run
-// (kCurvzLeadingAttr) covering `byte` (the line's start byte, which sits in
-// the owning paragraph) wins; otherwise the buffer default (metric or legacy
-// scalar) applies. ivalue is doc-px x PANGO_SCALE.
-static double leading_for_byte(const SceneNode* text, double default_leading,
-                               size_t byte) {
-  if (!text) return default_leading;
-  for (const auto& s : text->text_attr_spans)
-    if (s.type == curvz::utils::kCurvzLeadingAttr &&
-        (size_t)s.start_byte <= byte && (size_t)s.end_byte > byte)
-      return (double)s.ivalue / (double)PANGO_SCALE;
-  return default_leading;
-}
-
-// s334 — per-paragraph indent (doc units). Same shape as leading_for_byte: a
-// private indent run covering the line's start byte (which sits in the owning
+// s334 — per-paragraph indent (doc units). Same shape as the old leading reader:
+// a private indent run covering the line's start byte (which sits in the owning
 // paragraph) wins; default 0 = no inset. ivalue is doc-px x PANGO_SCALE.
 static double indent_for_byte(const SceneNode* text, int attr, size_t byte) {
   if (!text) return 0.0;
@@ -1094,13 +1091,87 @@ double metric_leading_px(const SceneNode* text) {
     return leading;
 }
 
+// s341 — metric leading for an ARBITRARY resolved font (not just the box's).
+// Same 1.2x (ascent+descent) derivation as metric_leading_px / the layout's
+// base-font block, parameterised so a styled paragraph's larger font yields a
+// proportionally larger stride.
+static double metric_leading_for(const std::string& family, double size,
+                                 bool bold, bool italic) {
+    if (size <= 0.0) size = 24.0;
+    cairo_surface_t* surf = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
+    cairo_t* cr = cairo_create(surf);
+    PangoLayout* layout = pango_cairo_create_layout(cr);
+    PangoFontDescription* desc = pango_font_description_new();
+    pango_font_description_set_family(desc, family.c_str());
+    pango_font_description_set_absolute_size(desc, size * PANGO_SCALE);
+    if (bold)   pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
+    if (italic) pango_font_description_set_style(desc, PANGO_STYLE_ITALIC);
+    PangoContext* pctx = pango_layout_get_context(layout);
+    PangoFontMetrics* fm = pango_context_get_metrics(pctx, desc, nullptr);
+    double ascent  = pango_font_metrics_get_ascent(fm)  / (double)PANGO_SCALE;
+    double descent = pango_font_metrics_get_descent(fm) / (double)PANGO_SCALE;
+    double leading = (ascent + descent) * 1.2;
+    if (leading <= 0.0) leading = size * 1.2;
+    pango_font_metrics_unref(fm);
+    pango_font_description_free(desc);
+    g_object_unref(layout);
+    cairo_destroy(cr);
+    cairo_surface_destroy(surf);
+    return leading;
+}
+
+// s341 — the stride below a line, resolving leading through the three tiers in
+// precedence order (the line-spacing twin of resolve_paragraph_baseline for
+// font): direct formatting on top, then the bound style, then a metric default.
+//   1. explicit per-paragraph leading run (kCurvzLeadingAttr) — direct
+//      formatting, wins outright.
+//   2. the resolved style's pinned leading (line_base.leading_px > 0).
+//   3. metric leading from the line's RESOLVED font, so a styled larger font
+//      opens its lines proportionally. When the resolved font equals the box
+//      font -- the common unbound case, where line_base IS box_base -- this
+//      returns box_leading unchanged, so no Pango metrics call is paid and the
+//      stride is byte-identical to pre-s341 behaviour.
+static double resolved_line_leading(const SceneNode* text,
+                                    const style::ResolvedTextStyle& line_base,
+                                    const style::ResolvedTextStyle& box_base,
+                                    double box_leading, size_t line_start) {
+    if (text)
+        for (const auto& s : text->text_attr_spans)
+            if (s.type == curvz::utils::kCurvzLeadingAttr &&
+                (size_t)s.start_byte <= line_start &&
+                (size_t)s.end_byte > line_start)
+                return (double)s.ivalue / (double)PANGO_SCALE;  // tier 1
+    if (line_base.leading_px > 0.0) return line_base.leading_px;  // tier 2
+    if (line_base.family == box_base.family && line_base.size == box_base.size &&
+        line_base.bold == box_base.bold && line_base.italic == box_base.italic)
+        return box_leading;                                        // tier 3, same font
+    return metric_leading_for(line_base.family, line_base.size,
+                              line_base.bold, line_base.italic);    // tier 3, styled font
+}
+
 TextLayout compute_text_layout(const SceneNode* boundary,
                                const SceneNode* text,
-                               size_t byte_start) {
+                               size_t byte_start,
+                               const style::TextStyleLibrary* lib) {
     TextLayout out;
     if (!boundary || !boundary->path || !text) return out;
     const PathData& bp = *boundary->path;
     if (bp.nodes.size() < 3) return out;
+
+    // s340 — the box-level baseline (Option A): the unbound paragraph's font
+    // default, from the node's loose scalars. Per paragraph below,
+    // resolve_paragraph_baseline returns this when the paragraph has no style
+    // binding, or the resolved style when it does. When `lib` is null (no
+    // project context — some internal callers) every paragraph uses this box
+    // baseline, i.e. byte-identical to pre-s340 behaviour. (leading/align here
+    // are carried for completeness; this milestone only consumes the font half
+    // — family/size/bold/italic — at make_single_line_layout. The leading/align/
+    // indent defaults under the per-paragraph spans are the next step.)
+    const style::ResolvedTextStyle box_base = style::box_baseline(
+        text->text_font_family, text->text_font_size,
+        text->text_bold, text->text_italic, text->text_letter_spacing,
+        text->text_line_height,
+        style::para_align_from_str(text->text_align));
 
     // s320 m1 — Frame rotation. Lay out in the boundary's UPRIGHT frame:
     // rotate every node by -angle about the centroid, bbox THAT, and run the
@@ -1268,6 +1339,18 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         // s331 — the byte that starts this line; sits in the owning paragraph,
         // so it resolves the per-paragraph leading for the stride below.
         const size_t line_start = cursor;
+        // s341 — resolve THIS line's paragraph baseline + stride up-front (the
+        // baseline resolve used to live below the span block; hoisting it lets
+        // the empty-span stride here use the styled leading too). para_start
+        // gates the first-line indent in the indent block further down.
+        const bool para_start =
+            (line_start == 0) || (buf[line_start - 1] == '\n');
+        const style::ResolvedTextStyle line_base =
+            lib ? style::resolve_paragraph_baseline(
+                      text->text_attr_spans, (unsigned)line_start, *lib, box_base)
+                : box_base;
+        const double line_lead =
+            resolved_line_leading(text, line_base, box_base, leading, line_start);
         // s323 (Arc E) — per-baseline span from the outline intersection.
         // M1 takes the single leftmost run (concave multi-span gap-flow is
         // deferred). dy is measured from the base baseline (line 0) so it
@@ -1278,7 +1361,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         std::vector<BaselineSpan> spans =
             intervals_for_baseline(eroded, base_baseline, dy);
         if (spans.empty()) {
-            baseline_y += leading_for_byte(text, leading, line_start);
+            baseline_y += line_lead;
             continue;
         }
         double x_start = spans.front().start.x;
@@ -1297,8 +1380,6 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         // stop's pos is doc-px from the content-area left edge, the layout is
         // placed at the indented x_start, so layout-local tab loc = pos
         // - (ind_l [+ ind_f]). See build_line_tab_array.
-        const bool para_start =
-            (line_start == 0) || (buf[line_start - 1] == '\n');
         const double ind_l = indent_for_byte(
             text, curvz::utils::kCurvzIndentLeftAttr,  line_start);
         const double ind_r = indent_for_byte(
@@ -1330,7 +1411,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         bl.angle      = 0.0;
         bl.ascent     = ascent;
         bl.descent    = descent;  // s301 m1h: caret height needs descent separately
-        bl.height     = leading;
+        bl.height     = line_lead;
         bl.byte_start = cursor;
 
         // s339 — if any stop on this line carries a leader, record ALL its
@@ -1360,12 +1441,12 @@ TextLayout compute_text_layout(const SceneNode* boundary,
             // capacity (every baseline that fits gets a hairline). Caret
             // navigation past end-of-buffer can land on these too —
             // they're real baselines, just without content.
-            PangoLayout* layout = make_single_line_layout(text, "", 0);
+            PangoLayout* layout = make_single_line_layout(text, "", 0, 0, nullptr, 0.0, &line_base);
             bl.pango.reset(layout);
             bl.byte_end = cursor;
             out.baselines.push_back(std::move(bl));
             out.bytes_consumed = cursor;
-            baseline_y += leading_for_byte(text, leading, line_start);
+            baseline_y += line_lead;
             continue;
         }
 
@@ -1379,12 +1460,12 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         // bytes_consumed < size, the user resizes the shape). Forcing it onto
         // the widest line and clipping is the deferred floor.
         if (remaining[0] != '\n' &&
-            measure_first_word_width(text, remaining, remaining_n, cursor) > avail) {
-            PangoLayout* empty = make_single_line_layout(text, "", 0);
+            measure_first_word_width(text, remaining, remaining_n, cursor, &line_base) > avail) {
+            PangoLayout* empty = make_single_line_layout(text, "", 0, 0, nullptr, 0.0, &line_base);
             bl.pango.reset(empty);
             bl.byte_end = cursor;          // empty line; owns no bytes
             out.baselines.push_back(std::move(bl));
-            baseline_y += leading_for_byte(text, leading, line_start);  // cursor NOT advanced
+            baseline_y += line_lead;  // cursor NOT advanced
             continue;
         }
 
@@ -1393,7 +1474,8 @@ TextLayout compute_text_layout(const SceneNode* boundary,
                                                        (int)remaining_n,
                                                        cursor,
                                                        line_tabs_c,
-                                                       tab_indent_offset);
+                                                       tab_indent_offset,
+                                                       &line_base);
         size_t consumed_on_line = fit_chunk_to_width(remaining, remaining_n,
                                                       layout, avail);
         // Special case: a leading '\n' makes fit_chunk_to_width return 0,
@@ -1402,13 +1484,13 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         // consume the newline so the next iteration starts after it.
         if (consumed_on_line == 0 && remaining[0] == '\n') {
             g_object_unref(layout);
-            PangoLayout* empty = make_single_line_layout(text, "", 0);
+            PangoLayout* empty = make_single_line_layout(text, "", 0, 0, nullptr, 0.0, &line_base);
             bl.pango.reset(empty);
             bl.byte_end = cursor;
             out.baselines.push_back(std::move(bl));
             cursor += 1;  // consume the '\n'
             out.bytes_consumed = cursor;
-            baseline_y += leading_for_byte(text, leading, line_start);
+            baseline_y += line_lead;
             continue;
         }
         if (consumed_on_line == 0) {
@@ -1430,7 +1512,8 @@ TextLayout compute_text_layout(const SceneNode* boundary,
                                                             (int)consumed_on_line,
                                                             cursor,
                                                             line_tabs_c,
-                                                            tab_indent_offset);
+                                                            tab_indent_offset,
+                                                            &line_base);
         // s317 — Belt-and-braces: the chosen break is verified against the
         //   ACTUAL rendered width. If the line is still wider than the
         //   interior (the index_to_pos estimate over-reached by a word),
@@ -1469,7 +1552,8 @@ TextLayout compute_text_layout(const SceneNode* boundary,
                                                        (int)consumed_on_line,
                                                        cursor,
                                                        line_tabs_c,
-                                                       tab_indent_offset);
+                                                       tab_indent_offset,
+                                                       &line_base);
                 pango_layout_get_size(line_layout, &lw, &lh);
             }
         }
@@ -1527,7 +1611,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         }
         out.bytes_consumed = cursor;
 
-        baseline_y += leading_for_byte(text, leading, line_start);
+        baseline_y += line_lead;
     }
 
     // s339 — the s337 m2a safety-cap diagnostic was stripped here; the popover

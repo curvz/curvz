@@ -1655,6 +1655,40 @@ void MainWindow::setup_layout() {
   // s338 — show-invisibles view toggle drives the canvas draw flag.
   m_style_bar.set_show_invisibles_request(
       [this](bool on) { m_canvas.set_show_invisibles(on); });
+  // s341 — Style chip: provider lists the library (app then user, by name) and
+  // reports the caret paragraph's bound id; apply binds; clear strips character
+  // direct formatting so the bound style shows.
+  m_style_bar.set_style_list_provider(
+      [this](std::vector<StyleBar::StyleEntry>& out, std::string& current) {
+        out.clear();
+        current.clear();
+        if (!m_project) return;
+        const auto& lib = m_project->text_styles;
+        for (const auto& cat : lib.app_categories())
+          for (const auto* s : lib.app_styles_in_category(cat))
+            if (s) out.push_back({s->header.id, s->header.name, true});
+        for (const auto& cat : lib.user_categories())
+          for (const auto* s : lib.user_styles_in_category(cat))
+            if (s) out.push_back({s->header.id, s->header.name, false});
+        std::string bound;
+        if (m_canvas.text_style_query_bound_style(bound)) current = bound;
+      });
+  m_style_bar.set_style_apply_request(
+      [this](const std::string& id) { m_canvas.apply_text_style(id); });
+  m_style_bar.set_style_clear_request(
+      [this]() { m_canvas.clear_direct_formatting(); });
+  // s341 — CRUD: New (capture paragraph -> new style), Redefine (update a user
+  // style from the paragraph), Delete (remove a user style).
+  m_style_bar.set_style_create_request(
+      [this](const std::string& name) {
+        m_canvas.create_text_style_from_paragraph(name);
+      });
+  m_style_bar.set_style_redefine_request(
+      [this](const std::string& id) {
+        m_canvas.redefine_text_style_from_paragraph(id);
+      });
+  m_style_bar.set_style_delete_request(
+      [this](const std::string& id) { m_canvas.delete_text_style(id); });
   // s333 TEMP — justify tuning slider drives the live spill knobs and redraws.
   m_style_bar.set_justify_knob_request(
       [this](double comfort_em, double track_em) {
@@ -1739,6 +1773,20 @@ void MainWindow::setup_layout() {
       m_style_bar.set_indent_values(ind_l, ind_r, ind_f);
     else
       m_style_bar.set_indent_values(0.0, 0.0, 0.0);
+    // s341 — caret paragraph's bound style onto the Style chip face. Resolve the
+    // id to its display name via the library (fall back to the id if a dangling
+    // binding can't be resolved); unbound or no edit -> the axis word "Style".
+    std::string bound_id;
+    if (m_canvas.text_style_query_bound_style(bound_id) && !bound_id.empty()) {
+      Glib::ustring nm = bound_id;  // defensive fallback for a dangling id
+      if (m_project) {
+        if (const auto* ts = m_project->text_styles.find_text_style(bound_id))
+          if (!ts->header.name.empty()) nm = ts->header.name;
+      }
+      m_style_bar.set_style_face(nm, true);
+    } else {
+      m_style_bar.set_style_face("", false);
+    }
   });
 
   m_canvas.set_document(m_project->active_doc());

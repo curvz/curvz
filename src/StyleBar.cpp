@@ -29,6 +29,7 @@
 #include <gtkmm/label.h>
 #include <gtkmm/separator.h>
 #include <gtkmm/searchentry.h>
+#include <gtkmm/entry.h>          // s341 — new-style name field in the Style popover
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/listbox.h>
 #include <gtkmm/listboxrow.h>
@@ -338,7 +339,7 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 1) {
   m_chip_para = add_label_chip("sty_para", "style_bar_linespacing_chip",
                                "Line spacing", "Line spacing");
   m_chip_style = add_label_chip("sty_named", "style_bar_style_chip",
-                                "Body", "Named paragraph style (placeholder)");
+                                "Style", "Named paragraph style");
 
   // Wire the live popovers after all chips exist.
   build_weight_popover(m_chip_weight);
@@ -351,9 +352,9 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 1) {
   build_align_popover(m_chip_align);    // s332 (+ s334 justify knobs)
   build_indent_popover(m_chip_indent);  // s334
   build_tabs_popover(m_chip_tabs);      // s335
+  build_style_popover(m_chip_style);    // s341 — named paragraph styles
 
-  // Stub popovers for the chips whose real popups aren't built yet.
-  stub_popover(m_chip_style,  "Style chooser + override + verbs");
+  // (no stubbed chips remain — every chip carries a live popover)
 
   // s331 — far-right Reset button. An expanding spacer pushes it to the end
   // of the bar (the chips stay left-clumped per §9; centering them is a
@@ -1596,6 +1597,144 @@ void StyleBar::build_font_popover(Gtk::MenuButton* chip) {
 
   pop->set_child(*box);
   chip->set_popover(*pop);
+}
+
+// s341 — Style popover: the named-paragraph-style surface AND its manager. The
+// list is rebuilt on each show from the provider (so library CRUD appears). A
+// row activate binds; user rows carry a redefine (edit-from-paragraph) and a
+// delete button; below, "Clear formatting" and a "New from paragraph" name
+// field. Every CRUD action popdowns rather than rebuilding the ListBox in a
+// click handler -- that synchronous row teardown is the s338 gesture-vs-freed-
+// row hang; popdown sidesteps it and the next open shows the fresh list.
+void StyleBar::build_style_popover(Gtk::MenuButton* chip) {
+  if (!chip) return;
+
+  auto* pop = Gtk::make_managed<Gtk::Popover>();
+  auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+  box->set_margin(6);
+
+  auto* scroller = Gtk::make_managed<Gtk::ScrolledWindow>();
+  scroller->set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+  scroller->set_min_content_height(260);
+  scroller->set_min_content_width(230);
+
+  auto* list = Gtk::make_managed<Gtk::ListBox>();
+  list->set_selection_mode(Gtk::SelectionMode::NONE);  // activate, don't select
+  list->add_css_class("curvz-style-list");
+  scroller->set_child(*list);
+  box->append(*scroller);
+
+  box->append(*Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL));
+
+  auto* clear_btn = Gtk::make_managed<Gtk::Button>("Clear formatting");
+  clear_btn->set_tooltip_text(
+      "Strip manual formatting so the applied style shows");
+  box->append(*clear_btn);
+
+  // New-from-paragraph: a name field + button. Capturing the current
+  // paragraph's formatting is the "editor" -- no separate field dialog.
+  auto* new_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
+  auto* name_entry = Gtk::make_managed<Gtk::Entry>();
+  name_entry->set_placeholder_text("New style name");
+  name_entry->set_hexpand(true);
+  auto* new_btn = Gtk::make_managed<Gtk::Button>("New");
+  new_btn->set_tooltip_text("Create a style from this paragraph's formatting");
+  new_row->append(*name_entry);
+  new_row->append(*new_btn);
+  box->append(*new_row);
+
+  // Rows hold their entry; rebuilt on show, so a shared vector keeps the
+  // row<->entry index map in sync without a header member.
+  auto rows = std::make_shared<std::vector<StyleEntry>>();
+
+  auto rebuild = [this, list, rows, pop]() {
+    while (Gtk::Widget* c = list->get_first_child())
+      list->remove(*c);
+    rows->clear();
+
+    std::vector<StyleEntry> entries;
+    std::string current;
+    if (m_style_list_provider) m_style_list_provider(entries, current);
+
+    auto add_row = [&](const StyleEntry& e) {
+      rows->push_back(e);
+      auto* row_box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
+      auto* check = Gtk::make_managed<Gtk::Label>(e.id == current ? "\u2713" : "");
+      check->set_width_chars(2);
+      check->set_xalign(0.0f);
+      auto* lbl = Gtk::make_managed<Gtk::Label>(e.name);
+      lbl->set_xalign(0.0f);
+      lbl->set_hexpand(true);
+      row_box->append(*check);
+      row_box->append(*lbl);
+      // User styles get redefine + delete; app styles are read-only.
+      if (!e.app && !e.id.empty()) {
+        auto* redef = Gtk::make_managed<Gtk::Button>();
+        redef->set_icon_name("document-edit-symbolic");
+        redef->set_has_frame(false);
+        redef->set_tooltip_text("Redefine from this paragraph");
+        const std::string rid = e.id;
+        redef->signal_clicked().connect([this, rid]() {
+          if (m_style_redefine_request) m_style_redefine_request(rid);
+        });
+        auto* del = Gtk::make_managed<Gtk::Button>();
+        del->set_icon_name("user-trash-symbolic");
+        del->set_has_frame(false);
+        del->set_tooltip_text("Delete this style");
+        const std::string did = e.id;
+        del->signal_clicked().connect([this, did, pop]() {
+          if (m_style_delete_request) m_style_delete_request(did);
+          pop->popdown();  // list changed; reopen rebuilds (no in-handler teardown)
+        });
+        row_box->append(*redef);
+        row_box->append(*del);
+      }
+      row_box->set_margin_start(6);
+      row_box->set_margin_end(6);
+      row_box->set_margin_top(2);
+      row_box->set_margin_bottom(2);
+      list->append(*row_box);
+    };
+
+    add_row({"", "Unstyled", true});       // unbind row (treated read-only)
+    for (const auto& e : entries) add_row(e);
+  };
+
+  pop->signal_show().connect(rebuild);
+
+  list->signal_row_activated().connect(
+      [this, chip, pop, rows](Gtk::ListBoxRow* row) {
+        int i = row->get_index();
+        if (i < 0 || i >= (int)rows->size()) return;
+        const StyleEntry& e = (*rows)[i];
+        if (m_style_apply_request) m_style_apply_request(e.id);
+        chip->set_label(e.id.empty() ? "Style" : Glib::ustring(e.name));
+        pop->popdown();
+      });
+
+  clear_btn->signal_clicked().connect([this, pop]() {
+    if (m_style_clear_request) m_style_clear_request();
+    pop->popdown();
+  });
+
+  auto do_create = [this, pop, name_entry]() {
+    if (m_style_create_request)
+      m_style_create_request(name_entry->get_text().raw());
+    name_entry->set_text("");
+    pop->popdown();
+  };
+  new_btn->signal_clicked().connect(do_create);
+  name_entry->signal_activate().connect(do_create);  // Enter in the field
+
+  pop->set_child(*box);
+  chip->set_popover(*pop);
+}
+
+void StyleBar::set_style_face(const Glib::ustring& name, bool resolved) {
+  if (!m_chip_style) return;
+  Glib::ustring next = (resolved && !name.empty()) ? name : "Style";
+  if (m_chip_style->get_label() == next) return;  // unchanged -> no action
+  m_chip_style->set_label(next);
 }
 
 } // namespace Curvz

@@ -35,6 +35,7 @@ enum class PaintSlot : int;
 }
 namespace style {
 class StyleLibrary;
+struct TextStyle;  // s341 — capture_paragraph_style takes a reference
 }
 }
 
@@ -541,6 +542,58 @@ public:
   // s335 — caret paragraph's indents (doc-px) for the live-read; 0 when none.
   bool text_style_query_indents(double& out_left, double& out_right,
                                 double& out_first) const;
+
+  // s341 — the named-text-style verbs (the clickable surface for the s340
+  // engine). apply_text_style BINDS the caret/selection's paragraph(s) to the
+  // style id (the three-tier cascade's anchor: the fitter resolves it under the
+  // paragraph's local spans). An EMPTY id UNBINDS. Paragraph-snapped, undoable,
+  // no-op guarded — modelled on set_text_alignment. Binding alone layers UNDER
+  // any direct formatting (Option A, the LibreOffice/Pages model), so on text
+  // that was manually formatted the bind looks like little changed until the
+  // direct runs are cleared -- which is what clear_direct_formatting is for.
+  void apply_text_style(const std::string& style_id);
+
+  // s341 — strip DIRECT formatting (both character runs AND paragraph runs:
+  // leading/align/indents/tabs) over the caret/selection's paragraph(s) while
+  // PRESERVING the style binding (kCurvzStyleAttr). This is the "make the
+  // applied style actually show" verb: it removes every override tier so the
+  // bound style's resolved baseline becomes visible, the LibreOffice "Clear
+  // Direct Formatting" model (clears direct, keeps the style). Undoable.
+  // (Distinct from reset_text_to_default, which nukes ALL spans on the WHOLE
+  // node, the binding included, and resets the box scalars.)
+  void clear_direct_formatting();
+
+  // s341 — caret paragraph's bound text-style id (empty when unbound) for the
+  // live-read. Mirrors text_style_query_tabs: sample the paragraph start byte,
+  // return the covering kCurvzStyleAttr run's svalue.
+  bool text_style_query_bound_style(std::string& out_id) const;
+
+  // s341 — capture the caret paragraph's EFFECTIVE formatting (the resolved
+  // look under the caret: family/size/weight/italic/colour + align/leading/
+  // indents/tabs) into a TextStyle's two sparse halves, composing the existing
+  // text_style_query_* readers so the unit handling is shared with the bar
+  // faces. Header is left to the caller. Returns false when no edit is active.
+  // The "editor" for a style is the StyleBar itself: you format a paragraph,
+  // then capture it -- the Word/Pages "from selection" / "update to match"
+  // idiom, reusing the live formatting surface instead of a parallel dialog.
+  bool capture_paragraph_style(style::TextStyle& out) const;
+
+  // s341 — New: build a style from the caret paragraph's formatting (parent =
+  // Default), add it to the project library, and bind the paragraph to it.
+  // Empty name -> an auto-generated non-empty name (the swatch naming rule:
+  // UUIDs never surface in the UI). Returns the new id, or empty on failure.
+  std::string create_text_style_from_paragraph(const std::string& name);
+
+  // s341 — Edit: redefine an existing USER style to match the caret paragraph's
+  // current formatting (keeps the style's header: id/name/category/parent, so
+  // descendants re-cascade). Rejects built-in ids (the UI duplicates first).
+  // Returns false on reject / no edit.
+  bool redefine_text_style_from_paragraph(const std::string& id);
+
+  // s341 — Remove: delete a USER style from the library. Paragraphs still bound
+  // to it dangle and resolve to the cascade floor (the model's safe degenerate),
+  // so a redraw is queued. Rejects built-in ids. Returns false on reject.
+  bool delete_text_style(const std::string& id);
 
   // s158 m1 — SelectionContext is the canonical answer to "what's
   // selected and what can it do?" Refreshed automatically whenever

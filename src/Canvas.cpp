@@ -5072,6 +5072,28 @@ bool Canvas::text_style_query_indents(double& out_left, double& out_right,
   return true;
 }
 
+// s341 — caret paragraph's bound text-style id for the live-read. Mirrors
+// query_tabs/query_alignment: sample the paragraph start byte, return the
+// covering kCurvzStyleAttr run's svalue (the style id), empty when unbound.
+// Drives the Style chip face on text-style-changed.
+bool Canvas::text_style_query_bound_style(std::string& out_id) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  const std::string& buf = m_text_editing->text_content;
+  auto [a, b] = m_text_cursor->selection_range();
+  (void)b;
+  unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
+  while (pa > 0 && buf[pa - 1] != '\n') --pa;
+  out_id.clear();
+  for (const auto& s : m_text_editing->text_attr_spans) {
+    if (s.type == curvz::utils::kCurvzStyleAttr &&
+        (unsigned)s.start_byte <= pa && (unsigned)s.end_byte > pa) {
+      out_id = s.svalue;
+      break;
+    }
+  }
+  return true;
+}
+
 bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
   if (!m_text_cursor) return false;
 

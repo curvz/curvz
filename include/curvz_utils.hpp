@@ -427,6 +427,27 @@ void apply_para_runs(const std::string& buf,
 std::pair<unsigned, unsigned>
 snap_range_to_paragraphs(const std::string& buf, unsigned a, unsigned b);
 
+// s340 — per-paragraph text-style binding pumps. Both compose the generic span
+// machinery above; they exist so callers (the future style-apply verb in the UI,
+// the fitter's per-paragraph resolve, and tests) name the intent once rather
+// than re-deriving the snap + set / covering-run read each time.
+//
+// Read: the svalue of the span of `type` covering `byte` (empty when none).
+// Generic over `type` (the leading/indent/tabs *_for_byte readers in TextCursor
+// are the same shape and can fold into this later); the first caller is the
+// style binding, via paragraph_attr_svalue_for_byte(spans, kCurvzStyleAttr, b).
+// Paragraph attrs are snapped + non-overlapping, so the first covering run wins.
+std::string paragraph_attr_svalue_for_byte(const std::vector<Curvz::AttrSpan>& spans,
+                                           int type, unsigned byte);
+
+// Bind paragraphs touched by [a,b) to `style_id`: snap the range to paragraph
+// boundaries, then set the kCurvzStyleAttr span. An EMPTY style_id UNBINDS
+// (clears the span over the snapped range) — the apply / clear-binding verb pair
+// in one entry point. `buf` is text_content (for the paragraph snap). a >= b is
+// a no-op (after snap, an empty paragraph range stays a no-op).
+void set_paragraph_style(std::vector<Curvz::AttrSpan>& spans, const std::string& buf,
+                         const std::string& style_id, unsigned a, unsigned b);
+
 // s331 — Curvz-private attribute type for PER-PARAGRAPH LEADING, carried as a
 // run in text_attr_spans (so the set/clear/sweep byte-maintenance applies for
 // free across edits). Deliberately outside the PangoAttrType range: it never
@@ -484,6 +505,25 @@ constexpr int kCurvzIndentFirstAttr = 0x494E4446;  // 'INDF'
 // tabs. '|' can never appear in a tab spec, so the run boundary is unambiguous.
 constexpr int kCurvzTabsAttr = 0x54414253;  // 'TABS'
 
+// s340 — per-paragraph TEXT-STYLE binding: the id of the named TextStyle
+// (style::TextStyleLibrary) this paragraph is bound to. A paragraph property
+// like alignment/indents/tabs, so it rides text_attr_spans under this Curvz-
+// private type, paragraph-snapped on set, and gets set/clear/sweep/offset byte-
+// maintenance for free. STRING-valued like tabs: svalue carries the style id
+// ("txs_<uuid>" or "app:<slug>"); ivalue unused. Default = NO span -> paragraph
+// is unbound and falls back to the box-level scalars / the cascade floor (the
+// "no style assigned" baseline). This is the cascade's anchor: the future fitter
+// reads the covering id, resolve()s it, then layers the paragraph's other local
+// spans on top (design text_formatting_design.md sec.7's three-tier resolve).
+//
+// NOTE the persistence name is data-curvz-text-style, NOT data-curvz-style --
+// the latter is already the GRAPHIC node-level bound_style binding (a different
+// concept at a different granularity; a node may carry both). The id charset
+// ([a-z0-9:_-]) contains no '|' (the run separator) and the transport splits on
+// only the first two ':' before taking the whole remainder as svalue, so an
+// id's internal ':' (the "app:" prefix) round-trips intact.
+constexpr int kCurvzStyleAttr = 0x5354594C;  // 'STYL'
+
 // s339-cont — the character/paragraph seam, named once. The flat span bag mixes
 // two populations: CHARACTER attrs (real Pango types — weight/style/underline/
 // size/scale/family/colour — plus the Curvz per-run stroke pair) and PARAGRAPH
@@ -499,7 +539,8 @@ inline bool is_paragraph_attr(int type) {
       || type == kCurvzIndentLeftAttr
       || type == kCurvzIndentRightAttr
       || type == kCurvzIndentFirstAttr
-      || type == kCurvzTabsAttr;
+      || type == kCurvzTabsAttr
+      || type == kCurvzStyleAttr;
 }
 
 enum class TabAlign { Left, Right, Center, Decimal };

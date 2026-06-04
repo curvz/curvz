@@ -1339,6 +1339,7 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
     std::string mgr_def_align;       // s332 — data-curvz-align, post-decode
     std::string mgr_def_indent_l, mgr_def_indent_r, mgr_def_indent_f;  // s334
     std::string mgr_def_tabs;        // s335 — data-curvz-tabs, post-decode
+    std::string mgr_def_text_style;  // s340 — data-curvz-text-style, post-decode
 
     // Push a freshly-built SceneNode into the correct destination:
     //   - When in_clip_def_id is active we're inside <clipPath id="X">;
@@ -1486,6 +1487,7 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                         }
                     };
                     inject_runs_str(mgr_def_tabs, curvz::utils::kCurvzTabsAttr);  // s335
+                    inject_runs_str(mgr_def_text_style, curvz::utils::kCurvzStyleAttr);  // s340
                     mgr_def_leading.clear();
                     mgr_def_stroke_color.clear();
                     mgr_def_stroke_width.clear();
@@ -1493,6 +1495,7 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                     mgr_def_indent_l.clear(); mgr_def_indent_r.clear();
                     mgr_def_indent_f.clear();
                     mgr_def_tabs.clear();  // s335
+                    mgr_def_text_style.clear();  // s340
                 }
             }
             continue;
@@ -2499,6 +2502,7 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     mgr_def_indent_r = attr(tag, "data-curvz-indent-right");  // s334
                     mgr_def_indent_f = attr(tag, "data-curvz-indent-first");  // s334
                     mgr_def_tabs     = attr(tag, "data-curvz-tabs");          // s335
+                    mgr_def_text_style = attr(tag, "data-curvz-text-style");  // s340
                     // s327 m1 — baseline flow angle (absent -> stays 0 -> horizontal)
                     auto ba = attr(tag, "data-curvz-baseline-angle");
                     if (!ba.empty()) mgr->text_baseline_angle = dbl(ba,

@@ -2395,6 +2395,29 @@ snap_range_to_paragraphs(const std::string& buf, unsigned a, unsigned b) {
   return {pa, pb};
 }
 
+// s340 — see header. Generic covering-run svalue read; first/only covering run
+// wins (paragraph attrs are snapped + non-overlapping).
+std::string paragraph_attr_svalue_for_byte(const std::vector<Curvz::AttrSpan>& spans,
+                                           int type, unsigned byte) {
+  for (const auto& s : spans)
+    if (s.type == type && s.start_byte <= byte && s.end_byte > byte)
+      return s.svalue;
+  return std::string();
+}
+
+// s340 — see header. Snap to paragraph boundaries, then bind (set span) or, for
+// an empty id, unbind (clear span). Composes snap + set/clear; no new logic.
+void set_paragraph_style(std::vector<Curvz::AttrSpan>& spans, const std::string& buf,
+                         const std::string& style_id, unsigned a, unsigned b) {
+  if (a > b) std::swap(a, b);
+  auto [pa, pb] = snap_range_to_paragraphs(buf, a, b);
+  if (pb <= pa) return;
+  if (style_id.empty())
+    clear_attr_over_range(spans, kCurvzStyleAttr, pa, pb);
+  else
+    set_attr_over_range(spans, kCurvzStyleAttr, 0, style_id, pa, pb);
+}
+
 std::vector<Curvz::AttrSpan>
 capture_para_runs(const std::string& buf,
                   const std::vector<Curvz::AttrSpan>& spans,

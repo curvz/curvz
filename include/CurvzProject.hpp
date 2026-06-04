@@ -2,6 +2,7 @@
 #include "CurvzDocument.hpp"
 #include "color/SwatchLibrary.hpp"
 #include "style/StyleLibrary.hpp"
+#include "style/TextStyleLibrary.hpp"
 #include "theme/ThemeLibrary.hpp"
 #include <string>
 #include <vector>
@@ -154,6 +155,15 @@ struct CurvzProject {
     // pre-populated; user styles persist in project.json (m3b). No UI
     // wired yet — the StylesPanel lands in Phase 2 (S76+).
     style::StyleLibrary styles;
+
+    // Project-wide TEXT style system (s340). Sibling of `styles` above, but a
+    // separate library with separate contents: named PARAGRAPH styles (font /
+    // size / weight / alignment / leading / indents / tabs) that apply to text,
+    // not the fill/stroke/shadow appearances `styles` carries for primitives.
+    // Same two-tier shell (app: built-ins re-seeded every launch + txs_<uuid>
+    // user styles persisted in project.json) plus single-parent inheritance.
+    // No UI wired yet — the style bar / picker land in a later milestone.
+    style::TextStyleLibrary text_styles;
 
     // Project-wide theme system (S103 m1). Sibling of `styles`. A theme
     // is a named bundle of doc-level "non-physical" settings (units,

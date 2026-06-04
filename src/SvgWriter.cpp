@@ -525,15 +525,19 @@ static std::string encode_markup(const std::string& text,
 
     std::vector<size_t> bounds{0, text.size()};
     for (const auto& s : spans) {
-        if (s.type == curvz::utils::kCurvzLeadingAttr) continue;  // s331 — not a Pango attr
-        // s332 — per-run stroke private attrs aren't Pango markup either; skip
-        // them from the bounds so they don't fragment the text into empty
-        // spans. (Their own data-curvz-stroke-* persistence is a follow-up;
-        // for now they're in-session only.)
+        // Paragraph attrs (leading / align / indents / tabs / text-style) are
+        // NOT Pango character markup — each persists via its own data-curvz-*
+        // run-list emitted below. Excluding the whole class by predicate (rather
+        // than enumerating types) keeps this correct as paragraph attrs are
+        // added: the old enumerated skip-list covered leading/align/tabs but
+        // silently MISSED indents (s334) and text-style (s340), so those spans
+        // were fragmenting the char markup into redundant runs. s340.
+        if (curvz::utils::is_paragraph_attr(s.type)) continue;
+        // s332 — per-run STROKE is a character attr that just isn't Pango markup
+        // (own data-curvz-stroke-* persistence, in-session for now); skip from
+        // the bounds so it doesn't fragment the text into empty spans.
         if (s.type == curvz::utils::kCurvzStrokeColorAttr ||
             s.type == curvz::utils::kCurvzStrokeWidthAttr) continue;
-        if (s.type == curvz::utils::kCurvzAlignAttr) continue;  // s332 — not a Pango attr
-        if (s.type == curvz::utils::kCurvzTabsAttr) continue;   // s335 — not a Pango attr
         if (s.start_byte <= text.size()) bounds.push_back(s.start_byte);
         if (s.end_byte   <= text.size()) bounds.push_back(s.end_byte);
     }
@@ -761,6 +765,26 @@ static void write_textbox_mgr_def(std::ostringstream& out,
         }
         if (!runs.empty())
             out << " data-curvz-tabs=\"" << runs << "\"";
+    }
+    // s340 — per-paragraph TEXT-STYLE binding (kCurvzStyleAttr). STRING-valued
+    //   like tabs: svalue is the bound style id. Same "start:end:value|..." run
+    //   shape (separator '|', which never appears in an id). The id charset is
+    //   XML-safe and contains no '|'; its internal ':' (the "app:" prefix) is
+    //   safe because the parser splits on only the first two ':' per run and
+    //   takes the remainder as the value. 0 runs -> attribute omitted (unbound
+    //   paragraphs stay byte-identical). NOTE: data-curvz-TEXT-style, distinct
+    //   from data-curvz-style (the graphic node-level bound_style binding).
+    {
+        std::string runs;
+        for (const auto& s : mgr.text_attr_spans) {
+            if (s.type != curvz::utils::kCurvzStyleAttr) continue;
+            if (s.svalue.empty()) continue;
+            if (!runs.empty()) runs += "|";
+            runs += std::to_string(s.start_byte) + ":" +
+                    std::to_string(s.end_byte) + ":" + s.svalue;
+        }
+        if (!runs.empty())
+            out << " data-curvz-text-style=\"" << runs << "\"";
     }
     // s327 m1 — baseline flow angle (radians). Default 0 omits cleanly so
     //   pre-s327 / un-rotated boxes stay byte-identical. fmt6 matches the

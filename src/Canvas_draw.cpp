@@ -298,7 +298,8 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
                                     const SceneNode& boundary,
                                     size_t byte_start,
                                     bool draw_overflow_indicator) {
-  TextLayout tl = compute_text_layout(&boundary, &text_obj, byte_start);
+  TextLayout tl = compute_text_layout(&boundary, &text_obj, byte_start,
+                                     project() ? &project()->text_styles : nullptr);
 
   // ── s308 m1 — Overflow indicator (drawn before baselines-empty
   // early-return) ───────────────────────────────────────────────────────
@@ -3798,7 +3799,8 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
           //    (tall boundary), so overflow is detected from content HEIGHT
           //    vs the visible window, not a byte count.
           TextLayout tl_full =
-              compute_text_layout(&area_boundary, &obj, flow_offset);
+              compute_text_layout(&area_boundary, &obj, flow_offset,
+                                  project() ? &project()->text_styles : nullptr);
           double content_h = 0.0;
           for (const auto& b : tl_full.baselines)
             if (b.byte_end > b.byte_start)        // s319 — skip capacity empties
@@ -5278,7 +5280,8 @@ void Canvas::draw_text_baseline_guides(
     if (!text || !boundary || !boundary->path ||
         boundary->path->nodes.size() < 3)
       return;
-    TextLayout tl = compute_text_layout(boundary, text, byte_start);
+    TextLayout tl = compute_text_layout(boundary, text, byte_start,
+                                   project() ? &project()->text_styles : nullptr);
     if (tl.baselines.empty()) return;
 
     cr->save();

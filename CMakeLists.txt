@@ -469,6 +469,18 @@ set(SOURCES
     # Mirrors color/PaletteIO's role for palette interchange.
     src/style/StyleIO.cpp
 
+    # s340 m1: named paragraph-text-style library -- a sibling of the graphic
+    # StyleLibrary (design text_formatting_design.md sec.6), with single-parent
+    # inheritance + a resolve pump. Pure addition this milestone: data model +
+    # library + resolve, no CurvzProject/fitter/UI consumer yet. Header-only
+    # types in include/style/TextStyle.hpp.
+    src/style/TextStyleLibrary.cpp
+
+    # s340 — node<->text-style bridge (sibling of StyleInterop). The fitter's
+    # per-paragraph baseline seam (Option A: resolve under local spans, no
+    # stamping). Pure addition this milestone; no fitter call site yet.
+    src/style/TextStyleInterop.cpp
+
     # S103 m1: theme system — named bundles of doc-level "non-physical"
     # settings (units, background, guides, grid, margins, snap). Sibling
     # of the style system; mirrors its two-list architecture. v1 has no

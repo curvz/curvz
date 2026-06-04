@@ -7815,7 +7815,243 @@ void Canvas::set_text_alignment(int align) {
   queue_draw();
 }
 
-// s334 — per-paragraph indents. which: 0 = left, 1 = right, 2 = first-line.
+// ── s341 — bind paragraph(s) to a named text style ──────────────────────────
+// The clickable apply verb. Resolve the text node (edited, else first text-
+// bearing selection member), scope to the selection's paragraph(s) (or the
+// whole buffer when not editing), and write/clear the kCurvzStyleAttr binding
+// via set_paragraph_style (which paragraph-snaps internally). An EMPTY id
+// unbinds. Undoable via TextEditCommand, no-op guarded against redundant
+// pushes. The fitter (TextCursor) reads the binding per paragraph and resolves
+// it under the local spans; nothing is stamped into the runs (Option A).
+void Canvas::apply_text_style(const std::string& style_id) {
+  if (!m_doc) return;
+  SceneNode* node = nullptr;
+  if (m_text_editing && (m_text_editing->is_text_box_mgr() ||
+                         m_text_editing->type == SceneNode::Type::Text))
+    node = m_text_editing;
+  if (!node) {
+    for (SceneNode* obj : m_selection) {
+      if (obj && (obj->is_text_box_mgr() ||
+                  obj->type == SceneNode::Type::Text)) { node = obj; break; }
+    }
+  }
+  if (!node) return;
+
+  unsigned a = 0, b = (unsigned)node->text_content.size();
+  if (m_text_editing == node && m_text_cursor) {
+    auto [sa, sb] = m_text_cursor->selection_range();
+    a = (unsigned)sa; b = (unsigned)sb;
+  }
+  unsigned pa = 0, pb = (unsigned)node->text_content.size();
+  snap_to_paragraphs(node->text_content, a, b, pa, pb);
+
+  // No-op guard: skip if the targeted paragraph(s) already carry exactly this
+  // binding (keeps redundant pushes off the undo stack).
+  if (style_id.empty()) {
+    bool had = false;
+    for (const auto& s : node->text_attr_spans)
+      if (s.type == curvz::utils::kCurvzStyleAttr &&
+          (unsigned)s.end_byte > pa && (unsigned)s.start_byte < pb) { had = true; break; }
+    if (!had) return;  // already unbound everywhere in range
+  } else if (curvz::utils::range_has_attr(node->text_attr_spans,
+                                          curvz::utils::kCurvzStyleAttr,
+                                          0, style_id, pa, pb)) {
+    return;
+  }
+
+  if (m_text_editing == node)
+    flush_text_segment();
+
+  TextEditCommand snap = TextEditCommand::snapshot_before(project(), node);
+
+  curvz::utils::set_paragraph_style(node->text_attr_spans, node->text_content,
+                                    style_id, a, b);
+
+  if (m_history) {
+    snap.record_after(node);
+    m_history->push(std::make_unique<TextEditCommand>(std::move(snap)));
+  }
+  if (m_text_editing == node && m_text_has_snapshot)
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), node);
+
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();
+  queue_draw();
+}
+
+// ── s341 — clear character direct formatting, keep paragraph attrs ──────────
+// The "make the style show" verb. Resolve the node + paragraph range like the
+// other paragraph ops, then drop every CHARACTER run (the runs the
+// is_paragraph_attr predicate rejects: family/size/weight/style/underline/
+// colour/stroke/etc.) over the range, while leaving paragraph attrs intact --
+// the style binding above all, plus align/indents/tabs. Enumerating the
+// distinct character attr types PRESENT in range (rather than a hard-coded
+// list) keeps this in step with the predicate as new per-run attrs land.
+// Undoable. No-op when the range carries no character runs.
+void Canvas::clear_direct_formatting() {
+  if (!m_doc) return;
+  SceneNode* node = nullptr;
+  if (m_text_editing && (m_text_editing->is_text_box_mgr() ||
+                         m_text_editing->type == SceneNode::Type::Text))
+    node = m_text_editing;
+  if (!node) {
+    for (SceneNode* obj : m_selection) {
+      if (obj && (obj->is_text_box_mgr() ||
+                  obj->type == SceneNode::Type::Text)) { node = obj; break; }
+    }
+  }
+  if (!node) return;
+
+  unsigned a = 0, b = (unsigned)node->text_content.size();
+  if (m_text_editing == node && m_text_cursor) {
+    auto [sa, sb] = m_text_cursor->selection_range();
+    a = (unsigned)sa; b = (unsigned)sb;
+  }
+  unsigned pa = 0, pb = (unsigned)node->text_content.size();
+  snap_to_paragraphs(node->text_content, a, b, pa, pb);
+
+  // Collect the distinct DIRECT-FORMATTING attr types overlapping [pa,pb) --
+  // everything EXCEPT the style binding itself. That means both character runs
+  // (family/size/weight/colour/...) AND paragraph direct formatting (leading/
+  // align/indents/tabs): all of it masks the bound style, so all of it goes,
+  // while kCurvzStyleAttr (the binding) stays so the paragraph keeps its style.
+  // This is the LibreOffice "Clear Direct Formatting" model (clears direct,
+  // keeps the style) -- the reason the prior char-only clear didn't go cleanly
+  // was that a manual leading/align/indent run survived and kept overriding.
+  std::vector<int> clear_types;
+  for (const auto& s : node->text_attr_spans) {
+    if ((unsigned)s.end_byte <= pa || (unsigned)s.start_byte >= pb) continue;
+    if (s.type == curvz::utils::kCurvzStyleAttr) continue;  // keep the binding
+    if (std::find(clear_types.begin(), clear_types.end(), s.type) == clear_types.end())
+      clear_types.push_back(s.type);
+  }
+  if (clear_types.empty()) return;  // nothing to clear -> no undo push
+
+  if (m_text_editing == node)
+    flush_text_segment();
+
+  TextEditCommand snap = TextEditCommand::snapshot_before(project(), node);
+
+  for (int t : clear_types)
+    curvz::utils::clear_attr_over_range(node->text_attr_spans, t, pa, pb);
+
+  if (m_history) {
+    snap.record_after(node);
+    m_history->push(std::make_unique<TextEditCommand>(std::move(snap)));
+  }
+  if (m_text_editing == node && m_text_has_snapshot)
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), node);
+
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();
+  queue_draw();
+}
+
+// ── s341 — capture the caret paragraph's effective formatting into a style ──
+// Composes the bar-face readers (so the unit handling is shared, not forked)
+// into the two sparse halves of a TextStyle. A "mixed" axis is left unset
+// (inherit) rather than guessing; an auto/zero leading is left unset so the
+// captured style metric-derives its stride. Header is the caller's job.
+bool Canvas::capture_paragraph_style(style::TextStyle& out) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+
+  // Character half.
+  Glib::ustring fam; bool fmix = false;
+  if (text_style_query_family(fam, fmix) && !fmix && !fam.empty())
+    out.chars.family = fam.raw();
+
+  long w = 0; bool wmix = false;
+  if (text_style_query_weight(w, wmix) && !wmix)
+    out.chars.bold = (w >= 700);
+
+  int ital = 0, undl = 0, strk = 0, ovrl = 0, sup = 0, sub = 0;
+  if (text_style_query_emphasis(ital, undl, strk, ovrl, sup, sub) && ital != 2)
+    out.chars.italic = (ital == 1);
+
+  double pt = 0.0; bool smix = false;
+  if (text_style_query_size(pt, smix) && !smix && pt > 0.0)
+    out.chars.size = UnitSystem::to_px(pt, Unit::Pt);  // doc-px, matches the floor
+
+  unsigned long rgb = 0; bool cmix = false, none = false;
+  if (text_style_query_fill(rgb, cmix, none) && !cmix) {
+    if (none) {
+      out.chars.colour = color::Paint(color::None{});
+    } else {
+      const double r = ((rgb >> 16) & 0xFF) / 255.0;
+      const double g = ((rgb >> 8)  & 0xFF) / 255.0;
+      const double b = ( rgb        & 0xFF) / 255.0;
+      out.chars.colour = color::Paint(color::Solid(color::Color(r, g, b, 1.0)));
+    }
+  }
+
+  // Paragraph half.
+  int align = 0;
+  if (text_style_query_alignment(align))
+    out.para.align = style::para_align_from_ivalue(align);
+
+  double lead_pt = 0.0; bool lead_auto = false;
+  if (text_style_query_leading(lead_pt, lead_auto) && !lead_auto && lead_pt > 0.0)
+    out.para.leading_px = UnitSystem::to_px(lead_pt, Unit::Pt);  // else unset -> metric
+
+  double il = 0.0, ir = 0.0, ifst = 0.0;
+  if (text_style_query_indents(il, ir, ifst)) {
+    out.para.indent_left_px  = il;
+    out.para.indent_right_px = ir;
+    out.para.indent_first_px = ifst;
+  }
+
+  std::string tabs;
+  if (text_style_query_tabs(tabs))
+    out.para.tabs = tabs;  // empty == explicit "no stops"
+
+  return true;
+}
+
+// s341 — New: capture -> add to library (parent = Default) -> bind paragraph.
+std::string Canvas::create_text_style_from_paragraph(const std::string& name) {
+  if (!project() || !m_text_cursor || !m_text_editing) return std::string();
+  style::TextStyle s;
+  if (!capture_paragraph_style(s)) return std::string();
+  s.header.name      = name.empty() ? std::string("Style") : name;  // never empty
+  s.header.parent_id = "app:text-default";
+  // header.id left empty -> the library mints a fresh txs_<uuid>.
+  const std::string id = project()->text_styles.add_text_style(std::move(s));
+  if (id.empty()) return std::string();
+  apply_text_style(id);  // bind the paragraph (undoable; emits + redraws)
+  return id;
+}
+
+// s341 — Edit: redefine a USER style to match the caret paragraph, keeping its
+// header so the id/name/category/parent (and thus descendants' cascade) survive.
+bool Canvas::redefine_text_style_from_paragraph(const std::string& id) {
+  if (!project() || id.empty() || !m_text_cursor || !m_text_editing) return false;
+  auto& lib = project()->text_styles;
+  if (lib.is_built_in(id)) return false;  // app styles are read-only
+  const style::TextStyle* existing = lib.find_text_style(id);
+  if (!existing) return false;
+  style::TextStyle s;
+  if (!capture_paragraph_style(s)) return false;
+  s.header = existing->header;  // preserve identity + parent link
+  if (!lib.update_text_style(id, std::move(s))) return false;
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();
+  queue_draw();  // the style changed -> every bound paragraph re-cascades
+  return true;
+}
+
+// s341 — Remove: delete a USER style. Bound paragraphs dangle and resolve to
+// the cascade floor (the model's safe degenerate), so we redraw.
+bool Canvas::delete_text_style(const std::string& id) {
+  if (!project() || id.empty()) return false;
+  auto& lib = project()->text_styles;
+  if (lib.is_built_in(id)) return false;
+  if (!lib.remove_text_style(id)) return false;
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();
+  queue_draw();
+  return true;
+}
+
 // doc_value in document units; 0 clears the run (default), non-zero stores
 // ivalue = value x PANGO_SCALE (the private-span fixed-point). Paragraph-snaps
 // the selection exactly like set_text_alignment and is undoable the same way;

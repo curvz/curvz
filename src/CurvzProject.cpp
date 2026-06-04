@@ -334,6 +334,20 @@ bool CurvzProject::save() const {
         j["styles"] = std::move(sj["styles"]);
     }
 
+    // ── Text styles (s340 — inline in project.json) ───────────────────────
+    //
+    // Same shape as the graphic styles block above, separate library and key.
+    // User tier only — app text styles are re-seeded every launch by the
+    // TextStyleLibrary constructor and never serialised. Key omitted entirely
+    // when the user tier is empty so text-style-less projects keep clean diffs.
+    // to_user_json writes a top-level "text_styles" array; we lift it out so the
+    // schema reads `{"text_styles": [...]}` and the load side wraps it back up.
+    if (text_styles.user_style_count() > 0) {
+        json tsj;
+        text_styles.to_user_json(tsj);
+        j["text_styles"] = std::move(tsj["text_styles"]);
+    }
+
     // ── Themes (S103 m1 — inline in project.json) ─────────────────────────
     //
     // Same shape as styles above: user-tier only (v1 has no app themes
@@ -592,6 +606,20 @@ bool CurvzProject::load(const std::string& dir) {
         json wrapped;
         wrapped["styles"] = j["styles"];
         styles.from_user_json(wrapped);
+    }
+
+    // ── Text styles (s340 — inline in project.json) ──────────────────────
+    //
+    // Same shape as the graphic styles block above. App text styles are
+    // re-seeded every launch by the TextStyleLibrary constructor; only the user
+    // tier loads here. Older project.json files written before s340 simply lack
+    // the "text_styles" key — additive schema change, no migration.
+    // from_user_json clears the user tier first, so reloading after deleting all
+    // text styles correctly empties the library.
+    if (j.contains("text_styles") && j["text_styles"].is_array()) {
+        json wrapped;
+        wrapped["text_styles"] = j["text_styles"];
+        text_styles.from_user_json(wrapped);
     }
 
     // ── Themes (S103 m1 — inline in project.json) ────────────────────────
