@@ -1650,6 +1650,8 @@ void MainWindow::setup_layout() {
       [this](int align) { m_canvas.set_text_alignment(align); });
   m_style_bar.set_indent_request(  // s334
       [this](int which, double v) { m_canvas.set_text_indent(which, v); });
+  m_style_bar.set_margin_request(  // s343
+      [this](int which, double v) { m_canvas.set_text_margin(which, v); });
   m_style_bar.set_tabs_request(  // s335
       [this](const std::string& spec) { m_canvas.set_text_tabs(spec); });
   // s338 — show-invisibles view toggle drives the canvas draw flag.
@@ -1674,7 +1676,7 @@ void MainWindow::setup_layout() {
         if (m_canvas.text_style_query_bound_style(bound)) current = bound;
       });
   m_style_bar.set_style_apply_request(
-      [this](const std::string& id) { m_canvas.apply_text_style(id); });
+      [this](const std::string& id) { m_canvas.apply_text_style(id, /*clear_direct=*/true); });
   m_style_bar.set_style_clear_request(
       [this]() { m_canvas.clear_direct_formatting(); });
   // s341 — CRUD: New (capture paragraph -> new style), Redefine (update a user
@@ -1688,7 +1690,101 @@ void MainWindow::setup_layout() {
         m_canvas.redefine_text_style_from_paragraph(id);
       });
   m_style_bar.set_style_delete_request(
-      [this](const std::string& id) { m_canvas.delete_text_style(id); });
+      [this](const std::string& id) {
+        // s342 — undoable now: snapshot + RemoveTextStyleCommand (was a direct
+        // library call). Bound paragraphs dangle to the cascade floor; the
+        // library-changed signal (Canvas::set_text_style_library) redraws.
+        if (!m_project) return;
+        auto& lib = m_project->text_styles;
+        if (lib.is_built_in(id)) return;            // app styles read-only
+        const style::TextStyle* s = lib.find_text_style(id);
+        if (!s) return;
+        auto cmd = std::make_unique<RemoveTextStyleCommand>(&lib, *s);
+        cmd->execute();
+        m_history.push(std::move(cmd));
+      });
+  // s342 — the field-editor dialog (the named "editing styles" focus). Edit
+  // opens a user style in place; Edit-a-copy duplicates an app style first;
+  // New opens a blank editor. Each on_committed pushes an undoable Add/Update.
+  m_style_bar.set_style_edit_request(
+      [this](const std::string& id) {
+        if (!m_project) return;
+        auto& lib = m_project->text_styles;
+        if (lib.is_built_in(id)) return;            // user styles only
+        const style::TextStyle* cur = lib.find_text_style(id);
+        if (!cur) return;
+        style::TextStyle before = *cur;             // snapshot for undo
+        style::TextStyleId sid = id;
+        auto on_committed = [this, sid, before](style::TextStyle after) {
+          if (!m_project) return;
+          if (before == after) return;              // round-tripped unchanged
+          after.header.id = sid;
+          auto cmd = std::make_unique<UpdateTextStyleCommand>(
+              &m_project->text_styles, sid, before, std::move(after),
+              std::string("Edit text style"));
+          cmd->execute();
+          m_history.push(std::move(cmd));
+        };
+        CurvzDocument* doc = m_project->active_doc();
+        CanvasModel* cm = doc ? &doc->canvas : nullptr;
+        m_text_style_editor_dialog.show(
+            *this, m_project->text_styles, cm,
+            m_project->text_styles.user_categories(),
+            TextStyleEditorDialog::Mode::Edit, before, std::move(on_committed));
+      });
+  m_style_bar.set_style_edit_copy_request(
+      [this](const std::string& id) {
+        if (!m_project) return;
+        auto& lib = m_project->text_styles;
+        const style::TextStyle* src = lib.find_text_style(id);
+        if (!src) return;
+        // Seed an app style as a fresh user copy: clear id (library mints),
+        // " copy" name, category cleared (app rows live under read-only
+        // built-in groups), parent preserved so it still inherits.
+        style::TextStyle seed = *src;
+        seed.header.id.clear();
+        seed.header.name = src->header.name + " copy";
+        seed.header.category.clear();
+        auto on_committed = [this](style::TextStyle result) {
+          if (!m_project) return;
+          auto cmd = std::make_unique<AddTextStyleCommand>(
+              &m_project->text_styles, std::move(result),
+              std::string("Duplicate text style"));
+          cmd->execute();
+          m_history.push(std::move(cmd));
+        };
+        CurvzDocument* doc = m_project->active_doc();
+        CanvasModel* cm = doc ? &doc->canvas : nullptr;
+        m_text_style_editor_dialog.show(
+            *this, m_project->text_styles, cm,
+            m_project->text_styles.user_categories(),
+            TextStyleEditorDialog::Mode::Duplicate, std::move(seed),
+            std::move(on_committed));
+      });
+  m_style_bar.set_style_new_request(
+      [this]() {
+        if (!m_project) return;
+        // Blank seed inheriting from the Default/Body root, so a fresh style
+        // is a thin delta from the cascade floor rather than a full pin.
+        style::TextStyle seed;
+        seed.header.name      = "Text style";
+        seed.header.parent_id = "app:text-default";
+        auto on_committed = [this](style::TextStyle result) {
+          if (!m_project) return;
+          auto cmd = std::make_unique<AddTextStyleCommand>(
+              &m_project->text_styles, std::move(result),
+              std::string("Add text style"));
+          cmd->execute();
+          m_history.push(std::move(cmd));
+        };
+        CurvzDocument* doc = m_project->active_doc();
+        CanvasModel* cm = doc ? &doc->canvas : nullptr;
+        m_text_style_editor_dialog.show(
+            *this, m_project->text_styles, cm,
+            m_project->text_styles.user_categories(),
+            TextStyleEditorDialog::Mode::New, std::move(seed),
+            std::move(on_committed));
+      });
   // s333 TEMP — justify tuning slider drives the live spill knobs and redraws.
   m_style_bar.set_justify_knob_request(
       [this](double comfort_em, double track_em) {
@@ -1773,6 +1869,10 @@ void MainWindow::setup_layout() {
       m_style_bar.set_indent_values(ind_l, ind_r, ind_f);
     else
       m_style_bar.set_indent_values(0.0, 0.0, 0.0);
+    // s343 — edited box's effective margins onto the Insets/Box spins. Doc-px.
+    double mrg_t = 0.0, mrg_b = 0.0, mrg_l = 0.0, mrg_r = 0.0;
+    if (m_canvas.text_style_query_margins(mrg_t, mrg_b, mrg_l, mrg_r))
+      m_style_bar.set_margin_values(mrg_t, mrg_b, mrg_l, mrg_r);
     // s341 — caret paragraph's bound style onto the Style chip face. Resolve the
     // id to its display name via the library (fall back to the id if a dangling
     // binding can't be resolved); unbound or no edit -> the axis word "Style".

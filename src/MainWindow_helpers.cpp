@@ -899,6 +899,7 @@ void MainWindow::update_all_panels() {
   // ── GROUP A: refresh all per-project pointers (no signals fired) ─
   m_canvas.set_swatch_library(&m_project->swatches); // Phase 5 M3
   m_canvas.set_style_library(&m_project->styles);    // S78 m3d
+  m_canvas.set_text_style_library(&m_project->text_styles); // s342 — redraw on lib change
   m_canvas.set_project(m_project.get()); // s116 m6 — workspace appearance reads
   m_swatches.set_library(&m_project->swatches);
   m_styles.set_library(&m_project->styles);           // S80 m4c

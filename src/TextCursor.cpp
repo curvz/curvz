@@ -28,10 +28,13 @@
 #include "curvz_utils.hpp"                  // s331 — kCurvzLeadingAttr (per-para leading)
 #include "style/TextStyleLibrary.hpp"        // s340 — per-paragraph style resolve
 #include "style/TextStyleInterop.hpp"        // s340 — resolve_paragraph_baseline / box_baseline
+#include "color/Color.hpp"                   // s343 — channel_to_u8 (bound-style colour baseline)
+#include "color/Paint.hpp"                   // s343 — Solid / SwatchRef variant access
 #include "math/TextFlowGeometry.hpp"   // s323 — form-fit reflow geometry pumps
 
 #include <pango/pangocairo.h>
 #include <glib.h>
+#include <variant>                     // s343 — std::get_if (Paint variant)
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -834,12 +837,55 @@ static PangoLayout* make_single_line_layout(const SceneNode* text,
 
     pango_layout_set_width(layout, -1);  // no Pango wrap
     pango_layout_set_text(layout, chunk, chunk_len);
-    // s325 — per-run formatting for this line. The scalar font_description
-    // above is the baseline; these spans override it per byte-range.
-    if (PangoAttrList* la = build_line_attrs(text, chunk_byte_start, chunk_len)) {
-        pango_layout_set_attributes(layout, la);
-        pango_attr_list_unref(la);
+    // s343 — per-run formatting for this line, layered OVER the resolved-style
+    // baseline. The font_description above already carries the bound style's
+    // family/size/bold/italic (s340), but COLOUR and LETTER-SPACING have no
+    // font-description equivalent: a bound style's colour/spacing never reached
+    // the glyphs -- only direct FOREGROUND/LETTER_SPACING runs did -- so a
+    // colour-only or spacing-only style rendered as a no-op once clear-direct
+    // stripped the manual run. Fix: seed a whole-line colour + letter-spacing
+    // baseline from `base`, THEN insert the per-run direct spans after it so
+    // direct still overrides bound in its byte range (Option A precedence).
+    // Solid / Swatch colours resolve to a flat foreground; None / CurrentColor
+    // / Gradient fall through to the node fill source, as before.
+    PangoAttrList* la = pango_attr_list_new();
+    if (base) {
+        const color::Color* bc = nullptr;
+        if (const auto* s = std::get_if<color::Solid>(&base->colour))
+            bc = &s->color;
+        else if (const auto* w = std::get_if<color::SwatchRef>(&base->colour))
+            bc = &w->fallback;  // cached resolved colour
+        if (bc) {
+            auto u16 = [](double c) {
+                return (guint16)(color::channel_to_u8(c) * 0x101);
+            };
+            PangoAttribute* fg = pango_attr_foreground_new(u16(bc->r), u16(bc->g), u16(bc->b));
+            fg->start_index = 0; fg->end_index = (guint)chunk_len;
+            pango_attr_list_insert(la, fg);
+            if (bc->a < 1.0) {
+                PangoAttribute* fa = pango_attr_foreground_alpha_new(u16(bc->a));
+                fa->start_index = 0; fa->end_index = (guint)chunk_len;
+                pango_attr_list_insert(la, fa);
+            }
+        }
+        if (base->letter_spacing != 0.0) {
+            PangoAttribute* lsp = pango_attr_letter_spacing_new(
+                (int)(base->letter_spacing * PANGO_SCALE));
+            lsp->start_index = 0; lsp->end_index = (guint)chunk_len;
+            pango_attr_list_insert(la, lsp);
+        }
     }
+    // Per-run direct spans on top (inserted after the baseline, so a direct
+    // colour/spacing run wins over the bound style across its byte range).
+    if (PangoAttrList* runs = build_line_attrs(text, chunk_byte_start, chunk_len)) {
+        GSList* attrs = pango_attr_list_get_attributes(runs);
+        for (GSList* n = attrs; n; n = n->next)
+            pango_attr_list_insert(la, (PangoAttribute*)n->data);  // takes ownership
+        g_slist_free(attrs);
+        pango_attr_list_unref(runs);
+    }
+    pango_layout_set_attributes(layout, la);
+    pango_attr_list_unref(la);
     // s337 m2 — per-paragraph tab stops for this line. set_tabs COPIES the
     // array into the layout (independent), so we free it immediately. With the
     // array set, Pango treats '\t' as a stop-advance and the width/position
@@ -1036,15 +1082,10 @@ void text_frame_basis(const SceneNode* boundary, const SceneNode* text,
 // s334 — per-paragraph indent (doc units). Same shape as the old leading reader:
 // a private indent run covering the line's start byte (which sits in the owning
 // paragraph) wins; default 0 = no inset. ivalue is doc-px x PANGO_SCALE.
-static double indent_for_byte(const SceneNode* text, int attr, size_t byte) {
-  if (!text) return 0.0;
-  double v = 0.0;
-  for (const auto& s : text->text_attr_spans)
-    if (s.type == attr &&
-        (size_t)s.start_byte <= byte && (size_t)s.end_byte > byte)
-      v = (double)s.ivalue / (double)PANGO_SCALE;
-  return v;
-}
+// s342 — indent_for_byte was retired here; resolved_indent (defined below,
+// beside resolved_line_leading) supersedes it with the three-tier style
+// fallback. The lone caller (compute_text_layout) now reads through the
+// resolver, so the direct-span-only reader had no remaining users.
 
 // s337 m2 — per-paragraph tab spec (canonical "pos,type;..." string). Same
 // shape as indent_for_byte / leading_for_byte: the kCurvzTabsAttr run covering
@@ -1147,6 +1188,34 @@ static double resolved_line_leading(const SceneNode* text,
         return box_leading;                                        // tier 3, same font
     return metric_leading_for(line_base.family, line_base.size,
                               line_base.bold, line_base.italic);    // tier 3, styled font
+}
+
+// s342 — three-tier per-paragraph indent (the indent twin of
+// resolved_line_leading). Precedence, mirroring leading exactly:
+//   1. a direct indent run (kCurvzIndent*Attr) covering the byte — direct
+//      formatting wins outright, BY PRESENCE, so an explicit 0 beats a styled
+//      non-zero value (a direct run is read with a presence test, not a >0
+//      test, same as the leading pump).
+//   2. the bound style's resolved indent for the axis (line_base.indent_*_px).
+//   3. the 0 floor.
+// Pre-s342 the call sites used indent_for_byte, which read tier 1 only and
+// returned 0 otherwise -- so a bound style's indents never applied. The gap was
+// invisible while direct indent spans coexisted with the binding, but a clean-
+// swap apply (s342) strips the direct indent spans, leaving the style as the
+// only source -- which the old reader ignored. `attr` is one of the three
+// kCurvzIndent*Attr.
+static double resolved_indent(const SceneNode* text, int attr,
+                              const style::ResolvedTextStyle& line_base,
+                              size_t byte) {
+    if (text)
+        for (const auto& s : text->text_attr_spans)
+            if (s.type == attr &&
+                (size_t)s.start_byte <= byte && (size_t)s.end_byte > byte)
+                return (double)s.ivalue / (double)PANGO_SCALE;     // tier 1
+    if (attr == curvz::utils::kCurvzIndentLeftAttr)  return line_base.indent_left_px;
+    if (attr == curvz::utils::kCurvzIndentRightAttr) return line_base.indent_right_px;
+    if (attr == curvz::utils::kCurvzIndentFirstAttr) return line_base.indent_first_px;
+    return 0.0;                                                     // tier 3
 }
 
 TextLayout compute_text_layout(const SceneNode* boundary,
@@ -1380,13 +1449,13 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         // stop's pos is doc-px from the content-area left edge, the layout is
         // placed at the indented x_start, so layout-local tab loc = pos
         // - (ind_l [+ ind_f]). See build_line_tab_array.
-        const double ind_l = indent_for_byte(
-            text, curvz::utils::kCurvzIndentLeftAttr,  line_start);
-        const double ind_r = indent_for_byte(
-            text, curvz::utils::kCurvzIndentRightAttr, line_start);
+        const double ind_l = resolved_indent(
+            text, curvz::utils::kCurvzIndentLeftAttr,  line_base, line_start);
+        const double ind_r = resolved_indent(
+            text, curvz::utils::kCurvzIndentRightAttr, line_base, line_start);
         const double ind_f = para_start
-            ? indent_for_byte(text, curvz::utils::kCurvzIndentFirstAttr,
-                              line_start)
+            ? resolved_indent(text, curvz::utils::kCurvzIndentFirstAttr,
+                              line_base, line_start)
             : 0.0;
         x_start += ind_l + ind_f;
         x_end   -= ind_r;
@@ -1637,13 +1706,30 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         for (auto& bl : out.baselines) {
             if (!bl.pango) continue;
             int align = 0;
+            bool direct = false;
             for (const auto& s : text->text_attr_spans) {
                 if (s.type == curvz::utils::kCurvzAlignAttr &&
                     (unsigned)s.start_byte <= bl.byte_start &&
                     (unsigned)s.end_byte > bl.byte_start) {
                     align = (int)s.ivalue;
+                    direct = true;
                     break;
                 }
+            }
+            // s342 — when the paragraph carries no direct align run, fall back
+            // to the BOUND style's resolved alignment (the align twin of the
+            // indent/leading three-tier). Scoped to bound paragraphs on purpose:
+            // an unbound paragraph keeps the pre-s342 behaviour (align spans
+            // only), so the box-level text_align default that box_baseline
+            // carries is NOT newly applied here -- this milestone only makes a
+            // *style's* alignment take effect, matching the reported gap without
+            // widening unbound behaviour.
+            if (!direct && lib) {
+                const std::string sid = curvz::utils::paragraph_attr_svalue_for_byte(
+                    text->text_attr_spans, curvz::utils::kCurvzStyleAttr,
+                    bl.byte_start);
+                if (!sid.empty())
+                    align = style::para_align_to_ivalue(lib->resolve(sid).align);
             }
             if (align <= 0) continue;  // left default — no shift
 

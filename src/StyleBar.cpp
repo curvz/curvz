@@ -25,6 +25,7 @@
 #include <gtkmm/scale.h>          // s334 — justify knobs (moved into align popover)
 #include <gtkmm/spinbutton.h>     // s334 — tracking + rise spins
 #include <gtkmm/drawingarea.h>   // s332 — the Fill chip's swatch face
+#include <gtkmm/notebook.h>      // s343 — Fill/Stroke tabs in the Color popover
 #include <gtkmm/image.h>         // s332 — the Alignment chip's prefix icon
 #include <gtkmm/label.h>
 #include <gtkmm/separator.h>
@@ -225,38 +226,30 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 1) {
                                "Sans", "Font family");
   m_chip_size = add_label_chip("sty_size", "style_bar_size_chip",
                                "12 pt", "Font size (placeholder)");
-  // Weight — the one LIVE axis in this pass, now a value picker. Label-faced
-  // because the value reads as a name ("Normal" / "Bold" / "450"), not a glyph.
-  m_chip_weight = add_label_chip("sty_wt", "style_bar_weight_chip",
-                                 "Normal", "Font weight (Thin .. Black)");
-  // Emphasis — the additive decoration toggles (italic / underline / strike /
-  // overline). Label-faced ("Emphasis", uppercased to EMPHASIS by the chip
-  // chrome) like Font / Size / Weight / Style, since the set has a name and
-  // "everything is a word" reads cleaner than a glyph here. The popover holds
-  // the toggles; the lit/mixed face reflecting the selection is deferred
-  // update_state work.
-  m_chip_emphasis = add_label_chip(
-      "sty_emph", "style_bar_emphasis_chip", "Emphasis",
-      "Emphasis: italic / underline / strike / overline");
-  // TRACKING — character/selection axis: letter-spacing (em) + baseline rise
-  // (pt), grouped because display work reaches for both at once (stacking a
-  // fraction, locking up a logo). Label-faced like Font / Weight / Emphasis.
-  m_chip_track = add_label_chip(
-      "sty_trk", "style_bar_tracking_chip", "Tracking",
-      "Tracking (letter-spacing) + baseline rise");
-  // FILL — a named chip like the rest (label "Fill", uppercased to FILL by the
-  // chip chrome, plus the dropdown arrow), with a small colour square prefixed
-  // in front of the name showing the current fill under the cursor. The square
-  // is a Cairo-drawn DrawingArea inside the chip's child box; the name and the
-  // arrow stay so FILL reads consistently with FONT / SIZE / WEIGHT.
-  m_chip_fill = Gtk::make_managed<Gtk::MenuButton>();
-  curvz::utils::set_name(m_chip_fill, "sty_fill", "style_bar_fill_chip");
-  m_chip_fill->set_has_frame(false);
-  m_chip_fill->set_always_show_arrow(true);  // keep the dropdown arrow (a child
-                                             // MenuButton hides it otherwise)
-  m_chip_fill->set_tooltip_text("Text fill colour");
-  m_chip_fill->add_css_class("curvz-style-chip");
-  m_chip_fill->add_css_class("curvz-style-chip-label");
+  // TYPE — s343: Weight and Emphasis merged into one chip. The label follows
+  // the resolved weight ("Normal" / "Bold" / "450"), matching the bar's idiom
+  // (a chip shows its value) and the old Weight chip's behaviour; the popover
+  // splits Weight / Emphasis into two tabs.
+  m_chip_type = add_label_chip("sty_type", "style_bar_type_chip",
+                               "Normal", "Type: weight + emphasis");
+  // SPACING — s343: Tracking (character axis: letter-spacing + baseline rise)
+  // and Line spacing (paragraph axis: leading) merged. Static "Spacing" label;
+  // the popover stacks a Character group above a Line group.
+  m_chip_spacing = add_label_chip("sty_spacing", "style_bar_spacing_chip",
+                                  "Spacing", "Spacing: tracking + line spacing");
+  // COLOR — s343: Fill and Stroke merged into one chip to reclaim a slot. The
+  // face carries both glances: a filled swatch (fill) and an outline ring
+  // (stroke), then the "Color" name. The popover (build_color_popover) splits
+  // the two into Fill / Stroke tabs. Both DrawingAreas remain live, so the
+  // existing set_fill_face / set_stroke_face live-read sync is unchanged.
+  m_chip_color = Gtk::make_managed<Gtk::MenuButton>();
+  curvz::utils::set_name(m_chip_color, "sty_color", "style_bar_color_chip");
+  m_chip_color->set_has_frame(false);
+  m_chip_color->set_always_show_arrow(true);  // keep the dropdown arrow (a child
+                                              // MenuButton hides it otherwise)
+  m_chip_color->set_tooltip_text("Text fill + stroke colour");
+  m_chip_color->add_css_class("curvz-style-chip");
+  m_chip_color->add_css_class("curvz-style-chip-label");
   {
     auto* face = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 5);
     m_fill_face = Gtk::make_managed<Gtk::DrawingArea>();
@@ -268,24 +261,6 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 1) {
           draw_swatch_face(cr, w, h, m_fill_r, m_fill_g, m_fill_b,
                            m_fill_resolved, m_fill_mixed, m_fill_none);
         });
-    auto* name = Gtk::make_managed<Gtk::Label>("Fill");
-    face->append(*m_fill_face);
-    face->append(*name);
-    m_chip_fill->set_child(*face);
-  }
-  append(*m_chip_fill);
-
-  // STROKE — same shape as FILL (named chip + square prefix + arrow), but the
-  // square draws as an outline ring (a stroke reads as an edge). Object-level.
-  m_chip_stroke = Gtk::make_managed<Gtk::MenuButton>();
-  curvz::utils::set_name(m_chip_stroke, "sty_strk", "style_bar_stroke_chip");
-  m_chip_stroke->set_has_frame(false);
-  m_chip_stroke->set_always_show_arrow(true);
-  m_chip_stroke->set_tooltip_text("Text stroke colour + width");
-  m_chip_stroke->add_css_class("curvz-style-chip");
-  m_chip_stroke->add_css_class("curvz-style-chip-label");
-  {
-    auto* face = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 5);
     m_stroke_face = Gtk::make_managed<Gtk::DrawingArea>();
     m_stroke_face->set_content_width(14);
     m_stroke_face->set_content_height(14);
@@ -296,12 +271,14 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 1) {
                            /*resolved=*/true, /*mixed=*/false,
                            /*is_none=*/!m_stroke_has, /*outline=*/true);
         });
-    auto* name = Gtk::make_managed<Gtk::Label>("Stroke");
+    auto* name = Gtk::make_managed<Gtk::Label>("Color");
+    face->append(*m_fill_face);
     face->append(*m_stroke_face);
     face->append(*name);
-    m_chip_stroke->set_child(*face);
+    m_chip_color->set_child(*face);
   }
-  append(*m_chip_stroke);
+  append(*m_chip_color);
+
 
   add_sep();  // the character/paragraph scope seam, made visible
 
@@ -330,27 +307,24 @@ StyleBar::StyleBar() : Gtk::Box(Gtk::Orientation::HORIZONTAL, 1) {
   append(*m_chip_align);
   // INDENTS — paragraph scope: left/right (link-locked) + first-line. Sits
   // between Alignment and Line-spacing, where paragraph geometry lives.
-  m_chip_indent = add_label_chip("sty_ind", "style_bar_indent_chip",
-                                 "Indents", "Indents + first-line indent");
+  m_chip_insets = add_label_chip("sty_insets", "style_bar_insets_chip",
+                                 "Insets", "Box margins + paragraph indents");
   // s335 — TABS chip: own dropdown (sibling to Indents), holds the per-paragraph
   // tab-stop list editor. Paragraph geometry neighbourhood, right of Indents.
   m_chip_tabs = add_label_chip("sty_tabs", "style_bar_tabs_chip",
                                "Tabs", "Tab stops (per paragraph)");
-  m_chip_para = add_label_chip("sty_para", "style_bar_linespacing_chip",
-                               "Line spacing", "Line spacing");
   m_chip_style = add_label_chip("sty_named", "style_bar_style_chip",
                                 "Style", "Named paragraph style");
 
   // Wire the live popovers after all chips exist.
-  build_weight_popover(m_chip_weight);
-  build_emphasis_popover(m_chip_emphasis);
+  build_type_popover(m_chip_type);          // s343 — Weight + Emphasis tabs
+  build_spacing_popover(m_chip_spacing);    // s343 — Tracking + Line spacing
   build_font_popover(m_chip_font);
   build_size_popover(m_chip_size);
-  build_tracking_popover(m_chip_track);  // s334 — letter-spacing + rise
-  build_paragraph_popover(m_chip_para);  build_fill_popover(m_chip_fill);  // s332
-  build_stroke_popover(m_chip_stroke);  // s332
+  build_color_popover(m_chip_color);         // s343
+
   build_align_popover(m_chip_align);    // s332 (+ s334 justify knobs)
-  build_indent_popover(m_chip_indent);  // s334
+  build_insets_popover(m_chip_insets);  // s343 — Box margins + Paragraph indents
   build_tabs_popover(m_chip_tabs);      // s335
   build_style_popover(m_chip_style);    // s341 — named paragraph styles
 
@@ -459,70 +433,142 @@ void StyleBar::set_font_face(const Glib::ustring& family, bool mixed) {
 }
 
 void StyleBar::set_weight_face(long weight, bool resolved, bool mixed) {
-  if (!m_chip_weight) return;
+  if (!m_chip_type) return;
   Glib::ustring next = mixed ? "\u2014"
                              : (resolved ? Glib::ustring(weight_face(weight))
-                                         : "Weight");
-  if (m_chip_weight->get_label() == next) return;  // unchanged -> no action
-  m_chip_weight->set_label(next);
+                                         : "Type");
+  if (m_chip_type->get_label() == next) return;  // unchanged -> no action
+  m_chip_type->set_label(next);
 }
 
-void StyleBar::build_weight_popover(Gtk::MenuButton* chip) {
+void StyleBar::build_type_popover(Gtk::MenuButton* chip) {
   if (!chip) return;
-  auto* pop = Gtk::make_managed<Gtk::Popover>();
-  auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
-  col->set_margin(6);
+  auto* pop  = Gtk::make_managed<Gtk::Popover>();
+  auto* book = Gtk::make_managed<Gtk::Notebook>();
+  book->set_show_border(false);
 
-  // Apply a weight: SET (not toggle) over the selection, update the chip
-  // face to the new value's name, and close the popover like a menu pick.
-  auto apply_weight = [this, chip, pop](long w) {
-    if (m_format_set) m_format_set(kAttrWeight, w, "");
-    chip->set_label(weight_face(w));  // "last look" face follows the pick
-    pop->popdown();
-  };
+  // ── Weight tab ─────────────────────────────────────────────────────────────
+  {
+    auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
+    col->set_margin(6);
 
-  // Preset stops — one flat menu-like row per named weight. Exclusive by
-  // nature: each SET replaces the last, so no lit-state bookkeeping here
-  // (the live read of the selection's current weight is the deferred
-  // update_state work).
-  for (const auto& s : kWeightStops) {
-    auto* b = Gtk::make_managed<Gtk::Button>(s.name);
-    b->set_has_frame(false);
-    b->set_can_focus(false);  // don't steal focus from the active text edit
-    b->add_css_class("curvz-style-weight-stop");
-    if (auto* lbl = dynamic_cast<Gtk::Label*>(b->get_child()))
-      lbl->set_xalign(0.0f);  // left-align the names into a tidy column
-    long w = s.value;
-    b->signal_clicked().connect([apply_weight, w]() { apply_weight(w); });
-    col->append(*b);
+    // Apply a weight: SET (not toggle) over the selection, update the chip face
+    // to the new value's name (the bar's value-showing idiom), and close like a
+    // menu pick.
+    auto apply_weight = [this, chip, pop](long w) {
+      if (m_format_set) m_format_set(kAttrWeight, w, "");
+      chip->set_label(weight_face(w));  // "last look" face follows the pick
+      pop->popdown();
+    };
+
+    // Preset stops — exclusive by nature: each SET replaces the last (the live
+    // read of the selection's current weight is deferred update_state work).
+    for (const auto& s : kWeightStops) {
+      auto* b = Gtk::make_managed<Gtk::Button>(s.name);
+      b->set_has_frame(false);
+      b->set_can_focus(false);  // don't steal focus from the active text edit
+      b->add_css_class("curvz-style-weight-stop");
+      if (auto* lbl = dynamic_cast<Gtk::Label*>(b->get_child()))
+        lbl->set_xalign(0.0f);
+      long w = s.value;
+      b->signal_clicked().connect([apply_weight, w]() { apply_weight(w); });
+      col->append(*b);
+    }
+
+    auto* sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+    sep->set_margin_top(4);
+    sep->set_margin_bottom(4);
+    col->append(*sep);
+
+    // Custom numeric override — variable-font in-betweens (450, 575). Applied
+    // on commit (Enter / activate) only, so stepping doesn't spray undo steps.
+    auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    auto* row_lbl = Gtk::make_managed<Gtk::Label>("Custom");
+    row_lbl->set_xalign(0.0f);
+    row_lbl->add_css_class("dim-label");
+    auto* spin = Gtk::make_managed<CurvzSpinButton>("sty_wt_num",
+                                                    SpinType::Integer);
+    spin->with_value(400)->with_width_chars(4)
+        ->with_tooltip("Any weight 1-1000 (variable fonts)");
+    spin->set_can_focus(true);  // the field DOES take focus to type into
+    spin->signal_activate().connect([apply_weight, spin]() {
+      apply_weight((long)spin->get_internal_value());
+    });
+    row->append(*row_lbl);
+    row->append(*spin);
+    col->append(*row);
+
+    book->append_page(*col, "Weight");
   }
 
-  auto* sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
-  sep->set_margin_top(4);
-  sep->set_margin_bottom(4);
-  col->append(*sep);
+  // ── Emphasis tab ───────────────────────────────────────────────────────────
+  // Written-out rows (not single letters) matching the Weight stop list. Each
+  // is a full-width left-aligned ToggleButton; the live-read pushes lit/off/
+  // mixed via set_emphasis_state and m_suppress_emphasis stops that programmatic
+  // set from re-firing the click handler.
+  {
+    auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 1);
+    col->set_margin(4);
 
-  // Custom numeric override — for the variable-font in-betweens (450, 575).
-  // Pango weight is an integer, so SpinType::Integer. Applied on commit
-  // (Enter / activate) only, so stepping the value doesn't spray undo steps;
-  // one apply = one undoable command, matching the preset path.
-  auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
-  auto* row_lbl = Gtk::make_managed<Gtk::Label>("Custom");
-  row_lbl->set_xalign(0.0f);
-  row_lbl->add_css_class("dim-label");
-  auto* spin = Gtk::make_managed<CurvzSpinButton>("sty_wt_num",
-                                                  SpinType::Integer);
-  spin->with_value(400)->with_width_chars(4)
-      ->with_tooltip("Any weight 1-1000 (variable fonts)");
-  spin->set_can_focus(true);  // the field DOES take focus to type into
-  spin->signal_activate().connect([apply_weight, spin]() {
-    apply_weight((long)spin->get_internal_value());
-  });
-  row->append(*row_lbl);
-  row->append(*spin);
-  col->append(*row);
+    auto make_row = [&](const std::string& label) -> Gtk::ToggleButton* {
+      auto* b = Gtk::make_managed<Gtk::ToggleButton>(label);
+      b->set_has_frame(false);
+      b->set_can_focus(false);  // don't steal focus from the active text edit
+      b->add_css_class("curvz-style-trigger");
+      b->add_css_class("curvz-style-emph-row");
+      if (auto* l = dynamic_cast<Gtk::Label*>(b->get_child())) l->set_xalign(0.0);
+      col->append(*b);
+      return b;
+    };
 
-  pop->set_child(*col);
+    // Independent decorations (additive set) — the toggle backend flips presence.
+    auto add_decoration = [&](const std::string& label, const std::string& tip,
+                              int attr, long value) -> Gtk::ToggleButton* {
+      auto* b = make_row(label);
+      b->set_tooltip_text(tip);
+      b->signal_toggled().connect([this, attr, value]() {
+        if (m_suppress_emphasis) return;  // programmatic state push, not a click
+        if (m_format_toggle) m_format_toggle(attr, value, "");
+      });
+      return b;
+    };
+
+    m_emph_italic    = add_decoration("Italic", "Italic (Ctrl+I)",
+                                      kAttrStyle,         kStyleItalic);
+    m_emph_underline = add_decoration("Underline", "Underline (Ctrl+U)",
+                                      kAttrUnderline,     kUnderlineSingle);
+    m_emph_strike    = add_decoration("Strikethrough", "Strikethrough",
+                                      kAttrStrikethrough, kStrikeOn);
+    m_emph_overline  = add_decoration("Overline", "Overline",
+                                      kAttrOverline,      kOverlineSingle);
+
+    // Position pair — exclusive, font-metric shrink+shift; a thin rule sets them
+    // apart. Each uses the value-SET path: on -> its scale, off -> NONE.
+    {
+      auto* sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+      sep->set_margin_top(2);
+      sep->set_margin_bottom(2);
+      col->append(*sep);
+    }
+    auto add_scale = [&](const std::string& label, const std::string& tip,
+                         long scale) -> Gtk::ToggleButton* {
+      auto* b = make_row(label);
+      b->set_tooltip_text(tip);
+      b->signal_toggled().connect([this, b, scale]() {
+        if (m_suppress_emphasis) return;
+        if (m_format_set)
+          m_format_set(kAttrFontScale,
+                       b->get_active() ? scale : kFontScaleNone, "");
+      });
+      return b;
+    };
+    m_emph_super = add_scale("Superscript", "Superscript", kFontScaleSuper);
+    m_emph_sub   = add_scale("Subscript",   "Subscript",   kFontScaleSub);
+
+    book->append_page(*col, "Emphasis");
+  }
+
+  pop->set_child(*book);
   chip->set_popover(*pop);
 }
 
@@ -607,31 +653,105 @@ void StyleBar::set_size_face(double pt, bool resolved, bool mixed) {
     m_size_ref_pt = pt;
 }
 
-void StyleBar::build_fill_popover(Gtk::MenuButton* chip) {
+void StyleBar::build_color_popover(Gtk::MenuButton* chip) {
   if (!chip) return;
-  auto* pop = Gtk::make_managed<Gtk::Popover>();
-  auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
-  col->set_margin(6);
+  auto* pop  = Gtk::make_managed<Gtk::Popover>();
+  auto* book = Gtk::make_managed<Gtk::Notebook>();
+  book->set_show_border(false);
 
-  m_fill_picker = Gtk::make_managed<CurvzColorPicker>();
-  m_fill_picker->set_with_alpha(false);  // Pango foreground is opaque RGB
-  m_fill_picker->set_initial(color::Color(0.0, 0.0, 0.0, 1.0));
-  // Live: every interactive edit SETS the foreground over the selection. The
-  // set-path emits text_style_changed, so the swatch face refreshes via the
-  // live-read; we don't write the face here. set_initial (used by the live-
-  // read sync) does not emit signal_changed, so there's no feedback loop;
-  // m_suppress_fill guards it anyway as belt-and-braces.
-  m_fill_picker->signal_changed().connect([this](color::Color c) {
-    if (m_suppress_fill) return;
-    auto ch = [](double v) {
-      return (long)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
-    };
-    long packed = (ch(c.r) << 16) | (ch(c.g) << 8) | ch(c.b);
-    if (m_format_set) m_format_set(kAttrForeground, packed, "");
-  });
-  col->append(*m_fill_picker);
+  // ── Fill tab ─────────────────────────────────────────────────────────────
+  // Per-run text fill rides PANGO_ATTR_FOREGROUND (a solid colour — Pango
+  // foreground has no gradient/swatch form), so the colour-only picker is the
+  // right surface. Every interactive edit SETS the foreground over the
+  // selection; the set-path emits text_style_changed, so the swatch face
+  // refreshes via the live-read (we don't write the face here). set_initial
+  // (used by the live-read sync) does not emit signal_changed, so there is no
+  // feedback loop; m_suppress_fill guards it anyway as belt-and-braces.
+  {
+    auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+    col->set_margin(6);
+    m_fill_picker = Gtk::make_managed<CurvzColorPicker>();
+    m_fill_picker->set_with_alpha(false);  // Pango foreground is opaque RGB
+    m_fill_picker->set_initial(color::Color(0.0, 0.0, 0.0, 1.0));
+    m_fill_picker->signal_changed().connect([this](color::Color c) {
+      if (m_suppress_fill) return;
+      auto ch = [](double v) {
+        return (long)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
+      };
+      long packed = (ch(c.r) << 16) | (ch(c.g) << 8) | ch(c.b);
+      if (m_format_set) m_format_set(kAttrForeground, packed, "");
+    });
+    col->append(*m_fill_picker);
+    book->append_page(*col, "Fill");
+  }
 
-  pop->set_child(*col);
+  // ── Stroke tab ─────────────────────────────────────────────────────────────
+  // Object-level (Pango has no stroke attr). Colour picker SETS the per-run
+  // stroke colour (kCurvzStrokeColorAttr); the set re-emits text_style_changed,
+  // so the face/spin refresh via the live-read. set_initial doesn't emit, so
+  // syncing from the live-read can't loop (m_suppress_stroke guards anyway).
+  {
+    auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+    col->set_margin(6);
+
+    m_stroke_picker = Gtk::make_managed<CurvzColorPicker>();
+    m_stroke_picker->set_with_alpha(false);  // stroke paint is opaque RGB here
+    m_stroke_picker->set_initial(color::Color(0.0, 0.0, 0.0, 1.0));
+    m_stroke_picker->signal_changed().connect([this](color::Color c) {
+      if (m_suppress_stroke) return;
+      auto ch = [](double v) {
+        return (long)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
+      };
+      long packed = (ch(c.r) << 16) | (ch(c.g) << 8) | ch(c.b);
+      if (m_format_set)
+        m_format_set(curvz::utils::kCurvzStrokeColorAttr, packed, "");
+    });
+    col->append(*m_stroke_picker);
+
+    // Width row — pt-locked spin (reuses the size chip's unit override). SETS a
+    // per-run width span (doc-px x PANGO_SCALE).
+    auto* wrow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    auto* wlbl = Gtk::make_managed<Gtk::Label>("Width");
+    wlbl->set_xalign(0.0f);
+    wlbl->add_css_class("dim-label");
+    m_stroke_width_spin = Gtk::make_managed<CurvzSpinButton>("sty_strk_w",
+                                                             SpinType::Width);
+    m_stroke_width_spin->with_unit_override(Unit::Pt)
+        ->with_value(UnitSystem::to_px(1.0, Unit::Pt))  // 1 pt default
+        ->with_width_chars(5)
+        ->with_tooltip("Stroke width in points (type 2pt, 1mm, ...)");
+    m_stroke_width_spin->set_can_focus(true);
+    m_stroke_width_spin->on_changed([this](double internal_px) {
+      if (m_format_set)
+        m_format_set(curvz::utils::kCurvzStrokeWidthAttr,
+                     std::lround(internal_px * (double)PANGO_SCALE), "");
+    });
+    wrow->append(*wlbl);
+    wrow->append(*m_stroke_width_spin);
+    wrow->append(*m_stroke_width_spin->get_unit_label());
+    col->append(*wrow);
+
+    // None — explicit no-stroke span over the selection (face shows the red-
+    // slash; also suppresses the object stroke on those glyphs).
+    auto* noneb = Gtk::make_managed<Gtk::Button>("None");
+    noneb->set_has_frame(false);
+    noneb->set_can_focus(false);
+    noneb->add_css_class("curvz-style-weight-stop");
+    if (auto* nl = dynamic_cast<Gtk::Label*>(noneb->get_child()))
+      nl->set_xalign(0.0f);
+    noneb->set_tooltip_text("No stroke");
+    noneb->signal_clicked().connect([this, pop]() {
+      if (m_format_set)
+        m_format_set(curvz::utils::kCurvzStrokeColorAttr,
+                     curvz::utils::kCurvzStrokeNone, "");
+      pop->popdown();
+    });
+    col->append(*noneb);
+
+    book->append_page(*col, "Stroke");
+  }
+
+  pop->set_child(*book);
   chip->set_popover(*pop);
 }
 
@@ -654,76 +774,6 @@ void StyleBar::set_fill_face(unsigned long rgb, bool resolved, bool mixed,
   }
 }
 
-void StyleBar::build_stroke_popover(Gtk::MenuButton* chip) {
-  if (!chip) return;
-  auto* pop = Gtk::make_managed<Gtk::Popover>();
-  auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
-  col->set_margin(6);
-
-  // Colour picker — picking SETS the per-run stroke colour over the selection
-  // via the generic value-set span path (kCurvzStrokeColorAttr). The set
-  // re-emits text_style_changed, so the face/spin refresh via the live-read;
-  // set_initial doesn't emit, so syncing from the live-read can't loop
-  // (m_suppress_stroke guards anyway).
-  m_stroke_picker = Gtk::make_managed<CurvzColorPicker>();
-  m_stroke_picker->set_with_alpha(false);  // stroke paint is opaque RGB here
-  m_stroke_picker->set_initial(color::Color(0.0, 0.0, 0.0, 1.0));
-  m_stroke_picker->signal_changed().connect([this](color::Color c) {
-    if (m_suppress_stroke) return;
-    auto ch = [](double v) {
-      return (long)std::lround(std::clamp(v, 0.0, 1.0) * 255.0);
-    };
-    long packed = (ch(c.r) << 16) | (ch(c.g) << 8) | ch(c.b);
-    if (m_format_set)
-      m_format_set(curvz::utils::kCurvzStrokeColorAttr, packed, "");
-  });
-  col->append(*m_stroke_picker);
-
-  // Width row — pt-locked spin (reuses the size chip's unit override). SETS a
-  // per-run width span (doc-px x PANGO_SCALE). Plain input for now; the finer
-  // per-instance step + modifier x10 stepping is noted/parked.
-  auto* wrow = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
-  auto* wlbl = Gtk::make_managed<Gtk::Label>("Width");
-  wlbl->set_xalign(0.0f);
-  wlbl->add_css_class("dim-label");
-  m_stroke_width_spin = Gtk::make_managed<CurvzSpinButton>("sty_strk_w",
-                                                           SpinType::Width);
-  m_stroke_width_spin->with_unit_override(Unit::Pt)
-      ->with_value(UnitSystem::to_px(1.0, Unit::Pt))  // 1 pt default
-      ->with_width_chars(5)
-      ->with_tooltip("Stroke width in points (type 2pt, 1mm, ...)");
-  m_stroke_width_spin->set_can_focus(true);
-  m_stroke_width_spin->on_changed([this](double internal_px) {
-    if (m_format_set)
-      m_format_set(curvz::utils::kCurvzStrokeWidthAttr,
-                   std::lround(internal_px * (double)PANGO_SCALE), "");
-  });
-  wrow->append(*wlbl);
-  wrow->append(*m_stroke_width_spin);
-  wrow->append(*m_stroke_width_spin->get_unit_label());
-  col->append(*wrow);
-
-  // None — set an explicit no-stroke span over the selection (face shows the
-  // red-slash; also suppresses the object stroke on those glyphs).
-  auto* noneb = Gtk::make_managed<Gtk::Button>("None");
-  noneb->set_has_frame(false);
-  noneb->set_can_focus(false);
-  noneb->add_css_class("curvz-style-weight-stop");
-  if (auto* nl = dynamic_cast<Gtk::Label*>(noneb->get_child()))
-    nl->set_xalign(0.0f);
-  noneb->set_tooltip_text("No stroke");
-  noneb->signal_clicked().connect([this, pop]() {
-    if (m_format_set)
-      m_format_set(curvz::utils::kCurvzStrokeColorAttr,
-                   curvz::utils::kCurvzStrokeNone, "");
-    pop->popdown();
-  });
-  col->append(*noneb);
-
-  pop->set_child(*col);
-  chip->set_popover(*pop);
-}
-
 void StyleBar::set_stroke_face(unsigned long rgb, bool has_color) {
   m_stroke_has = has_color;
   m_stroke_r = (double)((rgb >> 16) & 0xFF) / 255.0;
@@ -741,54 +791,6 @@ void StyleBar::set_stroke_face(unsigned long rgb, bool has_color) {
 void StyleBar::set_stroke_width(double pt) {
   if (!m_stroke_width_spin) return;
   m_stroke_width_spin->set_internal_value(UnitSystem::to_px(pt, Unit::Pt));  // no emit
-}
-
-void StyleBar::build_paragraph_popover(Gtk::MenuButton* chip) {
-  if (!chip) return;
-  auto* pop = Gtk::make_managed<Gtk::Popover>();
-  auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
-  col->set_margin(6);
-
-  // ── Leading row: label + pt-locked spin + unit label. Buffer-global, so a
-  // change requests Canvas::set_text_leading (not a span op). The spin reuses
-  // the size chip's unit override (owns pt regardless of doc unit).
-  auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
-  auto* lbl = Gtk::make_managed<Gtk::Label>("Line spacing");
-  lbl->set_xalign(0.0f);
-  lbl->add_css_class("dim-label");
-  m_leading_spin = Gtk::make_managed<CurvzSpinButton>("sty_lead_num",
-                                                      SpinType::Width);
-  m_leading_spin->with_unit_override(Unit::Pt)
-      ->with_value(UnitSystem::to_px(14.0, Unit::Pt))  // 14 pt default look
-      ->with_width_chars(5)
-      ->with_tooltip("Line spacing in points (type 2in, 10mm, 14pt, ...)");
-  m_leading_spin->set_can_focus(true);
-  m_leading_spin->on_changed([this](double internal_px) {
-    if (m_leading_request)
-      m_leading_request(m_leading_spin->to_display(internal_px));  // px -> pt
-  });
-  row->append(*lbl);
-  row->append(*m_leading_spin);
-  row->append(*m_leading_spin->get_unit_label());
-  col->append(*row);
-
-  // Auto: hand leading back to the metric-derived default (line_height = 0).
-  // Signalled as pt = 0, which Canvas reads as auto.
-  auto* autob = Gtk::make_managed<Gtk::Button>("Auto");
-  autob->set_has_frame(false);
-  autob->set_can_focus(false);
-  autob->add_css_class("curvz-style-weight-stop");  // reuse the menu-row look
-  if (auto* al = dynamic_cast<Gtk::Label*>(autob->get_child()))
-    al->set_xalign(0.0f);
-  autob->set_tooltip_text("Auto line spacing (derive from the font metrics)");
-  autob->signal_clicked().connect([this, pop]() {
-    if (m_leading_request) m_leading_request(0.0);  // <= 0 = auto
-    pop->popdown();
-  });
-  col->append(*autob);
-
-  pop->set_child(*col);
-  chip->set_popover(*pop);
 }
 
 void StyleBar::set_leading(double pt, bool is_auto) {
@@ -896,11 +898,19 @@ void StyleBar::build_align_popover(Gtk::MenuButton* chip) {
   chip->set_popover(*pop);
 }
 
-void StyleBar::build_tracking_popover(Gtk::MenuButton* chip) {
+void StyleBar::build_spacing_popover(Gtk::MenuButton* chip) {
   if (!chip) return;
   auto* pop = Gtk::make_managed<Gtk::Popover>();
   auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
   col->set_margin(8);
+
+  // ── Character group: tracking (em) + rise (pt) ─────────────────────────────
+  {
+    auto* hdr = Gtk::make_managed<Gtk::Label>("Character");
+    hdr->set_xalign(0.0f);
+    hdr->add_css_class("dim-label");
+    col->append(*hdr);
+  }
 
   auto mk_row = [&](const char* label, Gtk::SpinButton*& out_spin,
                     double lo, double hi, double step, double page,
@@ -919,13 +929,9 @@ void StyleBar::build_tracking_popover(Gtk::MenuButton* chip) {
     out_spin = sp;
   };
 
-  // Tracking in em. The range is wide on purpose (display work treats tracking
-  // as placement -- stacking a fraction, locking up a logo -- so negative goes
-  // well past full overlap and positive spreads freely); the bounds are a
-  // fat-finger guard, not a design ceiling, and we widen them if a real layout
-  // needs it. The spin keeps fine control across the whole span where a slider
-  // would not. Apply: em -> PANGO_ATTR_LETTER_SPACING units (1024ths of a
-  // point, like SIZE) against the selection's resolved point size.
+  // Tracking in em. Wide range on purpose (display work treats tracking as
+  // placement). Apply: em -> PANGO_ATTR_LETTER_SPACING units against the
+  // selection's resolved point size.
   Gtk::SpinButton* track_spin = nullptr;
   mk_row("Tracking (em)", track_spin, -50.0, 50.0, 0.01, 0.1, 2,
          "Letter-spacing across the selection, in em (scales with font size). "
@@ -937,8 +943,7 @@ void StyleBar::build_tracking_popover(Gtk::MenuButton* chip) {
     m_format_set(kAttrLetterSpacing, units, "");
   });
 
-  // Rise in pt (baseline displacement; positive = up). Symmetric -- up and
-  // down are equally wanted. Apply: pt -> PANGO_ATTR_RISE units.
+  // Rise in pt (baseline displacement; positive = up). Apply: pt -> RISE units.
   Gtk::SpinButton* rise_spin = nullptr;
   mk_row("Rise (pt)", rise_spin, -500.0, 500.0, 0.5, 5.0, 1,
          "Baseline shift across the selection, in points. Positive raises.");
@@ -949,13 +954,118 @@ void StyleBar::build_tracking_popover(Gtk::MenuButton* chip) {
     m_format_set(kAttrRise, units, "");
   });
 
+  {
+    auto* sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
+    sep->set_margin_top(4);
+    sep->set_margin_bottom(4);
+    col->append(*sep);
+  }
+
+  // ── Line group: line spacing (pt) + Auto ───────────────────────────────────
+  {
+    auto* hdr = Gtk::make_managed<Gtk::Label>("Line");
+    hdr->set_xalign(0.0f);
+    hdr->add_css_class("dim-label");
+    col->append(*hdr);
+  }
+
+  // Leading: buffer-global, so a change requests m_leading_request (not a span
+  // op). The spin reuses the size chip's unit override (owns pt regardless of
+  // doc unit).
+  auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+  auto* lbl = Gtk::make_managed<Gtk::Label>("Line spacing");
+  lbl->set_xalign(0.0f);
+  lbl->add_css_class("dim-label");
+  m_leading_spin = Gtk::make_managed<CurvzSpinButton>("sty_lead_num",
+                                                      SpinType::Width);
+  m_leading_spin->with_unit_override(Unit::Pt)
+      ->with_value(UnitSystem::to_px(14.0, Unit::Pt))  // 14 pt default look
+      ->with_width_chars(5)
+      ->with_tooltip("Line spacing in points (type 2in, 10mm, 14pt, ...)");
+  m_leading_spin->set_can_focus(true);
+  m_leading_spin->on_changed([this](double internal_px) {
+    if (m_leading_request)
+      m_leading_request(m_leading_spin->to_display(internal_px));  // px -> pt
+  });
+  row->append(*lbl);
+  row->append(*m_leading_spin);
+  row->append(*m_leading_spin->get_unit_label());
+  col->append(*row);
+
+  // Auto: hand leading back to the metric-derived default (signalled as pt = 0).
+  auto* autob = Gtk::make_managed<Gtk::Button>("Auto");
+  autob->set_has_frame(false);
+  autob->set_can_focus(false);
+  autob->add_css_class("curvz-style-weight-stop");  // reuse the menu-row look
+  if (auto* al = dynamic_cast<Gtk::Label*>(autob->get_child()))
+    al->set_xalign(0.0f);
+  autob->set_tooltip_text("Auto line spacing (derive from the font metrics)");
+  autob->signal_clicked().connect([this, pop]() {
+    if (m_leading_request) m_leading_request(0.0);  // <= 0 = auto
+    pop->popdown();
+  });
+  col->append(*autob);
+
   pop->set_child(*col);
   chip->set_popover(*pop);
 }
 
-void StyleBar::build_indent_popover(Gtk::MenuButton* chip) {
+void StyleBar::build_insets_popover(Gtk::MenuButton* chip) {
   if (!chip) return;
-  auto* pop = Gtk::make_managed<Gtk::Popover>();
+  auto* pop  = Gtk::make_managed<Gtk::Popover>();
+  auto* book = Gtk::make_managed<Gtk::Notebook>();
+  book->set_show_border(false);
+
+  // ── Box tab: the four box margins (top/bottom/left/right) ──────────────────
+  // Box-wide, on the boundary node. Doc-unit Distance spins (units parser);
+  // internal value is doc-px, which is exactly what set_text_margin wants.
+  {
+    auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+    col->set_margin(8);
+
+    auto mk_mrg = [&](const char* name, CurvzSpinButton*& out) {
+      auto* sp = Gtk::make_managed<CurvzSpinButton>(name, SpinType::Distance);
+      sp->with_value(9.0)  // TEXT_DEFAULT_MARGIN look; the live-read corrects it
+          ->with_width_chars(6)
+          ->with_tooltip("Box margin — follows the document unit (type 12pt, 1in, 10mm, …)");
+      sp->set_can_focus(true);
+      out = sp;
+    };
+    mk_mrg("sty_mrg_t", m_mrg_top);
+    mk_mrg("sty_mrg_b", m_mrg_bottom);
+    mk_mrg("sty_mrg_l", m_mrg_left);
+    mk_mrg("sty_mrg_r", m_mrg_right);
+
+    // on_changed delivers doc-px; set_internal_value (live-read) is guarded
+    // against emitting, so syncing never re-fires the apply.
+    m_mrg_top->on_changed(
+        [this](double px) { if (m_margin_request) m_margin_request(0, px); });
+    m_mrg_bottom->on_changed(
+        [this](double px) { if (m_margin_request) m_margin_request(1, px); });
+    m_mrg_left->on_changed(
+        [this](double px) { if (m_margin_request) m_margin_request(2, px); });
+    m_mrg_right->on_changed(
+        [this](double px) { if (m_margin_request) m_margin_request(3, px); });
+
+    auto mrow = [&](const char* la, CurvzSpinButton* sa,
+                    const char* lb, CurvzSpinButton* sb) {
+      auto* r = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+      auto* la_l = Gtk::make_managed<Gtk::Label>(la);
+      la_l->set_xalign(0.0); la_l->set_size_request(48, -1);
+      auto* lb_l = Gtk::make_managed<Gtk::Label>(lb);
+      lb_l->set_xalign(0.0); lb_l->set_size_request(48, -1);
+      r->append(*la_l); r->append(*sa); r->append(*sa->get_unit_label());
+      r->append(*lb_l); r->append(*sb); r->append(*sb->get_unit_label());
+      col->append(*r);
+    };
+    mrow("Top",  m_mrg_top,  "Bottom", m_mrg_bottom);
+    mrow("Left", m_mrg_left, "Right",  m_mrg_right);
+
+    book->append_page(*col, "Box");
+  }
+
+  // ── Paragraph tab: per-paragraph indents (left / right / first-line) ───────
+  {
   auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
   col->set_margin(8);
 
@@ -1045,8 +1155,21 @@ void StyleBar::build_indent_popover(Gtk::MenuButton* chip) {
     }
   });
 
-  pop->set_child(*col);
+  book->append_page(*col, "Paragraph");
+  }
+
+  pop->set_child(*book);
   chip->set_popover(*pop);
+}
+
+// s343 — live-read sync of the Box-tab margin spins to the edited box (doc-px).
+// Guarded by set_internal_value (no emit), mirroring set_indent_values.
+void StyleBar::set_margin_values(double top_px, double bottom_px,
+                                 double left_px, double right_px) {
+  if (m_mrg_top)    m_mrg_top->set_internal_value(top_px);
+  if (m_mrg_bottom) m_mrg_bottom->set_internal_value(bottom_px);
+  if (m_mrg_left)   m_mrg_left->set_internal_value(left_px);
+  if (m_mrg_right)  m_mrg_right->set_internal_value(right_px);
 }
 
 // s335 — live-read sync of the Indents spins to the caret paragraph (doc-px).
@@ -1428,79 +1551,6 @@ void StyleBar::set_align_face(int align) {
 // canvas re-justifies on every value change. Init positions match the static
 // defaults (0.18 / 0.05). Delete this whole method + its ctor call when the
 // values are dialed in.
-void StyleBar::build_emphasis_popover(Gtk::MenuButton* chip) {
-  if (!chip) return;
-  auto* pop = Gtk::make_managed<Gtk::Popover>();
-  auto* col = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 1);
-  col->set_margin(4);
-
-  // s334 — written-out rows, not single letters: with six items (and super/
-  // sub having no clean one-letter glyph) a named list reads better and matches
-  // the Weight popover's stop list. Each row is a full-width left-aligned
-  // ToggleButton (curvz-style-trigger keeps the lit / mixed styling); the live-
-  // read pushes lit/off/mixed via set_emphasis_state and the m_suppress_emphasis
-  // guard stops that programmatic set from re-firing the click handler.
-  auto make_row = [&](const std::string& label) -> Gtk::ToggleButton* {
-    auto* b = Gtk::make_managed<Gtk::ToggleButton>(label);
-    b->set_has_frame(false);
-    b->set_can_focus(false);  // don't steal focus from the active text edit
-    b->add_css_class("curvz-style-trigger");
-    b->add_css_class("curvz-style-emph-row");
-    if (auto* l = dynamic_cast<Gtk::Label*>(b->get_child())) l->set_xalign(0.0);
-    col->append(*b);
-    return b;
-  };
-
-  // Independent decorations (additive set) — the toggle backend flips presence.
-  auto add_decoration = [&](const std::string& label, const std::string& tip,
-                            int attr, long value) -> Gtk::ToggleButton* {
-    auto* b = make_row(label);
-    b->set_tooltip_text(tip);
-    b->signal_toggled().connect([this, attr, value]() {
-      if (m_suppress_emphasis) return;  // programmatic state push, not a click
-      if (m_format_toggle) m_format_toggle(attr, value, "");
-    });
-    return b;
-  };
-
-  m_emph_italic    = add_decoration("Italic", "Italic (Ctrl+I)",
-                                    kAttrStyle,         kStyleItalic);
-  m_emph_underline = add_decoration("Underline", "Underline (Ctrl+U)",
-                                    kAttrUnderline,     kUnderlineSingle);
-  m_emph_strike    = add_decoration("Strikethrough", "Strikethrough",
-                                    kAttrStrikethrough, kStrikeOn);
-  m_emph_overline  = add_decoration("Overline", "Overline",
-                                    kAttrOverline,      kOverlineSingle);
-
-  // Position pair — different kind (exclusive, font-metric shrink+shift), so a
-  // thin rule sets them apart. Each uses the value-SET path: on -> its scale,
-  // off -> NONE. Mutual exclusion is automatic (one attr type, span-replace);
-  // the post-apply re-read turns the sibling off via set_emphasis_state.
-  {
-    auto* sep = Gtk::make_managed<Gtk::Separator>(Gtk::Orientation::HORIZONTAL);
-    sep->set_margin_top(2);
-    sep->set_margin_bottom(2);
-    col->append(*sep);
-  }
-  auto add_scale = [&](const std::string& label, const std::string& tip,
-                       long scale) -> Gtk::ToggleButton* {
-    auto* b = make_row(label);
-    b->set_tooltip_text(tip);
-    b->signal_toggled().connect([this, b, scale]() {
-      if (m_suppress_emphasis) return;
-      if (m_format_set)
-        m_format_set(kAttrFontScale,
-                     b->get_active() ? scale : kFontScaleNone, "");
-    });
-    return b;
-  };
-  m_emph_super = add_scale("Superscript", "Superscript", kFontScaleSuper);
-  m_emph_sub   = add_scale("Subscript",   "Subscript",   kFontScaleSub);
-
-  pop->set_child(*col);
-  chip->set_popover(*pop);
-}
-
 void StyleBar::set_emphasis_state(int italic, int underline, int strike,
                                   int overline, int superscript, int subscript) {
   // Apply one tri-state to one toggle: 0 = off, 1 = on, 2 = mixed. GTK4's
@@ -1631,13 +1681,25 @@ void StyleBar::build_style_popover(Gtk::MenuButton* chip) {
       "Strip manual formatting so the applied style shows");
   box->append(*clear_btn);
 
+  // s342 — New style… opens the blank field editor (the dialog path), beside
+  // the from-paragraph capture below. Two New affordances on purpose: the
+  // dialog builds a style field-by-field; the capture names the current
+  // paragraph's look (Word/Pages "from selection").
+  auto* new_dialog_btn = Gtk::make_managed<Gtk::Button>("New style…");
+  new_dialog_btn->set_tooltip_text("Create a new style in the field editor");
+  new_dialog_btn->signal_clicked().connect([this, pop]() {
+    if (m_style_new_request) m_style_new_request();
+    pop->popdown();
+  });
+  box->append(*new_dialog_btn);
+
   // New-from-paragraph: a name field + button. Capturing the current
   // paragraph's formatting is the "editor" -- no separate field dialog.
   auto* new_row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 4);
   auto* name_entry = Gtk::make_managed<Gtk::Entry>();
-  name_entry->set_placeholder_text("New style name");
+  name_entry->set_placeholder_text("New style from this ¶");
   name_entry->set_hexpand(true);
-  auto* new_btn = Gtk::make_managed<Gtk::Button>("New");
+  auto* new_btn = Gtk::make_managed<Gtk::Button>("Capture");
   new_btn->set_tooltip_text("Create a style from this paragraph's formatting");
   new_row->append(*name_entry);
   new_row->append(*new_btn);
@@ -1667,27 +1729,53 @@ void StyleBar::build_style_popover(Gtk::MenuButton* chip) {
       lbl->set_hexpand(true);
       row_box->append(*check);
       row_box->append(*lbl);
-      // User styles get redefine + delete; app styles are read-only.
-      if (!e.app && !e.id.empty()) {
-        auto* redef = Gtk::make_managed<Gtk::Button>();
-        redef->set_icon_name("document-edit-symbolic");
-        redef->set_has_frame(false);
-        redef->set_tooltip_text("Redefine from this paragraph");
-        const std::string rid = e.id;
-        redef->signal_clicked().connect([this, rid]() {
-          if (m_style_redefine_request) m_style_redefine_request(rid);
-        });
-        auto* del = Gtk::make_managed<Gtk::Button>();
-        del->set_icon_name("user-trash-symbolic");
-        del->set_has_frame(false);
-        del->set_tooltip_text("Delete this style");
-        const std::string did = e.id;
-        del->signal_clicked().connect([this, did, pop]() {
-          if (m_style_delete_request) m_style_delete_request(did);
-          pop->popdown();  // list changed; reopen rebuilds (no in-handler teardown)
-        });
-        row_box->append(*redef);
-        row_box->append(*del);
+      // s342 — per-row actions. User rows: Edit… (dialog) / Update-to-match-
+      // paragraph (the s341 capture convenience) / Delete. App rows: Edit a
+      // copy… (duplicate-to-user then edit in the dialog). The Edit / Edit-a-
+      // copy buttons popdown the popover so the dialog opens cleanly over it.
+      if (!e.id.empty()) {
+        if (e.app) {
+          auto* editc = Gtk::make_managed<Gtk::Button>();
+          editc->set_icon_name("edit-copy-symbolic");
+          editc->set_has_frame(false);
+          editc->set_tooltip_text("Edit a copy of this style…");
+          const std::string cid = e.id;
+          editc->signal_clicked().connect([this, cid, pop]() {
+            if (m_style_edit_copy_request) m_style_edit_copy_request(cid);
+            pop->popdown();
+          });
+          row_box->append(*editc);
+        } else {
+          auto* edit = Gtk::make_managed<Gtk::Button>();
+          edit->set_icon_name("document-edit-symbolic");
+          edit->set_has_frame(false);
+          edit->set_tooltip_text("Edit this style…");
+          const std::string eid = e.id;
+          edit->signal_clicked().connect([this, eid, pop]() {
+            if (m_style_edit_request) m_style_edit_request(eid);
+            pop->popdown();
+          });
+          auto* redef = Gtk::make_managed<Gtk::Button>();
+          redef->set_icon_name("view-refresh-symbolic");
+          redef->set_has_frame(false);
+          redef->set_tooltip_text("Update this style to match this paragraph");
+          const std::string rid = e.id;
+          redef->signal_clicked().connect([this, rid]() {
+            if (m_style_redefine_request) m_style_redefine_request(rid);
+          });
+          auto* del = Gtk::make_managed<Gtk::Button>();
+          del->set_icon_name("user-trash-symbolic");
+          del->set_has_frame(false);
+          del->set_tooltip_text("Delete this style");
+          const std::string did = e.id;
+          del->signal_clicked().connect([this, did, pop]() {
+            if (m_style_delete_request) m_style_delete_request(did);
+            pop->popdown();  // list changed; reopen rebuilds (no in-handler teardown)
+          });
+          row_box->append(*edit);
+          row_box->append(*redef);
+          row_box->append(*del);
+        }
       }
       row_box->set_margin_start(6);
       row_box->set_margin_end(6);

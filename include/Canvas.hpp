@@ -35,6 +35,7 @@ enum class PaintSlot : int;
 }
 namespace style {
 class StyleLibrary;
+class TextStyleLibrary;  // s342 — set_text_style_library connection target
 struct TextStyle;  // s341 — capture_paragraph_style takes a reference
 }
 }
@@ -156,6 +157,13 @@ public:
   // set_swatch_library). The Canvas does NOT take ownership.
   void set_style_library(style::StyleLibrary *lib);
   style::StyleLibrary *style_library() { return m_style_library; }
+
+  // s342 — text-style library hookup. Symmetric to set_style_library, but the
+  // only reaction to a change is a redraw (the fitter re-resolves bound
+  // paragraphs live — no per-node materialise walk). Wired at boot + every
+  // project switch from MainWindow's update_all_panels, beside the graphic
+  // library hookup. Canvas does NOT take ownership.
+  void set_text_style_library(style::TextStyleLibrary *lib);
 
   // ── Project-wide workspace appearance (s116 m6) ─────────────────────
   // Canvas paints the artboard surface and the workspace surround using
@@ -528,6 +536,12 @@ public:
   // samples the caret paragraph's effective alignment (0=left default).
   void set_text_alignment(int align);
   void set_text_indent(int which, double doc_value);  // s334 — 0=L 1=R 2=first
+  // s343 — box-level text margins (the inset between the boundary edge and the
+  // text area). which: 0=top 1=bottom 2=left 3=right. doc_px in doc units.
+  // Writes the margin owner (the boundary for a TextBox, else the text node);
+  // undoable via TextEditCommand (which already snapshots text_margin_*); the
+  // fitter re-erodes on redraw.
+  void set_text_margin(int which, double doc_px);
   bool text_style_query_alignment(int &out_align) const;
 
   // s335 — per-paragraph TAB STOPS. String-valued paragraph property: `spec`
@@ -543,6 +557,12 @@ public:
   bool text_style_query_indents(double& out_left, double& out_right,
                                 double& out_first) const;
 
+  // s343 — the edited box's effective text margins (doc-px) for the live-read.
+  // Editing-only (mirrors the indents query); reads effective_text_margins over
+  // the edited text node + its boundary so the Insets/Box spins reflect the box.
+  bool text_style_query_margins(double& out_top, double& out_bottom,
+                                double& out_left, double& out_right) const;
+
   // s341 — the named-text-style verbs (the clickable surface for the s340
   // engine). apply_text_style BINDS the caret/selection's paragraph(s) to the
   // style id (the three-tier cascade's anchor: the fitter resolves it under the
@@ -551,7 +571,7 @@ public:
   // any direct formatting (Option A, the LibreOffice/Pages model), so on text
   // that was manually formatted the bind looks like little changed until the
   // direct runs are cleared -- which is what clear_direct_formatting is for.
-  void apply_text_style(const std::string& style_id);
+  void apply_text_style(const std::string& style_id, bool clear_direct = false);
 
   // s341 — strip DIRECT formatting (both character runs AND paragraph runs:
   // leading/align/indents/tabs) over the caret/selection's paragraph(s) while
@@ -1454,6 +1474,17 @@ private:
   // no-op if set_style_library is called with null or replaces a
   // prior library.
   sigc::connection m_library_style_changed_conn;
+
+  // s342 — text-style library pointer + redraw connections. Unlike graphic
+  // styles (bound on the SceneNode, cache-refreshed on change), a named text
+  // style binds per-paragraph in the buffer spans (kCurvzStyleAttr) and the
+  // fitter resolves it LIVE at layout time — so there is no per-node cache to
+  // walk; any library mutation just needs a redraw and the next draw re-
+  // resolves every bound paragraph (descendants included). Wired in
+  // set_text_style_library() with the same disconnect-then-reconnect dance so
+  // it follows project switches.
+  style::TextStyleLibrary *m_text_style_library = nullptr;
+  std::vector<sigc::connection> m_text_style_lib_conns;
 
   // ── Multi-select (Selection tool) ─────────────────────────────────────
   // m_selected is the primary (inspector target). m_selection is the full set.

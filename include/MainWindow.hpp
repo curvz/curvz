@@ -109,6 +109,7 @@
 #include "SaveAsTemplateDialog.hpp"
 #include "ShortcutsDialog.hpp"
 #include "StyleEditorDialog.hpp" // s201 m1 — hide-on-close singleton
+#include "TextStyleEditorDialog.hpp" // s342 — text-style field editor singleton
 #include "ThemeEditDialog.hpp"   // s200 m1 — hide-on-close singleton
 #include "TranslateDialog.hpp"   // s205 m4 — pivot-aware transform hub
 #include <giomm/menu.h>
@@ -1419,6 +1420,7 @@ private:
   ManageTemplatesDialog m_manage_templates_dialog;
   ThemeEditDialog m_theme_edit_dialog;              // s200 m1
   StyleEditorDialog m_style_editor_dialog;          // s201 m1
+  TextStyleEditorDialog m_text_style_editor_dialog; // s342
   ImageInfoDialog m_image_info_dialog;              // s210 m1
   RotateFromPointDialog m_rotate_from_point_dialog; // s210 m2
   ShortcutsDialog m_shortcuts_dialog;

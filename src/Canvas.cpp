@@ -15,6 +15,7 @@
 #include "color/FillStyleInterop.hpp"  // to_fillstyle — live-recolour walk (s70 M3)
 #include "style/StyleInterop.hpp"  // mutate_appearance funnel for user-driven fill/stroke writes
 #include "style/StyleLibrary.hpp"  // set_style_library + signal_style_changed (S78 m3d)
+#include "style/TextStyleLibrary.hpp"  // set_text_style_library (s342)
 #include <filesystem>
 #include <fontconfig/fontconfig.h>
 #include <ft2build.h>
@@ -1786,7 +1787,35 @@ void Canvas::set_style_library(style::StyleLibrary *lib) {
           });
 }
 
-// ── Canvas::mint_id / last_minted_iid ────────────────────────────────────────
+// ── Canvas::set_text_style_library (s342) ────────────────────────────────────
+// The text twin of set_style_library, much thinner. A named text style binds
+// per-paragraph in the buffer spans (kCurvzStyleAttr) and the fitter resolves
+// it LIVE every layout pass, so there is no per-node fill/stroke cache to
+// refresh on a library change — the next draw already re-resolves every bound
+// paragraph (and, because resolve walks the parent chain, every DESCENDANT of
+// a changed style too). So all three library signals collapse to one reaction:
+// queue a redraw. Same disconnect-then-reconnect lifecycle as the graphic
+// hookup so it follows project switches; the handler re-reads m_doc on fire.
+void Canvas::set_text_style_library(style::TextStyleLibrary *lib) {
+  for (auto& c : m_text_style_lib_conns) c.disconnect();
+  m_text_style_lib_conns.clear();
+
+  m_text_style_library = lib;
+  if (!m_text_style_library) return;
+
+  auto redraw = [this](style::TextStyleId) {
+    if (!m_doc) return;
+    queue_draw();
+  };
+  m_text_style_lib_conns.push_back(
+      m_text_style_library->signal_text_style_added().connect(redraw));
+  m_text_style_lib_conns.push_back(
+      m_text_style_library->signal_text_style_changed().connect(redraw));
+  m_text_style_lib_conns.push_back(
+      m_text_style_library->signal_text_style_removed().connect(redraw));
+}
+
+
 // Thin public wrappers over the file-local next_id() / last_iid() helpers
 // so callers outside this TU can produce fresh ids without duplicating
 // the generate_internal_id() / s_last_iid book-keeping.
@@ -5069,6 +5098,22 @@ bool Canvas::text_style_query_indents(double& out_left, double& out_right,
     else if (s.type == curvz::utils::kCurvzIndentRightAttr) out_right = v;
     else if (s.type == curvz::utils::kCurvzIndentFirstAttr) out_first = v;
   }
+  return true;
+}
+
+// s343 — the edited box's effective text margins (doc-px) for the live-read.
+// Editing-only, like query_indents. effective_text_margins applies the owner-
+// ship rule (boundary owns when any side is non-zero, else the text node), so
+// the spins reflect whatever actually drives the layout.
+bool Canvas::text_style_query_margins(double& out_top, double& out_bottom,
+                                      double& out_left, double& out_right) const {
+  if (!m_text_editing) return false;
+  Curvz::EffectiveTextMargins m =
+      Curvz::effective_text_margins(m_text_editing, m_text_boundary_editing);
+  out_top    = m.top;
+  out_bottom = m.bottom;
+  out_left   = m.left;
+  out_right  = m.right;
   return true;
 }
 

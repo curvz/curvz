@@ -106,6 +106,11 @@ public:
   using IndentRequest = std::function<void(int which, double value)>;
   void set_indent_request(IndentRequest cb) { m_indent_request = std::move(cb); }
 
+  // s343 — Box text margins (per text box), doc units. which: 0 = top,
+  // 1 = bottom, 2 = left, 3 = right. Wired to Canvas::set_text_margin.
+  using MarginRequest = std::function<void(int which, double value)>;
+  void set_margin_request(MarginRequest cb) { m_margin_request = std::move(cb); }
+
   // s335 — Tabs (per-paragraph). The whole stop list is one request: `spec` is
   // the canonical "pos,type;..." string the popover builds from its row list.
   // Wired to Canvas::set_text_tabs (which paragraph-snaps + canonicalises).
@@ -141,6 +146,13 @@ public:
   using StyleCreateRequest   = std::function<void(const std::string& name)>;
   using StyleRedefineRequest = std::function<void(const std::string& id)>;
   using StyleDeleteRequest   = std::function<void(const std::string& id)>;
+  // s342 — launch the TextStyleEditorDialog (the field editor). edit opens a
+  // USER style for in-place editing; edit_copy opens an APP style as a fresh
+  // user copy; create opens a blank New dialog. These are the dialog path; the
+  // redefine/create-from-paragraph verbs above stay as the capture convenience.
+  using StyleEditRequest     = std::function<void(const std::string& id)>;
+  using StyleEditCopyRequest = std::function<void(const std::string& id)>;
+  using StyleNewRequest      = std::function<void()>;
   void set_style_list_provider(StyleListProvider cb) {
     m_style_list_provider = std::move(cb);
   }
@@ -158,6 +170,15 @@ public:
   }
   void set_style_delete_request(StyleDeleteRequest cb) {
     m_style_delete_request = std::move(cb);
+  }
+  void set_style_edit_request(StyleEditRequest cb) {
+    m_style_edit_request = std::move(cb);
+  }
+  void set_style_edit_copy_request(StyleEditCopyRequest cb) {
+    m_style_edit_copy_request = std::move(cb);
+  }
+  void set_style_new_request(StyleNewRequest cb) {
+    m_style_new_request = std::move(cb);
   }
 
   // s333 TEMP — justify spill tuning slider. Fires (comfort_em, track_em) as the
@@ -217,6 +238,9 @@ public:
   // paragraph shows its indents. Guarded (set_internal_value does not emit,
   // so this never re-fires the apply).
   void set_indent_values(double left_px, double right_px, double first_px);
+  // s343 — live-read sync of the Box-tab margin spins (doc-px), guarded.
+  void set_margin_values(double top_px, double bottom_px,
+                         double left_px, double right_px);
 
   // s335 — cache the caret paragraph's tab spec (pushed on text-style-changed,
   // same relay as set_align_face). The Tabs popover reads this cache to build
@@ -273,7 +297,12 @@ private:
   // apply_text_format_set. Bold is simply the 700 stop — not a separate B
   // toggle. Italic / underline / strike / overline are NOT weight; they move
   // to the Emphasis chip in the next pass (Ctrl-I/U keep working meanwhile).
-  void build_weight_popover(Gtk::MenuButton* chip);
+  // s343 — Type: Weight and Emphasis under one chip, as two Notebook tabs. The
+  // Weight tab is the preset stops (Thin..Black) + numeric override (exclusive-
+  // set); the Emphasis tab is the additive decoration toggles (italic /
+  // underline / strike / overline) plus the exclusive super/sub scale. The chip
+  // label follows the resolved weight via set_weight_face.
+  void build_type_popover(Gtk::MenuButton* chip);
 
   // s331 — Size: a pt-locked editable combo. A CurvzSpinButton with the unit
   // override pinned to points (steppers nudge, math/units parser accepts
@@ -283,32 +312,36 @@ private:
   // and the spin both follow the selection on the live-read.
   void build_size_popover(Gtk::MenuButton* chip);
 
-  // s332 — Fill: a chip whose face is a colour swatch and whose popover hosts
-  // the CurvzColorPicker. Per-run text fill rides PANGO_ATTR_FOREGROUND (a
-  // solid colour — Pango foreground has no gradient/swatch form), so the
-  // colour-only picker is the right surface; picking SETS the foreground over
-  // the selection via the value-set path. The swatch face follows the
-  // selection on the live-read (set_fill_face). Built once like the others.
-  void build_fill_popover(Gtk::MenuButton* chip);
-
-  // s332 — Stroke: object-level (Pango has no stroke attr). The popover hosts
-  // the CurvzColorPicker for the stroke colour, a pt-locked width spin, and a
-  // None button to clear the stroke. Picking a colour / changing the width
-  // routes to the object-stroke requests; the square face follows the edited
-  // node on the live-read. Built once like the others.
-  void build_stroke_popover(Gtk::MenuButton* chip);
+  // s343 — Color: Fill and Stroke combined under one chip. The popover hosts
+  // a two-page Gtk::Notebook -- a Fill tab (CurvzColorPicker -> per-run
+  // PANGO_ATTR_FOREGROUND) and a Stroke tab (CurvzColorPicker + pt-locked width
+  // spin + None, object-level). The chip face carries both glances: a filled
+  // swatch (fill) and an outline ring (stroke). The faces follow the selection
+  // on the live-read (set_fill_face / set_stroke_face), unchanged from when the
+  // two lived as separate chips. Built once like the others.
+  void build_color_popover(Gtk::MenuButton* chip);
 
   // s331 — Paragraph popover (the ¶ chip). First control: Leading — a pt-locked
   // CurvzSpinButton (steppers + units parser, reusing the size chip's unit
   // override) plus an Auto button that hands leading back to the metric default.
   // Space-before/after and the rest of the paragraph set come later.
-  void build_paragraph_popover(Gtk::MenuButton* chip);
+  // s343 — Spacing: Tracking (character: letter-spacing em + baseline rise pt)
+  // and Line spacing (paragraph: leading pt + Auto) stacked in one popover
+  // under a Character group and a Line group. Tracking SETs over the selection
+  // via the value-set path; Line spacing routes to m_leading_request (a buffer-
+  // global, not a span op).
+  void build_spacing_popover(Gtk::MenuButton* chip);
   void build_align_popover(Gtk::MenuButton* chip);  // s332
 
   // s334 — Indents popover (paragraph scope): Left / Right doc-unit spins with
   // the inspector link-lock between them (engaged = the two stay equal, the
   // aspect-link idiom), plus a First-line spin (negative = hanging indent).
-  void build_indent_popover(Gtk::MenuButton* chip);
+  // s343 — Insets: per-box margins (Box tab) + per-paragraph indents (Paragraph
+  // tab) under one chip, as two Notebook tabs. The "left/right" pair appears in
+  // both halves at different scopes, which is exactly why the tabs keep them
+  // unambiguous. Box -> m_margin_request (Canvas::set_text_margin); Paragraph ->
+  // m_indent_request (Canvas::set_text_indent).
+  void build_insets_popover(Gtk::MenuButton* chip);
 
   // s335 — Tabs popover (paragraph scope, its own chip): a master-detail
   // editor. The master is a ListBox of the paragraph's stops (sorted by
@@ -353,7 +386,7 @@ private:
   // Both SET over the selection via the value-set path. The range is wide on
   // purpose (display work treats tracking as placement, not spacing) with a
   // spin, not a scale, so the fine zone stays usable across the whole range.
-  void build_tracking_popover(Gtk::MenuButton* chip);
+  // (s343 — now the Character group of build_spacing_popover.)
 
   // s330 — Emphasis: the line-decoration toggles that are NOT weight. Pango
   // treats these as independent attributes that combine (an additive set, vs
@@ -367,7 +400,7 @@ private:
   // a click toggles. The format-apply re-emits text_style_changed, so the
   // resulting state flows straight back onto the toggle (the click's own
   // active value isn't authoritative — the re-read corrects it).
-  void build_emphasis_popover(Gtk::MenuButton* chip);
+  // (s343 — now the Emphasis tab of build_type_popover.)
 
   // s330 — Font family: a chip whose popover holds a search box + a scrolled
   // list of every family the Pango font map reports, sorted. Picking a row
@@ -384,6 +417,7 @@ private:
   LeadingRequest m_leading_request;  // s331 — Paragraph Leading callback
   AlignRequest   m_align_request;    // s332 — Alignment callback
   IndentRequest  m_indent_request;   // s334 — Indents callback
+  MarginRequest  m_margin_request;   // s343 — Box margins callback
   bool           m_indent_locked = false;  // s334 — left/right indent link state
   TabsRequest    m_tabs_request;     // s335 — Tabs callback
   // s335 — Tabs popover state. m_tabs_spec is the canonical, sorted source of
@@ -404,19 +438,25 @@ private:
   StyleCreateRequest   m_style_create_request;    // s341 — New from paragraph
   StyleRedefineRequest m_style_redefine_request;  // s341 — Redefine (edit)
   StyleDeleteRequest   m_style_delete_request;    // s341 — Delete
+  StyleEditRequest     m_style_edit_request;      // s342 — Edit… (dialog)
+  StyleEditCopyRequest m_style_edit_copy_request; // s342 — Edit a copy… (dialog)
+  StyleNewRequest      m_style_new_request;       // s342 — New style… (dialog)
 
   // Persistent chips — built once, never rebuilt.
   Gtk::MenuButton* m_chip_font   = nullptr;  // character
-  Gtk::MenuButton* m_chip_size   = nullptr;  Gtk::MenuButton* m_chip_weight = nullptr;
-  Gtk::MenuButton* m_chip_emphasis = nullptr;  // italic/underline/strike/overline
-  Gtk::MenuButton* m_chip_track  = nullptr;  // s334 — tracking (letter-spacing) + rise
-  Gtk::MenuButton* m_chip_fill   = nullptr;
-  Gtk::MenuButton* m_chip_stroke = nullptr;
+  Gtk::MenuButton* m_chip_size   = nullptr;
+  Gtk::MenuButton* m_chip_type   = nullptr;  // s343 — Weight + Emphasis (tabbed)
+  Gtk::MenuButton* m_chip_spacing = nullptr; // s343 — Tracking + Line spacing
+  Gtk::MenuButton* m_chip_color  = nullptr;  // s343 — combined Fill/Stroke (tabbed)
   Gtk::MenuButton* m_chip_align  = nullptr;  // paragraph
-  Gtk::MenuButton* m_chip_indent = nullptr;  // s334 — indents + first-line
+  Gtk::MenuButton* m_chip_insets = nullptr;  // s343 — margins (Box) + indents (Paragraph)
   CurvzSpinButton* m_ind_left   = nullptr;   // s335 — indent spins (live-read sync)
   CurvzSpinButton* m_ind_right  = nullptr;
   CurvzSpinButton* m_ind_first  = nullptr;
+  CurvzSpinButton* m_mrg_top    = nullptr;   // s343 — box margin spins (live-read sync)
+  CurvzSpinButton* m_mrg_bottom = nullptr;
+  CurvzSpinButton* m_mrg_left   = nullptr;
+  CurvzSpinButton* m_mrg_right  = nullptr;
   Gtk::MenuButton* m_chip_tabs   = nullptr;  // s335 — tab stops
   Gtk::ToggleButton* m_chip_invis = nullptr; // s338 — show-invisibles view toggle
   Gtk::ListBox*    m_tabs_list   = nullptr;  // s335 — master list of stops
@@ -425,7 +465,6 @@ private:
   curvz::widgets::DropDown* m_tabs_leader = nullptr;  // s339 — detail: dot leader
   const CanvasModel* m_doc_model = nullptr;  // s338 — borrowed; feeds spin/row units
   Gtk::Image*      m_align_icon   = nullptr;  // s332 — chip prefix = current alignment
-  Gtk::MenuButton* m_chip_para   = nullptr;
   Gtk::MenuButton* m_chip_style  = nullptr;
 
   // s334 — the justify spill knobs (comfort / track) now live inside the

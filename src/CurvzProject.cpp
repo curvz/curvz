@@ -334,18 +334,26 @@ bool CurvzProject::save() const {
         j["styles"] = std::move(sj["styles"]);
     }
 
-    // ── Text styles (s340 — inline in project.json) ───────────────────────
+    // ── Write sibling text_styles.json (s342 — user tier only) ────────────
     //
-    // Same shape as the graphic styles block above, separate library and key.
-    // User tier only — app text styles are re-seeded every launch by the
-    // TextStyleLibrary constructor and never serialised. Key omitted entirely
-    // when the user tier is empty so text-style-less projects keep clean diffs.
-    // to_user_json writes a top-level "text_styles" array; we lift it out so the
-    // schema reads `{"text_styles": [...]}` and the load side wraps it back up.
-    if (text_styles.user_style_count() > 0) {
+    // Text styles persist in their own sibling file, exactly like swatches.json
+    // above, instead of inline in project.json. The file is self-describing
+    // ({"text_styles":[...]} from to_user_json), so it doubles as the portable
+    // transfer artifact: copy text_styles.json into another project's folder to
+    // carry the styles across (the in-app Import Styles reads the same file).
+    // App styles are re-seeded by the library ctor and never written. Always
+    // written — even an empty array — so deleting every user style empties the
+    // store on the next reload (from_user_json clears the user tier first).
+    {
         json tsj;
         text_styles.to_user_json(tsj);
-        j["text_styles"] = std::move(tsj["text_styles"]);
+        std::string ts_path = (fs::path(directory) / "text_styles.json").string();
+        std::ofstream tf(ts_path);
+        if (!tf) {
+            LOG_ERROR("CurvzProject::save: cannot write '{}'", ts_path);
+            return false;
+        }
+        tf << tsj.dump(2) << "\n";
     }
 
     // ── Themes (S103 m1 — inline in project.json) ─────────────────────────
@@ -608,15 +616,36 @@ bool CurvzProject::load(const std::string& dir) {
         styles.from_user_json(wrapped);
     }
 
-    // ── Text styles (s340 — inline in project.json) ──────────────────────
+    // ── Text styles (s342 — sibling text_styles.json) ────────────────────
     //
-    // Same shape as the graphic styles block above. App text styles are
-    // re-seeded every launch by the TextStyleLibrary constructor; only the user
-    // tier loads here. Older project.json files written before s340 simply lack
-    // the "text_styles" key — additive schema change, no migration.
-    // from_user_json clears the user tier first, so reloading after deleting all
-    // text styles correctly empties the library.
-    if (j.contains("text_styles") && j["text_styles"].is_array()) {
+    // Precedence mirrors swatches above:
+    //   1. Sibling text_styles.json exists → from_user_json. The file is
+    //      self-describing ({"text_styles":[...]}); it is also exactly the file
+    //      that Import Styles reads, so a copied file Just Works.
+    //   2. Legacy inline "text_styles" array in project.json (pre-s342) →
+    //      migrate; it gets written to text_styles.json on the next save and
+    //      the inline key is dropped.
+    //   3. Neither → user tier stays empty (app tier already seeded by ctor).
+    // from_user_json clears the user tier first, so an empty file empties it.
+    std::string ts_path = (fs::path(dir) / "text_styles.json").string();
+    std::error_code ts_ec;
+    if (fs::exists(ts_path, ts_ec)) {
+        std::ifstream tf(ts_path);
+        if (tf) {
+            try {
+                json tsj;
+                tf >> tsj;
+                text_styles.from_user_json(tsj);
+            } catch (const json::exception& e) {
+                LOG_WARN("CurvzProject::load: text_styles.json parse error: {}",
+                         e.what());
+            }
+        } else {
+            LOG_WARN("CurvzProject::load: cannot open '{}'", ts_path);
+        }
+    } else if (j.contains("text_styles") && j["text_styles"].is_array()) {
+        LOG_INFO("CurvzProject::load: legacy inline text_styles present — "
+                 "migrating to text_styles.json on next save");
         json wrapped;
         wrapped["text_styles"] = j["text_styles"];
         text_styles.from_user_json(wrapped);

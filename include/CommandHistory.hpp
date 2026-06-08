@@ -2,6 +2,7 @@
 #include "SceneNode.hpp"
 #include "color/SwatchLibrary.hpp"
 #include "style/StyleLibrary.hpp"   // BindStyleCommand / UnbindStyleCommand (S79 m4a)
+#include "style/TextStyleLibrary.hpp"  // Add/Update/RemoveTextStyleCommand (s342)
 #include "style/StyleInterop.hpp"   // materialise_from_style on redo (S79 m4a)
 #include "theme/ThemeLibrary.hpp"   // AddThemeCommand / RemoveThemeCommand (S103 m2)
 #include <functional>
@@ -3500,6 +3501,111 @@ struct RemoveStyleCommand : CurvzCommand {
 
     std::string description() const override { return desc; }
 
+    bool preserves_selection() const override { return true; }
+};
+
+// ── Text-style library commands (s342) ────────────────────────────────────────
+//
+// The text twin of Add/Update/RemoveStyleCommand above, over the project's
+// style::TextStyleLibrary instead of the graphic StyleLibrary. Same identity
+// model (empty id on Add -> library mints a txs_<uuid>, captured for redo
+// stability; Remove undo re-adds with the original id, free after execute).
+// The editor dialog's on_committed closure pushes Add (New / Edit-a-copy) or
+// Update (Edit); the Style popover's Delete pushes Remove. The visual redraw of
+// bound paragraphs is NOT a job of these commands -- it rides the library's
+// signal_text_style_{added,changed,removed} (wired once in MainWindow to a
+// canvas redraw), so undo / redo refresh through the same seam any live edit
+// does. Cascade implication: an Update changes the resolved look of every
+// descendant that did not override the changed attribute, so the redraw must
+// be unconditional (it is -- queue_draw redraws the whole canvas).
+
+struct AddTextStyleCommand : CurvzCommand {
+    style::TextStyleLibrary* library;
+    style::TextStyle         style_value;     // captured at construction
+    style::TextStyleId       m_assigned_id;   // captured on first execute()
+    std::string              desc;
+
+    AddTextStyleCommand(style::TextStyleLibrary* lib,
+                        style::TextStyle s,
+                        std::string description = "Add text style")
+        : library(lib)
+        , style_value(std::move(s))
+        , desc(std::move(description)) {}
+
+    void execute() override {
+        if (!library) return;
+        style::TextStyleId result = library->add_text_style(style_value);
+        if (result.empty()) return;     // rejected -> undo() is a no-op
+        m_assigned_id = result;
+        style_value.header.id = result; // redo targets the same id
+    }
+
+    void undo() override {
+        if (!library) return;
+        if (m_assigned_id.empty()) return;
+        library->remove_text_style(m_assigned_id);
+    }
+
+    std::string description() const override { return desc; }
+    bool preserves_selection() const override { return true; }
+};
+
+struct UpdateTextStyleCommand : CurvzCommand {
+    style::TextStyleLibrary* library;
+    style::TextStyleId       style_id;
+    style::TextStyle         before;
+    style::TextStyle         after;
+    std::string              desc;
+
+    UpdateTextStyleCommand(style::TextStyleLibrary* lib,
+                           style::TextStyleId id,
+                           style::TextStyle b,
+                           style::TextStyle a,
+                           std::string description = "Edit text style")
+        : library(lib)
+        , style_id(std::move(id))
+        , before(std::move(b))
+        , after(std::move(a))
+        , desc(std::move(description)) {}
+
+    void execute() override { apply(after); }
+    void undo()    override { apply(before); }
+
+    std::string description() const override { return desc; }
+    bool preserves_selection() const override { return true; }
+
+private:
+    void apply(const style::TextStyle& s) {
+        if (!library) return;
+        style::TextStyle copy = s;
+        copy.header.id = style_id;  // update_text_style requires id == arg
+        library->update_text_style(style_id, std::move(copy));
+    }
+};
+
+struct RemoveTextStyleCommand : CurvzCommand {
+    style::TextStyleLibrary* library;
+    style::TextStyle         style_value;   // full snapshot pre-remove
+    std::string              desc;
+
+    RemoveTextStyleCommand(style::TextStyleLibrary* lib,
+                           style::TextStyle s,
+                           std::string description = "Delete text style")
+        : library(lib)
+        , style_value(std::move(s))
+        , desc(std::move(description)) {}
+
+    void execute() override {
+        if (!library) return;
+        library->remove_text_style(style_value.header.id);
+    }
+
+    void undo() override {
+        if (!library) return;
+        library->add_text_style(style_value);  // re-add with the original id
+    }
+
+    std::string description() const override { return desc; }
     bool preserves_selection() const override { return true; }
 };
 

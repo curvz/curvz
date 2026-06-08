@@ -7744,6 +7744,66 @@ void Canvas::set_text_leading(double pt) {
   queue_draw();
 }
 
+// ── s343 — box-level text margins ───────────────────────────────────────────
+// Unlike leading/indent (paragraph spans), a margin is a field on the boundary
+// node (the TextBox shape), box-wide. Resolve the text node like the other text
+// ops, then resolve its margin owner: the boundary (post-migration) if the node
+// has one, else the text node itself (legacy paired text). Write the one field,
+// snapshot the OWNER (TextEditCommand snapshots text_margin_* already), push,
+// reflow. The fitter's effective_text_margins re-reads on redraw.
+void Canvas::set_text_margin(int which, double doc_px) {
+  if (!m_doc) return;
+  if (which < 0 || which > 3) return;
+
+  SceneNode* text = nullptr;
+  if (m_text_editing && (m_text_editing->is_text_box_mgr() ||
+                         m_text_editing->type == SceneNode::Type::Text))
+    text = m_text_editing;
+  if (!text) {
+    for (SceneNode* obj : m_selection)
+      if (obj && (obj->is_text_box_mgr() ||
+                  obj->type == SceneNode::Type::Text)) { text = obj; break; }
+  }
+  if (!text) return;
+
+  // Margin owner: write to the SAME node effective_text_margins reads from, so
+  // the write is visible to the fitter AND the live-read query (otherwise the
+  // relay re-reads the unchanged value and snaps the spin back -- looks like the
+  // field rejects input). While editing that node IS m_text_boundary_editing;
+  // fall back to the boundary-id lookup, then the text node (legacy).
+  SceneNode* owner = nullptr;
+  if (m_text_editing == text && m_text_boundary_editing)
+    owner = m_text_boundary_editing;
+  if (!owner && !text->text_boundary_ids.empty())
+    owner = find_text_boundary(text->text_boundary_ids.front());
+  if (!owner) owner = text;
+
+  if (doc_px < 0.0) doc_px = 0.0;  // margins are non-negative
+
+  double* field = (which == 0) ? &owner->text_margin_top
+                : (which == 1) ? &owner->text_margin_bottom
+                : (which == 2) ? &owner->text_margin_left
+                               : &owner->text_margin_right;
+  if (*field == doc_px) return;  // no-op guard — keep redundant pushes off undo
+
+  if (m_text_editing) flush_text_segment();
+
+  TextEditCommand snap = TextEditCommand::snapshot_before(project(), owner);
+  *field = doc_px;
+  if (m_history) {
+    snap.record_after(owner);
+    m_history->push(std::make_unique<TextEditCommand>(std::move(snap)));
+  }
+  // Refresh the edit-session baseline if we're mid-edit (the text node, not the
+  // boundary, carries the live edit snapshot).
+  if (m_text_editing == text && m_text_has_snapshot)
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), text);
+
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();
+  queue_draw();
+}
+
 // ── s332 — per-paragraph alignment ──────────────────────────────────────────
 // Mirrors set_text_leading: resolve the text node, scope to the selection's
 // paragraph(s) (or the whole buffer when not editing), and write/clear a
@@ -7823,7 +7883,7 @@ void Canvas::set_text_alignment(int align) {
 // unbinds. Undoable via TextEditCommand, no-op guarded against redundant
 // pushes. The fitter (TextCursor) reads the binding per paragraph and resolves
 // it under the local spans; nothing is stamped into the runs (Option A).
-void Canvas::apply_text_style(const std::string& style_id) {
+void Canvas::apply_text_style(const std::string& style_id, bool clear_direct) {
   if (!m_doc) return;
   SceneNode* node = nullptr;
   if (m_text_editing && (m_text_editing->is_text_box_mgr() ||
@@ -7845,24 +7905,49 @@ void Canvas::apply_text_style(const std::string& style_id) {
   unsigned pa = 0, pb = (unsigned)node->text_content.size();
   snap_to_paragraphs(node->text_content, a, b, pa, pb);
 
+  // s342 — clear_direct composes the clear-direct-formatting verb INTO the bind
+  // as one atomic, undoable step: "set the style" means clear the old direct
+  // overrides AND set the new binding, so the applied style is actually visible
+  // (the s341 Option-A layering otherwise makes a bind look like nothing
+  // happened on already-formatted text). When clear_direct, collect every
+  // direct-formatting attr (character runs AND paragraph direct: leading/align/
+  // indents/tabs) overlapping the paragraph range EXCEPT the style binding
+  // itself; we strip those before stamping the binding, under one snapshot.
+  std::vector<int> clear_types;
+  if (clear_direct) {
+    for (const auto& s : node->text_attr_spans) {
+      if ((unsigned)s.end_byte <= pa || (unsigned)s.start_byte >= pb) continue;
+      if (s.type == curvz::utils::kCurvzStyleAttr) continue;  // keep the binding
+      if (std::find(clear_types.begin(), clear_types.end(), s.type) == clear_types.end())
+        clear_types.push_back(s.type);
+    }
+  }
+
   // No-op guard: skip if the targeted paragraph(s) already carry exactly this
-  // binding (keeps redundant pushes off the undo stack).
+  // binding (keeps redundant pushes off the undo stack) AND there's nothing to
+  // clear. The clear half means an identical re-bind on still-direct-formatted
+  // text is NOT a no-op — there's formatting to strip.
+  bool binding_unchanged;
   if (style_id.empty()) {
     bool had = false;
     for (const auto& s : node->text_attr_spans)
       if (s.type == curvz::utils::kCurvzStyleAttr &&
           (unsigned)s.end_byte > pa && (unsigned)s.start_byte < pb) { had = true; break; }
-    if (!had) return;  // already unbound everywhere in range
-  } else if (curvz::utils::range_has_attr(node->text_attr_spans,
-                                          curvz::utils::kCurvzStyleAttr,
-                                          0, style_id, pa, pb)) {
-    return;
+    binding_unchanged = !had;  // already unbound everywhere in range
+  } else {
+    binding_unchanged = curvz::utils::range_has_attr(
+        node->text_attr_spans, curvz::utils::kCurvzStyleAttr,
+        0, style_id, pa, pb);
   }
+  if (binding_unchanged && clear_types.empty()) return;
 
   if (m_text_editing == node)
     flush_text_segment();
 
   TextEditCommand snap = TextEditCommand::snapshot_before(project(), node);
+
+  for (int t : clear_types)
+    curvz::utils::clear_attr_over_range(node->text_attr_spans, t, pa, pb);
 
   curvz::utils::set_paragraph_style(node->text_attr_spans, node->text_content,
                                     style_id, a, b);
