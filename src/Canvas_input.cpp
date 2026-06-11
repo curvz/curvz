@@ -989,12 +989,14 @@ bool Canvas::check_overflow_hit(double screen_x, double screen_y,
           if (c->children.empty() || !c->children[0] ||
               !c->children[0]->is_path()) continue;
           TextLayout up = compute_text_layout(c->children[0].get(), n,
-                                              flow_offset);
+                                              flow_offset,
+                                              text_style_library());  // s345
           flow_offset = up.bytes_consumed;
         }
         SceneNode* boundary = last_canvas->children[0].get();
         // Mgr plays the text-node role; tail laid out from its slice start.
-        TextLayout tl = compute_text_layout(boundary, n, flow_offset);
+        TextLayout tl = compute_text_layout(boundary, n, flow_offset,
+                                            text_style_library());  // s345
         if (tl.bytes_consumed < n->text_content.size()) {
           const auto& bp = boundary->path->nodes;
           double bx0 = bp[0].x, by0 = bp[0].y;
@@ -1088,7 +1090,8 @@ void Canvas::show_overflow_depot(SceneNode* text_node, SceneNode* boundary) {
     return;
   }
 
-  TextLayout tl = compute_text_layout(boundary, text_node);
+  TextLayout tl = compute_text_layout(boundary, text_node, 0,
+                                      text_style_library());  // s345
   if (tl.bytes_consumed >= text_node->text_content.size()) return;
 
   const std::string& buf = text_node->text_content;
@@ -1383,7 +1386,8 @@ bool Canvas::caret_at_canvas_end(SceneNode** out_mgr) const {
       last_canvas->children[0]->path->nodes.size() < 3) {
     return false;
   }
-  TextLayout tl = compute_text_layout(last_canvas->children[0].get(), mgr);
+  TextLayout tl = compute_text_layout(last_canvas->children[0].get(), mgr, 0,
+                                      text_style_library());  // s345
   const size_t buf_size = mgr->text_content.size();
   if (tl.bytes_consumed >= buf_size) return false;  // no overflow
   if (m_text_cursor->byte_index() != tl.bytes_consumed) return false;
@@ -1406,7 +1410,8 @@ bool Canvas::mgr_has_overflow(SceneNode** out_mgr) const {
       last_canvas->children[0]->path->nodes.size() < 3) {
     return false;
   }
-  TextLayout tl = compute_text_layout(last_canvas->children[0].get(), mgr);
+  TextLayout tl = compute_text_layout(last_canvas->children[0].get(), mgr, 0,
+                                      text_style_library());  // s345
   if (tl.bytes_consumed >= mgr->text_content.size()) return false;
   if (out_mgr) *out_mgr = mgr;
   return true;
@@ -1469,7 +1474,8 @@ void Canvas::cross_back_to_canvas(SceneNode* mgr) {
         last_canvas->children[0]->is_path() &&
         last_canvas->children[0]->path) {
       TextLayout tl = compute_text_layout(
-          last_canvas->children[0].get(), mgr);
+          last_canvas->children[0].get(), mgr, 0,
+          text_style_library());  // s345
       landing_byte = tl.bytes_consumed;
     }
   }
@@ -1611,7 +1617,8 @@ bool Canvas::member_region_at_point(SceneNode* mgr, double doc_x, double doc_y,
     boundaries[i] = boundary;
     starts[i]     = offset;
     // Advance the flow offset past this member's consumed slice.
-    TextLayout tl = compute_text_layout(boundary, mgr, offset);
+    TextLayout tl = compute_text_layout(boundary, mgr, offset,
+                                        text_style_library());  // s345
     offset = tl.bytes_consumed;
   }
 
@@ -1663,7 +1670,8 @@ Canvas::build_member_regions(SceneNode* mgr) const {
     }
     SceneNode* boundary = const_cast<SceneNode*>(v->children[0].get());
     size_t start = offset;
-    TextLayout tl = compute_text_layout(boundary, mgr, start);
+    TextLayout tl = compute_text_layout(boundary, mgr, start,
+                                        text_style_library());  // s345
     out.push_back({boundary, start, tl.bytes_consumed});
     offset = tl.bytes_consumed;
   }
@@ -1686,7 +1694,8 @@ bool Canvas::caret_at_region_end() const {
   SceneNode* b = m_text_cursor->boundary();
   if (!b) return false;
   TextLayout tl =
-      compute_text_layout(b, m_text_editing, m_text_cursor->region_byte_start());
+      compute_text_layout(b, m_text_editing, m_text_cursor->region_byte_start(),
+                          text_style_library());  // s345
   return m_text_cursor->byte_index() == tl.bytes_consumed;
 }
 
@@ -1809,7 +1818,8 @@ double Canvas::overflow_region_height(const SceneNode* mgr,
   double h = floor_h;
   for (int it = 0; it < 24; ++it) {
     scratch.path = std::make_unique<PathData>(rect_to_path(tx, ty, tw, h));
-    TextLayout tl = compute_text_layout(&scratch, mgr, ov_start);
+    TextLayout tl = compute_text_layout(&scratch, mgr, ov_start,
+                                        text_style_library());  // s345
     if (tl.bytes_consumed >= total) {
       // All remaining text fits. Tighten to the last CONTENT baseline so
       // the region carries minimal trailing capacity empties.

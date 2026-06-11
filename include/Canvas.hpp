@@ -164,6 +164,16 @@ public:
   // project switch from MainWindow's update_all_panels, beside the graphic
   // library hookup. Canvas does NOT take ownership.
   void set_text_style_library(style::TextStyleLibrary *lib);
+  // s345 — read accessor for layout computation: DERIVES from the project,
+  // i.e. returns the exact object the renderer reads (project()->
+  // text_styles). It deliberately does NOT return m_text_style_library:
+  // that member is signal-connection bookkeeping (redraw on lib change,
+  // s342) wired on the project-switch path, and the s345 geometry diag
+  // caught it null on a live canvas whose m_project was set — two routes
+  // to one fact, disagreeing. With derivation the cursor, input, and
+  // marker queries CANNOT read a different library than the renderer.
+  // (defined in Canvas.cpp — CurvzProject is forward-declared here)
+  style::TextStyleLibrary *text_style_library() const;
 
   // ── Project-wide workspace appearance (s116 m6) ─────────────────────
   // Canvas paints the artboard surface and the workspace surround using
@@ -398,6 +408,14 @@ public:
   void offset_path_op(double distance, OffsetSide side, bool keep_original);
   void expand_stroke_op();
   void text_to_paths_op();       // convert selected Text nodes to Path outlines
+  // s344 — Convert one TextBoxMgr to a Group: the member box(es) below
+  //   (cloned as-is, fill/stroke/transform preserved), a "text" sub-group of
+  //   per-glyph outline nodes above. Rides compute_text_layout (the resolved
+  //   layout the renderer uses), so wrap / margins / styles / justify /
+  //   rotation crystallize exactly as drawn. Returns nullptr if the Mgr is
+  //   malformed or has no visible (flowed) glyphs. Manages its own FreeType
+  //   library internally so FreeType stays out of this header.
+  std::unique_ptr<SceneNode> build_mgr_outline_group(SceneNode* mgr);
   void release_text_from_path(); // detach PTT text nodes in current selection
                                  // (undoable)
   // s162 m3: set_selection_single now folds in notify_object_selection_changed

@@ -182,6 +182,30 @@ else()
     set(CURVZ_CMARK_TARGET cmark)
 endif()
 
+# libhyphen — Frank Liang's TeX hyphenation engine (LibreOffice/OpenOffice
+# lineage, GPL/LGPL/MPL tri-license). Used by automatic hyphenation to find
+# legal in-word break points (the dictionaries in /usr/share/hyphen, the same
+# ones LibreOffice and Pango use). Curvz owns its line-breaking, so it calls
+# libhyphen directly rather than going through Pango's wrap pass.
+#
+# OPTIONAL on purpose: the package ships NO pkg-config or CMake config, so we
+# probe with find_path/find_library. When absent the build still succeeds with
+# automatic hyphenation compiled out -- MANUAL soft hyphens (U+00AD) need no
+# library and keep working. Install to enable:
+#   Fedora:  dnf install hyphen-devel hyphen-en
+#   Debian:  apt install libhyphen-dev hyphen-en-us
+# The header is sometimes /usr/include/hyphen.h, sometimes .../hyphen/hyphen.h.
+find_path(HYPHEN_INCLUDE_DIR hyphen.h PATH_SUFFIXES hyphen)
+find_library(HYPHEN_LIBRARY NAMES hyphen)
+if(HYPHEN_INCLUDE_DIR AND HYPHEN_LIBRARY)
+    set(HYPHEN_FOUND TRUE)
+    message(STATUS "libhyphen: ${HYPHEN_LIBRARY} (automatic hyphenation enabled)")
+else()
+    set(HYPHEN_FOUND FALSE)
+    message(STATUS "libhyphen not found -- automatic hyphenation disabled "
+                   "(manual soft hyphens still work). Install hyphen-devel to enable.")
+endif()
+
 # ── Widget names DB (regenerated from source) ────────────────────────────────
 # s283 m8: widget_names.db is a tab-separated abbrev → long_name → file:line
 # map, bundled into the binary via gresource and read at runtime by
@@ -701,6 +725,15 @@ target_link_libraries(curvz PRIVATE
     ${CURVZ_CMARK_TARGET}
     fmt
 )
+
+# libhyphen — conditional. CURVZ_HAVE_HYPHEN gates the automatic-hyphenation
+# code path (m2); when libhyphen is absent the path compiles out and manual
+# soft hyphens are unaffected.
+if(HYPHEN_FOUND)
+    target_include_directories(curvz PRIVATE ${HYPHEN_INCLUDE_DIR})
+    target_link_libraries(curvz PRIVATE ${HYPHEN_LIBRARY})
+    target_compile_definitions(curvz PRIVATE CURVZ_HAVE_HYPHEN)
+endif()
 
 target_compile_options(curvz PRIVATE
     ${GTKMM_CFLAGS_OTHER}

@@ -252,7 +252,8 @@ void MainWindow::setup_headerbar() {
                  "FreeType2 — The FreeType Project",
                  "Pango / PangoCairo — The GNOME Project",
                  "Clipper2 — Angus Johnson (Boost Software License 1.0)",
-                 "cmark — John MacFarlane (MIT)"});
+                 "cmark — John MacFarlane (MIT)",
+                 "libhyphen — Laszlo Nemeth / Hunspell (GPL/LGPL/MPL)"});
 
     credits_scroll->set_child(*credits_page);
     stack->add(*credits_scroll, "credits");

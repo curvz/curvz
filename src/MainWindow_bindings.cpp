@@ -239,7 +239,7 @@ void MainWindow::connect_signals() {
     const CurvzDocument &src = *m_project->documents[idx];
 
     // ── 1. Round-trip the scene tree ──────────────────────────────────
-    std::string svg_str = write_svg(src);
+    std::string svg_str = write_svg(src, &m_project->text_styles);  // s345
     auto dup = parse_svg(svg_str);
     if (!dup) {
       LOG_ERROR("dup_doc: parse_svg failed on round-trip of '{}'",

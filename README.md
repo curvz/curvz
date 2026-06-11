@@ -36,6 +36,7 @@ sudo dnf install gtkmm4.0-devel cairomm1.16-devel pangomm2.48-devel \
                  freetype-devel fontconfig-devel \
                  nlohmann-json-devel spdlog-devel libpng-devel \
                  cmark-devel clipper2-devel \
+                 hyphen-devel hyphen-en \
                  cmake clang pkgconf-pkg-config
 ```
 
@@ -45,6 +46,7 @@ sudo apt install libgtkmm-4.0-dev libcairomm-1.16-dev libpangomm-2.48-dev \
                  libfreetype-dev libfontconfig1-dev \
                  nlohmann-json3-dev libspdlog-dev libpng-dev \
                  libcmark-dev \
+                 libhyphen-dev hyphen-en-us \
                  cmake clang pkg-config
 ```
 
@@ -60,6 +62,16 @@ above.
 > few extra minutes to the first clean build. Installing the system
 > packages (where available) is faster and lets multiple projects share
 > the libraries.
+
+> **Note on libhyphen (optional):** `hyphen-devel` plus a dictionary
+> (`hyphen-en` for English) enables *automatic* hyphenation. Unlike
+> Clipper2/cmark there is no `FetchContent` fallback — the package ships
+> no pkg-config/CMake config, so CMake probes for a system copy and, if
+> absent, compiles automatic hyphenation out. The build still succeeds,
+> and *manual* soft hyphens (U+00AD) work either way since they need no
+> library. CMake prints which path it took. Install the dev package plus
+> a dictionary for the language(s) you set; mixed-language documents want
+> each dictionary present.
 
 ### Build
 

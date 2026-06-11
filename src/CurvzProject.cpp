@@ -102,7 +102,7 @@ bool CurvzProject::save() const {
         if (fname.empty()) fname = "untitled.svg";
 
         std::string svg_path = (fs::path(directory) / fname).string();
-        if (!write_svg_file(*doc, svg_path)) return false;
+        if (!write_svg_file(*doc, svg_path, &text_styles)) return false;  // s345 — styled baseline emit
 
         const CanvasModel& cm = doc->canvas;
         json canvas_j = {

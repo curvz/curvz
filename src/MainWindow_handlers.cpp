@@ -813,7 +813,7 @@ MainWindow::script_export_svg(const std::string& path) {
   // here is our own — distinct LOG_INFO so script-driven exports are
   // identifiable in the log apart from GUI Export Documents writes
   // (which log through ExportDialog's own info lines).
-  if (!write_svg_file(*doc, path)) {
+  if (!write_svg_file(*doc, path, &m_project->text_styles)) {  // s345
     return ScriptExportSvgResult::IoFailed;
   }
   LOG_INFO("export svg: wrote '{}'", path);

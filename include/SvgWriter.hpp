@@ -2,14 +2,28 @@
 #include "CurvzDocument.hpp"
 #include <string>
 
+// s345 — forward decl in the CORRECT nested namespace. The class is
+// Curvz::style::TextStyleLibrary; declaring a global ::style here made
+// each TU resolve the parameter type to whichever namespace it could
+// see — callers without the style headers called a ::style overload
+// that was never defined (undefined reference at link).
+namespace Curvz { namespace style { class TextStyleLibrary; } }
+
 namespace Curvz {
 
 // Writes a clean, minimal SVG from a CurvzDocument.
 // Returns the SVG string, or empty string on failure.
-std::string write_svg(const CurvzDocument& doc);
+// s345 — `text_styles` (the project's TextStyleLibrary) makes the
+// baseline-path emit lay text out STYLED — the same geometry the canvas
+// renders. Omitting it (nullptr) emits unstyled baselines: style-driven
+// indents and fonts vanish from the saved geometry. Callers with a
+// project in hand must pass &project->text_styles.
+std::string write_svg(const CurvzDocument& doc,
+                      const style::TextStyleLibrary* text_styles = nullptr);
 
 // Write SVG directly to a file path. Returns true on success.
-bool write_svg_file(const CurvzDocument& doc, const std::string& path);
+bool write_svg_file(const CurvzDocument& doc, const std::string& path,
+                    const style::TextStyleLibrary* text_styles = nullptr);
 
 // ── S104 m1 — Export Documents metadata ─────────────────────────────────────
 // Same output as write_svg_file, plus two custom attributes on the root
@@ -30,6 +44,7 @@ bool write_svg_file_with_export_meta(const CurvzDocument& doc,
                                      const std::string& path,
                                      const std::string& units,
                                      double size_value,
-                                     const std::string& fit_side);
+                                     const std::string& fit_side,
+                                     const style::TextStyleLibrary* text_styles = nullptr);
 
 } // namespace Curvz

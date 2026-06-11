@@ -906,7 +906,8 @@ void ExportDialog::docs_perform_export(const std::vector<DocTarget>& targets) {
         if (want_svg) {
             const std::string fit_side = fit_width ? "width" : "height";
             ok = write_svg_file_with_export_meta(
-                *t.doc, t.path, units, size_value, fit_side);
+                *t.doc, t.path, units, size_value, fit_side,
+                &m_project->text_styles);  // s345 — styled baseline emit
         } else if (want_png) {
             const int cw = t.doc->canvas_width();
             const int ch = t.doc->canvas_height();

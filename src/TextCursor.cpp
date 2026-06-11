@@ -63,26 +63,11 @@ void curvz_get_justify_knobs(double& comfort_em, double& track_em) {
 
 // s305 m4f — Find the last baseline with content (byte_start < byte_end).
 //   compute_text_layout emits empty baselines below the content to show
-//   the user the textbox's full line capacity. End-of-buffer caret /
-//   line nav fallbacks should target the LAST CONTENT baseline, not
-//   the bottom empty one. Returns nullptr only when the baseline list
-//   is empty (caller should have early-returned in that case).
-static const BaselineLayout* last_content_baseline(const TextLayout& tl) {
-    for (auto it = tl.baselines.rbegin(); it != tl.baselines.rend(); ++it) {
-        if (it->byte_start < it->byte_end) return &(*it);
-    }
-    // All empty (no text typed) — return the first one. The caret will
-    // render at the very top of the textbox, where the first character
-    // would go.
-    return tl.baselines.empty() ? nullptr : &tl.baselines.front();
-}
-
-// s306 m6 — Index variant of last_content_baseline, for Up/Down's
-//   bounds check ("Down at last-content-baseline does nothing").
-//   Returns the index into tl.baselines of the last baseline with
-//   content, or 0 when there is no content baseline at all (the
-//   "empty buffer / all-empty layout" case — Up/Down both no-op
-//   because there is exactly one navigable position).
+//   the user the textbox's full line capacity; end-of-window fallbacks
+//   should target the LAST CONTENT baseline, not the bottom empty one.
+//   (s345: the pointer variant last_content_baseline was deleted along
+//   with the per-reader predicate stacks — the index variant below is
+//   the resolver's only fallback now.)
 static size_t last_content_index(const TextLayout& tl) {
     if (tl.baselines.empty()) return 0;
     for (size_t i = tl.baselines.size(); i-- > 0; ) {
@@ -92,49 +77,77 @@ static size_t last_content_index(const TextLayout& tl) {
     return 0;
 }
 
-// s306 m6 — Find the baseline index currently holding the caret.
-//   Same lookup convention as position_on_canvas / move_line_*:
-//   strict `<` on the upper bound (m4d's "later-baseline-wins"
-//   rule), with last_content_index as the end-of-buffer fallback
-//   (m4f). Returns size_t(-1) only when the baseline list is
-//   empty; callers should have early-returned in that case.
-// s307 (newline fix v2) — The caret tracks the insertion point.
-//   After typing N chars the caret is at byte N; after typing a
-//   newline the caret crosses ONTO the next baseline (the empty
-//   one immediately after the consumed \n). The "did the caret
-//   cross a newline" discriminator is buf[B-1] == '\n':
-//     - "first" + B=5 → buf[4]='t', no \n. Caret on baseline 0
-//       (end of "first" content), not on the empty hairline below.
-//     - "first\n" + B=6 → buf[5]='\n'. Caret on baseline 1 (the
-//       empty baseline that owns byte 6, post-newline).
-//     - "first\nsecond" + B=12 → buf[11]='d'. Caret on baseline 1
-//       at end of "second" content.
-//   Empty-baseline ownership applies ONLY when the byte was
-//   reached by crossing a \n; otherwise the caret stays on the
-//   content baseline that ends at B (resolved via the m4f
-//   last_content_baseline fallback).
-static size_t baseline_index_for(const TextLayout& tl, size_t byte_index,
-                                  const std::string& buf) {
-    bool crossed_newline = (byte_index > 0 && byte_index <= buf.size() &&
-                            buf[byte_index - 1] == '\n');
-    bool buffer_empty = buf.empty();
+// s306 m6 / s307 — HISTORY. This function used to re-derive ownership
+//   with the in_range / empty_owns(crossed_newline) / hard_end predicate
+//   stack, hand-mirrored across five readers. The worked examples
+//   ("first" B=5 -> line 0; "first\n" B=6 -> the empty line below;
+//   "first\nsecond" B=12 -> line 1) still describe the INTENDED
+//   behavior — they are now pinned by the fit-time own ranges and the
+//   sandbox property tests rather than re-implemented per reader.
+// s345 — THE byte->baseline resolver. Ownership is a stored-range lookup
+//   against the own_start/own_end fields the fitter assigned at push time
+//   (see compute_text_layout's own_cursor) — never inferred from buffer
+//   content. The s307 crossed_newline, s338/s344 hard_end, and s305 m4d/
+//   m4f conventions are all encoded in those ranges; this function and
+//   every caller stay in register with the renderer BY CONSTRUCTION
+//   because there is exactly one reader and one writer of the fact.
+//   The buf parameter is gone: a resolver that peeks at the buffer is a
+//   resolver that can disagree with the fitter.
+//
+//   Fallback: positions outside the tiled window (overflow bytes past
+//   bytes_consumed — the region chain's territory) resolve to the last
+//   content baseline, same end-of-buffer degradation as the old m4f
+//   fallback. INSIDE the window the fallback firing would mean a tiling
+//   violation (the s345 geometry diag confirmed zero occurrences before
+//   it was stripped).
+static size_t baseline_index_for(const TextLayout& tl, size_t byte_index) {
     for (size_t i = 0; i < tl.baselines.size(); ++i) {
         const BaselineLayout& bl = tl.baselines[i];
-        bool in_range = (byte_index >= bl.byte_start && byte_index < bl.byte_end);
-        bool empty_owns = (bl.byte_start == bl.byte_end &&
-                           byte_index == bl.byte_start &&
-                           (crossed_newline || buffer_empty));
-        if (in_range || empty_owns) {
+        if (byte_index >= bl.own_start && byte_index < bl.own_end) {
             return i;
         }
     }
-    // End-of-buffer / unmatched: fall back to the last content
+    // Past the tiled window / unmatched: fall back to the last content
     // baseline (caret renders at end of content, not on a bottom
     // capacity hairline).
     return tl.baselines.empty() ? size_t(-1) : last_content_index(tl);
 }
 
+// s345 — Vertical-step companions to the resolver. A baseline that owns
+//   no caret positions (own_start == own_end: s323 neck artifacts,
+//   capacity lines past the first) is not a place the caret can live, so
+//   Up/Down must step OVER it to the nearest OWNING baseline. Stepping
+//   by raw index ±1 onto a non-owning line put the caret at a byte the
+//   resolver assigns to the line BEYOND it — Down skipped a row, and Up
+//   could never climb back past a neck (resolve always landed below it;
+//   Up no-opped forever). Indents make this hot: an indent that eats a
+//   line's span emits a fall-through neck right where the user is
+//   editing.
+static size_t prev_owning_index(const TextLayout& tl, size_t from) {
+    for (size_t i = from; i-- > 0; ) {
+        const BaselineLayout& bl = tl.baselines[i];
+        if (bl.own_start < bl.own_end) return i;
+    }
+    return size_t(-1);
+}
+static size_t next_owning_index(const TextLayout& tl, size_t from) {
+    for (size_t i = from + 1; i < tl.baselines.size(); ++i) {
+        const BaselineLayout& bl = tl.baselines[i];
+        if (bl.own_start < bl.own_end) return i;
+    }
+    return size_t(-1);
+}
+
 // ── Construction ────────────────────────────────────────────────────────────
+// s345 — see the declaration's comment: the one layout constructor for
+//   cursor operations, carrying the canvas's text-style library so caret
+//   geometry, navigation, and selection all read the renderer's layout.
+TextLayout TextCursor::layout_for(const SceneNode* boundary) const {
+    return compute_text_layout(
+        boundary, m_text, m_byte_start,
+        m_canvas ? m_canvas->text_style_library() : nullptr);
+}
+
 TextCursor::TextCursor(Canvas* canvas, SceneNode* text_node,
                        SceneNode* boundary, size_t byte_start)
     : m_canvas(canvas), m_text(text_node), m_boundary(boundary),
@@ -314,36 +327,17 @@ void TextCursor::move_line_start() {
             m_text->text_boundary_ids.front());
     }
     if (boundary) {
-        TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
+        TextLayout tl = layout_for(boundary);  // s345 — styled layout, see layout_for
         if (!tl.baselines.empty()) {
-            // s305 m4d — Later-baseline-wins at wrap boundary. See
-            //   position_on_canvas for the rationale. Strict `<` on
-            //   upper bound; fallback to last baseline catches the
-            //   end-of-buffer case.
-            // s307 (newline fix v2) — Empty-baseline ownership gated
-            //   on crossed_newline. See baseline_index_for.
-            const std::string& buf = m_text->text_content;
-            bool crossed_newline = (m_byte_index > 0 &&
-                                    m_byte_index <= buf.size() &&
-                                    buf[m_byte_index - 1] == '\n');
-            bool buffer_empty = buf.empty();
-            for (const auto& bl : tl.baselines) {
-                bool in_range = (m_byte_index >= bl.byte_start &&
-                                 m_byte_index < bl.byte_end);
-                bool empty_owns = (bl.byte_start == bl.byte_end &&
-                                   m_byte_index == bl.byte_start &&
-                                   (crossed_newline || buffer_empty));
-                if (in_range || empty_owns) {
-                    m_byte_index = bl.byte_start;
-                    on_horizontal_motion();  // s306 m6
-                    return;
-                }
-            }
-            // Caret at end-of-buffer or past the last baseline → start
-            // of the last content baseline.
-            const BaselineLayout* last = last_content_baseline(tl);
-            if (last) {
-                m_byte_index = last->byte_start;
+            // s345 — resolve through THE resolver. This reader's inline
+            //   copy of the predicate stack was missing the s338/s344
+            //   hard_end rule: Home with the caret at a paragraph break
+            //   fell through to the last content line and jumped the
+            //   caret to the bottom of the flow. Stored-range lookup
+            //   can't drift out of register with the renderer.
+            size_t idx = baseline_index_for(tl, m_byte_index);
+            if (idx != size_t(-1)) {
+                m_byte_index = tl.baselines[idx].byte_start;
                 on_horizontal_motion();  // s306 m6
             }
             return;
@@ -368,29 +362,13 @@ void TextCursor::move_line_end() {
             m_text->text_boundary_ids.front());
     }
     if (boundary) {
-        TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
+        TextLayout tl = layout_for(boundary);  // s345 — styled layout, see layout_for
         if (!tl.baselines.empty()) {
-            // s305 m4d — Later-baseline-wins (see move_line_start).
-            // s307 (newline fix v2) — Empty-baseline ownership gated.
-            const std::string& buf = m_text->text_content;
-            bool crossed_newline = (m_byte_index > 0 &&
-                                    m_byte_index <= buf.size() &&
-                                    buf[m_byte_index - 1] == '\n');
-            bool buffer_empty = buf.empty();
-            const BaselineLayout* target = nullptr;
-            for (const auto& bl : tl.baselines) {
-                bool in_range = (m_byte_index >= bl.byte_start &&
-                                 m_byte_index < bl.byte_end);
-                bool empty_owns = (bl.byte_start == bl.byte_end &&
-                                   m_byte_index == bl.byte_start &&
-                                   (crossed_newline || buffer_empty));
-                if (in_range || empty_owns) {
-                    target = &bl;
-                    break;
-                }
-            }
-            if (!target) target = last_content_baseline(tl);
-            if (!target) return;
+            // s345 — resolve through THE resolver (this copy was also
+            //   missing hard_end; see move_line_start).
+            size_t idx = baseline_index_for(tl, m_byte_index);
+            if (idx == size_t(-1)) return;
+            const BaselineLayout* target = &tl.baselines[idx];
 
             // s305 m4e — byte_end may include whitespace absorbed by
             //   the wrap (see compute_text_layout's m4e block). For
@@ -476,15 +454,18 @@ bool TextCursor::move_up() {
         if (!boundary) return false;
     }
 
-    TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
+    TextLayout tl = layout_for(boundary);  // s345 — styled layout, see layout_for
     if (tl.baselines.empty()) return false;
 
-    size_t cur_idx = baseline_index_for(tl, m_byte_index, m_text->text_content);
+    size_t cur_idx = baseline_index_for(tl, m_byte_index);
     if (cur_idx == size_t(-1)) return false;
-    if (cur_idx == 0) return false;  // top of list, nothing above
+    // s345 — step to the nearest OWNING baseline above (skips neck
+    //   artifacts and other zero-ownership rows; see prev_owning_index).
+    size_t tgt_idx = prev_owning_index(tl, cur_idx);
+    if (tgt_idx == size_t(-1)) return false;  // nothing navigable above
 
     const BaselineLayout* current = &tl.baselines[cur_idx];
-    const BaselineLayout* target  = &tl.baselines[cur_idx - 1];
+    const BaselineLayout* target  = &tl.baselines[tgt_idx];
 
     // Snapshot preferred_x lazily.
     if (m_preferred_caret_x < 0.0) {
@@ -564,17 +545,24 @@ bool TextCursor::move_down() {
         if (!boundary) return false;
     }
 
-    TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
+    TextLayout tl = layout_for(boundary);  // s345 — styled layout, see layout_for
     if (tl.baselines.empty()) return false;
 
-    size_t cur_idx = baseline_index_for(tl, m_byte_index, m_text->text_content);
+    size_t cur_idx = baseline_index_for(tl, m_byte_index);
     if (cur_idx == size_t(-1)) return false;
 
-    size_t last_idx = last_content_index(tl);
-    if (cur_idx >= last_idx) return false;  // already on last content row
+    // s345 — step to the nearest OWNING baseline below. This replaces the
+    //   `cur_idx >= last_content_index` guard, which was WRONG in two
+    //   ways: (a) it blocked Down from the last content line onto the
+    //   empty line below a trailing '\n' — a legitimate caret home (it
+    //   owns the post-newline position) — the literal "Down won't go
+    //   further" symptom; (b) raw index+1 could land on a non-owning
+    //   neck row (see prev_owning_index's comment).
+    size_t tgt_idx = next_owning_index(tl, cur_idx);
+    if (tgt_idx == size_t(-1)) return false;  // already on the last owning row
 
     const BaselineLayout* current = &tl.baselines[cur_idx];
-    const BaselineLayout* target  = &tl.baselines[cur_idx + 1];
+    const BaselineLayout* target  = &tl.baselines[tgt_idx];
 
     // Snapshot preferred_x lazily (same as move_up).
     if (m_preferred_caret_x < 0.0) {
@@ -1403,6 +1391,15 @@ TextLayout compute_text_layout(const SceneNode* boundary,
     // offset = bytes_consumed into the next member with no bookkeeping.
     size_t cursor = std::min(byte_start, text->text_content.size());
     const std::string& buf = text->text_content;
+    // s345 — running caret-position ownership cursor. Each push site claims
+    // a half-open range of caret positions [own_cursor, own_end) and
+    // advances own_cursor; the resulting per-baseline own ranges tile the
+    // flow window exactly (no gaps, no overlaps). This is the fit-time
+    // assignment behind baseline_index_for's lookup — the fitter KNOWS each
+    // line's kind (soft wrap / hard end / \n-empty / neck / capacity), so
+    // ownership is decided here once instead of re-guessed from buffer
+    // content by every reader.
+    size_t own_cursor = cursor;
     int safety = 0;
     while (baseline_y <= eroded_bottom && cursor <= buf.size() && safety++ < 10000) {
         // s331 — the byte that starts this line; sits in the owning paragraph,
@@ -1513,6 +1510,16 @@ TextLayout compute_text_layout(const SceneNode* boundary,
             PangoLayout* layout = make_single_line_layout(text, "", 0, 0, nullptr, 0.0, &line_base);
             bl.pango.reset(layout);
             bl.byte_end = cursor;
+            // s345 — ownership: the FIRST capacity line claims the
+            // end-of-buffer caret position iff it is still unclaimed
+            // (a trailing '\n' hard-ended the last content line at
+            // byte_end+1 == buf.size(), leaving own_cursor == buf.size());
+            // when the buffer ends in content, that line already claimed
+            // byte_end+1 == buf.size()+1 and capacity lines own nothing.
+            // This replaces the crossed_newline / m4f-fallback guesswork.
+            bl.own_start = own_cursor;
+            bl.own_end   = std::max(own_cursor, buf.size() + 1);
+            own_cursor   = bl.own_end;
             out.baselines.push_back(std::move(bl));
             out.bytes_consumed = cursor;
             baseline_y += line_lead;
@@ -1533,6 +1540,14 @@ TextLayout compute_text_layout(const SceneNode* boundary,
             PangoLayout* empty = make_single_line_layout(text, "", 0, 0, nullptr, 0.0, &line_base);
             bl.pango.reset(empty);
             bl.byte_end = cursor;          // empty line; owns no bytes
+            // s345 — ownership: a neck line owns NO caret positions. It is
+            // a geometric artifact (the span was too narrow), not a place
+            // the caret can live. The old empty_owns heuristic could
+            // falsely claim one when a hard '\n' preceded the neck
+            // (crossed_newline true, byte_start == position) — the caret
+            // landed on the artifact. Fit-time assignment knows better.
+            bl.own_start = own_cursor;
+            bl.own_end   = own_cursor;
             out.baselines.push_back(std::move(bl));
             baseline_y += line_lead;  // cursor NOT advanced
             continue;
@@ -1556,6 +1571,14 @@ TextLayout compute_text_layout(const SceneNode* boundary,
             PangoLayout* empty = make_single_line_layout(text, "", 0, 0, nullptr, 0.0, &line_base);
             bl.pango.reset(empty);
             bl.byte_end = cursor;
+            // s345 — ownership: a hard-ended empty line owns exactly the
+            // caret position AT its '\n' (the "between two newlines"
+            // position of a \n\n run). This is what the crossed_newline
+            // heuristic was reverse-engineering from buf[B-1]; stored
+            // here, the empty line legitimately owns its one position.
+            bl.own_start = own_cursor;
+            bl.own_end   = cursor + 1;
+            own_cursor   = bl.own_end;
             out.baselines.push_back(std::move(bl));
             cursor += 1;  // consume the '\n'
             out.bytes_consumed = cursor;
@@ -1671,6 +1694,56 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         // A pending '\n' (hard paragraph break) or end-of-buffer means this is
         // the paragraph's last line -> stays left under justify.
         bl.ended_by_wrap = (cursor < buf.size()) && (buf[cursor] != '\n');
+
+        // s344 m1 — Manual soft-hyphen rendering (the one mechanism both hyphen
+        // sources ride). fit_chunk_to_width breaks at a soft hyphen (U+00AD;
+        // Pango's log-attrs set is_line_break there), but U+00AD is zero-width,
+        // so a line that broke mid-word shows no dash. Detect that break (the
+        // line's last two content bytes are the UTF-8 soft hyphen C2 AD, and
+        // content continues -> a real word split) and render a visible dash by
+        // APPENDING a '-' to THIS line's render layout, past all content.
+        //
+        // s344 fix — APPEND, do not substitute. An earlier version swapped the
+        // 2-byte soft hyphen for a 1-byte '-', making the layout one byte
+        // shorter than the buffer slice; the caret maps byte_index->x via
+        // pango_layout_index_to_pos on this layout, so every hyphenated line
+        // drifted the mapping and the caret jumped / cycled. Appending keeps the
+        // zero-width soft hyphen in place (Pango renders it invisible -- a
+        // width=-1 single-line layout never hits its own hyphen path), so every
+        // buffer byte maps to the identical layout byte; the extra '-' sits at
+        // the very end, beyond byte_end, where no caret position lives. One
+        // visible dash, byte-faithful. Baking it into bl.pango still means the
+        // renderer, justify, and the outline extractor all show it for free.
+        bl.ended_by_hyphen = bl.ended_by_wrap && line_consumed_end >= 2 &&
+            (unsigned char)buf[line_consumed_end - 2] == 0xC2 &&
+            (unsigned char)buf[line_consumed_end - 1] == 0xAD;
+        // s344 — Dash rendering DISABLED for isolation. Baking a dash into the
+        // line layout (append or substitute) is the only thing the hyphen work
+        // changed about the layout the CARET reads, and a caret regression
+        // appeared. Leaving bl.pango as the exact buffer slice here returns the
+        // per-line layout to byte-AND-char-identical-to-pre-hyphenation. The
+        // ended_by_hyphen flag is still recorded (no consumer yet). If the caret
+        // is healthy with this off, the dash returns as a draw-time OVERLAY that
+        // never mutates the layout (so it can't perturb caret byte-mapping).
+        // Re-enable by restoring the make_single_line_layout swap below.
+        //
+        // if (bl.ended_by_hyphen) {
+        //     std::string line_text(remaining, consumed_on_line);
+        //     line_text.push_back('-');
+        //     PangoLayout* hy = make_single_line_layout(
+        //         text, line_text.c_str(), (int)line_text.size(),
+        //         bl.byte_start, line_tabs_c, tab_indent_offset, &line_base);
+        //     bl.pango.reset(hy);
+        // }
+        // s345 — ownership: a soft-wrapped line's boundary position belongs
+        // to the NEXT line (s305 m4d later-wins, unchanged); a hard-ended
+        // line ('\n' follows, or end of buffer) also owns the position AT
+        // its byte_end — the caret "before the newline" / "after the last
+        // char". This subsumes the s338/s344 hard_end heuristic AND the
+        // s305 m4f end-of-buffer fallback in one stored fact.
+        bl.own_start = own_cursor;
+        bl.own_end   = bl.ended_by_wrap ? bl.byte_end : bl.byte_end + 1;
+        own_cursor   = bl.own_end;
         out.baselines.push_back(std::move(bl));
 
         // If we broke at a '\n', consume that newline byte too (it
@@ -1890,71 +1963,24 @@ TextCursor::Geometry TextCursor::position_on_canvas() const {
         if (!boundary) return g;
     }
 
-    TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
+    TextLayout tl = layout_for(boundary);  // s345 — styled layout, see layout_for
     if (tl.baselines.empty()) return g;
 
-    // s305 m4d — At a wrap byte boundary, the byte belongs to the
-    //   LATER baseline. Two baselines share their boundary byte
-    //   (line A's byte_end == line B's byte_start), and the caret
-    //   sitting on that byte visually marks the start of line B,
-    //   not the end of line A. Strict `<` on the upper bound picks
-    //   the later baseline; fallback to last baseline catches
-    //   m_byte_index == buffer_size (where the last baseline's
-    //   byte_end equals the buffer size and the strict `<` would
-    //   miss it). Same convention as move_line_start/end and the
-    //   click handler's byte_index_at.
-    // s307 (newline fix v2) — Empty-baseline ownership ONLY when
-    //   the caret crossed a \n to get here (buf[B-1] == '\n') or
-    //   the buffer is completely empty. See baseline_index_for
-    //   for the full rationale. Without the gate, end-of-content
-    //   carets (e.g. after typing "first") would jump onto the
-    //   empty hairline below.
+    // s345 — resolve through THE resolver (stored own ranges), the same
+    //   lookup move_up/down, Home/End, and select_line_at use, so the
+    //   renderer and every stepper agree BY CONSTRUCTION. The s305 m4d
+    //   later-wins, s307 crossed-newline, s338 hard_end, and s305 m4f
+    //   end-of-buffer conventions are all encoded in the fitter's
+    //   ownership assignment; nothing is re-derived here.
     const std::string& buf = m_text->text_content;
-    bool crossed_newline = (m_byte_index > 0 &&
-                            m_byte_index <= buf.size() &&
-                            buf[m_byte_index - 1] == '\n');
-    bool buffer_empty = buf.empty();
     const BaselineLayout* target = nullptr;
-    for (const auto& bl : tl.baselines) {
-        bool in_range = (m_byte_index >= bl.byte_start &&
-                         m_byte_index < bl.byte_end);
-        bool empty_owns = (bl.byte_start == bl.byte_end &&
-                           m_byte_index == bl.byte_start &&
-                           (crossed_newline || buffer_empty));
-        // s338 — hard-return line-end ownership. A line ended by a hard '\n'
-        // has byte_end == the '\n' index (the newline is consumed, NOT part of
-        // the next line's range), so the caret AT that line's end
-        // (m_byte_index == byte_end) is owned by NO baseline under the strict
-        // `< byte_end` test: the content line rejects it and the next line
-        // starts at byte_end+1. The caret then fell through to the
-        // last_content_baseline fallback and drew on the LAST line of the flow
-        // (clamped to its first char) -- the reported "click at a return jumps
-        // to the last line" bug. Claim it for THIS line when its end is a hard
-        // return. Soft wraps keep ended_by_wrap == true, so they retain the
-        // s305 m4d "boundary belongs to the later line" behaviour; true EOF has
-        // byte_end == buf.size(), and the buf[byte_end] guard preserves the
-        // end-of-buffer fallback (and avoids an out-of-range read).
-        bool hard_end = (m_byte_index == bl.byte_end &&
-                         !bl.ended_by_wrap &&
-                         bl.byte_end < buf.size() &&
-                         buf[bl.byte_end] == '\n');
-        if (in_range || empty_owns || hard_end) {
-            target = &bl;
-            break;
-        }
+    {
+        size_t idx = baseline_index_for(tl, m_byte_index);
+        if (idx == size_t(-1)) return g;
+        target = &tl.baselines[idx];
     }
-    if (!target) {
-        // s305 m4f — End-of-buffer fallback. compute_text_layout emits
-        //   empty baselines (byte_start == byte_end == buf.size())
-        //   below the content so the user sees the textbox's full
-        //   line capacity. With strict-`<` lookup above, m_byte_index
-        //   == buf.size() matches no baseline; picking baselines.back()
-        //   would pick the BOTTOM empty baseline — caret would render
-        //   at bottom of the textbox even though text ends mid-textbox.
-        //   Right answer: last baseline with content (see helper).
-        target = last_content_baseline(tl);
-        if (!target) return g;
-    }
+    // (The old s305 m4f fallback block lived here; the resolver now
+    //  carries that behaviour internally — last_content_index on a miss.)
 
     // Cursor x within the line: pango_layout_index_to_pos at the
     // relative byte offset.
@@ -2036,7 +2062,7 @@ std::optional<size_t> TextCursor::byte_index_at(
         if (!boundary) return std::nullopt;
     }
 
-    TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
+    TextLayout tl = layout_for(boundary);  // s345 — styled layout, see layout_for
     if (tl.baselines.empty()) return std::nullopt;
 
     // s327 m3 — The baselines in `tl` live in the UPRIGHT frame: the layout
@@ -2263,21 +2289,18 @@ void TextCursor::select_line_at(size_t byte) {
             m_text->text_boundary_ids.front());
         if (!boundary) return;
     }
-    TextLayout tl = compute_text_layout(boundary, m_text, m_byte_start);
+    TextLayout tl = layout_for(boundary);  // s345 — styled layout, see layout_for
     if (tl.baselines.empty()) return;
-    // The visual line is the baseline whose byte window contains `byte`.
-    for (const auto& bl : tl.baselines) {
-        if (byte >= bl.byte_start && byte < bl.byte_end) {
-            m_anchor_byte = bl.byte_start;
-            m_byte_index  = bl.byte_end;
-            m_preferred_caret_x = -1.0;
-            return;
-        }
-    }
-    // Past the last placed byte -> the last baseline.
-    const BaselineLayout& last = tl.baselines.back();
-    m_anchor_byte = last.byte_start;
-    m_byte_index  = last.byte_end;
+    // s345 — resolve the owning line through THE resolver (this reader's
+    // strict-`<` scan also missed hard_end: triple-click at a paragraph
+    // break selected the wrong line). Selection range stays the line's
+    // CONTENT bytes [byte_start, byte_end) — ownership answers "which
+    // line", content answers "which bytes".
+    size_t idx = baseline_index_for(tl, byte);
+    if (idx == size_t(-1)) return;
+    const BaselineLayout& bl = tl.baselines[idx];
+    m_anchor_byte = bl.byte_start;
+    m_byte_index  = bl.byte_end;
     m_preferred_caret_x = -1.0;
 }
 

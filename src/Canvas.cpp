@@ -16,6 +16,7 @@
 #include "style/StyleInterop.hpp"  // mutate_appearance funnel for user-driven fill/stroke writes
 #include "style/StyleLibrary.hpp"  // set_style_library + signal_style_changed (S78 m3d)
 #include "style/TextStyleLibrary.hpp"  // set_text_style_library (s342)
+#include "style/TextStyleInterop.hpp"  // s345 — box_baseline / resolve_paragraph_baseline
 #include <filesystem>
 #include <fontconfig/fontconfig.h>
 #include <ft2build.h>
@@ -828,6 +829,74 @@ Canvas::Canvas() {
   rclick->signal_pressed().connect([this](int, double x, double y) {
     if (!m_doc)
       return;
+
+    // s344 — Right-click while editing text (TextBoxMgr caret): insert
+    //   hard-to-type typographic characters. (Intended as an "Insert" submenu,
+    //   but the GTK4 nested submenu blinked shut here, so the items sit at top
+    //   level for now.) Soft hyphen is the MANUAL source for hyphenation -- the breaker already stops at it and
+    //   (s344 m1) renders a dash; this gives it a real insertion path instead
+    //   of pasting U+00AD from elsewhere. The no-break characters need no
+    //   fitter change: they ride Pango's log-attrs as break suppressors the
+    //   moment they're in the buffer. Gated to active caret editing
+    //   (m_text_cursor) so a non-editing right-click still falls through to the
+    //   member / object menus below, and the legacy point-text Gtk::Entry keeps
+    //   its own menu.
+    if (m_text_editing && m_text_cursor) {
+      struct SpecialChar { const char* label; const char* utf8; };
+      static const SpecialChar kSpecials[] = {
+          {"Soft hyphen", "\u00ad"},
+          {"Non-breaking space", "\u00a0"},
+          {"Word joiner (no break)", "\u2060"},
+          {"Non-breaking hyphen", "\u2011"},
+          {"En dash", "\u2013"},
+          {"Em dash", "\u2014"},
+          {"Ellipsis", "\u2026"},
+      };
+      auto menu = Gio::Menu::create();
+      auto sec = Gio::Menu::create();
+      auto ag = Gio::SimpleActionGroup::create();
+      const int n = (int)(sizeof(kSpecials) / sizeof(kSpecials[0]));
+      for (int i = 0; i < n; ++i) {
+        const std::string aname = "ins" + std::to_string(i);
+        // Top-level items (the submenu form blinked shut in GTK4 here, s344) --
+        // a flat section, the proven idiom the tbmemberctx menu uses.
+        auto item = Gio::MenuItem::create(kSpecials[i].label,
+                                          "txtedit." + aname);
+        sec->append_item(item);
+        const std::string utf8 = kSpecials[i].utf8;
+        auto act = Gio::SimpleAction::create(aname);
+        act->signal_activate().connect(
+            [this, utf8](const Glib::VariantBase &) {
+              // Mirrors the keyboard insert path: replace any selection, splice
+              // the UTF-8, then flush so each insertion is its own undo step.
+              if (!m_text_editing || !m_text_cursor)
+                return;
+              if (m_text_cursor->has_selection()) {
+                flush_text_segment();
+                m_text_cursor->delete_selection();
+              }
+              if (m_text_cursor->insert_string(utf8)) {
+                flush_text_segment();
+                m_sig_doc_changed.emit();
+                queue_draw();
+              }
+            });
+        ag->add_action(act);
+      }
+      menu->append_section("", sec);
+      insert_action_group("txtedit", ag);
+
+      auto *popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
+      popover->set_parent(*this);
+      popover->set_has_arrow(false);
+      Gdk::Rectangle rect((int)x, (int)y, 1, 1);
+      popover->set_pointing_to(rect);
+      popover->signal_closed().connect([popover]() {
+        Glib::signal_idle().connect_once([popover]() { popover->unparent(); });
+      });
+      popover->popup();
+      return;
+    }
 
     // s317 — Live TextBoxMgr member right-click: "Delete text box". A miss
     //   falls through to the normal object menu.
@@ -1785,6 +1854,18 @@ void Canvas::set_style_library(style::StyleLibrary *lib) {
             }
             queue_draw();
           });
+}
+
+// ── Canvas::text_style_library (s345) ────────────────────────────────────────
+// The READ accessor for layout computation. Derives from the project — the
+// exact object the renderer passes to compute_text_layout — rather than
+// returning m_text_style_library, which is signal-connection bookkeeping
+// wired on the project-switch path and was caught null on a live canvas
+// whose m_project was set (geometry diag, this session). Two routes to one
+// fact disagree; derivation leaves one route. The member fallback covers
+// only the degenerate no-project case.
+style::TextStyleLibrary *Canvas::text_style_library() const {
+  return m_project ? &m_project->text_styles : m_text_style_library;
 }
 
 // ── Canvas::set_text_style_library (s342) ────────────────────────────────────
@@ -3291,10 +3372,65 @@ collect_selection_entries(CurvzDocument *doc,
                found ? "FOUND" : "MISSING");
     }
   }
+
+  // s344 — TextBoxMgr resolution. A canvas click on a text box selects the
+  //   box's boundary Path, which lives nested as Mgr -> TextBoxView -> boundary
+  //   (three levels deep). The one-level-deep match above silently dropped it,
+  //   so copy / cut / duplicate / clone all no-opped on text boxes (they every
+  //   funnel through this function). Resolve any still-unmatched selection that
+  //   is a TBM member (its boundary, its view, or the Mgr itself) up to the
+  //   owning top-level Mgr and emit that one entry, deduped. Fixing the seam
+  //   here repairs all callers at once -- the Mgr is the unit that copies.
+  for (SceneNode *sel : selection) {
+    if (!sel)
+      continue;
+    bool already = false;
+    for (const auto &e : result)
+      if (e.node == sel) { already = true; break; }
+    if (already)
+      continue;
+
+    SceneNode *parent = nullptr;
+    SceneNode *mgr = nullptr;
+    int idx = -1;
+    for (auto &layer : doc->layers) {
+      for (int i = 0; i < (int)layer->children.size(); ++i) {
+        SceneNode *child = layer->children[i].get();
+        if (!child || !child->is_text_box_mgr())
+          continue;
+        bool hit = (child == sel);
+        if (!hit) {
+          for (const auto &v : child->children) {
+            if (!v)
+              continue;
+            if (v.get() == sel ||
+                (!v->children.empty() && v->children[0] &&
+                 v->children[0].get() == sel)) {
+              hit = true;
+              break;
+            }
+          }
+        }
+        if (hit) { parent = layer.get(); mgr = child; idx = i; break; }
+      }
+      if (mgr)
+        break;
+    }
+    if (!mgr)
+      continue; // not a TBM member; leave it dropped as before
+
+    bool dup = false;
+    for (const auto &e : result)
+      if (e.node == mgr) { dup = true; break; }
+    if (!dup) {
+      result.push_back({parent, mgr, idx});
+      LOG_INFO("[GRPDIAG]   resolved TBM member sel iid='{}' -> Mgr '{}'",
+               sel->internal_id, mgr->name);
+    }
+  }
+
   return result;
 }
-
-// Strip any existing " (N)" suffix, then find the lowest N≥2 that is unique
 // across all ids and names in the document.
 static void collect_all_names(const SceneNode *node,
                               std::set<std::string> &out) {
@@ -5090,7 +5226,26 @@ bool Canvas::text_style_query_indents(double& out_left, double& out_right,
   (void)b;
   unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
   while (pa > 0 && buf[pa - 1] != '\n') --pa;
+  // s345 — two-tier resolve, mirroring the fitter's resolved_indent: a
+  // direct attr span wins per-field; otherwise the paragraph's BOUND
+  // STYLE supplies the value. This query previously read tier 1 only, so
+  // a style-provided indent moved the text but the ruler markers (and the
+  // inspector spins fed from here) stayed at zero — the markers lied
+  // about the layout. Unbound paragraphs resolve to the box baseline,
+  // whose indents are zero: behaviour there is unchanged.
   out_left = out_right = out_first = 0.0;
+  if (const style::TextStyleLibrary* qlib = text_style_library()) {
+    const style::ResolvedTextStyle box = style::box_baseline(
+        m_text_editing->text_font_family, m_text_editing->text_font_size,
+        m_text_editing->text_bold, m_text_editing->text_italic,
+        m_text_editing->text_letter_spacing, m_text_editing->text_line_height,
+        style::para_align_from_str(m_text_editing->text_align));
+    const style::ResolvedTextStyle base = style::resolve_paragraph_baseline(
+        m_text_editing->text_attr_spans, pa, *qlib, box);
+    out_left  = base.indent_left_px;
+    out_right = base.indent_right_px;
+    out_first = base.indent_first_px;
+  }
   for (const auto& s : m_text_editing->text_attr_spans) {
     if ((unsigned)s.start_byte > pa || (unsigned)s.end_byte <= pa) continue;
     const double v = (double)s.ivalue / (double)PANGO_SCALE;

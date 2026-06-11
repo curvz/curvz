@@ -4524,24 +4524,252 @@ static FT_Outline_Funcs s_ft_callbacks = {
     0  // delta
 };
 
+// ── s344 — Per-glyph outline emission from a RESOLVED baseline ────────────────
+// One node per glyph appended to `out`: a bare Path when the glyph is a single
+// contour, a Compound when it has 2+ (so counters/holes fill together under
+// even-odd). Anchored exactly like the renderer: draw_text_in_boundary places
+// each baseline's PangoLayout at (bl.x_start, bl.y - layout_baseline) in the
+// boundary's UPRIGHT frame and paints it; here we read the same resolved layout,
+// FreeType-decompose each glyph at the same pen positions, and map into doc
+// space (then rotate into the frame). Because the layout is the one the fitter
+// produced, wrap / margins / per-run styles / justify / letter-spacing are
+// already baked into the glyph advances and positions -- nothing is recomputed.
+// Per-run font + size come from the resolved run (styled runs vary); colour is
+// the Mgr node fill (per-run colour is a deferred follow-up).
+static void emit_baseline_glyph_nodes(
+    const BaselineLayout &bl, const TextLayout &tl, FT_Library ft_lib,
+    const FillStyle &fill, const StrokeStyle &stroke, double fallback_px,
+    std::vector<std::unique_ptr<SceneNode>> &out) {
+  if (!bl.pango)
+    return;
+  PangoLayout *layout = bl.pango.get();
+
+  // Frame rotation (upright -> doc), matching the cr transform in draw.
+  const bool rot = (tl.frame_angle != 0.0);
+  const double ca = std::cos(tl.frame_angle), sa = std::sin(tl.frame_angle);
+  auto to_doc = [&](double &x, double &y) {
+    if (!rot)
+      return;
+    double rx = x - tl.frame_cx, ry = y - tl.frame_cy;
+    x = tl.frame_cx + rx * ca - ry * sa;
+    y = tl.frame_cy + rx * sa + ry * ca;
+  };
+
+  PangoLayoutIter *iter = pango_layout_get_iter(layout);
+  do {
+    PangoLayoutRun *run = pango_layout_iter_get_run(iter);
+    if (!run)
+      continue;
+    PangoFont *pfont = run->item->analysis.font;
+    PangoGlyphString *gs = run->glyphs;
+
+    PangoRectangle run_ext;
+    pango_layout_iter_get_run_extents(iter, nullptr, &run_ext);
+    double run_x_px = run_ext.x / (double)PANGO_SCALE;
+
+    // Resolve font file + face index + the ACTUAL rendered pixel size, all from
+    // the same resolved FcPattern (FC_PIXEL_SIZE is the size Pango/Cairo drew
+    // these glyphs at -- the authoritative scale for FreeType to match).
+    const char *font_file = nullptr;
+    int face_idx = 0;
+    double px_size = 0.0;
+    PangoFcFont *fc_font = PANGO_FC_FONT(pfont);
+    if (fc_font) {
+      FcPattern *pat = pango_fc_font_get_pattern(fc_font);
+      FcPatternGetString(pat, FC_FILE, 0, (FcChar8 **)&font_file);
+      FcPatternGetInteger(pat, FC_INDEX, 0, &face_idx);
+      FcPatternGetDouble(pat, FC_PIXEL_SIZE, 0, &px_size);
+    }
+    if (!font_file) {
+      LOG_WARN("emit_baseline_glyph_nodes: no font file for run, skipping");
+      continue;
+    }
+    if (px_size <= 0.0)
+      px_size = fallback_px; // node font size, not a magic constant
+
+    FT_Face ft_face = nullptr;
+    if (FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
+      LOG_WARN("emit_baseline_glyph_nodes: FT_New_Face failed for {}",
+               font_file);
+      continue;
+    }
+    // 72 dpi so 1pt == 1px: FC_PIXEL_SIZE px maps straight to FT char size.
+    FT_Set_Char_Size(ft_face, 0, (FT_F26Dot6)(px_size * 64.0), 72, 72);
+    const double ft_scale = 1.0 / 64.0;
+
+    double pen_x = run_x_px;
+    for (int gi = 0; gi < gs->num_glyphs; ++gi) {
+      PangoGlyphInfo &g = gs->glyphs[gi];
+      PangoGlyph glyph_id = g.glyph;
+      double adv = g.geometry.width / (double)PANGO_SCALE; // spacing baked in
+      if (glyph_id == PANGO_GLYPH_EMPTY ||
+          (glyph_id & PANGO_GLYPH_UNKNOWN_FLAG)) {
+        pen_x += adv;
+        continue;
+      }
+      double gx = pen_x + g.geometry.x_offset / (double)PANGO_SCALE;
+      double glyph_base_y = bl.y + g.geometry.y_offset / (double)PANGO_SCALE;
+
+      if (FT_Load_Glyph(ft_face, glyph_id, FT_LOAD_NO_BITMAP) == 0 &&
+          ft_face->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
+        FTOutlineCtx ctx;
+        ctx.scale = ft_scale;
+        FT_Outline_Decompose(&ft_face->glyph->outline, &s_ft_callbacks, &ctx);
+
+        // Map every contour node from glyph space (Y-up, origin at the pen on
+        // the baseline) into doc space, then into the rotated frame.
+        std::vector<PathData> contours;
+        for (auto &pd : ctx.contours) {
+          if (pd.nodes.empty())
+            continue;
+          for (auto &n : pd.nodes) {
+            auto map = [&](double &nx, double &ny) {
+              double dx = bl.x_start + gx + nx;
+              double dy = glyph_base_y - ny;
+              to_doc(dx, dy);
+              nx = dx;
+              ny = dy;
+            };
+            map(n.x, n.y);
+            map(n.cx1, n.cy1);
+            map(n.cx2, n.cy2);
+          }
+          contours.push_back(std::move(pd));
+        }
+
+        if (contours.size() == 1) {
+          // Single contour -> bare Path (no hole to resolve).
+          auto p = std::make_unique<SceneNode>();
+          p->type = SceneNode::Type::Path;
+          p->name = "glyph";
+          p->fill = fill;
+          p->stroke = stroke;
+          p->path = std::make_unique<PathData>(std::move(contours[0]));
+          out.push_back(std::move(p));
+        } else if (contours.size() >= 2) {
+          // 2+ contours -> Compound; stroke sits on each child (Compound's
+          // draw reads stroke per-child, never from the Compound itself).
+          auto comp = std::make_unique<SceneNode>();
+          comp->type = SceneNode::Type::Compound;
+          comp->name = "glyph";
+          comp->fill = fill;
+          comp->stroke = stroke;
+          for (auto &pd : contours) {
+            auto child = std::make_unique<SceneNode>();
+            child->type = SceneNode::Type::Path;
+            child->fill = fill;
+            child->stroke = stroke;
+            child->path = std::make_unique<PathData>(std::move(pd));
+            comp->children.push_back(std::move(child));
+          }
+          out.push_back(std::move(comp));
+        }
+      }
+      pen_x += adv;
+    }
+    FT_Done_Face(ft_face);
+  } while (pango_layout_iter_next_run(iter));
+  pango_layout_iter_free(iter);
+}
+
+// ── s344 — TextBoxMgr -> Group{ box(es) below, "text" group of glyphs above } ─
+std::unique_ptr<SceneNode> Canvas::build_mgr_outline_group(SceneNode *mgr) {
+  if (!mgr || !mgr->is_text_box_mgr())
+    return nullptr;
+
+  // Members in flow order, each with its absolute byte_start -- the same chain
+  // the renderer walks.
+  auto regions = build_member_regions(mgr);
+  if (regions.empty())
+    return nullptr;
+
+  FT_Library ft_lib = nullptr;
+  if (FT_Init_FreeType(&ft_lib) != 0) {
+    LOG_WARN("build_mgr_outline_group: FreeType init failed");
+    return nullptr;
+  }
+
+  const style::TextStyleLibrary *lib =
+      project() ? &project()->text_styles : nullptr;
+
+  std::vector<std::unique_ptr<SceneNode>> box_clones; // the member boxes, as-is
+  auto text_group = std::make_unique<SceneNode>();
+  text_group->type = SceneNode::Type::Group;
+  text_group->name = m_doc ? m_doc->uniquify_name("text") : "text";
+
+  for (const auto &reg : regions) {
+    if (!reg.boundary)
+      continue;
+    // Leave the box: clone it verbatim. fill / stroke / opacity / transform
+    // ride along because clone_node deep-copies the whole node.
+    box_clones.push_back(clone_node(*reg.boundary));
+
+    // Resolved layout for this member's slice; emit its glyph nodes.
+    TextLayout tl = compute_text_layout(reg.boundary, mgr, reg.byte_start, lib);
+    for (const auto &bl : tl.baselines)
+      emit_baseline_glyph_nodes(bl, tl, ft_lib, mgr->fill, mgr->stroke,
+                                mgr->text_font_size > 0.0 ? mgr->text_font_size
+                                                          : 24.0,
+                                text_group->children);
+  }
+
+  FT_Done_FreeType(ft_lib);
+
+  if (text_group->children.empty())
+    return nullptr; // nothing flowed/visible to outline
+
+  auto group = std::make_unique<SceneNode>();
+  group->type = SceneNode::Type::Group;
+  group->name = m_doc ? m_doc->uniquify_name(mgr->name, mgr) : mgr->name;
+  group->opacity = mgr->opacity; // Mgr composited as a unit
+  // Z-order: box(es) painted first (below), text group last (above) -- the
+  // same order draw_text_in_boundary uses (boundary, then glyphs on top).
+  for (auto &b : box_clones)
+    group->children.push_back(std::move(b));
+  group->children.push_back(std::move(text_group));
+
+  LOG_INFO("build_mgr_outline_group: '{}' -> {} box(es) + text group ({} glyph "
+           "node(s))",
+           mgr->name, group->children.size() - 1,
+           group->children.back()->children.size());
+  return group;
+}
+
 void Canvas::text_to_paths_op() {
   if (!m_doc || m_selection.empty()) {
     LOG_WARN("Canvas: text_to_paths_op — nothing selected");
     return;
   }
 
+  // s344 — Gather both legacy Type::Text nodes and TextBoxMgr objects. A
+  // canvas click selects a member's boundary Path, so resolve those up to the
+  // owning Mgr; a layers selection is the Mgr directly. Dedup so two selected
+  // members of one Mgr convert once.
   std::vector<SceneNode *> text_nodes;
-  for (SceneNode *obj : m_selection)
-    if (obj->is_text())
+  std::vector<SceneNode *> mgr_nodes;
+  auto have_mgr = [&](SceneNode *m) {
+    return std::find(mgr_nodes.begin(), mgr_nodes.end(), m) != mgr_nodes.end();
+  };
+  for (SceneNode *obj : m_selection) {
+    if (obj->is_text_box_mgr()) {
+      if (!have_mgr(obj))
+        mgr_nodes.push_back(obj);
+    } else if (obj->is_text()) {
       text_nodes.push_back(obj);
+    } else {
+      SceneNode *mgr = nullptr;
+      if (find_textbox_member(obj, &mgr, nullptr) && mgr && !have_mgr(mgr))
+        mgr_nodes.push_back(mgr);
+    }
+  }
 
-  if (text_nodes.empty()) {
+  if (text_nodes.empty() && mgr_nodes.empty()) {
     m_sig_show_message.emit("Convert Text to Path",
                             "Select one or more text objects first.");
     return;
   }
 
-  // Initialise FreeType library once per call.
+  // Initialise FreeType library once per call (legacy Type::Text branch).
   FT_Library ft_lib = nullptr;
   if (FT_Init_FreeType(&ft_lib) != 0) {
     m_sig_show_message.emit("Convert Text to Path",
@@ -4894,6 +5122,71 @@ void Canvas::text_to_paths_op() {
   }
 
   FT_Done_FreeType(ft_lib);
+
+  // ── s344 — TextBoxMgr branch ───────────────────────────────────────────────
+  // Each selected Mgr becomes a Group: its member box(es) below (left as drawn,
+  // fill/stroke intact), a "text" sub-group of per-glyph outlines above. The
+  // Mgr (buffer, members, overlay) is consumed; undo restores the whole subtree.
+  for (SceneNode *mgr : mgr_nodes) {
+    auto group = build_mgr_outline_group(mgr);
+    if (!group) {
+      LOG_WARN("text_to_paths_op: Mgr '{}' produced no outline (empty or all "
+               "text overflowed)",
+               mgr->name);
+      continue;
+    }
+
+    // Locate the Mgr in its owning layer (top-level search, mirrors the legacy
+    // branch). A Mgr nested inside a Group is a deferred edge.
+    SceneNode *owner_layer = nullptr;
+    int insert_idx = 0;
+    for (auto &layer : m_doc->layers) {
+      for (int i = 0; i < (int)layer->children.size(); ++i) {
+        if (layer->children[i].get() == mgr) {
+          owner_layer = layer.get();
+          insert_idx = i;
+          break;
+        }
+      }
+      if (owner_layer)
+        break;
+    }
+    if (!owner_layer) {
+      LOG_WARN("text_to_paths_op: Mgr '{}' not a top-level layer child; skipped",
+               mgr->name);
+      continue;
+    }
+
+    // Every command removes by SVG id; a fresh Mgr has a unique internal_id but
+    // an empty id. Carry a unique id onto both sides so the replace's remove-
+    // by-id is unambiguous on redo/undo.
+    if (mgr->id.empty())
+      mgr->id = mgr->internal_id;
+    group->id = mgr->id;
+
+    const std::string mgr_name = mgr->name; // mgr is freed by the erase below
+
+    auto before_snap = clone_node(*mgr);
+    SceneNode *raw_group = group.get();
+
+    // Manual swap now (command below is the undo record, mirroring the legacy
+    // branch which also swaps then pushes a ReplaceNodeCommand un-executed).
+    owner_layer->children.insert(owner_layer->children.begin() + insert_idx,
+                                 std::move(group));
+    owner_layer->children.erase(owner_layer->children.begin() + insert_idx + 1);
+
+    if (m_history) {
+      auto composite =
+          std::make_unique<CompositeCommand>("Convert text to path");
+      composite->add(std::make_unique<ReplaceNodeCommand>(
+          owner_layer, insert_idx, std::move(before_snap),
+          clone_node(*raw_group)));
+      m_history->push(std::move(composite));
+    }
+
+    LOG_INFO("text_to_paths_op: Mgr '{}' → Group (box(es) + outlined text)",
+             mgr_name);
+  }
 
   m_selection.clear();
   m_selected = nullptr;

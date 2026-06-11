@@ -92,6 +92,28 @@ struct BaselineLayout {
                                // soft-wrapped lines stretch edge to edge; a
                                // paragraph's final line stays left. Set in
                                // compute_text_layout at the content-line push.
+    size_t own_start = 0;      // s345 — fit-time caret-position ownership:
+    size_t own_end   = 0;      // half-open [own_start, own_end) of CARET
+                               // POSITIONS (0..buf.size()) this baseline owns.
+                               // Assigned at the fitter's push sites, where the
+                               // line's kind is known; the ranges of a layout's
+                               // baselines tile the flow window exactly — no
+                               // gaps, no overlaps. own_start == own_end means
+                               // "owns nothing" (s323 neck artifacts, capacity
+                               // lines past the first). Every byte->baseline
+                               // reader resolves through baseline_index_for's
+                               // range lookup; nobody infers ownership from
+                               // buffer content anymore (the s307 crossed_
+                               // newline and s338/s344 hard_end heuristics are
+                               // subsumed by these stored ranges).
+    bool   ended_by_hyphen = false;  // s344 — true if this line broke at a soft
+                               // hyphen (U+00AD) with content continuing, i.e. a
+                               // word was split across the wrap. The trailing
+                               // soft hyphen is swapped for a visible '-' baked
+                               // into `pango` (so renderer / justify / outline
+                               // all show the dash). Recorded here for the
+                               // consecutive-hyphen "ladder" limit (a later
+                               // milestone) — nothing reads it yet for render.
     struct PangoDeleter { void operator()(PangoLayout* p) const { if (p) g_object_unref(p); } };
     std::unique_ptr<PangoLayout, PangoDeleter> pango;
 
@@ -416,6 +438,18 @@ public:
     void render(const Cairo::RefPtr<Cairo::Context>& cr) const;
 
 private:
+    // s345 — THE layout constructor for every cursor operation. Wraps
+    //   compute_text_layout with this cursor's (m_text, m_byte_start) AND
+    //   the canvas's text-style library — the library argument is the one
+    //   the renderer passes, so the cursor navigates the SAME geometry the
+    //   user sees. Before this pump, all seven cursor call sites omitted
+    //   the library: styled paragraphs laid out UNSTYLED for navigation
+    //   (no style indents, base font metrics, different wrap points) — the
+    //   caret-in-the-indent-gap / select-wrong-char regression. New cursor
+    //   methods MUST build layouts through this, never by calling
+    //   compute_text_layout directly.
+    TextLayout layout_for(const SceneNode* boundary) const;
+
     Canvas*    m_canvas = nullptr;
     SceneNode* m_text   = nullptr;
     // Optional direct boundary pointer — used when the cursor is

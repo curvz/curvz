@@ -103,6 +103,15 @@ struct GradientCollector {
 // concurrent in practice.
 static const GradientCollector* g_grad_collector = nullptr;
 
+// s345 — file-scope text-style library for the baseline-path emit. Same
+// pattern and rationale as g_grad_collector above: write_object's two
+// compute_text_layout sites sit deep in the recursion, and threading a
+// parameter through would be mostly noise. Set on entry to write_svg,
+// cleared on exit. Without it styled text saved UNSTYLED baseline
+// geometry (no style indents / fonts) — drifting from what the canvas
+// renders.
+static const style::TextStyleLibrary* g_text_styles = nullptr;
+
 // Recursive walk: collect every gradient FillStyle in fill + stroke.paint
 // slots. Used as the pre-pass at the top of write_svg.
 static void collect_gradients(const SceneNode& n, GradientCollector& gc) {
@@ -1060,7 +1069,8 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         //    buffers the baseline list is empty, and we emit nothing —
         //    the textbox loads back as an empty frame the user can
         //    type into. Same behaviour as a freshly-created textbox.
-        TextLayout layout = compute_text_layout(&boundary, &text);
+        TextLayout layout = compute_text_layout(&boundary, &text, 0,
+                                                g_text_styles);  // s345
         const std::string ipad((indent + 1) * 2, ' ');
         for (size_t bi = 0; bi < layout.baselines.size(); ++bi) {
             const auto& bl = layout.baselines[bi];
@@ -1249,7 +1259,8 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
             // defaults) — same as the pre-m1c-redux emit did, just at
             // one less indent level since there's no Mgr wrapper now.
             const std::string vipad((indent + 1) * 2, ' ');
-            TextLayout layout = compute_text_layout(&boundary, &obj);
+            TextLayout layout = compute_text_layout(&boundary, &obj, 0,
+                                                    g_text_styles);  // s345
             for (size_t bi = 0; bi < layout.baselines.size(); ++bi) {
                 const auto& bl = layout.baselines[bi];
                 const std::string bid = "baseline_" + view.internal_id + "_" +
@@ -1586,7 +1597,9 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
 
 // ── write_svg ─────────────────────────────────────────────────────────────────
 
-std::string write_svg(const CurvzDocument& doc) {
+std::string write_svg(const CurvzDocument& doc,
+                      const style::TextStyleLibrary* text_styles) {
+    g_text_styles = text_styles;   // s345 — see file-scope holder
     std::ostringstream out;
 
     char vb[128];
@@ -1933,16 +1946,18 @@ std::string write_svg(const CurvzDocument& doc) {
     g_grad_collector = nullptr;
     g_shadow_collector = nullptr;  // S97 m1
     g_mgr_collector    = nullptr;  // s311 m1c-redux
+    g_text_styles      = nullptr;  // s345
     return out.str();
 }
 
-bool write_svg_file(const CurvzDocument& doc, const std::string& path) {
+bool write_svg_file(const CurvzDocument& doc, const std::string& path,
+                    const style::TextStyleLibrary* text_styles) {
     std::ofstream f(path);
     if (!f) {
         LOG_ERROR("SvgWriter: cannot open '{}' for writing", path);
         return false;
     }
-    f << write_svg(doc);
+    f << write_svg(doc, text_styles);
     LOG_DEBUG("SvgWriter: wrote '{}'", path);
     return true;
 }
@@ -1966,8 +1981,9 @@ bool write_svg_file_with_export_meta(const CurvzDocument& doc,
                                      const std::string& path,
                                      const std::string& units,
                                      double size_value,
-                                     const std::string& fit_side) {
-    std::string svg = write_svg(doc);
+                                     const std::string& fit_side,
+                                     const style::TextStyleLibrary* text_styles) {
+    std::string svg = write_svg(doc, text_styles);
 
     // Build the injection. fmt2 isn't visible here; do it inline with
     // snprintf — same precision as the rest of the writer.
