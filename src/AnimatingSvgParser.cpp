@@ -55,6 +55,8 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdio>   // s203 m4 — fprintf(stderr, ...) in catastrophic catch
+#include <set>        // s347 [TOPSAVE] — load-summary iid index
+#include <functional> // s347 [TOPSAVE] — load-summary tree walks
 
 // Minimal hand-written XML parser for our own SVG subset.
 // No external library — matches the HANDOFF constraint.
@@ -2405,6 +2407,25 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 obj->text_path_flip = (attr(tag, "data-curvz-path-flip") == "1");
             }
 
+            // s347 — path-text v2 ruler reference (text_on_path_v2.md). The
+            // guide iid is written as an internal UUID at attach time, so it
+            // loads verbatim — no svg-id migration pass like the legacy
+            // text_path_id needs. A dangling iid (guide deleted) degrades at
+            // render time (free-rendering fall-through) until m5's
+            // detach-to-box conversion owns that case.
+            auto guide_id = attr(tag, "data-curvz-guide-id");
+            if (!guide_id.empty()) {
+                obj->text_guide_id = guide_id;
+                auto anchor = attr(tag, "data-curvz-guide-anchor");
+                if (!anchor.empty()) obj->text_guide_anchor = dbl(anchor);
+                auto fdelta = attr(tag, "data-curvz-guide-anchor-flip-delta");
+                if (!fdelta.empty())  // s348 m3
+                    obj->text_guide_anchor_flip_delta = dbl(fdelta);
+                LOG_INFO("[TOPSAVE] read text iid='{}' guide_id='{}' anchor={:.1f}",
+                         obj->internal_id, obj->text_guide_id,
+                         obj->text_guide_anchor);
+            }
+
             if (attr(tag, "display") == "none") obj->visible = false;
             auto op = attr(tag, "opacity");
             if (!op.empty()) obj->opacity = dbl(op, 1.0);
@@ -2447,6 +2468,14 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     compound->type = SceneNode::Type::Compound;
                     compound->id   = attr(tag, "id");
                     if (compound->id.empty()) compound->id = "compound" + std::to_string(obj_counter++);
+                    {   // s347 — round-trip the compound's iid (same gap as
+                        // plain paths; see comment there).
+                        auto iid = attr(tag, "data-curvz-iid");
+                        if (!iid.empty()) compound->internal_id = iid;
+                        LOG_INFO("[TOPSAVE] read compound iid='{}' child_iids='{}'",
+                                 compound->internal_id,
+                                 attr(tag, "data-curvz-child-iids"));
+                    }
                     auto nm = attr(tag, "data-curvz-name");
                     compound->name = nm.empty() ? compound->id : nm;
                     if (attr(tag, "display") == "none") compound->visible = false;
@@ -2506,6 +2535,22 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                         while (std::getline(ss, tok, ','))
                             child_ids.push_back(tok);
                     }
+                    // s347 — child IIDS by index (new data-curvz-child-iids,
+                    // emitted alongside child-ids). Compound LEAVES are the
+                    // attachment targets of path-text v2 (text_guide_id names
+                    // a leaf), so their UUIDs must survive the round trip;
+                    // until now only their SVG ids did. Older files lack the
+                    // attr — the list stays empty and the finalize pass mints
+                    // as before (attachments in old files were impossible
+                    // anyway, since saving v2 fields began this session).
+                    std::vector<std::string> child_iids;
+                    {
+                        auto s = attr(tag, "data-curvz-child-iids");
+                        std::istringstream ss(s);
+                        std::string tok;
+                        while (std::getline(ss, tok, ','))
+                            child_iids.push_back(tok);
+                    }
 
                     // s291 m2 — parse and stash transform onto compound
                     // before on_compound_begin so the consumer reads it
@@ -2539,6 +2584,8 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                         child->type  = SceneNode::Type::Path;
                         child->id    = (ci < child_ids.size()) ? child_ids[ci]
                                        : "obj" + std::to_string(obj_counter++);
+                        if (ci < child_iids.size() && !child_iids[ci].empty())
+                            child->internal_id = child_iids[ci];   // s347
                         child->fill  = style_obj.fill;
                         child->stroke = style_obj.stroke;
                         child->fill_swatch_id   = style_obj.fill_swatch_id;
@@ -2704,6 +2751,17 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     auto blend_role = attr(tag, "data-curvz-blend-role");
                     auto warp_role  = attr(tag, "data-curvz-warp-role");
                     auto path_node = std::make_unique<SceneNode>(std::move(obj));
+                    // s347 — restore the path's internal_id. The writer has
+                    // emitted data-curvz-iid on plain paths all along; the
+                    // parser never read it, so every load minted a fresh
+                    // UUID (the finalize pass) and every iid REFERENCE to a
+                    // path — text_guide_id chief among them — dangled after
+                    // one save/load cycle. Empty stays empty: the finalize
+                    // pass mints for foreign files as before.
+                    {
+                        auto iid = attr(tag, "data-curvz-iid");
+                        if (!iid.empty()) path_node->internal_id = iid;
+                    }
                     SceneNode* raw = path_node.get();
                     if (!blend_role.empty()) {
                         SceneNode *par = stack.empty() ? nullptr : stack.back().node;
@@ -2853,6 +2911,9 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
     std::function<void(SceneNode*)> assign_iids = [&](SceneNode* n) {
         if (n->internal_id.empty()) {
             n->internal_id = generate_internal_id();
+            LOG_INFO("[TOPSAVE] minted fresh iid '{}' for type={} id='{}' "
+                     "name='{}' (no data-curvz-iid survived the read)",
+                     n->internal_id, (int)n->type, n->id, n->name);
             LOG_WARN("SvgParser: minted fresh iid '{}' for node type={} name='{}' id='{}'",
                      n->internal_id, (int)n->type, n->name, n->id);
         }
@@ -2861,6 +2922,36 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
     };
     for (auto& layer : doc->layers)
         assign_iids(layer.get());
+
+    // s347 [TOPSAVE] — UNCONDITIONAL load summary (the read-side twin of
+    // the save summary in SvgWriter): how many texts carry a guide ref,
+    // and how many of those refs resolve to a known iid in the loaded
+    // tree. guide_texts>0 with resolved<guide_texts is the dangle,
+    // localized to load; both 0 while the file's <text> has the attrs
+    // means the read branch never fired.
+    {
+        std::set<std::string> iids;
+        int guide_texts = 0, resolved = 0;
+        std::function<void(SceneNode*)> walk = [&](SceneNode* n) {
+            if (!n->internal_id.empty()) iids.insert(n->internal_id);
+            for (auto& ch : n->children) walk(ch.get());
+        };
+        for (auto& l : doc->layers) walk(l.get());
+        std::function<void(SceneNode*)> cnt = [&](SceneNode* n) {
+            if (n->is_text() && !n->text_guide_id.empty()) {
+                ++guide_texts;
+                if (iids.count(n->text_guide_id)) ++resolved;
+                else
+                    LOG_INFO("[TOPSAVE] LOAD dangle: text iid='{}' "
+                             "guide_id='{}' matches no node",
+                             n->internal_id, n->text_guide_id);
+            }
+            for (auto& ch : n->children) cnt(ch.get());
+        };
+        for (auto& l : doc->layers) cnt(l.get());
+        LOG_INFO("[TOPSAVE] LOAD — guide-attached texts: {} (resolved: {})",
+                 guide_texts, resolved);
+    }
 
     // Build SVG-id → internal_id map for text_path_id migration.
     // Text nodes loaded from older files store the SVG id in text_path_id.

@@ -55,7 +55,9 @@ namespace curvz::utils { enum class TabLeader; }
 namespace Curvz {
 
 struct SceneNode;
-namespace style { class TextStyleLibrary; }  // s340 — compute_text_layout style param
+struct PathData;   // s347 m4 — pattern_walk_path / pattern_path_length below
+namespace style { class TextStyleLibrary;    // s340 — compute_text_layout style param
+                  struct ResolvedTextStyle; }  // s346 — per-field resolver params
 class Canvas;
 
 // ── Layout primitive used by both the renderer and the cursor ───────────────
@@ -126,7 +128,59 @@ struct BaselineLayout {
     // is built from, so the locations can't drift from where tabs actually land.
     struct TabLeaderMark { double loc = 0.0; curvz::utils::TabLeader leader{}; };
     std::vector<TabLeaderMark> tab_locs;
+
+    // s347 — path-text v2 m2 (docs/text_on_path_v2.md): the PATTERN BLOCK.
+    // Present => this baseline rides a guide path; its geometry is
+    // (guide, arc-length), not (x, y). The byte/ownership side above is
+    // IDENTICAL to a box baseline — spans, styles, own ranges, the pango
+    // layout — which is the whole point of riding the TBM substrate.
+    //
+    // x_start/x_end KEEP their line-local meaning (0 .. line width in the
+    // pango layout's frame) — they are NOT overloaded with arc meaning.
+    // The arc mapping every geometry consumer applies is:
+    //     arc(x) = pattern->arc_start + (x - x_start)
+    // and y/ascent/descent measure perpendicular offset from the guide in
+    // the glyph's rotated frame (y == 0 -> baseline ON the guide).
+    //
+    // arc_start may be NEGATIVE or exceed the guide's length (a centered
+    // line near a closed path's seam straddles arc 0). The fitter is
+    // deliberately geometry-free and does not normalize; the renderer and
+    // (m3) caret wrap closed-guide arcs modulo length and skip open-guide
+    // arcs outside [0, total]. flip == reverse traversal + π glyph rotation
+    // (closed-path bottom lines — written by the m4 Return derivation,
+    // always false until then; the renderer already honours it).
+    struct PatternBlock {
+        std::string guide_id;        // leaf path iid (== node's text_guide_id)
+        double      arc_start = 0.0; // arc where the line's first glyph begins
+        bool        flip      = false;
+        // s347 m4 — perpendicular stack distance (doc units, >= 0). The line
+        // rides a TRUE parallel offset of the guide at this distance on the
+        // Return side (closed: inward), derived via pattern_walk_path below —
+        // never a constant-y drop in the glyph frame, which would crowd
+        // glyph spacing on curvature. 0 == the guide itself (lines 0 and 1).
+        // arc_start is in THIS derived path's arc space (its own length).
+        double      offset    = 0.0;
+    };
+    std::optional<PatternBlock> pattern;  // nullopt on box baselines
 };
+
+// ── s347 m4 — THE walk-path pump ─────────────────────────────────────────────
+// Derives the path a pattern baseline actually rides from (guide, offset).
+// The fitter (line lengths for anchor mapping), the glyph renderer, the
+// selection band, and the caret's arc helpers ALL derive through this one
+// function, so no consumer can disagree about a line's geometry. offset <= 0
+// or an open guide returns the guide unchanged; a closed guide returns the
+// INWARD parallel offset (math/PathOffset, Tiller-Hanson). Returns an empty
+// PathData when the offset consumes the shape (offset >= inradius) — the
+// caller emits/draws nothing for that line, mirroring the box fitter's
+// "margin consumed the shape" behaviour. Open-guide offsets land when
+// PathOffset learns open paths (the m4 open-Return follow-on).
+PathData pattern_walk_path(const PathData& guide, double offset);
+
+// Total arc length of a path at the same fidelity class as Canvas's
+// build_arc_table (per-segment length(32)). The fitter uses it to map the
+// anchor proportionally onto offset lines without touching Canvas.
+double pattern_path_length(const PathData& path);
 
 // Result of laying out a buffer into a boundary. Overflow (bytes not
 // placed because no baseline accepted them) is everything from
@@ -181,6 +235,47 @@ void curvz_get_justify_knobs(double& comfort_em, double& track_em);
 // style-bar read-out calls this so "Auto" shows the true leading rather than a
 // font-size * 1.2 approximation.
 double metric_leading_px(const SceneNode* text);
+
+// ── s346 — per-field three-tier resolvers (shared with the style-bar reads) ──
+// These four are THE precedence pumps for the per-paragraph format fields:
+// direct span (presence test — an explicit 0 beats a styled value) -> bound
+// style's resolved value -> floor. The fitter strides on them; Canvas's
+// text_style_query_* readers call the SAME functions, so the chip faces and
+// the geometry agree by construction (the s345 lesson applied to format:
+// don't hand-copy a tiering, read through one resolver). New format
+// consumers must call these, never re-derive the tiers inline.
+//
+// resolved_line_leading — the stride below a line (doc-px). Tiers: explicit
+// kCurvzLeadingAttr run at line_start -> line_base.leading_px > 0 -> metric
+// leading from the line's RESOLVED font (== box_leading when line_base is
+// box_base, the unbound common case, so no metrics call is paid there).
+double resolved_line_leading(const SceneNode* text,
+                             const style::ResolvedTextStyle& line_base,
+                             const style::ResolvedTextStyle& box_base,
+                             double box_leading, size_t line_start);
+
+// resolved_indent — one indent axis (doc-px); `attr` is one of the three
+// kCurvzIndent*Attr. Tiers: direct run -> line_base.indent_*_px -> 0.
+double resolved_indent(const SceneNode* text, int attr,
+                       const style::ResolvedTextStyle& line_base, size_t byte);
+
+// resolved_align — paragraph alignment ivalue (0=L 1=C 2=R 3=J). Tiers:
+// direct kCurvzAlignAttr run -> the BOUND style's resolved align -> 0.
+// Deliberately scoped to bound paragraphs at tier 2 (s342): the box-level
+// text_align scalar is NOT applied to unbound paragraphs, preserving the
+// pre-s342 layout contract. Null lib reads tier 1 only.
+int resolved_align(const SceneNode* text,
+                   const style::TextStyleLibrary* lib, size_t byte);
+
+// resolved_tabs — the paragraph's tab spec (canonical "pos,type;..." form,
+// empty == Pango default interval). Tiers: direct kCurvzTabsAttr run ->
+// line_base.tabs -> empty. (s346 — tier 2 is new HERE TOO: pre-s346 the
+// fitter's tabs reader was tier-1 only, so a style's tabs never reached the
+// layout. Fitter and face move together — a style-aware read over a
+// style-blind layout would manufacture a trace-vs-eyes divergence.)
+std::string resolved_tabs(const SceneNode* text,
+                          const style::ResolvedTextStyle& line_base,
+                          size_t byte);
 
 // s320 m1 — Frame basis for a text boundary. Derives the boundary's
 // orientation (radians) from its first edge (node[0] -> node[1], which for

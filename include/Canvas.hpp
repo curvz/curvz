@@ -123,6 +123,21 @@ public:
 
   Canvas();
 
+protected:
+  // s346 — THE GTK4 popover-parenting contract, previously unimplemented:
+  // a custom widget carrying popover children (we set_parent five context
+  // popovers onto this DrawingArea) MUST re-present() them from its
+  // size_allocate vfunc; a layout manager would do it automatically and
+  // DrawingArea has none. popup() presents once, which is why a FLAT menu
+  // looked fine — nothing re-allocated while it was open. A SLIDING SUBMENU
+  // resizes the popover mid-flight, allocation runs, nothing re-presented,
+  // and the popover's positioning went stale -> GTK popped it down. That
+  // was the s344 "submenu blinks shut": not a submenu bug, a parenting-
+  // contract breach that only a resize could expose. One override here
+  // fixes the class for every popover Canvas will ever parent.
+  void size_allocate_vfunc(int width, int height, int baseline) override;
+
+public:
   void set_document(CurvzDocument *doc);
   void set_zoom(double zoom);
   void set_active_tool(ActiveTool tool);
@@ -581,6 +596,18 @@ public:
   bool text_style_query_margins(double& out_top, double& out_bottom,
                                 double& out_left, double& out_right) const;
 
+  // s346 — tracking (per-run letter-spacing) over the caret/selection for
+  // the Spacing popover's Character group (write-only until now). out_units
+  // is the raw span scaling (PANGO_ATTR_LETTER_SPACING ivalue); the popover
+  // converts to em against its size reference, inverting its write. Gap
+  // default per paragraph is the resolved style's letter_spacing, scaled as
+  // the renderer seeds it (s343).
+  bool text_style_query_tracking(long& out_units, bool& out_mixed) const;
+
+  // s346 — baseline rise over the caret/selection (points; positive = up).
+  // No style/node tier exists for rise — gaps read 0.
+  bool text_style_query_rise(double& out_pt, bool& out_mixed) const;
+
   // s341 — the named-text-style verbs (the clickable surface for the s340
   // engine). apply_text_style BINDS the caret/selection's paragraph(s) to the
   // style id (the three-tier cascade's anchor: the fitter resolves it under the
@@ -735,6 +762,10 @@ public:
   // Text tool — invoked from MainWindow key handler and entry signals
   void commit_text_edit();
   void cancel_text_edit();
+  // s347 — AddNode + textonpath_# grouping for a newly committed pattern
+  // text, as one composite undo step. Returns the post-commit selection
+  // target (the group, or the text when grouping wasn't possible).
+  SceneNode *finalize_new_pattern_text();
 
   // Ref tool — place a ref point at display/user-space coordinates
   void place_ref_at_display(double ux, double uy);
@@ -2057,6 +2088,18 @@ private:
   double m_top_drag_start_off = 0.0;
   double m_top_drag_start_x = 0.0;
   double m_top_drag_start_y = 0.0;
+  // s348 m2 — slide-anchor drag (path-text v2): grabbing ANY line's anchor
+  // tick slides the ONE shared text_guide_anchor along the guide; every
+  // line's geometry is derived, so all lines move together. Live mutation
+  // during the drag; ONE PatternAnchorCommand pushed at release.
+  // s348 m3 — the grabbed tick FOLLOWS THE POINTER, always; Ctrl (read
+  // LIVE each motion frame, never latched at press) decides only whether
+  // the other family is towed. The family is fixed at the grab. Family 2
+  // = flipped lines (closed) or the offset stack (open) — see TopTick.
+  bool m_top_anchor_dragging = false;
+  double m_top_anchor_start = 0.0;  // anchor arc at grab — the undo 'before'
+  double m_top_anchor_delta_start = 0.0;  // flip delta at grab — undo 'before'
+  bool m_top_anchor_grab_second = false;  // which family holds the grab
 
   void on_top_begin(double x, double y);
   void on_top_motion(double x, double y);
@@ -2074,6 +2117,18 @@ private:
   bool path_point_at(const BezierPath &bp, const std::vector<double> &arc_table,
                      double total_len, double arc_offset, Vec2 &pos,
                      double &angle) const;
+  // s346 — path-text v2 (text_on_path_v2.md): the inverse of path_point_at —
+  // project a doc-space point onto the path, returning the arc-length offset
+  // of the nearest point and the distance to it. Coarse per-segment sampling
+  // refined locally; tool-gesture precision, not CAD precision. Returns false
+  // on a degenerate path.
+  bool project_to_path(const BezierPath &bp,
+                       const std::vector<double> &arc_table, double total_len,
+                       const Vec2 &p, double &out_arc, double &out_dist) const;
+  // s346 — path-text v2: the text node attached to a given guide leaf (by
+  // text_guide_id), or null. One text per guide is canonical in v2; first
+  // match wins.
+  SceneNode *find_guide_attached_text(const std::string &guide_iid) const;
 
   // Guide selection — multi-select set (mirrors m_selection for objects)
   std::vector<SceneNode *> m_guide_selection;
@@ -2964,15 +3019,63 @@ public:
   bool apply_text_format_set(int attr_type, long ivalue,
                              const std::string& svalue);
 
+  // s346 — Insert a UTF-8 string at the caret (replacing any selection),
+  //   flushed so each insertion is its own undo step. The one insert path
+  //   shared by the right-click Insert menu (s344) and the special-character
+  //   chords in handle_text_edit_key (Ctrl+Shift+Space / Ctrl+- /
+  //   Ctrl+Shift+-). No-op without an active caret edit.
+  bool insert_utf8_at_caret(const std::string& utf8);
+
   // s301 m1c — Public query for the active text-edit state. MainWindow
   // uses this to gate which shortcuts pass through.
   bool text_cursor_active() const { return (bool)m_text_cursor; }
+
+  // ── s347 — path-text v2 m3: the arc seam for the caret ──────────────────
+  // TextCursor's pattern branches (position_on_canvas / byte_index_at) map
+  // between line-local x and guide arc through these three. They wrap the
+  // private arc machinery (build_arc_table / path_point_at /
+  // project_to_path) with the v2 wrap policy — closed guides wrap modulo
+  // length, open guides clamp — so the caret and the renderer agree on
+  // where an arc lands. Per-call table builds: caret ops are click/keystroke
+  // frequency; the glyph renderer keeps its own amortized loop.
+  SceneNode *find_guide_path(const std::string &iid) const;
+  // s347 m4 — `offset` selects the line's derived walk path (0 = the guide;
+  // > 0 = the inward parallel offset, via pattern_walk_path — the same pump
+  // the fitter and renderer use, so all consumers agree).
+  bool guide_arc_point(const SceneNode *guide, double arc, bool flip,
+                       Vec2 &pos, double &angle, double offset = 0.0) const;
+  bool guide_project_point(const SceneNode *guide, const Vec2 &p,
+                           double &out_arc, double &out_dist,
+                           double *out_total = nullptr,
+                           double offset = 0.0) const;
+  // s348 m2 — the anchor-tick images: (doc pos, tangent angle) for every
+  // line's tick — line 0 at text_guide_anchor on the raw guide, each
+  // further pattern line at its own anchor image on its walk path (the
+  // antipode half-turn for flipped lines), the SAME derivation the s347
+  // overlay drew with. draw_top_overlay and on_top_begin's tick hit-test
+  // both consume this one helper so the grab target can never disagree
+  // with the drawn tick.
+  // s348 m3 — each tick reports its FAMILY so the grab knows which side
+  // it holds: family 1 is the anchor's own (line 0); family 2 carries the
+  // independent slide delta — flipped lines on CLOSED guides, the
+  // below-stack (offset) lines on OPEN guides. Plain drag slides both
+  // families in sync; Ctrl+drag slides the grabbed family independently.
+  struct TopTick { Vec2 pos; double angle = 0.0; bool second = false; };
+  std::vector<TopTick>
+  top_anchor_ticks(const SceneNode *txt, const SceneNode *guide);
 
 private:
   void position_text_entry(); // move entry widget to node's screen pos
   void draw_text_on_path(const Cairo::RefPtr<Cairo::Context> &cr,
                          const SceneNode &text_obj,
                          const SceneNode &guide_path);
+  // s347 — path-text v2 m2: the pattern renderer. Consumes
+  // compute_text_layout's pattern baselines (glyph-walks each one along the
+  // guide's arc). Replaces draw_text_on_path for v2 objects; the legacy
+  // renderer above dies with the rest of the old walker at m5.
+  void draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
+                          const SceneNode &text_obj,
+                          const SceneNode &guide);
   void draw_text_node(const Cairo::RefPtr<Cairo::Context> &cr,
                       const SceneNode &obj);
 

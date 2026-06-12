@@ -364,6 +364,31 @@ void GuideMoveCommand::undo() {
     node->guide_angle = before_angle;
 }
 
+// ── PatternAnchorCommand bodies (s348 m2/m3) ─────────────────────────
+// Two-field swap of text_guide_anchor + text_guide_anchor_flip_delta;
+// everything visual is derived. Same resolution + no-op-on-missing
+// shape as GuideMoveCommand above.
+
+void PatternAnchorCommand::execute() {
+    if (!proj) return;
+    invalidate_iid_indexes(proj);
+    if (obj_iid.empty()) return;
+    auto* node = curvz::utils::find_by_iid(*proj, obj_iid);
+    if (!node) return;
+    node->text_guide_anchor            = after_arc;
+    node->text_guide_anchor_flip_delta = after_delta;
+}
+
+void PatternAnchorCommand::undo() {
+    if (!proj) return;
+    invalidate_iid_indexes(proj);
+    if (obj_iid.empty()) return;
+    auto* node = curvz::utils::find_by_iid(*proj, obj_iid);
+    if (!node) return;
+    node->text_guide_anchor            = before_arc;
+    node->text_guide_anchor_flip_delta = before_delta;
+}
+
 // ── MoveObjectCommand bodies (s169 m1) ───────────────────────────────
 // Text-anchor and image-origin moves. Branches on the resolved node's
 // type — text writes text_x/text_y, image writes image_x/image_y. The

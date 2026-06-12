@@ -2470,9 +2470,122 @@ SceneNode* Canvas::hit_overflow_link(double doc_x, double doc_y) {
 }
 
 
+// ── s347 — finalize a NEW pattern (guide-attached) text into history ────────
+// One gesture, one undo step: a CompositeCommand of [AddNode(text),
+// GroupNodes({guide's top-level object, text})], the group named
+// "textonpath_N" (Scott's organization ruling — the text and its ruler
+// travel together in Layers; the ruler model is untouched, the group is
+// organizational, not ownership). Called from BOTH commit_text_edit and
+// cancel_text_edit's new-pattern-content branch so the two deactivate
+// routes cannot diverge. Returns the node to select afterwards (the group,
+// or the text when grouping wasn't possible).
+//
+// Grouping is skipped (AddNode alone is pushed) when: the guide dangles,
+// the guide's top object isn't in the same layer as the text, or that top
+// object is ALREADY a textonpath_# group (a second text on another leaf of
+// the same compound — rare; nesting groups would be worse than leaving the
+// text alongside; noted for m5).
+SceneNode *Canvas::finalize_new_pattern_text() {
+  SceneNode *text = m_text_editing;
+  if (!text || !m_doc)
+    return text;
+
+  // Owning layer (the attach gesture inserts at layer level).
+  SceneNode *layer = nullptr;
+  for (auto &l : m_doc->layers) {
+    for (auto &ch : l->children)
+      if (ch.get() == text) { layer = l.get(); break; }
+    if (layer) break;
+  }
+  if (!layer)
+    return text;
+
+  auto add_cmd = std::make_unique<AddNodeCommand>(layer, clone_node(*text));
+
+  // The guide's top-level ancestor within this layer (the leaf may sit
+  // inside a Compound; the group wraps the whole drawable).
+  SceneNode *guide_top = nullptr;
+  if (SceneNode *guide = find_guide_path(text->text_guide_id)) {
+    SceneNode *cur = guide;
+    while (cur) {
+      int idx = 0;
+      SceneNode *par = find_parent(m_doc, cur, &idx);
+      if (!par) { cur = nullptr; break; }
+      if (par == layer) { guide_top = cur; break; }
+      cur = par;
+    }
+  }
+  const bool already_top_grouped =
+      guide_top && guide_top->type == SceneNode::Type::Group &&
+      guide_top->name.rfind("textonpath_", 0) == 0;
+
+  if (!guide_top || guide_top == text || already_top_grouped ||
+      !m_history || !project()) {
+    if (already_top_grouped)
+      LOG_INFO("finalize_new_pattern_text: guide already in '{}' — text "
+               "left at layer level (multi-text-per-compound grouping is "
+               "an m5 item)",
+               guide_top->name);
+    if (m_history)
+      m_history->push(std::move(add_cmd));
+    return text;
+  }
+
+  // Targets in PARENT Z-ORDER with original indices (GroupNodesCommand's
+  // contract, same capture group_selection performs).
+  std::vector<std::string> target_iids;
+  std::vector<int> target_indices_before;
+  int insert_idx = (int)layer->children.size();
+  for (int i = 0; i < (int)layer->children.size(); ++i) {
+    SceneNode *c = layer->children[i].get();
+    if (c == guide_top || c == text) {
+      target_iids.push_back(c->internal_id);
+      target_indices_before.push_back(i);
+      insert_idx = std::min(insert_idx, i);
+    }
+  }
+  if (target_iids.size() != 2) {
+    m_history->push(std::move(add_cmd));
+    return text;
+  }
+
+  // Gap-filled textonpath_N name across the whole document.
+  int maxn = 0;
+  std::function<void(SceneNode *)> scan = [&](SceneNode *n) {
+    if (n->type == SceneNode::Type::Group &&
+        n->name.rfind("textonpath_", 0) == 0) {
+      int v = atoi(n->name.c_str() + 11);
+      if (v > maxn) maxn = v;
+    }
+    for (auto &ch : n->children)
+      scan(ch.get());
+  };
+  for (auto &l : m_doc->layers)
+    scan(l.get());
+  const std::string gname = "textonpath_" + std::to_string(maxn + 1);
+  const std::string giid = generate_internal_id();
+
+  auto grp = std::make_unique<GroupNodesCommand>(
+      project(), layer->internal_id, std::move(target_iids),
+      std::move(target_indices_before), insert_idx, giid, gname,
+      "Attach text to path");
+  grp->execute();  // structural-command pattern: do it, then record it
+
+  auto comp = std::make_unique<CompositeCommand>("Attach text to path");
+  comp->add(std::move(add_cmd));
+  comp->add(std::move(grp));
+  m_history->push(std::move(comp));
+
+  for (auto &ch : layer->children)
+    if (ch && ch->internal_id == giid)
+      return ch.get();
+  return text;
+}
+
 void Canvas::commit_text_edit() {
   if (!m_text_editing)
     return;
+  SceneNode *pattern_select = nullptr;  // s347 — set by the pattern branch
 
   // s301 m1c — Content source depends on which edit path is active.
   // If the canvas TextCursor is up, the text has been mutated in real
@@ -2529,6 +2642,10 @@ void Canvas::commit_text_edit() {
             break;
           }
         }
+      } else if (!m_text_editing->text_guide_id.empty()) {
+        // s347 — new PATTERN text: AddNode + textonpath_# grouping as one
+        // undoable composite; the group becomes the post-commit selection.
+        pattern_select = finalize_new_pattern_text();
       } else {
         for (auto &layer : m_doc->layers) {
           bool found_text = false;
@@ -2558,6 +2675,7 @@ void Canvas::commit_text_edit() {
   // also fall back to m_text_editing so we never leave the user with
   // an empty selection.
   SceneNode *to_select = m_text_editing;
+  if (pattern_select) to_select = pattern_select;  // s347 — the textonpath group
   if (m_text_boundary_editing) {
     SceneNode* text_box = find_text_box_for_text(m_text_editing);
     if (text_box) to_select = text_box;
@@ -2597,6 +2715,17 @@ void Canvas::cancel_text_edit() {
   bool is_new_unbound_empty =
       m_text_is_new && !m_text_boundary_editing &&
       m_text_editing && m_text_editing->text_content.empty();
+  // s347 m3 — a NEW pattern (guide-attached) text deactivated WITH content:
+  // Esc should leave the same history state as click-outside (which routes
+  // through commit). Without this, the legacy-unbound else below flushes
+  // nothing (no snapshot on a new node) and the creation never enters
+  // history — Ctrl+Z couldn't remove it. Empty new pattern text is covered
+  // by is_new_unbound_empty above (deleted), which also closes the m1
+  // stranded-empty-node limit.
+  bool is_new_pattern_content =
+      m_text_is_new && !m_text_boundary_editing && m_text_editing &&
+      !m_text_editing->text_guide_id.empty() &&
+      !m_text_editing->text_content.empty();
 
   if (is_new_unbound_empty) {
     // Remove the bare (unbound, empty) text node.
@@ -2640,6 +2769,16 @@ void Canvas::cancel_text_edit() {
     m_selected = sel_target;
     m_selection = {sel_target};
     notify_object_selection_changed();
+  } else if (is_new_pattern_content) {
+    // s347 — same finalize as commit (AddNode + textonpath_# group, one
+    // composite): Esc and click-outside leave identical history and tree
+    // state. Select the group so the user sees what was made.
+    SceneNode *sel = finalize_new_pattern_text();
+    if (sel) {
+      m_selected = sel;
+      m_selection = {sel};
+      notify_object_selection_changed();
+    }
   } else {
     // s307 m1 — Existing-text deactivate. "Cancel" is a misnomer here;
     //   the only rewind in this UI is Ctrl+Z. Esc, click-outside, and
@@ -10205,199 +10344,344 @@ void Canvas::on_ruler_end(double /*x*/, double /*y*/) {
 }
 
 void Canvas::on_top_begin(double x, double y) {
+  // s346 — path-text v2 (docs/text_on_path_v2.md): the phase machine is
+  // retired. The gesture is PATH-FIRST: click a leaf path -> project the
+  // click onto it -> create an attached text node anchored at the
+  // projection (undoable), or, if the guide already carries attached text,
+  // select that text. Compound subpaths are leaf Path children with their
+  // own iids, so clicking near the ring's inner circle attaches to the
+  // inner circle — no subpath indexing. Edit-session entry (caret +
+  // StyleBar) lands in v2 m3; m1 ends at created/selected + anchor tick.
   if (!m_doc)
     return;
   double dx, dy;
   screen_to_doc(x, y, dx, dy);
-  double tol = 10.0 / m_zoom;
-  LOG_DEBUG("on_top_begin: phase={} screen=({:.1f},{:.1f}) doc=({:.1f},{:.1f})",
-            m_top_phase, x, y, dx, dy);
+  const double tol = 12.0 / m_zoom;
 
-  // Phase 2: check if clicking the offset drag handle OR anywhere on the guide
-  // path
-  if (m_top_phase == 2 && m_top_text && !m_top_text->text_path_id.empty()) {
-    SceneNode *guide = top_find_path_by_id(m_top_text->text_path_id);
-    if (guide && guide->path) {
-      BezierPath bp = BezierPath::from_path_data(*guide->path);
-      std::vector<double> arc_table;
-      double total = build_arc_table(bp, arc_table);
-
-      // Hit-test the I-beam handle (tight tolerance).
-      // flip=true: I-beam is at the mirrored arc position.
-      double ibeam_arc = m_top_text->text_path_flip
-                             ? total - m_top_text->text_path_offset
-                             : m_top_text->text_path_offset;
-      Vec2 pos;
-      double angle;
-      if (path_point_at(bp, arc_table, total, ibeam_arc, pos, angle)) {
-        double hsx, hsy;
-        doc_to_screen(pos.x, pos.y, hsx, hsy);
-        double dist = std::hypot(x - hsx, y - hsy);
-        LOG_DEBUG("on_top_begin phase2: ibeam screen=({:.1f},{:.1f}) "
-                  "dist={:.1f} tol={:.1f}",
-                  hsx, hsy, dist, tol + 6.0);
-        if (dist < tol + 6.0) {
-          LOG_DEBUG("on_top_begin phase2: HIT ibeam — starting drag");
-          m_top_dragging = true;
-          m_top_drag_start_off = m_top_text->text_path_offset;
-          m_top_drag_start_x = x;
-          m_top_drag_start_y = y;
-          return;
+  // s348 m2 — SLIDE-ANCHOR grab, FIRST. The ticks belong to the active
+  // pattern text (the one being edited, else the selected one — the same
+  // resolution draw_top_overlay uses), and the hit-test rides the same
+  // top_anchor_ticks helper the overlay draws from. Ordering is the
+  // contract: a tick sits ON the path (line 0) or over the lettering
+  // (further lines), so this test must run before the on-path caret
+  // reposition and the text-band test below — grabbing a tick slides the
+  // anchor; it never repositions the caret or re-attaches.
+  {
+    SceneNode *ttxt = nullptr;
+    if (m_text_editing && !m_text_editing->text_guide_id.empty())
+      ttxt = m_text_editing;
+    else if (m_top_text && is_node_alive(m_top_text) &&
+             !m_top_text->text_guide_id.empty())
+      ttxt = m_top_text;
+    else if (m_selected && m_selected->is_text() &&
+             !m_selected->text_guide_id.empty())
+      ttxt = m_selected;
+    if (ttxt) {
+      if (SceneNode *tg = find_guide_path(ttxt->text_guide_id)) {
+        const double grab = 12.0;  // screen px — tick half-length + slack
+        for (const auto &t : top_anchor_ticks(ttxt, tg)) {
+          double sx, sy;
+          doc_to_screen(t.pos.x, t.pos.y, sx, sy);
+          const double ddx = sx - x, ddy = sy - y;
+          if (ddx * ddx + ddy * ddy <= grab * grab) {
+            if (ttxt->internal_id.empty())
+              ttxt->internal_id = generate_internal_id();
+            m_top_text = ttxt;
+            m_top_anchor_dragging = true;
+            m_top_anchor_start = ttxt->text_guide_anchor;
+            m_top_anchor_delta_start = ttxt->text_guide_anchor_flip_delta;
+            m_top_anchor_grab_second = t.second;
+            LOG_DEBUG("on_top_begin: anchor tick grabbed iid='{}' arc={:.1f} "
+                      "family2={}",
+                      ttxt->internal_id, m_top_anchor_start,
+                      m_top_anchor_grab_second);
+            queue_draw();
+            return;
+          }
         }
       }
-      // Also hit-test the full path stroke
-      HitResult hr = bp.hit_test({dx, dy}, m_zoom, 10.0);
-      LOG_DEBUG("on_top_begin phase2: path hit_test kind={}", (int)hr.kind);
-      if (hr.kind != HitResult::Kind::None) {
-        LOG_DEBUG("on_top_begin phase2: HIT path stroke — starting drag");
-        m_top_dragging = true;
-        m_top_drag_start_off = m_top_text->text_path_offset;
-        m_top_drag_start_x = x;
-        m_top_drag_start_y = y;
-        return;
+    }
+  }
+
+  // Nearest leaf path across visible, unlocked, ordinary layers — recursing
+  // through groups and compounds so subpath leaves are individually
+  // addressable.
+  SceneNode *best_guide = nullptr;
+  double best_dist = tol;
+  double best_arc = 0.0;
+  std::function<void(SceneNode *)> visit = [&](SceneNode *n) {
+    if (n->is_path() && n->path && n->path->nodes.size() >= 2) {
+      BezierPath bp = BezierPath::from_path_data(*n->path);
+      std::vector<double> arc_table;
+      const double total = build_arc_table(bp, arc_table);
+      double arc = 0.0, dist = 0.0;
+      if (total >= 0.001 &&
+          project_to_path(bp, arc_table, total, {dx, dy}, arc, dist) &&
+          dist < best_dist) {
+        best_dist = dist;
+        best_guide = n;
+        best_arc = arc;
       }
     }
-    // Phase 2 miss: click hit neither I-beam nor guide path stroke.
-    // Stay in phase 2 — a miss is a no-op, not a reason to lose the selection.
+    for (auto &ch : n->children)
+      visit(ch.get());
+  };
+  for (auto &layer : m_doc->layers) {
+    if (!layer->visible || layer->locked || layer->is_special_layer())
+      continue;
+    for (auto &obj : layer->children)
+      visit(obj.get());
+  }
+
+  if (!best_guide) {
+    // Miss. s347 m3 — if an edit is in progress, this is the click-outside
+    // deactivate (same semantic as the Text tool: commit, which routes to
+    // cancel for an empty new node and deletes it — the m1 "stranded empty
+    // node" limit closes here). Otherwise a no-op, not a reason to lose
+    // the selection.
+    if (m_text_editing && m_text_cursor)
+      commit_text_edit();
     return;
   }
 
-  // Right-click is handled by on_top_rclick — skip here
-  // Phase 0: pick a text node
-  if (m_top_phase == 0) {
-    // Hit-test text nodes
-    for (auto &layer : m_doc->layers) {
-      if (!layer->visible || layer->locked || layer->is_special_layer())
-        continue;
-      for (auto &obj_uptr : layer->children) {
-        SceneNode *obj = obj_uptr.get();
-        if (!obj->is_text())
+  // s347 m3 — ToP-click on the guide whose text is ALREADY being edited →
+  // reposition the caret at the click (the s319 OA idiom), staying in the
+  // edit; the press also ARMS DRAG-SELECT (m_top_dragging) — on_top_motion
+  // extends the selection from this anchor, the universal text gesture.
+  // byte_index_at's pattern branch projects the click onto the guide and
+  // un-maps the arc to a byte.
+  if (m_text_editing && m_text_cursor &&
+      m_text_editing->text_guide_id == best_guide->internal_id) {
+    if (auto b = m_text_cursor->byte_index_at(dx, dy)) {
+      m_text_cursor->set_byte_index(*b);
+      m_text_cursor->collapse_selection();
+      m_text_cursor->set_visible(true);
+      m_top_dragging = true;  // s347 — drag from here extends selection
+      emit_text_style_changed();  // s330 — face follows the click
+    }
+    queue_draw();
+    return;
+  }
+  // s347 — TEXT-BAND acceptance during an edit. The 12px path tolerance
+  // above is the ATTACH gesture's; the edited text's glyphs sit up to an
+  // ascent off the path (bottom lines hang; stacked lines ride inward
+  // offsets), so a click ON the lettering often misses the raw path test
+  // and would commit the edit — the "caret is hard to move" symptom.
+  // Before declaring a miss, test the click against each line's own walk
+  // path with a band of (ascent + descent + slack): inside the band →
+  // reposition + arm drag-select, exactly as the on-path case above.
+  if (m_text_editing && m_text_cursor &&
+      !m_text_editing->text_guide_id.empty()) {
+    if (SceneNode *eg = find_guide_path(m_text_editing->text_guide_id)) {
+      TextLayout etl = compute_text_layout(
+          eg, m_text_editing, 0,
+          project() ? &project()->text_styles : nullptr);
+      const double slack = 8.0 / m_zoom;
+      bool in_band = false;
+      for (const auto &bl : etl.baselines) {
+        if (!bl.pattern)
           continue;
-
-        bool hit = false;
-        if (!obj->text_path_id.empty()) {
-          // Linked text: hit-test the guide path stroke so the user
-          // can click anywhere along the path to re-select the link.
-          SceneNode *guide = top_find_path_by_id(obj->text_path_id);
-          if (guide && guide->path) {
-            BezierPath bp = BezierPath::from_path_data(*guide->path);
-            HitResult hr = bp.hit_test({dx, dy}, m_zoom, 10.0);
-            hit = (hr.kind != HitResult::Kind::None);
-          }
-        } else {
-          // Unlinked text: use approx bounding box
-          double approx_w =
-              obj->text_content.size() * obj->text_font_size * 0.6;
-          double approx_h = obj->text_font_size * 1.4;
-          double tx = obj->text_x;
-          double ty = obj->text_y;
-          if (obj->text_anchor == "middle")
-            tx -= approx_w * 0.5;
-          if (obj->text_anchor == "end")
-            tx -= approx_w;
-          hit = (dx >= tx - 4 && dx <= tx + approx_w + 4 &&
-                 dy >= ty - approx_h && dy <= ty + 4);
-        }
-
-        if (hit) {
-          m_top_text = obj;
-          // If already linked, jump straight to phase 2
-          if (!obj->text_path_id.empty()) {
-            m_top_path_node = top_find_path_by_id(obj->text_path_id);
-            m_top_phase = 2;
-          } else {
-            m_top_phase = 1;
-            m_top_path_node = nullptr;
-          }
-          m_selected = obj;
-          m_selection = {obj};  // s159 m2: keep m_selection in sync for SelectionContext
-          notify_object_selection_changed();
-          queue_draw();
-          return;
+        double arc = 0.0, dist = 0.0;
+        if (guide_project_point(eg, {dx, dy}, arc, dist, nullptr,
+                                bl.pattern->offset) &&
+            dist <= bl.ascent + bl.descent + slack) {
+          in_band = true;
+          break;
         }
       }
+      if (in_band) {
+        if (auto b = m_text_cursor->byte_index_at(dx, dy)) {
+          m_text_cursor->set_byte_index(*b);
+          m_text_cursor->collapse_selection();
+          m_text_cursor->set_visible(true);
+          m_top_dragging = true;
+          emit_text_style_changed();
+        }
+        queue_draw();
+        return;
+      }
     }
-    // Missed — reset
-    m_top_text = nullptr;
-    m_top_phase = 0;
+  }
+
+  // Editing some OTHER text and clicked a different guide: commit the
+  // current edit first, then fall through to select/create on this guide.
+  if (m_text_editing && m_text_cursor)
+    commit_text_edit();
+
+  // Guide already carries attached text -> enter editing it (one text per
+  // guide is canonical in v2). s347 m3 — a real edit session: snapshot for
+  // the segment-undo machinery, cursor with the GUIDE as its boundary (the
+  // cursor's layout_for then routes through the pattern fitter), caret
+  // placed at the click projection. The whole s330–s346 StyleBar relay
+  // lights off begin_text_cursor_edit's emit.
+  if (SceneNode *existing = find_guide_attached_text(best_guide->internal_id)) {
+    m_text_editing = existing;
+    m_text_is_new = false;
+    m_text_snapshot = TextEditCommand::snapshot_before(project(), existing);
+    m_text_has_snapshot = true;
+    m_top_text = existing;
+    m_selected = existing;
+    m_selection = {existing};
+    notify_object_selection_changed();
+    m_text_boundary_editing = nullptr;  // pattern text has no box boundary
+    if (m_text_entry) {
+      m_text_entry_conn_activate.disconnect();
+      m_text_entry_conn_changed.disconnect();
+      m_text_entry->set_visible(false);
+    }
+    begin_text_cursor_edit(existing, best_guide);
+    if (auto b = m_text_cursor->byte_index_at(dx, dy)) {
+      m_text_cursor->set_byte_index(*b);
+      m_text_cursor->collapse_selection();
+      m_text_cursor->set_visible(true);
+      emit_text_style_changed();
+    }
     queue_draw();
     return;
   }
 
-  // s298 m1 (A4): removed unreachable "phase 0 bare-path → new linked text"
-  // branch that previously lived here. Two consecutive `if (m_top_phase == 0)`
-  // blocks existed; the first (text hit-test, just above) always returns —
-  // hit returns at notify_object_selection_changed(); miss returns at the
-  // "Missed — reset" branch. Nothing could ever reach the second block.
-  // Cleanup-only, no behavior change. Captured in s297's text-on-path
-  // redesign recon (text_on_path_redesign.md, code recon finding 4).
-
-  // Phase 1: pick a path node to link
-  if (m_top_phase == 1 && m_top_text) {
-    // Hit-test path objects
-    for (auto &layer : m_doc->layers) {
-      if (!layer->visible || layer->locked || layer->is_special_layer())
-        continue;
-      for (auto &obj_uptr : layer->children) {
-        SceneNode *obj = obj_uptr.get();
-        if (!obj->is_path() || !obj->path)
-          continue;
-        if (obj == m_top_text)
-          continue;
-        BezierPath bp = BezierPath::from_path_data(*obj->path);
-        HitResult hr = bp.hit_test({dx, dy}, m_zoom, 12.0);
-        if (hr.kind != HitResult::Kind::None) {
-          // Check multi-line warning
-          const std::string &tc = m_top_text->text_content;
-          if (tc.find('\n') != std::string::npos) {
-            if (auto *win = dynamic_cast<Gtk::Window *>(get_root()))
-              curvz::utils::show_alert(
-                  *win, "Text on path supports single-line text only.",
-                  "Only the first line of text will be used. "
-                  "Please edit the text to a single line.");
-          }
-          // Ensure path has stable internal_id
-          if (obj->internal_id.empty())
-            obj->internal_id = generate_internal_id();
-          // s175 m2: ensure text node has stable internal_id too — the
-          // migrated LinkTextToPathCommand captures m_top_text's iid for
-          // resolution at undo/redo time. Symmetric with the path-side
-          // ensure above.
-          if (m_top_text->internal_id.empty())
-            m_top_text->internal_id = generate_internal_id();
-          // Push undo command before mutating
-          if (m_history) {
-            m_history->push(std::make_unique<LinkTextToPathCommand>(
-                project(), m_top_text->internal_id,
-                m_top_text->text_path_id, // before (empty or old)
-                m_top_text->text_path_offset, m_top_text->text_path_flip,
-                m_top_text->text_x, m_top_text->text_y, // before x/y
-                obj->internal_id,                       // after
-                0.0, false, m_top_text->text_x,
-                m_top_text->text_y)); // after x/y (unchanged)
-          }
-          m_top_text->text_path_id = obj->internal_id;
-          m_top_text->text_path_offset = 0.0;
-          m_top_text->text_path_flip = false;
-          m_top_path_node = obj;
-          m_top_phase = 2;
-          // Keep text node selected so inspector shows text panel
-          m_selected = m_top_text;
-          m_selection = {m_top_text};  // s159 m2: keep m_selection in sync for SelectionContext
-          notify_object_selection_changed();
-          // Persist the link immediately — ensures data-curvz-iid is
-          // written to SVG before next load, so text_path_id survives
-          // restarts without UUID re-assignment breaking the link.
-          m_sig_doc_changed.emit();
-          queue_draw();
-          return;
-        }
-      }
-    }
+  // Create the attached text node. Mirrors the selection-tool new-text
+  // construction (style funnel, defaults, front insertion) with the v2
+  // attachment fields; text_x/text_y are set to the anchor position as a
+  // cached convenience only — geometry is DERIVED from (guide, anchor).
+  Vec2 anchor_pos{dx, dy};
+  {
+    BezierPath bp = BezierPath::from_path_data(*best_guide->path);
+    std::vector<double> arc_table;
+    const double total = build_arc_table(bp, arc_table);
+    double angle = 0.0;
+    path_point_at(bp, arc_table, total, best_arc, anchor_pos, angle);
   }
+  auto obj = std::make_unique<SceneNode>();
+  obj->type = SceneNode::Type::Text;
+  obj->internal_id = generate_internal_id();
+  obj->name = m_doc->next_default_name(CurvzDocument::NameKind::Text);
+  style::mutate_appearance(*obj, [this](SceneNode &nn) {
+    nn.fill = m_def_fill;
+    nn.stroke = m_def_stroke;
+    nn.stroke.paint.type = FillStyle::Type::None;  // default: no stroke on text
+  });
+  obj->text_x = anchor_pos.x;
+  obj->text_y = anchor_pos.y;
+  obj->text_font_family = "Sans";
+  obj->text_font_size = 24.0;
+  obj->text_anchor = "start";
+  obj->text_align = "center";  // s348 m4 — ToP default: centre ON the anchor
+                               // (Scott's ruling); per-selection align runs
+                               // override as usual. Box text stays "left".
+  obj->text_guide_id = best_guide->internal_id;
+  obj->text_guide_anchor = best_arc;
+
+  SceneNode *layer = m_doc->active_layer();
+  if (!layer)
+    layer = m_doc->layers[0].get();
+  layer->children.insert(layer->children.begin(), std::move(obj));
+  SceneNode *node = layer->children.front().get();
+  // s347 m3 — new-text undo follows the TBM m_text_is_new pattern: NO
+  // history push at creation. commit_text_edit's unbound-new branch pushes
+  // the AddNodeCommand when the edit ends with content (the node is a
+  // direct layer child, so that branch finds it as-is); cancel's
+  // new-unbound-empty branch deletes it when abandoned empty. The m1
+  // creation-time push is gone — it double-entered history once commit
+  // learned about the node.
+  m_text_editing = node;
+  m_text_is_new = true;
+  m_text_has_snapshot = false;
+  m_text_boundary_editing = nullptr;
+  m_top_text = node;
+  m_selected = node;
+  m_selection = {node};
+  notify_object_selection_changed();
+  if (m_text_entry) {
+    m_text_entry_conn_activate.disconnect();
+    m_text_entry_conn_changed.disconnect();
+    m_text_entry->set_visible(false);
+  }
+  begin_text_cursor_edit(node, best_guide);
+  m_sig_doc_changed.emit();
+  LOG_DEBUG("on_top_begin v2: attached new text iid='{}' guide='{}' "
+            "anchor={:.1f} dist={:.2f} — editing",
+            node->internal_id, best_guide->internal_id, best_arc, best_dist);
+  queue_draw();
 }
 
 void Canvas::on_top_motion(double x, double y) {
+  // s348 m2/m3/m6 — slide-anchor drag: project the pointer onto the RAW
+  // guide (offset 0). THE invariant: the GRABBED tick follows the pointer,
+  // always. Ctrl decides only whether the OTHER family is towed, and is
+  // read LIVE each frame (m_mod_ctrl is refreshed from the drag event in
+  // the update dispatch — the rotate-lock idiom), so holding/releasing
+  // Ctrl mid-drag switches towing without anything jumping.
+  //
+  // Family 2's image sits at anchor + delta + half, where half is the
+  // antipode half-turn on CLOSED guides (flipped lines) and 0 on OPEN
+  // (the below-stack — s348 m6 second family):
+  //   family-1 grab: anchor = arc. Ctrl → delta counter-writes (family 2
+  //                  planted); no Ctrl → delta untouched (towed).
+  //   family-2 grab: Ctrl → solve into delta (family 1 planted);
+  //                  no Ctrl → solve into anchor (family 1 towed rigidly).
+  // Closed arcs wrap; open arcs ride unwrapped and the renderer clamps —
+  // the v2 open policy. Live mutation only; ONE command at release.
+  if (m_top_anchor_dragging) {
+    if (m_top_text && is_node_alive(m_top_text) &&
+        !m_top_text->text_guide_id.empty()) {
+      if (SceneNode *tg = find_guide_path(m_top_text->text_guide_id)) {
+        double arc = 0.0, dist = 0.0, total = 0.0;
+        if (guide_project_point(tg, {x, y}, arc, dist, &total, 0.0) &&
+            total > 0.001) {
+          const bool closed = tg->path && tg->path->closed;
+          auto wrap = [&](double v) {
+            if (!closed)
+              return v;
+            v = std::fmod(v, total);
+            if (v < 0.0)
+              v += total;
+            return v;
+          };
+          const double half = closed ? 0.5 * total : 0.0;
+          const bool independent = m_mod_ctrl;  // live, per frame
+          if (!m_top_anchor_grab_second) {
+            // Family 1 grabbed — anchor under the pointer.
+            const double old_anchor = m_top_text->text_guide_anchor;
+            m_top_text->text_guide_anchor = arc;
+            if (independent)
+              m_top_text->text_guide_anchor_flip_delta =
+                  wrap(m_top_text->text_guide_anchor_flip_delta +
+                       (old_anchor - arc));
+          } else {
+            // Family 2 grabbed — its image under the pointer.
+            if (independent)
+              m_top_text->text_guide_anchor_flip_delta =
+                  wrap(arc - m_top_text->text_guide_anchor - half);
+            else
+              m_top_text->text_guide_anchor =
+                  wrap(arc - half -
+                       m_top_text->text_guide_anchor_flip_delta);
+          }
+        }
+      }
+    }
+    queue_draw();
+    return;
+  }
+  // s347 — drag-select during a pattern edit. The press (on_top_begin)
+  // placed caret + anchor and armed m_top_dragging; motion moves the caret
+  // WITHOUT collapsing, so the selection grows from the anchor — the
+  // universal press-drag text gesture, on the curve. Takes priority over
+  // the legacy slide below (which only ever ran for legacy text_path_id
+  // objects and dies at m5).
+  if (m_top_dragging && m_text_editing && m_text_cursor &&
+      !m_text_editing->text_guide_id.empty()) {
+    if (auto b = m_text_cursor->byte_index_at(x, y)) {
+      if (*b != m_text_cursor->byte_index()) {
+        m_text_cursor->set_byte_index(*b);   // anchor stays: selection grows
+        m_text_cursor->set_visible(true);
+        emit_text_style_changed();           // s330 — face follows selection
+      }
+    }
+    queue_draw();
+    return;
+  }
   if (!m_top_dragging || !m_top_text) {
     queue_draw();
     return;
@@ -10438,6 +10722,37 @@ void Canvas::on_top_motion(double x, double y) {
 }
 
 void Canvas::on_top_end(double /*x*/, double /*y*/) {
+  // s348 m2 — slide-anchor release: ONE undo step per drag. The drag
+  // mutated text_guide_anchor live; the command's `after` equals the live
+  // value, so push-time execute is a no-op write and Ctrl+Z restores the
+  // grab-time arc. Zero-delta releases (a click on the tick) push nothing
+  // — exact double equality is right here, motion wrote by direct
+  // assignment from the projection. Deliberately NOT LinkTextToPathCommand:
+  // that's the legacy tuple-swap and dies at the legacy-deletion milestone.
+  if (m_top_anchor_dragging) {
+    m_top_anchor_dragging = false;
+    if (m_history && m_top_text && is_node_alive(m_top_text) &&
+        !m_top_text->text_guide_id.empty() &&
+        (m_top_text->text_guide_anchor != m_top_anchor_start ||
+         m_top_text->text_guide_anchor_flip_delta !=
+             m_top_anchor_delta_start)) {
+      m_history->push(std::make_unique<PatternAnchorCommand>(
+          project(), m_top_text->internal_id, m_top_anchor_start,
+          m_top_anchor_delta_start, m_top_text->text_guide_anchor,
+          m_top_text->text_guide_anchor_flip_delta));
+    }
+    m_sig_doc_changed.emit();  // persist the new anchor
+    queue_draw();
+    return;
+  }
+  // s347 — release a drag-select (pattern edit) without touching the
+  // legacy slide-commit machinery below.
+  if (m_top_dragging && m_text_editing && m_text_cursor &&
+      !m_text_editing->text_guide_id.empty()) {
+    m_top_dragging = false;
+    queue_draw();
+    return;
+  }
   if (m_top_dragging) {
     // s298 m4 (A3): make the slide-along-path drag undoable. Previously
     // this was a live mutation with no command record — the drag updated

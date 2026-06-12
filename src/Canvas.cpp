@@ -831,9 +831,10 @@ Canvas::Canvas() {
       return;
 
     // s344 — Right-click while editing text (TextBoxMgr caret): insert
-    //   hard-to-type typographic characters. (Intended as an "Insert" submenu,
-    //   but the GTK4 nested submenu blinked shut here, so the items sit at top
-    //   level for now.) Soft hyphen is the MANUAL source for hyphenation -- the breaker already stops at it and
+    //   hard-to-type typographic characters. (s346 — restored to a real
+    //   Insert submenu, plus a Format submenu: the s344 "submenu blinked
+    //   shut" was Canvas missing the GTK4 popover-parenting contract, fixed
+    //   in size_allocate_vfunc.) Soft hyphen is the MANUAL source for hyphenation -- the breaker already stops at it and
     //   (s344 m1) renders a dash; this gives it a real insertion path instead
     //   of pasting U+00AD from elsewhere. The no-break characters need no
     //   fitter change: they ride Pango's log-attrs as break suppressors the
@@ -842,15 +843,21 @@ Canvas::Canvas() {
     //   member / object menus below, and the legacy point-text Gtk::Entry keeps
     //   its own menu.
     if (m_text_editing && m_text_cursor) {
-      struct SpecialChar { const char* label; const char* utf8; };
+      // s346 — accel column added: the three conventional chords
+      // (LibreOffice/Word) display on their items and dispatch in
+      // handle_text_edit_key; the rest have no shared convention and stay
+      // menu-only. The "accel" attribute is display-only in a PopoverMenu —
+      // real dispatch lives in the key handler, per the hotkey rule.
+      struct SpecialChar { const char* label; const char* utf8;
+                           const char* accel; };
       static const SpecialChar kSpecials[] = {
-          {"Soft hyphen", "\u00ad"},
-          {"Non-breaking space", "\u00a0"},
-          {"Word joiner (no break)", "\u2060"},
-          {"Non-breaking hyphen", "\u2011"},
-          {"En dash", "\u2013"},
-          {"Em dash", "\u2014"},
-          {"Ellipsis", "\u2026"},
+          {"Soft hyphen", "\u00ad", "<Control>minus"},
+          {"Non-breaking space", "\u00a0", "<Control><Shift>space"},
+          {"Word joiner (no break)", "\u2060", nullptr},
+          {"Non-breaking hyphen", "\u2011", "<Control><Shift>minus"},
+          {"En dash", "\u2013", nullptr},
+          {"Em dash", "\u2014", nullptr},
+          {"Ellipsis", "\u2026", nullptr},
       };
       auto menu = Gio::Menu::create();
       auto sec = Gio::Menu::create();
@@ -858,32 +865,61 @@ Canvas::Canvas() {
       const int n = (int)(sizeof(kSpecials) / sizeof(kSpecials[0]));
       for (int i = 0; i < n; ++i) {
         const std::string aname = "ins" + std::to_string(i);
-        // Top-level items (the submenu form blinked shut in GTK4 here, s344) --
-        // a flat section, the proven idiom the tbmemberctx menu uses.
+        // s346 — back in a real submenu. The s344 "submenu blinks shut" was
+        // never a submenu bug: Canvas didn't implement the popover-parenting
+        // contract (size_allocate_vfunc -> present(), see Canvas.hpp), so the
+        // slide's RESIZE invalidated the popover. With the contract in place
+        // the category lives where the design rule puts it.
         auto item = Gio::MenuItem::create(kSpecials[i].label,
                                           "txtedit." + aname);
+        if (kSpecials[i].accel)
+          item->set_attribute_value(
+              "accel", Glib::Variant<Glib::ustring>::create(
+                           kSpecials[i].accel));
         sec->append_item(item);
         const std::string utf8 = kSpecials[i].utf8;
         auto act = Gio::SimpleAction::create(aname);
         act->signal_activate().connect(
             [this, utf8](const Glib::VariantBase &) {
-              // Mirrors the keyboard insert path: replace any selection, splice
-              // the UTF-8, then flush so each insertion is its own undo step.
-              if (!m_text_editing || !m_text_cursor)
-                return;
-              if (m_text_cursor->has_selection()) {
-                flush_text_segment();
-                m_text_cursor->delete_selection();
-              }
-              if (m_text_cursor->insert_string(utf8)) {
-                flush_text_segment();
-                m_sig_doc_changed.emit();
-                queue_draw();
-              }
+              insert_utf8_at_caret(utf8);  // s346 — shared with the chords
             });
         ag->add_action(act);
       }
-      menu->append_section("", sec);
+      menu->append_submenu("Insert", sec);
+
+      // s346 — Format quick-toggles: the common character settings on the
+      // same menu, wired to the SAME apply_text_format_toggle verb the
+      // Ctrl+B/I/U chords call (s326), so menu and keyboard stay one
+      // behaviour. Selection-scoped like the chords (bare caret no-ops).
+      {
+        struct FormatToggle { const char* label; const char* aname;
+                              int attr; long ivalue; const char* accel; };
+        static const FormatToggle kToggles[] = {
+            {"Bold",      "fmt-bold",   PANGO_ATTR_WEIGHT,
+             /*PANGO_WEIGHT_BOLD*/ 700,     "<Control>b"},
+            {"Italic",    "fmt-italic", PANGO_ATTR_STYLE,
+             /*PANGO_STYLE_ITALIC*/ 2,      "<Control>i"},
+            {"Underline", "fmt-under",  PANGO_ATTR_UNDERLINE,
+             /*PANGO_UNDERLINE_SINGLE*/ 1,  "<Control>u"},
+        };
+        auto fsec = Gio::Menu::create();
+        for (const auto& t : kToggles) {
+          auto item = Gio::MenuItem::create(t.label,
+                                            std::string("txtedit.") + t.aname);
+          item->set_attribute_value(
+              "accel", Glib::Variant<Glib::ustring>::create(t.accel));
+          fsec->append_item(item);
+          const int attr = t.attr;
+          const long iv = t.ivalue;
+          auto act = Gio::SimpleAction::create(t.aname);
+          act->signal_activate().connect(
+              [this, attr, iv](const Glib::VariantBase&) {
+                apply_text_format_toggle(attr, iv, "");
+              });
+          ag->add_action(act);
+        }
+        menu->append_submenu("Format", fsec);
+      }
       insert_action_group("txtedit", ag);
 
       auto *popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
@@ -1606,6 +1642,20 @@ Canvas::Canvas() {
   // key controller needed (it would require canvas focus which is unreliable).
 
   LOG_DEBUG("Canvas created");
+}
+
+// s346 — see Canvas.hpp: the GTK4 popover-parenting contract. Chain up, then
+// re-present every popover child so a popover that RESIZES while open (a
+// PopoverMenu sliding into a submenu is the canonical case) keeps a valid
+// position instead of going stale and popping down. Walking the child list
+// rather than tracking a member per popover keeps this total over all five
+// context popovers (and any future ones) with zero bookkeeping.
+void Canvas::size_allocate_vfunc(int width, int height, int baseline) {
+  Gtk::DrawingArea::size_allocate_vfunc(width, height, baseline);
+  for (Gtk::Widget* c = get_first_child(); c; c = c->get_next_sibling())
+    if (auto* p = dynamic_cast<Gtk::Popover*>(c))
+      if (p->get_visible())
+        p->present();
 }
 
 // ── Public setters
@@ -4698,6 +4748,26 @@ void Canvas::resume_text_cursor_blink() {
 // m2 is selection-only: no selection -> no-op. The caret-insertion case
 // (set the "pending format" for the next typed char) is the bar's job and
 // comes with m3. Returns true when a toggle was applied.
+// s346 — see Canvas.hpp. Mirrors the keyboard insert path: replace any
+// selection, splice the UTF-8, then flush so each insertion is its own undo
+// step. Extracted from the s344 menu lambda so the menu and the chords share
+// one insert pump.
+bool Canvas::insert_utf8_at_caret(const std::string& utf8) {
+  if (!m_text_editing || !m_text_cursor) return false;
+  if (m_text_cursor->has_selection()) {
+    flush_text_segment();
+    m_text_cursor->delete_selection();
+  }
+  if (!m_text_cursor->insert_string(utf8)) return false;
+  flush_text_segment();
+  m_sig_doc_changed.emit();
+  emit_text_style_changed();  // s346 — caret moved; the menu path has no
+                              // dispatch-site emit (the chord path does —
+                              // the double emit there is a harmless re-read)
+  queue_draw();
+  return true;
+}
+
 bool Canvas::apply_text_format_toggle(int attr_type, long ivalue,
                                       const std::string& svalue) {
   if (!m_text_cursor || !m_text_editing) return false;
@@ -4706,6 +4776,36 @@ bool Canvas::apply_text_format_toggle(int attr_type, long ivalue,
   //   chord is distinguishable from a non-arriving keystroke in the trace.
   LOG_INFO("[s326] format toggle ENTER type={} sel=[{},{}) has_sel={}",
            attr_type, (unsigned)a, (unsigned)b, (a < b));
+  // s348 m5 — empty buffer: flip the node tier so the format sticks to the
+  // following input (see apply_text_format_set's m5 block for the full
+  // rationale). Only bold/italic have a node tier among the toggles.
+  if (m_text_editing->text_content.empty()) {
+    bool wrote = true;
+    switch (attr_type) {
+      case PANGO_ATTR_WEIGHT:
+        m_text_editing->text_bold = !m_text_editing->text_bold;
+        break;
+      case PANGO_ATTR_STYLE:
+        m_text_editing->text_italic = !m_text_editing->text_italic;
+        break;
+      default:
+        wrote = false;
+        break;
+    }
+    if (!wrote) return false;
+    if (m_text_has_snapshot && m_history) {
+      m_text_snapshot.record_after(m_text_editing);
+      m_history->push(
+          std::make_unique<TextEditCommand>(std::move(m_text_snapshot)));
+      m_text_snapshot =
+          TextEditCommand::snapshot_before(project(), m_text_editing);
+    }
+    LOG_INFO("[s326] format toggle type={} EMPTY-BUFFER node tier", attr_type);
+    m_sig_doc_changed.emit();
+    emit_text_style_changed();
+    queue_draw();
+    return true;
+  }
   if (a >= b) return false;  // selection-only in m2
 
   // Close any in-flight typing run as its own undo step.
@@ -4745,6 +4845,64 @@ bool Canvas::apply_text_format_set(int attr_type, long ivalue,
   auto [a, b] = m_text_cursor->selection_range();
   LOG_INFO("[s330] format set ENTER type={} val={} sel=[{},{}) has_sel={}",
            attr_type, ivalue, (unsigned)a, (unsigned)b, (a < b));
+  // s348 m5 — EMPTY BUFFER: the format must stick to the following input
+  // (click to bind, set font/size/colour, type). The node's base fields ARE
+  // the pending format for an empty buffer — no pending-span machinery: the
+  // fitter seeds every line from the resolved node baseline (s344) and the
+  // live-read sweeps default from para_baseline_at, so render and StyleBar
+  // faces both honour the write immediately, and persistence is free.
+  // Attrs with no node tier (underline/strike/overline/rise/font-scale/
+  // stroke runs) stay selection-only — a documented limit. Undo mirrors the
+  // span path: snapshot push when an edit snapshot is live; a brand-new
+  // unbound node pushes nothing (commit's AddNodeCommand captures the final
+  // state — the TBM m_text_is_new pattern).
+  if (m_text_editing->text_content.empty()) {
+    bool wrote = true;
+    switch (attr_type) {
+      case PANGO_ATTR_FAMILY:
+        m_text_editing->text_font_family = svalue;
+        break;
+      case PANGO_ATTR_SIZE:  // span ivalue is pt × PANGO_SCALE; node is doc-px
+        m_text_editing->text_font_size = UnitSystem::to_px(
+            (double)ivalue / (double)PANGO_SCALE, Unit::Pt);
+        break;
+      case PANGO_ATTR_WEIGHT:  // node tier is the bold bool — >= 600 is bold
+        m_text_editing->text_bold = (ivalue >= 600);
+        break;
+      case PANGO_ATTR_FOREGROUND: {  // packed 0xRRGGBB, as the bar emits
+        FillStyle f = m_text_editing->fill;
+        f.type = FillStyle::Type::Solid;
+        f.r = ((ivalue >> 16) & 0xFF) / 255.0;
+        f.g = ((ivalue >> 8) & 0xFF) / 255.0;
+        f.b = (ivalue & 0xFF) / 255.0;
+        f.a = 1.0;
+        style::mutate_appearance(*m_text_editing,
+                                 [&](SceneNode& nn) { nn.fill = f; });
+        break;
+      }
+      case PANGO_ATTR_LETTER_SPACING:  // span ivalue is doc-px × PANGO_SCALE
+        m_text_editing->text_letter_spacing =
+            (double)ivalue / (double)PANGO_SCALE;
+        break;
+      default:
+        wrote = false;
+        break;
+    }
+    if (!wrote) return false;
+    if (m_text_has_snapshot && m_history) {
+      m_text_snapshot.record_after(m_text_editing);
+      m_history->push(
+          std::make_unique<TextEditCommand>(std::move(m_text_snapshot)));
+      m_text_snapshot =
+          TextEditCommand::snapshot_before(project(), m_text_editing);
+    }
+    LOG_INFO("[s330] format set type={} ivalue={} EMPTY-BUFFER node tier",
+             attr_type, ivalue);
+    m_sig_doc_changed.emit();
+    emit_text_style_changed();  // faces refresh off the node baseline
+    queue_draw();
+    return true;
+  }
   if (a >= b) return false;  // selection-only, matching the toggle path
 
   // Close any in-flight typing run as its own undo step.
@@ -5013,30 +5171,165 @@ bool sweep_foreground_uniform(const std::vector<Curvz::AttrSpan>& spans,
   out = have ? first : def;
   return !mixed;
 }
+// ── s346 — per-paragraph style resolution for the readers ───────────────────
+// The queries below historically swept with the NODE scalars as their gap /
+// caret defaults — tier 1 + box only. A bound style's resolved values (which
+// the fitter has consumed since s340-s343) never reached the faces, so a
+// styled paragraph rendered one thing while the chips claimed another. These
+// helpers give every reader the same per-paragraph baseline the fitter
+// strides on: box_baseline from the node scalars, then the bound style's
+// resolved chain when the paragraph carries a binding.
+
+// Paragraph start byte (run between '\n' breaks) owning `p`.
+unsigned para_start_for(const std::string& buf, unsigned p) {
+  unsigned pa = std::min<unsigned>(p, (unsigned)buf.size());
+  while (pa > 0 && buf[pa - 1] != '\n') --pa;
+  return pa;
+}
+
+// The paragraph's resolved baseline — THE same resolve the fitter performs
+// per line (box_baseline -> resolve_paragraph_baseline). Null lib -> box.
+Curvz::style::ResolvedTextStyle para_baseline_at(
+    const Curvz::SceneNode* text, const Curvz::style::TextStyleLibrary* lib,
+    unsigned pa) {
+  const Curvz::style::ResolvedTextStyle box = Curvz::style::box_baseline(
+      text->text_font_family, text->text_font_size, text->text_bold,
+      text->text_italic, text->text_letter_spacing, text->text_line_height,
+      Curvz::style::para_align_from_str(text->text_align));
+  if (!lib) return box;
+  return Curvz::style::resolve_paragraph_baseline(text->text_attr_spans, pa,
+                                                  *lib, box);
+}
+
+// Walk the paragraphs of `buf` intersecting [a,b), calling
+// fn(para_start, seg_a, seg_b) with each paragraph's start byte and the
+// selection sub-range clipped to it (the trailing '\n' byte belongs to its
+// paragraph). With styles, the sweep gap default varies PER PARAGRAPH — one
+// node-scalar default over the whole range under-reports mixedness whenever
+// a selection crosses differently-styled paragraphs — so the uniform sweeps
+// run per segment with that paragraph's resolved default and the caller
+// merges. A bare caret (a==b) visits the single paragraph owning the
+// SAMPLED byte (the byte before the caret — the sweeps' caret convention,
+// so a caret at a paragraph start reads the paragraph it just left, exactly
+// as the per-byte sample always has).
+template <typename Fn>
+void for_each_para_segment(const std::string& buf, unsigned a, unsigned b,
+                           Fn&& fn) {
+  if (a >= b) {
+    unsigned p = (a > 0) ? a - 1 : 0;
+    fn(para_start_for(buf, p), a, a);
+    return;
+  }
+  unsigned cur = a;
+  while (cur < b) {
+    unsigned pa = para_start_for(buf, cur);
+    unsigned pe = pa;
+    while (pe < (unsigned)buf.size() && buf[pe] != '\n') ++pe;
+    pe = (pe < (unsigned)buf.size()) ? pe + 1 : (unsigned)buf.size();
+    fn(pa, cur, std::min(b, pe));
+    if (pe <= cur) break;  // degenerate guard (empty buffer tail)
+    cur = pe;
+  }
+}
+
+// s346 — generic uniform sweep over one ivalue attr type, the parameterised
+// form of sweep_weight/size/foreground_uniform (those stay as-is — working
+// readers don't churn mid-diagnosis; collapsing them onto this is backlog).
+// Used by the new tracking / rise reads.
+bool sweep_ivalue_uniform(const std::vector<Curvz::AttrSpan>& spans, int type,
+                          long def, unsigned a, unsigned b, long& out) {
+  if (a == b) {  // caret: the value at the byte just before it
+    unsigned p = (a > 0) ? a - 1 : 0;
+    out = def;
+    for (const auto& s : spans)
+      if (s.type == type &&
+          (unsigned)s.start_byte <= p && (unsigned)s.end_byte > p)
+        out = s.ivalue;
+    return true;
+  }
+  std::vector<const Curvz::AttrSpan*> sp;
+  for (const auto& s : spans)
+    if (s.type == type &&
+        (unsigned)s.end_byte > a && (unsigned)s.start_byte < b)
+      sp.push_back(&s);
+  std::sort(sp.begin(), sp.end(),
+            [](const Curvz::AttrSpan* x, const Curvz::AttrSpan* y) {
+              return x->start_byte < y->start_byte;
+            });
+  long first = 0;
+  bool have = false, mixed = false;
+  unsigned cur = a;
+  auto note = [&](long v) {
+    if (!have) { first = v; have = true; }
+    else if (v != first) mixed = true;
+  };
+  for (auto* s : sp) {
+    unsigned ss = std::max((unsigned)s->start_byte, a);
+    unsigned se = std::min((unsigned)s->end_byte, b);
+    if (ss > cur) note(def);
+    note(s->ivalue);
+    cur = std::max(cur, se);
+    if (mixed) break;
+  }
+  if (!mixed && cur < b) note(def);
+  out = have ? first : def;
+  return !mixed;
+}
 } // namespace
 
 bool Canvas::text_style_query_family(Glib::ustring& out_family,
                                      bool& out_mixed) const {
   if (!m_text_cursor || !m_text_editing) return false;
   auto [a, b] = m_text_cursor->selection_range();
-  std::string fam;
-  bool uniform = sweep_family_uniform(m_text_editing->text_attr_spans,
-                                      m_text_editing->text_font_family,
-                                      (unsigned)a, (unsigned)b, fam);
-  out_mixed = !uniform;
-  out_family = fam;
+  // s346 — the sweep's gap/caret default is the PARAGRAPH's resolved family
+  // (bound style or box), not the node scalar: the fitter has rendered the
+  // styled family since s340, so a one-default sweep both showed the wrong
+  // face in styled paragraphs and under-reported mixedness across a
+  // selection spanning differently-styled ones. Segment per paragraph, sweep
+  // each with its own resolved default, merge.
+  const style::TextStyleLibrary* lib = text_style_library();
+  const std::string& buf = m_text_editing->text_content;
+  std::string first;
+  bool have = false, mixed = false;
+  for_each_para_segment(buf, (unsigned)a, (unsigned)b,
+                        [&](unsigned pa, unsigned sa, unsigned sb) {
+    if (mixed) return;
+    const style::ResolvedTextStyle base =
+        para_baseline_at(m_text_editing, lib, pa);
+    std::string v;
+    if (!sweep_family_uniform(m_text_editing->text_attr_spans, base.family,
+                              sa, sb, v)) { mixed = true; return; }
+    if (!have) { first = v; have = true; }
+    else if (v != first) mixed = true;
+  });
+  out_mixed = mixed;
+  out_family = mixed ? Glib::ustring() : Glib::ustring(first);
   return true;
 }
 
 bool Canvas::text_style_query_weight(long& out_weight, bool& out_mixed) const {
   if (!m_text_cursor || !m_text_editing) return false;
   auto [a, b] = m_text_cursor->selection_range();
-  long def = m_text_editing->text_bold ? 700 : 400;
-  long w = def;
-  bool uniform = sweep_weight_uniform(m_text_editing->text_attr_spans,
-                                      def, (unsigned)a, (unsigned)b, w);
-  out_mixed = !uniform;
-  out_weight = w;
+  // s346 — gap default per paragraph from the resolved baseline's bold (see
+  // query_family).
+  const style::TextStyleLibrary* lib = text_style_library();
+  const std::string& buf = m_text_editing->text_content;
+  long first = 0;
+  bool have = false, mixed = false;
+  for_each_para_segment(buf, (unsigned)a, (unsigned)b,
+                        [&](unsigned pa, unsigned sa, unsigned sb) {
+    if (mixed) return;
+    const style::ResolvedTextStyle base =
+        para_baseline_at(m_text_editing, lib, pa);
+    const long def = base.bold ? 700 : 400;
+    long v = def;
+    if (!sweep_weight_uniform(m_text_editing->text_attr_spans, def,
+                              sa, sb, v)) { mixed = true; return; }
+    if (!have) { first = v; have = true; }
+    else if (v != first) mixed = true;
+  });
+  out_mixed = mixed;
+  out_weight = first;
   return true;
 }
 
@@ -5046,11 +5339,26 @@ bool Canvas::text_style_query_emphasis(int& out_italic, int& out_underline,
   if (!m_text_cursor || !m_text_editing) return false;
   auto [a, b] = m_text_cursor->selection_range();
   const auto& spans = m_text_editing->text_attr_spans;
-  // Italic gaps inherit the node's scalar italic default; the other three
-  // decorations have no node-level scalar, so their gaps are off.
-  out_italic    = sweep_decoration(spans, PANGO_ATTR_STYLE,
-                                   m_text_editing->text_italic,
-                                   (unsigned)a, (unsigned)b);
+  // Italic gaps inherit the PARAGRAPH's resolved italic default (s346 —
+  // bound style or box, per segment; the other three decorations have no
+  // style/node tier, so their gaps stay off and sweep the whole range).
+  {
+    const style::TextStyleLibrary* lib = text_style_library();
+    const std::string& buf = m_text_editing->text_content;
+    bool any_on = false, any_off = false;
+    for_each_para_segment(buf, (unsigned)a, (unsigned)b,
+                          [&](unsigned pa, unsigned sa, unsigned sb) {
+      if (any_on && any_off) return;
+      const style::ResolvedTextStyle base =
+          para_baseline_at(m_text_editing, lib, pa);
+      switch (sweep_decoration(spans, PANGO_ATTR_STYLE, base.italic, sa, sb)) {
+        case 0: any_off = true; break;
+        case 1: any_on  = true; break;
+        default: any_on = any_off = true; break;  // segment itself mixed
+      }
+    });
+    out_italic = (any_on && any_off) ? 2 : (any_on ? 1 : 0);
+  }
   out_underline = sweep_decoration(spans, PANGO_ATTR_UNDERLINE,     false,
                                    (unsigned)a, (unsigned)b);
   out_strike    = sweep_decoration(spans, PANGO_ATTR_STRIKETHROUGH, false,
@@ -5070,16 +5378,29 @@ bool Canvas::text_style_query_emphasis(int& out_italic, int& out_underline,
 bool Canvas::text_style_query_size(double& out_pt, bool& out_mixed) const {
   if (!m_text_cursor || !m_text_editing) return false;
   auto [a, b] = m_text_cursor->selection_range();
-  // Node default: text_font_size is doc-px (user units); the spans are point-
-  // scaled, so express the default in the same units for an apples-to-apples
-  // sweep. 1 pt = 96/72 px, via UnitSystem (pure typographic, doc-independent).
-  long def = std::lround(
-      UnitSystem::from_px(m_text_editing->text_font_size, Unit::Pt) * PANGO_SCALE);
-  long v = def;
-  bool uniform = sweep_size_uniform(m_text_editing->text_attr_spans,
-                                    def, (unsigned)a, (unsigned)b, v);
-  out_mixed = !uniform;
-  out_pt = (double)v / (double)PANGO_SCALE;
+  // s346 — per-paragraph resolved default (see query_family). The resolved
+  // size is doc-px (user units); the spans are point-scaled, so express each
+  // segment's default in the same units for an apples-to-apples sweep.
+  // 1 pt = 96/72 px, via UnitSystem (pure typographic, doc-independent).
+  const style::TextStyleLibrary* lib = text_style_library();
+  const std::string& buf = m_text_editing->text_content;
+  long first = 0;
+  bool have = false, mixed = false;
+  for_each_para_segment(buf, (unsigned)a, (unsigned)b,
+                        [&](unsigned pa, unsigned sa, unsigned sb) {
+    if (mixed) return;
+    const style::ResolvedTextStyle base =
+        para_baseline_at(m_text_editing, lib, pa);
+    const long def = std::lround(
+        UnitSystem::from_px(base.size, Unit::Pt) * PANGO_SCALE);
+    long v = def;
+    if (!sweep_size_uniform(m_text_editing->text_attr_spans, def,
+                            sa, sb, v)) { mixed = true; return; }
+    if (!have) { first = v; have = true; }
+    else if (v != first) mixed = true;
+  });
+  out_mixed = mixed;
+  out_pt = (double)first / (double)PANGO_SCALE;
   return true;
 }
 
@@ -5087,10 +5408,11 @@ bool Canvas::text_style_query_fill(unsigned long& out_rgb, bool& out_mixed,
                                    bool& out_none) const {
   if (!m_text_cursor || !m_text_editing) return false;
   auto [a, b] = m_text_cursor->selection_range();
-  // Node default: the text object's own fill paint, packed 0xRRGGBB the same
-  // way the FOREGROUND spans are. (Foreground spans carry only a solid colour;
-  // gradient / swatch object fills collapse to their stored solid r/g/b for
-  // this read, which is what the swatch face shows when no run overrides.)
+  // s346 — the gap default mirrors make_single_line_layout's s343 colour
+  // seeding PER PARAGRAPH: a bound style's Solid / SwatchRef colour is the
+  // baseline under the FOREGROUND runs; None / CurrentColor / Gradient fall
+  // through to the node's own fill (collapsed to its stored solid r/g/b,
+  // which is what the swatch face shows when no run overrides).
   const FillStyle& f = m_text_editing->fill;
   auto pack = [](double r, double g, double b) -> long {
     auto ch = [](double v) {
@@ -5098,18 +5420,42 @@ bool Canvas::text_style_query_fill(unsigned long& out_rgb, bool& out_mixed,
     };
     return (ch(r) << 16) | (ch(g) << 8) | ch(b);
   };
-  long def = pack(f.r, f.g, f.b);
-  long v = def;
-  bool uniform = sweep_foreground_uniform(m_text_editing->text_attr_spans,
-                                          def, (unsigned)a, (unsigned)b, v);
-  out_mixed = !uniform;
-  out_rgb = (unsigned long)(v & 0xFFFFFF);
-  // "None" only when the effective colour is the node default AND that default
-  // is a None / fully-transparent paint with no per-run override in range. A
-  // per-run FOREGROUND span is always a real colour, so a resolved span never
-  // reads as none.
-  bool def_is_none = (f.type == FillStyle::Type::None) || (f.a <= 0.0);
-  out_none = !out_mixed && def_is_none && (v == def);
+  const bool node_fill_none =
+      (f.type == FillStyle::Type::None) || (f.a <= 0.0);
+  const style::TextStyleLibrary* lib = text_style_library();
+  const std::string& buf = m_text_editing->text_content;
+  long first = 0;
+  bool have = false, mixed = false, all_none = true;
+  for_each_para_segment(buf, (unsigned)a, (unsigned)b,
+                        [&](unsigned pa, unsigned sa, unsigned sb) {
+    if (mixed) return;
+    const style::ResolvedTextStyle base =
+        para_baseline_at(m_text_editing, lib, pa);
+    long def;
+    bool def_styled = false;
+    if (const auto* s = std::get_if<color::Solid>(&base.colour)) {
+      def = pack(s->color.r, s->color.g, s->color.b);
+      def_styled = true;
+    } else if (const auto* w = std::get_if<color::SwatchRef>(&base.colour)) {
+      def = pack(w->fallback.r, w->fallback.g, w->fallback.b);
+      def_styled = true;
+    } else {
+      def = pack(f.r, f.g, f.b);  // renderer fall-through: node fill
+    }
+    long v = def;
+    if (!sweep_foreground_uniform(m_text_editing->text_attr_spans, def,
+                                  sa, sb, v)) { mixed = true; return; }
+    if (!have) { first = v; have = true; }
+    else if (v != first) mixed = true;
+    // "None" only when this segment's effective colour is the node-fill
+    // fall-through AND that fill is a None / fully-transparent paint with no
+    // per-run override. A styled baseline or a resolved span is always a
+    // real colour, so it never reads as none.
+    if (def_styled || !node_fill_none || v != def) all_none = false;
+  });
+  out_mixed = mixed;
+  out_rgb = (unsigned long)(first & 0xFFFFFF);
+  out_none = !mixed && all_none;
   return true;
 }
 
@@ -5153,24 +5499,34 @@ bool Canvas::text_style_query_leading(double& out_pt, bool& out_auto) const {
   if (!m_text_cursor || !m_text_editing) return false;
   const std::string& buf = m_text_editing->text_content;
   auto [a, b] = m_text_cursor->selection_range();
+  (void)b;
   // Snap to the caret paragraph (run between '\n' breaks); sample its start.
-  unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
-  while (pa > 0 && buf[pa - 1] != '\n') --pa;
-  // A per-paragraph leading run covering the paragraph start wins.
-  for (const auto& s : m_text_editing->text_attr_spans) {
+  const unsigned pa = para_start_for(buf, (unsigned)std::min<size_t>(a, buf.size()));
+  // s346 — the VALUE comes from the same resolved_line_leading pump the
+  // fitter strides on (direct run -> bound style's pinned leading -> metric
+  // leading from the RESOLVED font), so the spin shows the stride the canvas
+  // actually uses — including a bound style's leading and the styled-font
+  // metric, both of which the old read (run -> node scalar -> box metric)
+  // never saw. The AUTO flag is the one thing the pump doesn't report:
+  // auto == neither a direct run nor a pinned style/scalar leading applies,
+  // i.e. tier 3 (metric-derived) is in effect.
+  const style::TextStyleLibrary* lib = text_style_library();
+  const style::ResolvedTextStyle box =
+      para_baseline_at(m_text_editing, nullptr, pa);   // box scalars only
+  const style::ResolvedTextStyle line =
+      lib ? style::resolve_paragraph_baseline(m_text_editing->text_attr_spans,
+                                              pa, *lib, box)
+          : box;
+  bool direct = false;
+  for (const auto& s : m_text_editing->text_attr_spans)
     if (s.type == curvz::utils::kCurvzLeadingAttr &&
         (unsigned)s.start_byte <= pa && (unsigned)s.end_byte > pa) {
-      out_auto = false;
-      out_pt = UnitSystem::from_px((double)s.ivalue / (double)PANGO_SCALE,
-                                   Unit::Pt);
-      return true;
+      direct = true;
+      break;
     }
-  }
-  // No run: legacy buffer-global scalar, else the true metric-derived auto
-  // leading (same (ascent+descent)*1.2 the flow strides — not font x 1.2).
-  double lh = m_text_editing->text_line_height;
-  out_auto = !(lh > 0.0);
-  double px = (lh > 0.0) ? lh : metric_leading_px(m_text_editing);
+  out_auto = !direct && !(line.leading_px > 0.0);
+  const double px = resolved_line_leading(
+      m_text_editing, line, box, metric_leading_px(m_text_editing), pa);
   out_pt = UnitSystem::from_px(px, Unit::Pt);
   return true;
 }
@@ -5181,78 +5537,103 @@ bool Canvas::text_style_query_alignment(int& out_align) const {
   auto [a, b] = m_text_cursor->selection_range();
   (void)b;
   // Sample the caret paragraph start (run between '\n' breaks), like leading.
-  unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
-  while (pa > 0 && buf[pa - 1] != '\n') --pa;
-  out_align = 0;  // default = left (no align run)
-  for (const auto& s : m_text_editing->text_attr_spans) {
-    if (s.type == curvz::utils::kCurvzAlignAttr &&
-        (unsigned)s.start_byte <= pa && (unsigned)s.end_byte > pa) {
-      out_align = (int)s.ivalue;
-      break;
-    }
-  }
+  // s346 — through the same resolved_align pump the fitter's align post-pass
+  // uses (direct run -> bound style -> 0), so the chip face shows the
+  // alignment the canvas actually applies. The old read was tier-1 only: a
+  // style-bound centred paragraph rendered centred while the chip said Left.
+  const unsigned pa = para_start_for(buf, (unsigned)std::min<size_t>(a, buf.size()));
+  out_align = resolved_align(m_text_editing, text_style_library(), pa);
   return true;
 }
 
 // s335 — caret paragraph's tab spec (svalue). Mirrors query_alignment: sample
-// the paragraph start byte, return the covering kCurvzTabsAttr run's svalue, or
-// empty when none. Drives the Tabs popover's row list on text-style-changed.
+// the paragraph start byte. s346 — through the shared resolved_tabs pump
+// (direct run -> bound style's tabs -> empty), the same read the fitter
+// builds its PangoTabArray from, so the popover's row list and where tabs
+// actually land agree by construction. Drives the Tabs popover on
+// text-style-changed.
 bool Canvas::text_style_query_tabs(std::string& out_spec) const {
   if (!m_text_cursor || !m_text_editing) return false;
   const std::string& buf = m_text_editing->text_content;
   auto [a, b] = m_text_cursor->selection_range();
   (void)b;
-  unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
-  while (pa > 0 && buf[pa - 1] != '\n') --pa;
-  out_spec.clear();
-  for (const auto& s : m_text_editing->text_attr_spans) {
-    if (s.type == curvz::utils::kCurvzTabsAttr &&
-        (unsigned)s.start_byte <= pa && (unsigned)s.end_byte > pa) {
-      out_spec = s.svalue;
-      break;
-    }
-  }
+  const unsigned pa = para_start_for(buf, (unsigned)std::min<size_t>(a, buf.size()));
+  out_spec = resolved_tabs(m_text_editing,
+                           para_baseline_at(m_text_editing,
+                                            text_style_library(), pa),
+                           pa);
   return true;
 }
 
 // s335 — caret paragraph's indents (doc-px) for the live-read. Mirrors
-// query_tabs/query_alignment: sample the paragraph start byte, read each
-// indent run's ivalue (doc-px x PANGO_SCALE) covering it, default 0.
+// query_tabs/query_alignment: sample the paragraph start byte. s346 — the
+// s345 inline two-tier copy is deleted; this now reads through the SAME
+// resolved_indent pump the fitter strides on (direct run by presence ->
+// bound style -> 0), so markers, spins, and layout agree from one resolver.
 bool Canvas::text_style_query_indents(double& out_left, double& out_right,
                                       double& out_first) const {
   if (!m_text_cursor || !m_text_editing) return false;
   const std::string& buf = m_text_editing->text_content;
   auto [a, b] = m_text_cursor->selection_range();
   (void)b;
-  unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
-  while (pa > 0 && buf[pa - 1] != '\n') --pa;
-  // s345 — two-tier resolve, mirroring the fitter's resolved_indent: a
-  // direct attr span wins per-field; otherwise the paragraph's BOUND
-  // STYLE supplies the value. This query previously read tier 1 only, so
-  // a style-provided indent moved the text but the ruler markers (and the
-  // inspector spins fed from here) stayed at zero — the markers lied
-  // about the layout. Unbound paragraphs resolve to the box baseline,
-  // whose indents are zero: behaviour there is unchanged.
-  out_left = out_right = out_first = 0.0;
-  if (const style::TextStyleLibrary* qlib = text_style_library()) {
-    const style::ResolvedTextStyle box = style::box_baseline(
-        m_text_editing->text_font_family, m_text_editing->text_font_size,
-        m_text_editing->text_bold, m_text_editing->text_italic,
-        m_text_editing->text_letter_spacing, m_text_editing->text_line_height,
-        style::para_align_from_str(m_text_editing->text_align));
-    const style::ResolvedTextStyle base = style::resolve_paragraph_baseline(
-        m_text_editing->text_attr_spans, pa, *qlib, box);
-    out_left  = base.indent_left_px;
-    out_right = base.indent_right_px;
-    out_first = base.indent_first_px;
-  }
-  for (const auto& s : m_text_editing->text_attr_spans) {
-    if ((unsigned)s.start_byte > pa || (unsigned)s.end_byte <= pa) continue;
-    const double v = (double)s.ivalue / (double)PANGO_SCALE;
-    if (s.type == curvz::utils::kCurvzIndentLeftAttr)  out_left  = v;
-    else if (s.type == curvz::utils::kCurvzIndentRightAttr) out_right = v;
-    else if (s.type == curvz::utils::kCurvzIndentFirstAttr) out_first = v;
-  }
+  const unsigned pa = para_start_for(buf, (unsigned)std::min<size_t>(a, buf.size()));
+  const style::ResolvedTextStyle base =
+      para_baseline_at(m_text_editing, text_style_library(), pa);
+  out_left  = resolved_indent(m_text_editing,
+                              curvz::utils::kCurvzIndentLeftAttr,  base, pa);
+  out_right = resolved_indent(m_text_editing,
+                              curvz::utils::kCurvzIndentRightAttr, base, pa);
+  out_first = resolved_indent(m_text_editing,
+                              curvz::utils::kCurvzIndentFirstAttr, base, pa);
+  return true;
+}
+
+// s346 — tracking (per-run letter-spacing) live-read for the Spacing
+// popover's Character group, which was WRITE-ONLY until now (the spins
+// showed whatever was last typed, regardless of caret or selection). The
+// sweep's gap default per paragraph is the resolved style's letter_spacing
+// scaled exactly as make_single_line_layout seeds it under the runs
+// (px x PANGO_SCALE, s343), so the read mirrors the render. out_units is
+// the raw span scaling (the popover converts to em against its size
+// reference, inverting its own write conversion).
+bool Canvas::text_style_query_tracking(long& out_units, bool& out_mixed) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  auto [a, b] = m_text_cursor->selection_range();
+  const style::TextStyleLibrary* lib = text_style_library();
+  const std::string& buf = m_text_editing->text_content;
+  long first = 0;
+  bool have = false, mixed = false;
+  for_each_para_segment(buf, (unsigned)a, (unsigned)b,
+                        [&](unsigned pa, unsigned sa, unsigned sb) {
+    if (mixed) return;
+    const style::ResolvedTextStyle base =
+        para_baseline_at(m_text_editing, lib, pa);
+    const long def = std::lround(base.letter_spacing * (double)PANGO_SCALE);
+    long v = def;
+    if (!sweep_ivalue_uniform(m_text_editing->text_attr_spans,
+                              PANGO_ATTR_LETTER_SPACING, def,
+                              sa, sb, v)) { mixed = true; return; }
+    if (!have) { first = v; have = true; }
+    else if (v != first) mixed = true;
+  });
+  out_mixed = mixed;
+  out_units = first;
+  return true;
+}
+
+// s346 — baseline rise live-read, the second write-only Spacing spin. No
+// style or node tier exists for rise, so the gap default is 0; one plain
+// sweep over the whole range. out_pt is points (units / PANGO_SCALE, the
+// inverse of the popover's write).
+bool Canvas::text_style_query_rise(double& out_pt, bool& out_mixed) const {
+  if (!m_text_cursor || !m_text_editing) return false;
+  auto [a, b] = m_text_cursor->selection_range();
+  long v = 0;
+  const bool uniform = sweep_ivalue_uniform(m_text_editing->text_attr_spans,
+                                            PANGO_ATTR_RISE, 0,
+                                            (unsigned)a, (unsigned)b, v);
+  out_mixed = !uniform;
+  out_pt = (double)v / (double)PANGO_SCALE;
   return true;
 }
 
@@ -5281,8 +5662,7 @@ bool Canvas::text_style_query_bound_style(std::string& out_id) const {
   const std::string& buf = m_text_editing->text_content;
   auto [a, b] = m_text_cursor->selection_range();
   (void)b;
-  unsigned pa = (unsigned)std::min<size_t>(a, buf.size());
-  while (pa > 0 && buf[pa - 1] != '\n') --pa;
+  const unsigned pa = para_start_for(buf, (unsigned)std::min<size_t>(a, buf.size()));
   out_id.clear();
   for (const auto& s : m_text_editing->text_attr_spans) {
     if (s.type == curvz::utils::kCurvzStyleAttr &&
@@ -5344,6 +5724,32 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
       (keyval == GDK_KEY_u || keyval == GDK_KEY_U)) {
     apply_text_format_toggle(PANGO_ATTR_UNDERLINE,
                              /*PANGO_UNDERLINE_SINGLE*/ 1, "");
+    return true;
+  }
+
+  // s346 — special-character chords, the keyboard twins of the right-click
+  //   Insert menu (which shows these as accel labels). The three carry the
+  //   LibreOffice/Word conventions; the rest of the Insert set (dashes,
+  //   joiner, ellipsis) has no shared convention and stays menu-only rather
+  //   than inventing chords that fight GNOME. Intercepted above the ctrl-
+  //   passthrough gate like Ctrl+B/I/U — during a text edit the chord means
+  //   "insert in the text". NOTE: Ctrl+Shift+Space therefore SHADOWS the
+  //   global inspector-collapse chord (s202 m6) while a text edit is active;
+  //   it returns to the inspector the moment the edit ends.
+  //   Shift+minus arrives as the underscore keysym on most layouts, so the
+  //   non-breaking-hyphen chord matches both.
+  if (ctrl && !alt && shift && keyval == GDK_KEY_space) {
+    insert_utf8_at_caret("\u00a0");  // non-breaking space
+    return true;
+  }
+  if (ctrl && !alt && !shift &&
+      (keyval == GDK_KEY_minus || keyval == GDK_KEY_KP_Subtract)) {
+    insert_utf8_at_caret("\u00ad");  // soft hyphen
+    return true;
+  }
+  if (ctrl && !alt && shift &&
+      (keyval == GDK_KEY_minus || keyval == GDK_KEY_underscore)) {
+    insert_utf8_at_caret("\u2011");  // non-breaking hyphen
     return true;
   }
 
@@ -5765,6 +6171,11 @@ bool Canvas::handle_text_edit_key(guint keyval, Gdk::ModifierType mods) {
   switch (keyval) {
     case GDK_KEY_Return:
     case GDK_KEY_KP_Enter:
+      // s347 m4 — Return derives the next line on CLOSED guides (antipode
+      // + flip; lines 2+ inward offsets). s348 m6 — open guides too: the
+      // fitter stacks below-parallels via offset_open_path, so the guard
+      // that kept '\n' out of open-guide buffers is deleted as marked.
+      //
       // s305 m4 — Enter while selection active: replace the range
       //   with a newline. delete_selection runs first; then the
       //   newline inserts at the collapsed caret. Matches every
@@ -6675,6 +7086,73 @@ std::optional<Canvas::BBox> Canvas::object_bbox(const SceneNode &obj,
       SceneNode *guide = top_find_path_by_id(obj.text_path_id);
       if (guide)
         return object_bbox(*guide, include_stroke);
+    }
+    // s348 m1 — path-text v2: a pattern text's bbox derives from the SAME
+    // pump every other consumer rides. Pre-s348 a v2 text fell through to
+    // the free-text Pango measure below — a straight-line PHANTOM of the
+    // content anchored at the cached text_x/text_y, rendered nowhere. Every
+    // object_bbox consumer (selection handles, the hit-test gate, snapping,
+    // alignment, PropertiesPanel geometry) then saw an invisible rectangle
+    // unrelated to the curve. Here: for each pattern baseline, sample its
+    // occupied arc span [arc_start, arc_start + line width] along the
+    // line's own walk path (flip = reverse traversal, closed guides wrap —
+    // mirroring guide_arc_point's lookup policy) and grow the box by
+    // (ascent + descent) around each sample. Conservative on purpose: the
+    // axis-aligned pad covers both attachment conventions (baseline-on-path
+    // and ascender-hung flipped lines) without re-deriving per-glyph ink.
+    // Empty/zero-width layouts fall through to the legacy measure so the
+    // bbox stays defined during a brand-new empty edit.
+    if (!obj.text_guide_id.empty()) {
+      SceneNode *guide = find_guide_path(obj.text_guide_id);
+      if (guide && guide->path && guide->path->nodes.size() >= 2) {
+        TextLayout tl = compute_text_layout(
+            guide, &obj, 0, m_project ? &m_project->text_styles : nullptr);
+        bool found = false;
+        double px0 = 0, py0 = 0, px1 = 0, py1 = 0;
+        for (const auto &bl : tl.baselines) {
+          if (!bl.pattern)
+            continue;
+          const double span = bl.x_end - bl.x_start;
+          if (span <= 0.0)
+            continue;
+          PathData walk = pattern_walk_path(*guide->path, bl.pattern->offset);
+          if (walk.nodes.size() < 2)
+            continue;
+          BezierPath wbp = BezierPath::from_path_data(walk);
+          std::vector<double> wtab;
+          const double wtotal = build_arc_table(wbp, wtab);
+          if (wtotal < 0.001)
+            continue;
+          const double pad = bl.ascent + bl.descent;
+          const int samples =
+              std::max(8, std::min(64, (int)(span / 8.0)));
+          for (int i = 0; i <= samples; ++i) {
+            double arc = bl.pattern->arc_start + span * i / (double)samples;
+            double lookup = bl.pattern->flip ? wtotal - arc : arc;
+            if (walk.closed) {
+              lookup = std::fmod(lookup, wtotal);
+              if (lookup < 0.0)
+                lookup += wtotal;
+            }
+            Vec2 p;
+            double ang = 0.0;
+            if (!path_point_at(wbp, wtab, wtotal, lookup, p, ang))
+              continue;
+            if (!found) {
+              px0 = p.x - pad; py0 = p.y - pad;
+              px1 = p.x + pad; py1 = p.y + pad;
+              found = true;
+            } else {
+              px0 = std::min(px0, p.x - pad);
+              py0 = std::min(py0, p.y - pad);
+              px1 = std::max(px1, p.x + pad);
+              py1 = std::max(py1, p.y + pad);
+            }
+          }
+        }
+        if (found)
+          return BBox{px0, py0, px1 - px0, py1 - py0};
+      }
     }
     // Use a scratch Cairo surface — we only need the layout metrics.
     auto surf =
@@ -8135,6 +8613,205 @@ bool Canvas::path_point_at(const BezierPath &bp,
     }
   }
   return false;
+}
+
+// s346 — path-text v2: see Canvas.hpp. Coarse sample every segment, keep the
+// global best, then refine within the winning segment by golden-section-ish
+// halving. Partial arc within the segment is approximated by a sampled
+// polyline — the same fidelity class as build_arc_table's length(32).
+bool Canvas::project_to_path(const BezierPath &bp,
+                             const std::vector<double> &arc_table,
+                             double total_len, const Vec2 &p, double &out_arc,
+                             double &out_dist) const {
+  if (total_len < 0.001 || arc_table.empty())
+    return false;
+  const int n = bp.segment_count();
+  int best_seg = -1;
+  double best_t = 0.0, best_d2 = 1e300;
+  constexpr int kCoarse = 24;
+  for (int i = 0; i < n; ++i) {
+    CubicSegment seg = bp.segment(i);
+    for (int k = 0; k <= kCoarse; ++k) {
+      const double t = (double)k / kCoarse;
+      const Vec2 q = seg.at(t);
+      const double dx = q.x - p.x, dy = q.y - p.y;
+      const double d2 = dx * dx + dy * dy;
+      if (d2 < best_d2) { best_d2 = d2; best_seg = i; best_t = t; }
+    }
+  }
+  if (best_seg < 0)
+    return false;
+  // Local refine: shrink a bracket around best_t.
+  {
+    CubicSegment seg = bp.segment(best_seg);
+    double lo = std::max(0.0, best_t - 1.0 / kCoarse);
+    double hi = std::min(1.0, best_t + 1.0 / kCoarse);
+    for (int it = 0; it < 24; ++it) {
+      const double m1 = lo + (hi - lo) / 3.0;
+      const double m2 = hi - (hi - lo) / 3.0;
+      auto d2at = [&](double t) {
+        const Vec2 q = seg.at(t);
+        const double dx = q.x - p.x, dy = q.y - p.y;
+        return dx * dx + dy * dy;
+      };
+      if (d2at(m1) < d2at(m2)) hi = m2; else lo = m1;
+    }
+    best_t = 0.5 * (lo + hi);
+    const Vec2 q = seg.at(best_t);
+    const double dx = q.x - p.x, dy = q.y - p.y;
+    best_d2 = dx * dx + dy * dy;
+  }
+  // Partial arc length within the winning segment via sampled polyline.
+  double partial = 0.0;
+  {
+    CubicSegment seg = bp.segment(best_seg);
+    constexpr int kArc = 16;
+    Vec2 prev = seg.at(0.0);
+    for (int k = 1; k <= kArc; ++k) {
+      const Vec2 q = seg.at(best_t * (double)k / kArc);
+      const double dx = q.x - prev.x, dy = q.y - prev.y;
+      partial += std::sqrt(dx * dx + dy * dy);
+      prev = q;
+    }
+  }
+  out_arc = arc_table[best_seg] + partial;
+  out_dist = std::sqrt(best_d2);
+  return true;
+}
+
+// s346 — path-text v2: see Canvas.hpp.
+SceneNode *Canvas::find_guide_attached_text(const std::string &guide_iid) const {
+  if (!m_doc || guide_iid.empty())
+    return nullptr;
+  std::function<SceneNode *(SceneNode *)> find =
+      [&](SceneNode *n) -> SceneNode * {
+    if (n->is_text() && n->text_guide_id == guide_iid)
+      return n;
+    for (auto &ch : n->children)
+      if (auto *r = find(ch.get()))
+        return r;
+    return nullptr;
+  };
+  for (auto &layer : m_doc->layers)
+    if (auto *r = find(layer.get()))
+      return r;
+  return nullptr;
+}
+
+// ── s347 — path-text v2 m3: public arc seam (see Canvas.hpp) ────────────────
+SceneNode *Canvas::find_guide_path(const std::string &iid) const {
+  return top_find_path_by_id(iid);
+}
+
+bool Canvas::guide_arc_point(const SceneNode *guide, double arc, bool flip,
+                             Vec2 &pos, double &angle, double offset) const {
+  if (!guide || !guide->path || guide->path->nodes.size() < 2)
+    return false;
+  PathData walk = pattern_walk_path(*guide->path, offset);   // s347 m4
+  if (walk.nodes.size() < 2)
+    return false;
+  BezierPath bp = BezierPath::from_path_data(walk);
+  std::vector<double> arc_table;
+  const double total = build_arc_table(bp, arc_table);
+  if (total < 0.001)
+    return false;
+  double lookup = flip ? total - arc : arc;
+  if (walk.closed) {
+    lookup = std::fmod(lookup, total);
+    if (lookup < 0.0)
+      lookup += total;
+  }
+  // Open guides: path_point_at clamps to [0, total] — the caret pins to
+  // the guide's end rather than vanishing, matching the renderer's skip
+  // policy closely enough for a caret (a caret must always draw SOMEWHERE).
+  if (!path_point_at(bp, arc_table, total, lookup, pos, angle))
+    return false;
+  if (flip)
+    angle += M_PI;
+  return true;
+}
+
+bool Canvas::guide_project_point(const SceneNode *guide, const Vec2 &p,
+                                 double &out_arc, double &out_dist,
+                                 double *out_total, double offset) const {
+  if (!guide || !guide->path || guide->path->nodes.size() < 2)
+    return false;
+  PathData walk = pattern_walk_path(*guide->path, offset);   // s347 m4
+  if (walk.nodes.size() < 2)
+    return false;
+  BezierPath bp = BezierPath::from_path_data(walk);
+  std::vector<double> arc_table;
+  const double total = build_arc_table(bp, arc_table);
+  if (total < 0.001)
+    return false;
+  if (out_total)
+    *out_total = total;
+  return project_to_path(bp, arc_table, total, p, out_arc, out_dist);
+}
+
+// s348 m2 — anchor-tick images for a pattern text (see Canvas.hpp). The
+// derivation is verbatim what draw_top_overlay computed inline through
+// s347: line 0's tick at text_guide_anchor on the raw guide; each further
+// pattern line's tick at the shared anchor's fraction mapped onto that
+// line's OWN walk path (flip adds the antipode half-turn and the π glyph
+// rotation). The overlay now draws from this list and the slide-anchor
+// grab hit-tests against it — one pump, no disagreement.
+std::vector<Canvas::TopTick>
+Canvas::top_anchor_ticks(const SceneNode *txt, const SceneNode *guide) {
+  std::vector<TopTick> out;
+  if (!txt || !guide || !guide->path || guide->path->nodes.size() < 2)
+    return out;
+  BezierPath bp = BezierPath::from_path_data(*guide->path);
+  std::vector<double> arc_table;
+  const double total = build_arc_table(bp, arc_table);
+  if (total < 0.001)
+    return out;
+  Vec2 pos;
+  double angle = 0.0;
+  if (path_point_at(bp, arc_table, total, txt->text_guide_anchor, pos, angle))
+    out.push_back({pos, angle, false});
+
+  // Further lines: derive each line's walk path through THE pump and place
+  // the tick at the anchor fraction. The SECOND FAMILY adds the
+  // independent slide delta: flipped lines (closed — plus the antipode
+  // half-turn) or offset lines (open) — the same derivation the fitter
+  // applies, so tick and lettering cannot disagree. Closed fractions wrap;
+  // open fractions clamp via path_point_at, matching the render policy.
+  TextLayout tl = compute_text_layout(
+      guide, txt, 0, m_project ? &m_project->text_styles : nullptr);
+  const double base_frac = txt->text_guide_anchor / total;
+  const double delta_frac = txt->text_guide_anchor_flip_delta / total;
+  for (const auto &bl : tl.baselines) {
+    if (!bl.pattern)
+      continue;
+    if (!bl.pattern->flip && bl.pattern->offset <= 0.0)
+      continue;  // line 0 — already ticked above
+    PathData walk = pattern_walk_path(*guide->path, bl.pattern->offset);
+    if (walk.nodes.size() < 2)
+      continue;
+    BezierPath wbp = BezierPath::from_path_data(walk);
+    std::vector<double> wtab;
+    const double wtotal = build_arc_table(wbp, wtab);
+    if (wtotal < 0.001)
+      continue;
+    double frac =
+        base_frac + delta_frac + (bl.pattern->flip ? 0.5 : 0.0);
+    if (walk.closed) {
+      frac = std::fmod(frac, 1.0);
+      if (frac < 0.0)
+        frac += 1.0;
+    } else {
+      frac = std::max(0.0, std::min(1.0, frac));
+    }
+    Vec2 wpos;
+    double wang = 0.0;
+    if (!path_point_at(wbp, wtab, wtotal, frac * wtotal, wpos, wang))
+      continue;
+    if (bl.pattern->flip)
+      wang += M_PI;
+    out.push_back({wpos, wang, true});
+  }
+  return out;
 }
 
 // Find a path SceneNode in the document by its id string.

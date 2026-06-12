@@ -8121,6 +8121,34 @@ void Canvas::set_text_alignment(int align) {
   if (align < 0) align = 0;
   if (align > 3) align = 3;  // s333 — 3 = justify (was clamped to 2)
 
+  // s348 m5 — empty buffer: paragraph-snapped span ops over [0,0) are a
+  // no-op, so the pick fell on the floor and a pre-typing alignment never
+  // stuck. Write the NODE tier instead — the fitter's paragraph default
+  // (para_align_from_str(text_align)) — so the choice governs everything
+  // typed after; align runs override per paragraph as usual once content
+  // exists. Undo via the same snapshot push (text_align is snapshotted).
+  if (node->text_content.empty()) {
+    const char* str = (align == 1)   ? "center"
+                      : (align == 2) ? "right"
+                      : (align == 3) ? "justify"
+                                     : "left";
+    if (node->text_align == str) return;  // no-op guard
+    if (m_text_editing == node)
+      flush_text_segment();
+    TextEditCommand snap = TextEditCommand::snapshot_before(project(), node);
+    node->text_align = str;
+    if (m_history) {
+      snap.record_after(node);
+      m_history->push(std::make_unique<TextEditCommand>(std::move(snap)));
+    }
+    if (m_text_editing == node && m_text_has_snapshot)
+      m_text_snapshot = TextEditCommand::snapshot_before(project(), node);
+    m_sig_doc_changed.emit();
+    emit_text_style_changed();
+    queue_draw();
+    return;
+  }
+
   unsigned a = 0, b = (unsigned)node->text_content.size();
   if (m_text_editing == node && m_text_cursor) {
     auto [sa, sb] = m_text_cursor->selection_range();

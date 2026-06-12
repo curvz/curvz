@@ -31,6 +31,8 @@
 #include "color/Color.hpp"                   // s343 — channel_to_u8 (bound-style colour baseline)
 #include "color/Paint.hpp"                   // s343 — Solid / SwatchRef variant access
 #include "math/TextFlowGeometry.hpp"   // s323 — form-fit reflow geometry pumps
+#include "math/BezierPath.hpp"         // s347 m4 — pattern_path_length
+#include "math/PathOffset.hpp"         // s347 m4 — pattern_walk_path (offset lines)
 
 #include <pango/pangocairo.h>
 #include <glib.h>
@@ -1081,14 +1083,10 @@ void text_frame_basis(const SceneNode* boundary, const SceneNode* text,
 // none, so Pango falls back to its default tab interval. The fitter parses this
 // into a per-line PangoTabArray (build_line_tab_array) so a '\t' advances to the
 // next stop instead of being a plain break opportunity.
-static std::string tabs_for_byte(const SceneNode* text, size_t byte) {
-  if (!text) return std::string();
-  for (const auto& s : text->text_attr_spans)
-    if (s.type == curvz::utils::kCurvzTabsAttr &&
-        (size_t)s.start_byte <= byte && (size_t)s.end_byte > byte)
-      return s.svalue;
-  return std::string();
-}
+// s346 — tabs_for_byte (tier-1-only tab-spec reader, s337) deleted; the
+// fitter and the Tabs popover both read resolved_tabs now (direct run ->
+// bound style -> empty), so a bound style's tabs reach the layout AND the
+// face from one pump.
 
 // s331 — see header. Mirrors compute_text_layout's base-font metric block
 // (lines ~970-1012) so the read-out and the stride agree by construction.
@@ -1160,10 +1158,12 @@ static double metric_leading_for(const std::string& family, double size,
 //      font -- the common unbound case, where line_base IS box_base -- this
 //      returns box_leading unchanged, so no Pango metrics call is paid and the
 //      stride is byte-identical to pre-s341 behaviour.
-static double resolved_line_leading(const SceneNode* text,
-                                    const style::ResolvedTextStyle& line_base,
-                                    const style::ResolvedTextStyle& box_base,
-                                    double box_leading, size_t line_start) {
+// s346 — de-static'd and declared in TextCursor.hpp: the style-bar leading
+// read calls this same pump, so face and stride agree by construction.
+double resolved_line_leading(const SceneNode* text,
+                             const style::ResolvedTextStyle& line_base,
+                             const style::ResolvedTextStyle& box_base,
+                             double box_leading, size_t line_start) {
     if (text)
         for (const auto& s : text->text_attr_spans)
             if (s.type == curvz::utils::kCurvzLeadingAttr &&
@@ -1192,9 +1192,10 @@ static double resolved_line_leading(const SceneNode* text,
 // swap apply (s342) strips the direct indent spans, leaving the style as the
 // only source -- which the old reader ignored. `attr` is one of the three
 // kCurvzIndent*Attr.
-static double resolved_indent(const SceneNode* text, int attr,
-                              const style::ResolvedTextStyle& line_base,
-                              size_t byte) {
+// s346 — de-static'd and declared in TextCursor.hpp (see resolved_line_leading).
+double resolved_indent(const SceneNode* text, int attr,
+                       const style::ResolvedTextStyle& line_base,
+                       size_t byte) {
     if (text)
         for (const auto& s : text->text_attr_spans)
             if (s.type == attr &&
@@ -1206,11 +1207,303 @@ static double resolved_indent(const SceneNode* text, int attr,
     return 0.0;                                                     // tier 3
 }
 
+// s346 — paragraph alignment through the same two tiers the fitter's align
+// post-pass applied inline since s342 (now extracted HERE so the style-bar
+// read shares it): a direct kCurvzAlignAttr run wins; else a bound style's
+// resolved align; else 0 (left). The box text_align scalar is deliberately
+// NOT a tier (s342's scoping decision, preserved): an unbound paragraph
+// keeps align-span-only behaviour.
+int resolved_align(const SceneNode* text,
+                   const style::TextStyleLibrary* lib, size_t byte) {
+    if (!text) return 0;
+    for (const auto& s : text->text_attr_spans)
+        if (s.type == curvz::utils::kCurvzAlignAttr &&
+            (size_t)s.start_byte <= byte && (size_t)s.end_byte > byte)
+            return (int)s.ivalue;                                   // tier 1
+    if (lib) {
+        const std::string sid = curvz::utils::paragraph_attr_svalue_for_byte(
+            text->text_attr_spans, curvz::utils::kCurvzStyleAttr, byte);
+        if (!sid.empty())
+            return style::para_align_to_ivalue(lib->resolve(sid).align);  // tier 2
+    }
+    return 0;                                                       // tier 3
+}
+
+// s346 — the paragraph's tab spec through the indent/leading tiering. Tier 2
+// (line_base.tabs) is NEW for the layout too: pre-s346 tabs_for_byte read
+// direct runs only, so a bound style's tabs moved nothing. Both the fitter
+// and the Tabs popover read through here now — they go style-aware together.
+std::string resolved_tabs(const SceneNode* text,
+                          const style::ResolvedTextStyle& line_base,
+                          size_t byte) {
+    if (text)
+        for (const auto& s : text->text_attr_spans)
+            if (s.type == curvz::utils::kCurvzTabsAttr &&
+                (size_t)s.start_byte <= byte && (size_t)s.end_byte > byte)
+                return s.svalue;                                    // tier 1
+    return line_base.tabs;                                          // tier 2 / empty floor
+}
+
+// ── s347 m4 — walk-path + length pumps (see TextCursor.hpp) ─────────────────
+PathData pattern_walk_path(const PathData& guide, double offset) {
+    if (offset <= 0.0)
+        return guide;
+    if (!guide.closed) {
+        // s348 m6 — open guide: a TRUE parallel on the descender side
+        // (+distance is the left-perp of travel — see offset_open_path).
+        // The open-path Return stack rides this exactly as closed rides
+        // the inward offset.
+        PathData w = offset_open_path(guide, offset);
+        if (w.nodes.size() < 2)
+            return PathData{};   // degenerate offset -> no line here
+        return w;
+    }
+    std::vector<PathData> in = offset_path(guide, offset, OffsetSide::Inside);
+    if (in.empty() || in.front().nodes.size() < 2)
+        return PathData{};   // offset consumed the shape -> no line here
+    return in.front();
+}
+
+double pattern_path_length(const PathData& path) {
+    if (path.nodes.size() < 2) return 0.0;
+    BezierPath bp = BezierPath::from_path_data(path);
+    double total = 0.0;
+    const int n = bp.segment_count();
+    for (int i = 0; i < n; ++i)
+        total += bp.segment(i).length(32);
+    return total;
+}
+
+// ── s347 — path-text v2 m2: the PATTERN FITTER ──────────────────────────────
+// (docs/text_on_path_v2.md, "Architecture: riding the TBM substrate.")
+// Lays out path-attached text into BaselineLayouts carrying the pattern
+// block. The byte/style side rides the SAME machinery as the box fitter —
+// resolve_paragraph_baseline for the bound style, make_single_line_layout
+// for the chunk (per-run direct spans, bound colour/letter-spacing baseline,
+// all baked into the pango layout exactly as for a box line) — so the
+// StyleBar relay, spans, and ownership tiling carry over by construction.
+//
+// The fitter is GEOMETRY-FREE: it never touches the guide's path data. It
+// needs only the line's measured width and the node's (anchor, alignment)
+// to place arc_start; wrapping a closed guide's arc / clamping an open
+// guide's is the renderer's (and m3 caret's) job. That keeps TextCursor.cpp
+// free of Canvas's arc machinery and the byte domain cleanly separated from
+// the arc domain.
+//
+// m2 scope: the FIRST hard line only. L/C/R alignment maps the line's
+// extent onto the arc relative to text_guide_anchor (left grows forward
+// from the anchor, center straddles it, right ends at it); justify has no
+// edge-to-edge meaning on an unbounded arc and degrades to left. Content
+// past the first '\n' is unconsumed overflow until the m4 Return
+// derivation stacks lines (closed: antipode + flip; open: PathOffset).
+//
+// Ownership: the single line is hard-ended by definition (a '\n' or the
+// buffer end follows), so it owns [byte_start, byte_end + 1) — the caret
+// position AT its end included — per the s345 fit-time assignment rules.
+// An empty buffer emits one empty baseline owning position 0, so the m3
+// caret has a home in a freshly attached text.
+static TextLayout compute_pattern_layout(const SceneNode* guide,
+                                         const SceneNode* text,
+                                         size_t byte_start,
+                                         const style::TextStyleLibrary* lib) {
+    TextLayout out;
+    if (!guide || !guide->path || !text) return out;
+
+    const std::string& buf = text->text_content;
+    if (byte_start > buf.size()) byte_start = buf.size();
+
+    // Box-level baseline from the node's loose scalars — identical
+    // derivation to the box fitter's prelude (s340 Option A).
+    const style::ResolvedTextStyle box_base = style::box_baseline(
+        text->text_font_family, text->text_font_size,
+        text->text_bold, text->text_italic, text->text_letter_spacing,
+        text->text_line_height,
+        style::para_align_from_str(text->text_align));
+
+    // ── s347 m4 — multi-line layout (Return semantics) ───────────────────
+    // CLOSED guides: hard '\n' lines stack per the v2 derivation: line 0
+    // rides the guide at the anchor; line 1 takes the complementary arc —
+    // antipode anchor with flip (reverse traversal + π) so it reads upright
+    // on the bottom; lines 2+ stack INWARD, each riding a true parallel
+    // offset of the guide (pattern_walk_path) at the accumulated leading.
+    // s348 m6 — OPEN guides: no antipode, no flip; lines 1+ stack BELOW the
+    // guide on true open parallels (offset_open_path via the same pump) at
+    // the accumulated leading. The anchor maps onto each offset line
+    // PROPORTIONALLY (same fraction of that line's own length — exact for
+    // circles and straight lines, reasonable everywhere), and arc_start
+    // lives in the derived path's own arc space.
+    //
+    // Ownership tiles exactly as the box fitter's hard lines: every line —
+    // including a '\n\n' empty — owns [its start, byte_end + 1), so the
+    // caret position AT each newline has exactly one home.
+    const bool guide_closed = guide->path && guide->path->closed;
+    const double guide_total =
+        guide->path ? pattern_path_length(*guide->path) : 0.0;
+    // s348 m3 — the flipped family's anchor image = shared anchor + the
+    // independent flip delta (Ctrl+drag), THEN the antipode half-turn.
+    // Normalize after fmod: the delta may drive the sum negative.
+    double anchor_frac = 0.0;
+    if (guide_closed && guide_total > 0.001) {
+        anchor_frac = std::fmod(
+            (text->text_guide_anchor + text->text_guide_anchor_flip_delta) /
+                    guide_total + 0.5,
+            1.0);
+        if (anchor_frac < 0.0)
+            anchor_frac += 1.0;
+    }
+
+    size_t cursor = byte_start;
+    size_t own_cursor = byte_start;
+    int line_idx = 0;
+    double stack_offset = 0.0;   // accumulated inward distance for lines 2+
+    int safety = 0;
+    while (cursor <= buf.size() && safety++ < 10000) {
+        size_t line_end = buf.find('\n', cursor);
+        if (line_end == std::string::npos) line_end = buf.size();
+
+        const style::ResolvedTextStyle line_base =
+            lib ? style::resolve_paragraph_baseline(
+                      text->text_attr_spans, (unsigned)cursor, *lib, box_base)
+                : box_base;
+
+        // Metrics for the line's resolved font (same derivation as the box
+        // prelude, per line so a styled paragraph sizes its own cell).
+        double ascent = 0.0, descent = 0.0, metric_lead = 0.0;
+        {
+            cairo_surface_t* msurf =
+                cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
+            cairo_t* mcr = cairo_create(msurf);
+            PangoLayout* mlayout = pango_cairo_create_layout(mcr);
+            PangoFontDescription* mdesc = pango_font_description_new();
+            pango_font_description_set_family(mdesc, line_base.family.c_str());
+            const double fsize = line_base.size > 0.0 ? line_base.size : 24.0;
+            pango_font_description_set_absolute_size(mdesc,
+                                                     fsize * PANGO_SCALE);
+            if (line_base.bold)
+                pango_font_description_set_weight(mdesc, PANGO_WEIGHT_BOLD);
+            if (line_base.italic)
+                pango_font_description_set_style(mdesc, PANGO_STYLE_ITALIC);
+            PangoContext* pctx = pango_layout_get_context(mlayout);
+            PangoFontMetrics* fm =
+                pango_context_get_metrics(pctx, mdesc, nullptr);
+            ascent  = pango_font_metrics_get_ascent(fm)  / (double)PANGO_SCALE;
+            descent = pango_font_metrics_get_descent(fm) / (double)PANGO_SCALE;
+            pango_font_metrics_unref(fm);
+            pango_font_description_free(mdesc);
+            g_object_unref(mlayout);
+            cairo_destroy(mcr);
+            cairo_surface_destroy(msurf);
+            metric_lead = (ascent + descent) * 1.2;
+            if (metric_lead <= 0.0) metric_lead = fsize * 1.2;
+            if (text->text_line_height > 0.0)
+                metric_lead = text->text_line_height;
+        }
+        const double line_lead = resolved_line_leading(
+            text, line_base, box_base, metric_lead, cursor);
+
+        // The line's walk path: closed — guide for lines 0/1 (anchor +
+        // antipode), inward offsets for 2+; open (s348 m6) — guide for
+        // line 0, below-parallels for 1+ (no antipode to spend line 1 on).
+        const double off =
+            ((guide_closed ? line_idx >= 2 : line_idx >= 1) ? stack_offset
+                                                            : 0.0);
+        PathData walk = pattern_walk_path(*guide->path, off);
+        const double walk_total = pattern_path_length(walk);
+        const bool line_has_path = walk.nodes.size() >= 2 && walk_total > 0.001;
+
+        PangoLayout* layout = make_single_line_layout(
+            text, buf.data() + cursor, (int)(line_end - cursor),
+            cursor, nullptr, 0.0, &line_base);
+        int lw = 0;
+        pango_layout_get_size(layout, &lw, nullptr);
+        const double width = lw / (double)PANGO_SCALE;
+
+        const int align = resolved_align(text, lib, cursor);
+        const double align_off =
+            (align == 1) ? width * 0.5 : (align == 2) ? width : 0.0;
+
+        const bool flip = guide_closed && line_idx >= 1;
+        double arc_start = 0.0;
+        if (!flip) {
+            // s348 m6 — proportional anchor mapping for unflipped lines:
+            // the anchor's FRACTION of the raw guide, on THIS line's own
+            // length. At offset 0 (walk_total == guide_total) this is
+            // byte-identical to the raw anchor, so closed line 0 and the
+            // m2 single-line case are unchanged. Offset lines (the OPEN
+            // stack) are the open guide's SECOND FAMILY and add the
+            // independent slide delta — the same one closed guides spend
+            // on the flipped family — so Ctrl+drag works on both
+            // topologies through the one node field.
+            const double eff_anchor =
+                (off > 0.0) ? text->text_guide_anchor +
+                                  text->text_guide_anchor_flip_delta
+                            : text->text_guide_anchor;
+            const double A = (guide_total > 0.001)
+                ? (eff_anchor / guide_total) * walk_total
+                : 0.0;
+            arc_start = A - align_off;
+        } else {
+            // Antipode mapped proportionally onto THIS line's path, then
+            // into flipped pattern space (lookup = total - pattern_arc).
+            const double A = anchor_frac * walk_total;
+            arc_start = (walk_total - A) - align_off;
+        }
+
+        BaselineLayout bl;
+        bl.y       = 0.0;
+        bl.x_start = 0.0;
+        bl.x_end   = width;
+        bl.ascent  = ascent;
+        bl.descent = descent;
+        bl.height  = line_lead;
+        bl.byte_start = cursor;
+        bl.byte_end   = line_end;
+        bl.ended_by_wrap = false;
+        bl.own_start = own_cursor;
+        bl.own_end   = line_end + 1;
+        own_cursor   = bl.own_end;
+        bl.pango.reset(layout);
+        if (line_has_path) {
+            bl.pattern = BaselineLayout::PatternBlock{
+                text->text_guide_id, arc_start, flip, off};
+        }
+        // No walk path (offset consumed the shape): the baseline still
+        // exists for byte/ownership (the caret can live there; nothing
+        // renders), pattern stays nullopt and the renderer skips it.
+        out.baselines.push_back(std::move(bl));
+
+        if (line_end < buf.size()) {
+            cursor = line_end + 1;          // consume the '\\n'
+            out.bytes_consumed = cursor;
+        } else {
+            out.bytes_consumed = buf.size();
+            break;
+        }
+
+        // Stride: closed — lines 0->1 share the guide (top/bottom), so the
+        // inward stack starts accumulating from line 1; open (s348 m6) —
+        // every line is the predecessor of an offset line, so each Return
+        // adds the CURRENT line's leading from line 0 on.
+        if (guide_closed ? line_idx >= 1 : true)
+            stack_offset += line_lead;
+        ++line_idx;
+    }
+    return out;
+}
+
 TextLayout compute_text_layout(const SceneNode* boundary,
                                const SceneNode* text,
                                size_t byte_start,
                                const style::TextStyleLibrary* lib) {
     TextLayout out;
+    // s347 — path-text v2 m2: PATTERN MODE. When the text is guide-attached
+    // and the caller passed its guide as the "boundary", route to the
+    // pattern fitter. Sits ABOVE the nodes<3 rejection below — a 2-node
+    // open line is a perfectly good guide, just not a box boundary. Box
+    // callers are unaffected (a TBM text never carries text_guide_id).
+    if (text && boundary && !text->text_guide_id.empty() &&
+        boundary->internal_id == text->text_guide_id)
+        return compute_pattern_layout(boundary, text, byte_start, lib);
     if (!boundary || !boundary->path || !text) return out;
     const PathData& bp = *boundary->path;
     if (bp.nodes.size() < 3) return out;
@@ -1462,7 +1755,7 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         // continuation lines, so this is ind_l there and ind_l+ind_f on a
         // paragraph's first line. Resolve the paragraph's tab spec once per line.
         const double tab_indent_offset = ind_l + ind_f;
-        const std::string line_tabs = tabs_for_byte(text, line_start);
+        const std::string line_tabs = resolved_tabs(text, line_base, line_start);
         const char* line_tabs_c = line_tabs.empty() ? nullptr : line_tabs.c_str();
         double avail   = x_end - x_start;
 
@@ -1778,32 +2071,10 @@ TextLayout compute_text_layout(const SceneNode* boundary,
     if (text) {
         for (auto& bl : out.baselines) {
             if (!bl.pango) continue;
-            int align = 0;
-            bool direct = false;
-            for (const auto& s : text->text_attr_spans) {
-                if (s.type == curvz::utils::kCurvzAlignAttr &&
-                    (unsigned)s.start_byte <= bl.byte_start &&
-                    (unsigned)s.end_byte > bl.byte_start) {
-                    align = (int)s.ivalue;
-                    direct = true;
-                    break;
-                }
-            }
-            // s342 — when the paragraph carries no direct align run, fall back
-            // to the BOUND style's resolved alignment (the align twin of the
-            // indent/leading three-tier). Scoped to bound paragraphs on purpose:
-            // an unbound paragraph keeps the pre-s342 behaviour (align spans
-            // only), so the box-level text_align default that box_baseline
-            // carries is NOT newly applied here -- this milestone only makes a
-            // *style's* alignment take effect, matching the reported gap without
-            // widening unbound behaviour.
-            if (!direct && lib) {
-                const std::string sid = curvz::utils::paragraph_attr_svalue_for_byte(
-                    text->text_attr_spans, curvz::utils::kCurvzStyleAttr,
-                    bl.byte_start);
-                if (!sid.empty())
-                    align = style::para_align_to_ivalue(lib->resolve(sid).align);
-            }
+            // s346 — the direct-run -> bound-style tiering this loop carried
+            // inline since s342 now lives in resolved_align (TextCursor.hpp),
+            // shared with the style-bar's alignment read. Semantics unchanged.
+            int align = resolved_align(text, lib, bl.byte_start);
             if (align <= 0) continue;  // left default — no shift
 
             if (align == 3) {
@@ -1949,13 +2220,19 @@ TextCursor::Geometry TextCursor::position_on_canvas() const {
     Geometry g;
     if (!m_text || !m_canvas) return g;
 
-    // Boundary resolution — two paths in priority order:
+    // Boundary resolution — three paths in priority order:
     //   1. m_boundary set: TextBox-owned text passes its sibling
-    //      boundary into the ctor. Direct pointer, no lookup.
-    //   2. Legacy paired-sibling: read text_boundary_ids.front() and
+    //      boundary into the ctor (and the ToP edit entry passes the
+    //      GUIDE here — s347 m3); direct pointer, no lookup.
+    //   2. s347 — guide-attached text: resolve the guide by iid so a
+    //      cursor constructed without the pointer (re-entry paths)
+    //      still lays out through the pattern fitter.
+    //   3. Legacy paired-sibling: read text_boundary_ids.front() and
     //      look the boundary up by iid through Canvas. Works for
     //      files loaded from before the TextBox migration.
     SceneNode* boundary = m_boundary;
+    if (!boundary && !m_text->text_guide_id.empty())
+        boundary = m_canvas->find_guide_path(m_text->text_guide_id);
     if (!boundary) {
         if (m_text->text_boundary_ids.empty()) return g;
         boundary = m_canvas->find_text_boundary(
@@ -1992,6 +2269,36 @@ TextCursor::Geometry TextCursor::position_on_canvas() const {
     PangoRectangle pos;
     pango_layout_index_to_pos(target->pango.get(), rel_byte, &pos);
     double caret_x_in_line = pos.x / (double)PANGO_SCALE;
+
+    // ── s347 — path-text v2 m3: pattern caret ───────────────────────────
+    // The baseline rides a guide; map the line-local caret x through the
+    // arc (arc = arc_start + x, the PatternBlock contract) and stand the
+    // caret perpendicular to the tangent. Cap-top is the glyph frame's
+    // local (0, -ascent) rotated into doc space; Geometry.angle carries
+    // the tangent so render()'s existing rotated branch draws the caret
+    // down the glyph's local +y — the field was reserved for exactly
+    // this ("line pattern tangent rotation adds to this in Arc F").
+    if (target->pattern) {
+        const double arc = target->pattern->arc_start + caret_x_in_line;
+        SceneNode* gnode =
+            m_canvas->find_guide_path(target->pattern->guide_id);
+        Vec2 gp; double ga = 0.0;
+        if (!gnode ||
+            !m_canvas->guide_arc_point(gnode, arc, target->pattern->flip,
+                                       gp, ga, target->pattern->offset))
+            return g;   // dangling guide: no caret (buffer ops still work)
+        // s347 — attachment convention: unflipped caret tops at -ascent
+        // (cap height above the path); flipped lines hang from the
+        // ascender, so the caret tops ON the path. Local (0, t) maps to
+        // gp + (-t*sin, t*cos).
+        const double t_top = target->pattern->flip ? 0.0 : -target->ascent;
+        g.x = gp.x - t_top * std::sin(ga);
+        g.y = gp.y + t_top * std::cos(ga);
+        g.height = target->ascent + target->descent * 0.25;
+        g.angle = ga;
+        g.valid = true;
+        return g;
+    }
 
     g.x = target->x_start + caret_x_in_line;
     // s301 m1h — Caret geometry sized to glyph height, not line height.
@@ -2053,8 +2360,11 @@ std::optional<size_t> TextCursor::byte_index_at(
     // Empty buffer: only one sensible caret position.
     if (m_text->text_content.empty()) return size_t{0};
 
-    // Resolve boundary the same way position_on_canvas does.
+    // Resolve boundary the same way position_on_canvas does (including
+    // the s347 guide tier).
     SceneNode* boundary = m_boundary;
+    if (!boundary && !m_text->text_guide_id.empty())
+        boundary = m_canvas->find_guide_path(m_text->text_guide_id);
     if (!boundary) {
         if (m_text->text_boundary_ids.empty()) return std::nullopt;
         boundary = m_canvas->find_text_boundary(
@@ -2064,6 +2374,71 @@ std::optional<size_t> TextCursor::byte_index_at(
 
     TextLayout tl = layout_for(boundary);  // s345 — styled layout, see layout_for
     if (tl.baselines.empty()) return std::nullopt;
+
+    // ── s347 — path-text v2 m3: pattern click-to-byte ───────────────────
+    // Project the click onto the guide, un-map the arc to line-local x
+    // (the inverse of the PatternBlock contract), and ask the line's
+    // pango layout for the byte — the same xy_to_index + trailing logic
+    // as the box path below, sharing its tail. One baseline exists until
+    // m4 stacks lines; the band test below has no meaning on a curve, so
+    // this branch fully replaces target selection for pattern layouts.
+    // Distance is NOT gated here: callers (ToP entry / caret reposition)
+    // have already decided the click belongs to this text, and clamping
+    // a far click to the line's nearest end mirrors the box behaviour.
+    const BaselineLayout* target = nullptr;
+    double x_in_line = 0.0;
+    if (!m_text->text_guide_id.empty()) {
+        // s347 m4 — several stacked lines, each on its OWN walk path
+        // (line 0/1 the guide, 2+ inward offsets). Project the click onto
+        // every line's path and keep the nearest; ties resolve to the
+        // earlier line. Baselines without a pattern block (offset consumed
+        // the shape) can't be clicked — skipped; if NO line has a path the
+        // click falls back to the first baseline at x 0.
+        double best_d = std::numeric_limits<double>::max();
+        const BaselineLayout* best_bl = nullptr;
+        double best_x = 0.0;
+        for (const auto& bl : tl.baselines) {
+            if (!bl.pattern) continue;
+            SceneNode* gnode =
+                m_canvas->find_guide_path(bl.pattern->guide_id);
+            double arc = 0.0, dist = 0.0, total = 0.0;
+            if (!gnode ||
+                !m_canvas->guide_project_point(gnode, {doc_x, doc_y}, arc,
+                                               dist, &total,
+                                               bl.pattern->offset))
+                continue;
+            double x = (bl.pattern->flip ? total - arc : arc)
+                       - bl.pattern->arc_start;
+            const double w = std::max(bl.x_end - bl.x_start, 0.0);
+            auto pen = [&](double c) {
+                return c < 0.0 ? -c : (c > w ? c - w : 0.0);
+            };
+            if (gnode->path && gnode->path->closed && total > 0.001) {
+                // The line may straddle the seam (arc_start negative or
+                // past total): of x, x±total, keep the candidate least
+                // outside [0, w].
+                for (double c : {x - total, x + total})
+                    if (pen(c) < pen(x)) x = c;
+            }
+            // Rank by perpendicular distance to the path PLUS how far the
+            // click overshoots the line's arc extent, so a click past a
+            // short top line but right on a long bottom line picks the
+            // bottom line, not the nearer-path top.
+            const double score = dist + pen(x);
+            if (score < best_d) {
+                best_d = score;
+                best_bl = &bl;
+                best_x = std::min(std::max(x, 0.0), w);
+            }
+        }
+        if (!best_bl) {
+            target = &tl.baselines.front();
+            x_in_line = 0.0;
+        } else {
+            target = best_bl;
+            x_in_line = best_x;
+        }
+    } else {
 
     // s327 m3 — The baselines in `tl` live in the UPRIGHT frame: the layout
     // rotated the boundary by -frame_angle about the centroid before laying
@@ -2087,7 +2462,6 @@ std::optional<size_t> TextCursor::byte_index_at(
     // baseline.y - baseline.ascent as the top edge and
     // baseline.y + baseline.descent as the bottom edge; a click in
     // the gap snaps to the nearest band.
-    const BaselineLayout* target = nullptr;
     for (size_t i = 0; i < tl.baselines.size(); ++i) {
         const BaselineLayout& bl = tl.baselines[i];
         double top    = bl.y - bl.ascent;
@@ -2123,9 +2497,12 @@ std::optional<size_t> TextCursor::byte_index_at(
     // at byte_end.
     double line_width = target->x_end - target->x_start;
     if (line_width < 0.0) line_width = 0.0;
-    double x_in_line = ux - target->x_start;
+    x_in_line = ux - target->x_start;
     if (x_in_line < 0.0) x_in_line = 0.0;
     if (x_in_line > line_width) x_in_line = line_width;
+
+    }  // s347 — end of the box-frame else (pattern branch above shares the
+       // xy_to_index + trailing tail below)
 
     // Pango wants pixel coords scaled by PANGO_SCALE. The layouts were
     // built with the same unit convention compute_text_layout uses

@@ -719,6 +719,25 @@ struct SceneNode {
       0.0; // arc-length start offset along path in doc units
   bool text_path_flip = false; // true = text hangs below path (inside circle)
 
+  // ── s346 — Path-text v2: the RULER model (docs/text_on_path_v2.md) ─────────
+  // The guide is a ruler the text reads, not a container it owns: text paints
+  // independently, the path paints independently, geometry is fully DERIVED
+  // per paint from (guide, anchor) — attached text has no position of its own
+  // (text_x/text_y become a cached convenience only). The guide reference is
+  // the iid of a LEAF path; compound subpaths are child Path nodes with their
+  // own iids, so "which subpath" is answered by which leaf was clicked. Kept
+  // distinct from the legacy triple above so the old walker never fires on v2
+  // objects; the legacy fields + walker are deleted in v2 m5.
+  std::string text_guide_id;       // iid of guide LEAF path; empty = unattached
+  double text_guide_anchor = 0.0;  // arc-length anchor along the guide (doc units)
+  // s348 m3 — the FLIPPED family's independent slide. One arc-length delta
+  // (raw-guide units, wrapped mod length) added to the shared anchor's
+  // antipode mapping for flipped lines only. 0 = the families ride in sync
+  // (the default). NOT per-line state — lines are dynamic (wraps/Returns);
+  // one delta on the node keeps the derivation a pump: the fitter applies
+  // it in anchor_frac, and ticks/renderer/band/caret all inherit.
+  double text_guide_anchor_flip_delta = 0.0;
+
   // ── s301 m1a — Text container model (data foundation) ──────────────────────
   // The unified text model (see docs/text_unified_model.md) decomposes text
   // rendering into three primitives: a boundary (closed path defining where
@@ -1051,6 +1070,9 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->text_path_id = src.text_path_id;
   dst->text_path_offset = src.text_path_offset;
   dst->text_path_flip = src.text_path_flip;
+  dst->text_guide_id = src.text_guide_id;          // s346 — path-text v2
+  dst->text_guide_anchor = src.text_guide_anchor;  // s346 — path-text v2
+  dst->text_guide_anchor_flip_delta = src.text_guide_anchor_flip_delta;  // s348 m3
   // s301 m1a — text container model field copy
   dst->text_boundary_ids = src.text_boundary_ids;
   dst->text_line_path_id = src.text_line_path_id;

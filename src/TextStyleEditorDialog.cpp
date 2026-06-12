@@ -507,12 +507,19 @@ void TextStyleEditorDialog::apply_inherited_previews() {
     }
     const style::ResolvedTextStyle r = m_library->resolve(parent);
 
+    // s346 — CurvzSpinButton's internal value IS doc-px (the widget owns the
+    // pt display conversion via the unit override); wrapping it in
+    // from_px/to_px here double-converted. The read and write errors
+    // cancelled INSIDE the dialog — it always displayed the typed number —
+    // while the committed value was inflated by 96/72, so styled text
+    // rendered (and the s346 chip face reported) 4/3 of the typed size.
+    // The indent rows below were always raw-px, the correct idiom.
     if (m_size_sp && m_size_ov && !m_size_ov->get_active())
-        m_size_sp->set_internal_value(UnitSystem::from_px(r.size, Unit::Pt));
+        m_size_sp->set_internal_value(r.size);
     if (m_leading_sp && m_leading_ov && !m_leading_ov->get_active())
-        m_leading_sp->set_internal_value(UnitSystem::from_px(r.leading_px, Unit::Pt));
+        m_leading_sp->set_internal_value(r.leading_px);
     if (m_track_sp && m_track_ov && !m_track_ov->get_active())
-        m_track_sp->set_internal_value(UnitSystem::from_px(r.letter_spacing, Unit::Pt));
+        m_track_sp->set_internal_value(r.letter_spacing);
     if (m_indent_ov && !m_indent_ov->get_active()) {
         if (m_indent_left_sp)  m_indent_left_sp->set_internal_value(r.indent_left_px);
         if (m_indent_right_sp) m_indent_right_sp->set_internal_value(r.indent_right_px);
@@ -615,7 +622,7 @@ void TextStyleEditorDialog::sync_from_working() {
         const bool on = m_working.chars.size.has_value();
         m_size_ov->set_active(on);
         if (on && m_size_sp)
-            m_size_sp->set_internal_value(UnitSystem::from_px(*m_working.chars.size, Unit::Pt));
+            m_size_sp->set_internal_value(*m_working.chars.size);  // s346 — internal IS px
         set_size_override(on, /*reload_preview=*/false);
     }
 
@@ -624,8 +631,7 @@ void TextStyleEditorDialog::sync_from_working() {
         const bool on = m_working.chars.letter_spacing.has_value();
         m_track_ov->set_active(on);
         if (on && m_track_sp)
-            m_track_sp->set_internal_value(
-                UnitSystem::from_px(*m_working.chars.letter_spacing, Unit::Pt));
+            m_track_sp->set_internal_value(*m_working.chars.letter_spacing);  // s346 — internal IS px
         set_track_override(on, false);
     }
 
@@ -659,8 +665,7 @@ void TextStyleEditorDialog::sync_from_working() {
         const bool on = m_working.para.leading_px.has_value();
         m_leading_ov->set_active(on);
         if (on && m_leading_sp)
-            m_leading_sp->set_internal_value(
-                UnitSystem::from_px(*m_working.para.leading_px, Unit::Pt));
+            m_leading_sp->set_internal_value(*m_working.para.leading_px);  // s346 — internal IS px
         set_leading_override(on, false);
     }
 
@@ -733,7 +738,7 @@ void TextStyleEditorDialog::harvest_into_working() {
     }
     if (m_size_ov && m_size_sp) {
         if (m_size_ov->get_active())
-            m_working.chars.size = UnitSystem::to_px(m_size_sp->get_internal_value(), Unit::Pt);
+            m_working.chars.size = m_size_sp->get_internal_value();  // s346 — already px
         else
             m_working.chars.size.reset();
     }
@@ -752,7 +757,7 @@ void TextStyleEditorDialog::harvest_into_working() {
     if (m_track_ov && m_track_sp) {
         if (m_track_ov->get_active())
             m_working.chars.letter_spacing =
-                UnitSystem::to_px(m_track_sp->get_internal_value(), Unit::Pt);
+                m_track_sp->get_internal_value();  // s346 — already px
         else
             m_working.chars.letter_spacing.reset();
     }
@@ -779,7 +784,7 @@ void TextStyleEditorDialog::harvest_into_working() {
     if (m_leading_ov && m_leading_sp) {
         if (m_leading_ov->get_active())
             m_working.para.leading_px =
-                UnitSystem::to_px(m_leading_sp->get_internal_value(), Unit::Pt);
+                m_leading_sp->get_internal_value();  // s346 — already px
         else
             m_working.para.leading_px.reset();
     }

@@ -1448,6 +1448,40 @@ struct GuideMoveCommand : CurvzCommand {
     std::string description() const override { return "Move guide"; }
 };
 
+// ── PatternAnchorCommand ─────────────────────────────────────────────────────
+// s348 m2 — slide-anchor drag undo for path-text v2. Swaps the two anchor
+// degrees of freedom: text_guide_anchor (the shared anchor) and — s348 m3 —
+// text_guide_anchor_flip_delta (the flipped family's independent slide,
+// Ctrl+drag). Every line's geometry (offsets, flips, antipodes, ticks) is
+// DERIVED from these through the pattern pump, so restoring them restores
+// everything; any drag flavour (synced / independent-top / independent-
+// bottom) is one Ctrl+Z. Same shape as GuideMoveCommand: project + iid
+// capture, before/after doubles, find_by_iid resolution at replay, clean
+// no-op if the node is gone. text_x/text_y stay untouched — they are a
+// creation-time cached convenience, not geometry (text_on_path_v2.md).
+// Deliberately NOT LinkTextToPathCommand, which swaps the legacy
+// (text_path_id, offset, flip, x, y) tuple and dies with the legacy
+// walker at the s348 legacy-deletion milestone.
+struct PatternAnchorCommand : CurvzCommand {
+    CurvzProject* proj;
+    std::string   obj_iid;
+    double        before_arc;
+    double        before_delta;
+    double        after_arc;
+    double        after_delta;
+
+    PatternAnchorCommand(CurvzProject* proj, std::string obj_iid,
+                         double before_arc, double before_delta,
+                         double after_arc, double after_delta)
+        : proj(proj), obj_iid(std::move(obj_iid))
+        , before_arc(before_arc), before_delta(before_delta)
+        , after_arc(after_arc), after_delta(after_delta) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override { return "Slide text anchor"; }
+};
+
 // ── PasteCommand ─────────────────────────────────────────────────────────────
 // Inserts one or more pasted nodes into a parent at the front.
 // Undo removes them by id; redo re-inserts clones.

@@ -50,4 +50,13 @@ std::vector<PathData> offset_path(const PathData& path,
                                   LineJoin         join              = LineJoin::Miter,
                                   double           miter_limit_ratio = 4.0);
 
+// s348 m6 — single-side OPEN offset: one true parallel of an open path at
+// signed distance d (Tiller-Hanson pieces + joins, no caps, no closing —
+// the un-joined half of the stroke-outline machinery above). Sign: +d
+// displaces toward the LEFT perpendicular of travel, which in Y-down doc
+// space is the glyph frame's "below the baseline" side — the side pattern
+// text stacks on (open-path Return). Returns empty PathData on closed
+// input or fewer than 2 nodes.
+PathData offset_open_path(const PathData& path, double distance);
+
 } // namespace Curvz

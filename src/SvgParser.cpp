@@ -127,6 +127,90 @@ static std::string attr(const std::string& tag, const std::string& name) {
     return {};
 }
 
+// s347 — minimal XML entity decode for attribute payloads that carry markup
+// (data-curvz-markup-attr). attr() returns the raw substring between quotes;
+// the writer xml_escape'd it, so '<span ...>' arrives as '&lt;span ...&gt;'
+// and pango_parse_markup would reject it. Decodes the five XML entities the
+// writer's escape produces; anything else passes through untouched.
+static std::string xml_unescape(const std::string& s) {
+    std::string r;
+    r.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] == '&') {
+            if      (s.compare(i, 5, "&amp;")  == 0) { r += '&';  i += 5; continue; }
+            else if (s.compare(i, 4, "&lt;")   == 0) { r += '<';  i += 4; continue; }
+            else if (s.compare(i, 4, "&gt;")   == 0) { r += '>';  i += 4; continue; }
+            else if (s.compare(i, 6, "&quot;") == 0) { r += '"';  i += 6; continue; }
+            else if (s.compare(i, 6, "&apos;") == 0) { r += '\''; i += 6; continue; }
+        }
+        r += s[i++];
+    }
+    return r;
+}
+
+// ── s347 — Curvz-span run-list injectors, hoisted from the Mgr-def close ────
+// (verbatim logic; the Mgr block and the plain-<text> handler both call
+// these now, so the two load paths cannot drift). Int form: flat
+// "start:end:ival;..." — ival meaning is per-type. String form: runs
+// separated by '|' (specs/ids may contain ';'), value = whole remainder
+// after the second ':'.
+static void inject_int_runs(Curvz::SceneNode* node, const std::string& ls,
+                            int type) {
+    if (!node) return;
+    size_t i = 0;
+    while (i < ls.size()) {
+        size_t semi = ls.find(';', i);
+        std::string tok = ls.substr(i, semi == std::string::npos
+                                            ? std::string::npos
+                                            : semi - i);
+        size_t c1 = tok.find(':');
+        size_t c2 = (c1 == std::string::npos) ? std::string::npos
+                                              : tok.find(':', c1 + 1);
+        if (c1 != std::string::npos && c2 != std::string::npos) {
+            try {
+                Curvz::AttrSpan sp;
+                sp.type = type;
+                sp.start_byte = (unsigned)std::stoul(tok.substr(0, c1));
+                sp.end_byte = (unsigned)std::stoul(tok.substr(c1 + 1, c2 - c1 - 1));
+                sp.ivalue = std::stol(tok.substr(c2 + 1));
+                if (sp.end_byte > sp.start_byte)
+                    node->text_attr_spans.push_back(sp);
+            } catch (...) { /* skip malformed triple */ }
+        }
+        if (semi == std::string::npos) break;
+        i = semi + 1;
+    }
+}
+
+static void inject_str_runs(Curvz::SceneNode* node, const std::string& ls,
+                            int type) {
+    if (!node) return;
+    size_t i = 0;
+    while (i < ls.size()) {
+        size_t bar = ls.find('|', i);
+        std::string tok = ls.substr(i, bar == std::string::npos
+                                            ? std::string::npos
+                                            : bar - i);
+        size_t c1 = tok.find(':');
+        size_t c2 = (c1 == std::string::npos) ? std::string::npos
+                                              : tok.find(':', c1 + 1);
+        if (c1 != std::string::npos && c2 != std::string::npos) {
+            try {
+                Curvz::AttrSpan sp;
+                sp.type = type;
+                sp.start_byte = (unsigned)std::stoul(tok.substr(0, c1));
+                sp.end_byte = (unsigned)std::stoul(tok.substr(c1 + 1, c2 - c1 - 1));
+                sp.svalue = tok.substr(c2 + 1);
+                if (sp.end_byte > sp.start_byte && !sp.svalue.empty())
+                    node->text_attr_spans.push_back(sp);
+            } catch (...) { /* skip malformed run */ }
+        }
+        if (bar == std::string::npos) break;
+        i = bar + 1;
+    }
+}
+
 static double dbl(const std::string& s, double def = 0.0) {
     if (s.empty()) return def;
     try { return std::stod(s); } catch (...) { return def; }
@@ -1420,74 +1504,17 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
                 //   "start:end:ival;..." list; ival meaning is per-type. One
                 //   parser for all three (leading + stroke colour/width).
                 if (in_textbox_mgr_def) {
-                    auto inject_runs = [&](const std::string& ls, int type) {
-                        size_t i = 0;
-                        while (i < ls.size()) {
-                            size_t semi = ls.find(';', i);
-                            std::string tok = ls.substr(i, semi == std::string::npos
-                                                                ? std::string::npos
-                                                                : semi - i);
-                            size_t c1 = tok.find(':');
-                            size_t c2 = (c1 == std::string::npos)
-                                            ? std::string::npos
-                                            : tok.find(':', c1 + 1);
-                            if (c1 != std::string::npos && c2 != std::string::npos) {
-                                try {
-                                    Curvz::AttrSpan sp;
-                                    sp.type = type;
-                                    sp.start_byte = (unsigned)std::stoul(tok.substr(0, c1));
-                                    sp.end_byte = (unsigned)std::stoul(
-                                        tok.substr(c1 + 1, c2 - c1 - 1));
-                                    sp.ivalue = std::stol(tok.substr(c2 + 1));
-                                    if (sp.end_byte > sp.start_byte)
-                                        in_textbox_mgr_def->text_attr_spans.push_back(sp);
-                                } catch (...) { /* skip malformed triple */ }
-                            }
-                            if (semi == std::string::npos) break;
-                            i = semi + 1;
-                        }
-                    };
-                    inject_runs(mgr_def_leading,      curvz::utils::kCurvzLeadingAttr);
-                    inject_runs(mgr_def_stroke_color, curvz::utils::kCurvzStrokeColorAttr);
-                    inject_runs(mgr_def_stroke_width, curvz::utils::kCurvzStrokeWidthAttr);
-                    inject_runs(mgr_def_align,        curvz::utils::kCurvzAlignAttr);
-                    inject_runs(mgr_def_indent_l, curvz::utils::kCurvzIndentLeftAttr);   // s334
-                    inject_runs(mgr_def_indent_r, curvz::utils::kCurvzIndentRightAttr);  // s334
-                    inject_runs(mgr_def_indent_f, curvz::utils::kCurvzIndentFirstAttr);  // s334
-                    // s335 — string-valued sibling of inject_runs for tabs. Runs
-                    // are separated by '|' (the spec uses ';'), and the value
-                    // after start:end: is the WHOLE remainder of the run token
-                    // (the spec, which may contain ':' nowhere but ';'/',' yes),
-                    // assigned to svalue instead of ivalue.
-                    auto inject_runs_str = [&](const std::string& ls, int type) {
-                        size_t i = 0;
-                        while (i < ls.size()) {
-                            size_t bar = ls.find('|', i);
-                            std::string tok = ls.substr(i, bar == std::string::npos
-                                                                ? std::string::npos
-                                                                : bar - i);
-                            size_t c1 = tok.find(':');
-                            size_t c2 = (c1 == std::string::npos)
-                                            ? std::string::npos
-                                            : tok.find(':', c1 + 1);
-                            if (c1 != std::string::npos && c2 != std::string::npos) {
-                                try {
-                                    Curvz::AttrSpan sp;
-                                    sp.type = type;
-                                    sp.start_byte = (unsigned)std::stoul(tok.substr(0, c1));
-                                    sp.end_byte = (unsigned)std::stoul(
-                                        tok.substr(c1 + 1, c2 - c1 - 1));
-                                    sp.svalue = tok.substr(c2 + 1);
-                                    if (sp.end_byte > sp.start_byte && !sp.svalue.empty())
-                                        in_textbox_mgr_def->text_attr_spans.push_back(sp);
-                                } catch (...) { /* skip malformed run */ }
-                            }
-                            if (bar == std::string::npos) break;
-                            i = bar + 1;
-                        }
-                    };
-                    inject_runs_str(mgr_def_tabs, curvz::utils::kCurvzTabsAttr);  // s335
-                    inject_runs_str(mgr_def_text_style, curvz::utils::kCurvzStyleAttr);  // s340
+                    // s347 — injectors hoisted to file scope (shared with
+                    // the plain-<text> handler); same logic verbatim.
+                    inject_int_runs(in_textbox_mgr_def, mgr_def_leading,      curvz::utils::kCurvzLeadingAttr);
+                    inject_int_runs(in_textbox_mgr_def, mgr_def_stroke_color, curvz::utils::kCurvzStrokeColorAttr);
+                    inject_int_runs(in_textbox_mgr_def, mgr_def_stroke_width, curvz::utils::kCurvzStrokeWidthAttr);
+                    inject_int_runs(in_textbox_mgr_def, mgr_def_align,        curvz::utils::kCurvzAlignAttr);
+                    inject_int_runs(in_textbox_mgr_def, mgr_def_indent_l, curvz::utils::kCurvzIndentLeftAttr);   // s334
+                    inject_int_runs(in_textbox_mgr_def, mgr_def_indent_r, curvz::utils::kCurvzIndentRightAttr);  // s334
+                    inject_int_runs(in_textbox_mgr_def, mgr_def_indent_f, curvz::utils::kCurvzIndentFirstAttr);  // s334
+                    inject_str_runs(in_textbox_mgr_def, mgr_def_tabs, curvz::utils::kCurvzTabsAttr);  // s335
+                    inject_str_runs(in_textbox_mgr_def, mgr_def_text_style, curvz::utils::kCurvzStyleAttr);  // s340
                     mgr_def_leading.clear();
                     mgr_def_stroke_color.clear();
                     mgr_def_stroke_width.clear();
@@ -3116,6 +3143,25 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             auto content = attr(tag, "data-curvz-content");
             obj->text_content = content;
 
+            // s347 — per-run spine for plain texts: same decode pump the
+            // TBM CDATA payload uses; rewrites text_content with the clean
+            // string and fills text_attr_spans (colour, rise, weight, ...).
+            auto markup_attr = attr(tag, "data-curvz-markup-attr");
+            if (!markup_attr.empty())
+                decode_markup_into(obj.get(), xml_unescape(markup_attr));
+            // s347 — Curvz-private runs (align is the headline: a centred
+            // ring text reloaded left without it). MUST follow the markup
+            // decode above, which clears text_attr_spans.
+            inject_int_runs(obj.get(), attr(tag, "data-curvz-leading-runs"),      curvz::utils::kCurvzLeadingAttr);
+            inject_int_runs(obj.get(), attr(tag, "data-curvz-stroke-color-runs"), curvz::utils::kCurvzStrokeColorAttr);
+            inject_int_runs(obj.get(), attr(tag, "data-curvz-stroke-width-runs"), curvz::utils::kCurvzStrokeWidthAttr);
+            inject_int_runs(obj.get(), attr(tag, "data-curvz-align-runs"),        curvz::utils::kCurvzAlignAttr);
+            inject_int_runs(obj.get(), attr(tag, "data-curvz-indent-left-runs"),  curvz::utils::kCurvzIndentLeftAttr);
+            inject_int_runs(obj.get(), attr(tag, "data-curvz-indent-right-runs"), curvz::utils::kCurvzIndentRightAttr);
+            inject_int_runs(obj.get(), attr(tag, "data-curvz-indent-first-runs"), curvz::utils::kCurvzIndentFirstAttr);
+            inject_str_runs(obj.get(), attr(tag, "data-curvz-tabs-runs"),         curvz::utils::kCurvzTabsAttr);
+            inject_str_runs(obj.get(), attr(tag, "data-curvz-text-style-runs"),   curvz::utils::kCurvzStyleAttr);
+
             // Baseline shift + letter spacing
             auto bs = attr(tag, "data-curvz-baseline-shift");
             if (!bs.empty()) obj->text_baseline_shift = dbl(bs);
@@ -3129,6 +3175,26 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                 auto off = attr(tag, "data-curvz-path-offset");
                 if (!off.empty()) obj->text_path_offset = dbl(off);
                 obj->text_path_flip = (attr(tag, "data-curvz-path-flip") == "1");
+            }
+
+            // s347 — path-text v2 ruler reference (text_on_path_v2.md). The
+            // guide iid is a UUID written at attach time — loads verbatim,
+            // no svg-id migration. NOTE: this read lives HERE, in the
+            // parser CurvzProject::load actually uses; the same read in
+            // AnimatingSvgParser serves the replay/import path. The s347
+            // save-restore hunt found the first port landed only in the
+            // Animating twin — both parsers must carry v2 reads from now on.
+            auto guide_id = attr(tag, "data-curvz-guide-id");
+            if (!guide_id.empty()) {
+                obj->text_guide_id = guide_id;
+                auto ganchor = attr(tag, "data-curvz-guide-anchor");
+                if (!ganchor.empty()) obj->text_guide_anchor = dbl(ganchor);
+                auto gdelta = attr(tag, "data-curvz-guide-anchor-flip-delta");
+                if (!gdelta.empty())  // s348 m3
+                    obj->text_guide_anchor_flip_delta = dbl(gdelta);
+                LOG_INFO("[TOPSAVE] read text iid='{}' guide_id='{}' anchor={:.1f}",
+                         obj->internal_id, obj->text_guide_id,
+                         obj->text_guide_anchor);
             }
 
             // s301 m1a — text container model parsing. Iid migration for
@@ -3197,6 +3263,15 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     compound->type = SceneNode::Type::Compound;
                     compound->id   = attr(tag, "id");
                     if (compound->id.empty()) compound->id = "compound" + std::to_string(obj_counter++);
+                    {   // s347 — round-trip the compound's iid (see the
+                        // matching read in AnimatingSvgParser; both parsers
+                        // carry it).
+                        auto iid = attr(tag, "data-curvz-iid");
+                        if (!iid.empty()) compound->internal_id = iid;
+                        LOG_INFO("[TOPSAVE] read compound iid='{}' child_iids='{}'",
+                                 compound->internal_id,
+                                 attr(tag, "data-curvz-child-iids"));
+                    }
                     auto nm = attr(tag, "data-curvz-name");
                     compound->name = nm.empty() ? compound->id : nm;
                     if (attr(tag, "display") == "none") compound->visible = false;
@@ -3256,12 +3331,25 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                         while (std::getline(ss, tok, ','))
                             child_ids.push_back(tok);
                     }
+                    // s347 — leaf IIDS by index (data-curvz-child-iids):
+                    // compound leaves are path-text v2 attachment targets;
+                    // their UUIDs must survive the round trip.
+                    std::vector<std::string> child_iids;
+                    {
+                        auto s = attr(tag, "data-curvz-child-iids");
+                        std::istringstream ss(s);
+                        std::string tok;
+                        while (std::getline(ss, tok, ','))
+                            child_iids.push_back(tok);
+                    }
 
                     for (size_t ci = 0; ci < sub_ds.size(); ++ci) {
                         auto child = std::make_unique<SceneNode>();
                         child->type  = SceneNode::Type::Path;
                         child->id    = (ci < child_ids.size()) ? child_ids[ci]
                                        : "obj" + std::to_string(obj_counter++);
+                        if (ci < child_iids.size() && !child_iids[ci].empty())
+                            child->internal_id = child_iids[ci];   // s347
                         child->fill  = style_obj.fill;
                         child->stroke = style_obj.stroke;
                         child->fill_swatch_id   = style_obj.fill_swatch_id;
@@ -3401,6 +3489,13 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     auto blend_role = attr(tag, "data-curvz-blend-role");
                     auto warp_role  = attr(tag, "data-curvz-warp-role");
                     auto path_node = std::make_unique<SceneNode>(std::move(obj));
+                    {   // s347 — restore the path's internal_id (writer has
+                        // emitted data-curvz-iid all along; without the read
+                        // every load minted fresh and iid references —
+                        // text_guide_id chief among them — dangled).
+                        auto iid = attr(tag, "data-curvz-iid");
+                        if (!iid.empty()) path_node->internal_id = iid;
+                    }
                     SceneNode* raw = path_node.get();
                     // Margins ride on the boundary path of a TextBox per
                     // stage 3d ownership. The four attrs are emitted
@@ -3641,6 +3736,9 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
     std::function<void(SceneNode*)> assign_iids = [&](SceneNode* n) {
         if (n->internal_id.empty()) {
             n->internal_id = generate_internal_id();
+            LOG_INFO("[TOPSAVE] minted fresh iid '{}' for type={} id='{}' "
+                     "name='{}' (no data-curvz-iid survived the read)",
+                     n->internal_id, (int)n->type, n->id, n->name);
             LOG_WARN("SvgParser: minted fresh iid '{}' for node type={} name='{}' id='{}'",
                      n->internal_id, (int)n->type, n->name, n->id);
         }
@@ -3794,6 +3892,34 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             LOG_INFO("SvgParser: dedup_names renamed {} colliding node "
                      "name{} on load", renames, renames == 1 ? "" : "s");
         }
+    }
+
+    // s347 [TOPSAVE] — UNCONDITIONAL load summary: fires on every project
+    // load, so an empty grep means "this parser didn't run", never "the
+    // branch wasn't hit". Counts guide-attached texts and how many of
+    // their refs resolve to a node in the loaded tree.
+    {
+        std::set<std::string> iids;
+        int guide_texts = 0, resolved = 0;
+        std::function<void(SceneNode*)> walk = [&](SceneNode* n) {
+            if (!n->internal_id.empty()) iids.insert(n->internal_id);
+            for (auto& ch : n->children) walk(ch.get());
+        };
+        for (auto& l : doc->layers) walk(l.get());
+        std::function<void(SceneNode*)> cnt = [&](SceneNode* n) {
+            if (n->is_text() && !n->text_guide_id.empty()) {
+                ++guide_texts;
+                if (iids.count(n->text_guide_id)) ++resolved;
+                else
+                    LOG_INFO("[TOPSAVE] LOAD dangle: text iid='{}' "
+                             "guide_id='{}' matches no node",
+                             n->internal_id, n->text_guide_id);
+            }
+            for (auto& ch : n->children) cnt(ch.get());
+        };
+        for (auto& l : doc->layers) cnt(l.get());
+        LOG_INFO("[TOPSAVE] LOAD — guide-attached texts: {} (resolved: {})",
+                 guide_texts, resolved);
     }
 
     return doc;

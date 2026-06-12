@@ -225,6 +225,15 @@ public:
   // leading (points). is_auto only annotates the tooltip; the spin shows the
   // value either way. No apply re-fired (set_internal_value is guarded).
   void set_leading(double pt, bool is_auto);
+  // s346 — sync the Spacing popover's Character spins to the effective
+  // tracking / rise under the caret/selection (the pair was write-only —
+  // the spins showed whatever was last typed). units is the raw
+  // PANGO_ATTR_LETTER_SPACING scaling; em is derived here against
+  // m_size_ref_pt, inverting the write conversion. Spins update only on a
+  // resolved single value (the size-spin precedent — a SpinButton has no
+  // mixed look); the suppress guard keeps the set from re-firing the apply.
+  void set_tracking_face(long units, bool resolved, bool mixed);
+  void set_rise_face(double pt, bool resolved, bool mixed);
   // s332 — reflect the caret paragraph's alignment on the chip face.
   void set_align_face(int align);
 
@@ -499,6 +508,14 @@ private:
   CurvzSpinButton* m_size_spin = nullptr;
   // s331 — the Paragraph popover's pt-locked Leading spin (held for live-sync).
   CurvzSpinButton* m_leading_spin = nullptr;
+  // s346 — the Spacing popover's Character spins, held for live-sync (they
+  // were popover-locals, unreachable by any read). The suppress flag keeps a
+  // face-sync set_value from echoing back through the value-changed apply —
+  // plain Gtk::SpinButton has no guarded set like CurvzSpinButton's
+  // set_internal_value, so the guard lives here.
+  Gtk::SpinButton* m_track_spin = nullptr;
+  Gtk::SpinButton* m_rise_spin  = nullptr;
+  bool m_suppress_spacing = false;
 
   // s332 — Fill chip. The chip is named ("Fill") like the rest; a small
   // colour square (DrawingArea) is prefixed in front of the name in the chip's

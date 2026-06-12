@@ -1423,4 +1423,20 @@ std::vector<PathData> offset_path(const PathData& path,
     return { join_open_as_closed(outer, inner_rev) };
 }
 
+// s348 m6 — the single-side open parallel (see PathOffset.hpp). This is
+// EXACTLY what offset_path's build_open lambda computes for one side of
+// the stroke outline — extracted to the public surface, minus the
+// endpoint join and close. pattern_walk_path rides it for open-guide
+// Return stacking; +d = the descender side of travel.
+PathData offset_open_path(const PathData& path, double distance) {
+    if (path.closed || path.nodes.size() < 2)
+        return PathData{};
+    if (distance == 0.0)
+        return path;
+    BezierPath bp = BezierPath::from_path_data(path);
+    auto pieces = offset_to_pieces(bp, distance);
+    apply_joins(pieces, bp, /*closed=*/false, distance);
+    return pieces_to_path(pieces, /*closed=*/false);
+}
+
 } // namespace Curvz

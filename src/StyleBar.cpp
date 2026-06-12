@@ -801,6 +801,27 @@ void StyleBar::set_leading(double pt, bool is_auto) {
   m_leading_spin->set_internal_value(UnitSystem::to_px(pt, Unit::Pt));  // no emit
 }
 
+// s346 — Spacing/Character live-sync. Units -> em inverts the apply's
+// em * m_size_ref_pt * PANGO_SCALE exactly, so a user who typed 0.05 reads
+// 0.05 back. Sync only on a resolved single value (size-spin precedent:
+// Gtk::SpinButton has no mixed face); mixed / no-edit leaves the spin where
+// it was. The suppress flag brackets set_value so the apply doesn't re-fire.
+void StyleBar::set_tracking_face(long units, bool resolved, bool mixed) {
+  if (!m_track_spin || !resolved || mixed) return;
+  const double ref = (m_size_ref_pt > 0.0) ? m_size_ref_pt : 12.0;
+  const double em = (double)units / (ref * (double)PANGO_SCALE);
+  m_suppress_spacing = true;
+  m_track_spin->set_value(em);
+  m_suppress_spacing = false;
+}
+
+void StyleBar::set_rise_face(double pt, bool resolved, bool mixed) {
+  if (!m_rise_spin || !resolved || mixed) return;
+  m_suppress_spacing = true;
+  m_rise_spin->set_value(pt);
+  m_suppress_spacing = false;
+}
+
 // s332 — Alignment popover: Left / Centre / Right / Justify as a small icon
 // row. Each requests Canvas::set_text_alignment(0/1/2/3), which paragraph-snaps
 // and writes the kCurvzAlignAttr run. Justify (3) lands as the Pango justify
@@ -931,25 +952,25 @@ void StyleBar::build_spacing_popover(Gtk::MenuButton* chip) {
 
   // Tracking in em. Wide range on purpose (display work treats tracking as
   // placement). Apply: em -> PANGO_ATTR_LETTER_SPACING units against the
-  // selection's resolved point size.
-  Gtk::SpinButton* track_spin = nullptr;
-  mk_row("Tracking (em)", track_spin, -50.0, 50.0, 0.01, 0.1, 2,
+  // selection's resolved point size. s346 — spin held as a member so the
+  // live-read can sync it; the suppress guard keeps that sync from re-firing
+  // this apply.
+  mk_row("Tracking (em)", m_track_spin, -50.0, 50.0, 0.01, 0.1, 2,
          "Letter-spacing across the selection, in em (scales with font size). "
          "Negative tightens/overlaps; positive spreads.");
-  track_spin->signal_value_changed().connect([this, track_spin]() {
-    if (!m_format_set) return;
-    double em = track_spin->get_value();
+  m_track_spin->signal_value_changed().connect([this]() {
+    if (m_suppress_spacing || !m_format_set) return;
+    double em = m_track_spin->get_value();
     long units = std::lround(em * m_size_ref_pt * (double)PANGO_SCALE);
     m_format_set(kAttrLetterSpacing, units, "");
   });
 
   // Rise in pt (baseline displacement; positive = up). Apply: pt -> RISE units.
-  Gtk::SpinButton* rise_spin = nullptr;
-  mk_row("Rise (pt)", rise_spin, -500.0, 500.0, 0.5, 5.0, 1,
+  mk_row("Rise (pt)", m_rise_spin, -500.0, 500.0, 0.5, 5.0, 1,
          "Baseline shift across the selection, in points. Positive raises.");
-  rise_spin->signal_value_changed().connect([this, rise_spin]() {
-    if (!m_format_set) return;
-    double pt = rise_spin->get_value();
+  m_rise_spin->signal_value_changed().connect([this]() {
+    if (m_suppress_spacing || !m_format_set) return;
+    double pt = m_rise_spin->get_value();
     long units = std::lround(pt * (double)PANGO_SCALE);
     m_format_set(kAttrRise, units, "");
   });

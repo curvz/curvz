@@ -1852,6 +1852,21 @@ void MainWindow::setup_layout() {
     bool lead_auto = false;
     if (m_canvas.text_style_query_leading(lead_pt, lead_auto))
       m_style_bar.set_leading(lead_pt, lead_auto);
+    // s346 — tracking + rise onto the Spacing popover's Character spins
+    // (write-only until now: the spins showed whatever was last typed,
+    // regardless of caret or selection).
+    long track_units = 0;
+    bool track_mix = false;
+    if (m_canvas.text_style_query_tracking(track_units, track_mix))
+      m_style_bar.set_tracking_face(track_units, true, track_mix);
+    else
+      m_style_bar.set_tracking_face(0, false, false);
+    double rise_pt = 0.0;
+    bool rise_mix = false;
+    if (m_canvas.text_style_query_rise(rise_pt, rise_mix))
+      m_style_bar.set_rise_face(rise_pt, true, rise_mix);
+    else
+      m_style_bar.set_rise_face(0.0, false, false);
     // s332 — alignment (per-paragraph) onto the Align chip face.
     int align = 0;
     if (m_canvas.text_style_query_alignment(align))

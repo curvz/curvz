@@ -34,6 +34,7 @@
 #include <pango/pangocairo.h>
 #include <pango/pangofc-font.h>
 #include <sstream>
+#include <map>      // s347 m4 — per-offset walk cache in draw_text_on_guide
 #include FT_FREETYPE_H
 #include FT_OUTLINE_H
 #include <algorithm>
@@ -277,6 +278,276 @@ void Canvas::draw_text_on_path(const Cairo::RefPtr<Cairo::Context> &cr,
 
   pango_layout_iter_free(iter);
   g_object_unref(layout);
+}
+
+// ── s347 — path-text v2 m2: draw_text_on_guide ──────────────────────────────
+// (docs/text_on_path_v2.md.) The pattern renderer. Lays the text out through
+// compute_text_layout — which routes guide-attached text to the pattern
+// fitter — and glyph-walks each pattern baseline along the guide's arc.
+//
+// Mined from draw_text_on_path's proven per-glyph walk (run iter ->
+// per-glyph advances -> path_point_at -> translate/rotate -> single-glyph
+// show), with the v2 differences:
+//   - The pango layout comes from the FITTER (bl.pango), so bound-style and
+//     per-run direct formatting are already baked in. Letter spacing lives
+//     in the layout's attrs, so glyph advances already include it — no
+//     manual obj.text_letter_spacing add (the legacy loop added it by hand
+//     because its layout carried no attrs).
+//   - Per-run foreground: colour spans land in the run's extra_attrs after
+//     itemization; honour them so a coloured span renders coloured on the
+//     curve, falling back to the node fill (None/CurrentColor/Gradient
+//     resolve through apply_fill exactly as on a box line).
+//   - Closed guides WRAP: the glyph arc is taken modulo the guide length,
+//     so a centered line near the seam straddles arc 0 and a long line
+//     rings the badge. Open guides clamp by SKIPPING out-of-range glyphs
+//     (legacy behaviour).
+//   - flip comes from the baseline's pattern block (reverse traversal + π
+//     rotation). Always false until the m4 Return derivation writes it;
+//     the math is wired now so m4 only flips the bit.
+//
+// Known limit (legacy parity): underline/strikethrough attrs don't render —
+// pango_cairo_show_glyph_string draws glyphs only. Per-glyph decoration
+// segments are an m4+ nicety if wanted.
+void Canvas::draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
+                                const SceneNode &text_obj,
+                                const SceneNode &guide) {
+  if (!guide.path || guide.path->nodes.size() < 2)
+    return;
+
+  TextLayout tl = compute_text_layout(
+      &guide, &text_obj, 0,
+      project() ? &project()->text_styles : nullptr);
+  if (tl.baselines.empty())
+    return;
+
+  // s347 m4 — each line rides its OWN walk path (line 0/1 the guide, 2+
+  // inward parallel offsets). Derive per distinct offset through THE pump
+  // (pattern_walk_path) and cache the arc table per offset for the draw.
+  struct Walk { BezierPath bp; std::vector<double> arc_table;
+                double total = 0.0; bool closed = false; bool ok = false; };
+  std::map<double, Walk> walks;
+  auto walk_for = [&](double offset) -> const Walk& {
+    auto it = walks.find(offset);
+    if (it != walks.end()) return it->second;
+    Walk w;
+    PathData pd = pattern_walk_path(*guide.path, offset);
+    if (pd.nodes.size() >= 2) {
+      w.bp = BezierPath::from_path_data(pd);
+      w.total = build_arc_table(w.bp, w.arc_table);
+      w.closed = pd.closed;
+      w.ok = (w.total >= 0.001);
+    }
+    return walks.emplace(offset, std::move(w)).first->second;
+  };
+  {
+    const Walk& w0 = walk_for(0.0);
+    if (!w0.ok)
+      return;
+  }
+
+  // ── s347 m3 — Selection highlight on the curve ────────────────────────
+  // The pattern twin of draw_text_in_boundary's rectangle pass: clip the
+  // selection to the baseline's byte range, map the endpoint bytes to
+  // line-local x via index_to_pos, then sweep the arc interval as a strip
+  // — sampled points offset perpendicular by -ascent (top edge) and
+  // +descent (bottom edge), tops walked forward and bottoms back, filled
+  // as one polygon per baseline. Same translucent blue as the box pass;
+  // drawn BEFORE glyphs so text reads through it.
+  if (&text_obj == m_text_editing && m_text_cursor &&
+      m_text_cursor->has_selection()) {
+    auto [sel_start, sel_end] = m_text_cursor->selection_range();
+    cr->save();
+    cr->set_source_rgba(0.30, 0.55, 0.95, 0.30);
+    for (const auto &bl : tl.baselines) {
+      if (!bl.pango || !bl.pattern)
+        continue;
+      size_t ov_s = std::max(sel_start, bl.byte_start);
+      size_t ov_e = std::min(sel_end, bl.byte_end);
+      if (ov_e <= ov_s)
+        continue;
+      PangoRectangle p_s, p_e;
+      pango_layout_index_to_pos(bl.pango.get(),
+                                (int)(ov_s - bl.byte_start), &p_s);
+      pango_layout_index_to_pos(bl.pango.get(),
+                                (int)(ov_e - bl.byte_start), &p_e);
+      const double a1 =
+          bl.pattern->arc_start + (double)p_s.x / (double)PANGO_SCALE;
+      const double a2 =
+          bl.pattern->arc_start + (double)p_e.x / (double)PANGO_SCALE;
+      if (a2 <= a1)
+        continue;
+      const Walk& w = walk_for(bl.pattern->offset);   // s347 m4
+      if (!w.ok)
+        continue;
+      // Sample density: ~one point per 4 doc units, bounded.
+      int steps = (int)((a2 - a1) / 4.0);
+      if (steps < 8) steps = 8;
+      if (steps > 256) steps = 256;
+      std::vector<Vec2> tops, bots;
+      tops.reserve(steps + 1);
+      bots.reserve(steps + 1);
+      for (int s = 0; s <= steps; ++s) {
+        double arc = a1 + (a2 - a1) * (double)s / (double)steps;
+        double lookup = bl.pattern->flip ? w.total - arc : arc;
+        if (w.closed) {
+          lookup = std::fmod(lookup, w.total);
+          if (lookup < 0.0)
+            lookup += w.total;
+        } else if (lookup < 0.0 || lookup > w.total) {
+          continue;  // off the open guide's ends — same skip as glyphs
+        }
+        Vec2 pos;
+        double ang;
+        if (!path_point_at(w.bp, w.arc_table, w.total, lookup, pos, ang))
+          continue;
+        if (bl.pattern->flip)
+          ang += M_PI;
+        const double sa = std::sin(ang), ca = std::cos(ang);
+        // s347 — band spans the glyph cell per the attachment convention:
+        // unflipped [-ascent, +descent] about the path; flipped (hanging
+        // from the ascender) [0, ascent + descent] below it. Local (0, t)
+        // maps to pos + (-t*sa, t*ca).
+        const double t_top = bl.pattern->flip ? 0.0 : -bl.ascent;
+        const double t_bot = bl.pattern->flip ? (bl.ascent + bl.descent)
+                                              : bl.descent;
+        tops.push_back({pos.x - t_top * sa, pos.y + t_top * ca});
+        bots.push_back({pos.x - t_bot * sa, pos.y + t_bot * ca});
+      }
+      if (tops.size() < 2)
+        continue;
+      cr->move_to(tops.front().x, tops.front().y);
+      for (size_t i = 1; i < tops.size(); ++i)
+        cr->line_to(tops[i].x, tops[i].y);
+      for (size_t i = bots.size(); i-- > 0;)
+        cr->line_to(bots[i].x, bots[i].y);
+      cr->close_path();
+      cr->fill();
+    }
+    cr->restore();
+  }
+
+  for (const auto &bl : tl.baselines) {
+    if (!bl.pango || !bl.pattern)
+      continue;
+    const Walk& w = walk_for(bl.pattern->offset);   // s347 m4
+    if (!w.ok)
+      continue;
+    const double arc_start = bl.pattern->arc_start;
+    const bool flip = bl.pattern->flip;
+
+    PangoLayoutIter *iter = pango_layout_get_iter(bl.pango.get());
+    do {
+      PangoLayoutRun *run = pango_layout_iter_get_run(iter);
+      if (!run)
+        continue;
+
+      PangoGlyphString *gs = run->glyphs;
+      PangoFont *pfont = run->item->analysis.font;
+
+      // Run origin within the line's layout (line-local px frame — the
+      // same frame x_start/x_end and the arc mapping live in).
+      PangoRectangle run_ext;
+      pango_layout_iter_get_run_extents(iter, nullptr, &run_ext);
+      double glyph_x_px = run_ext.x / (double)PANGO_SCALE;
+
+      // Per-run ink source: a foreground span covering this run wins;
+      // otherwise the node fill (same precedence the box renderer gets for
+      // free from pango_cairo_show_layout).
+      bool run_has_fg = false;
+      double run_rise_px = 0.0;   // s347 m4 — PANGO_ATTR_RISE is applied by
+                                  // pango_layout's run renderer, NOT baked
+                                  // into glyph geometry, so show_glyph_string
+                                  // loses it; lift the run's rise here and
+                                  // offset perpendicular (+rise = up = -y in
+                                  // the glyph frame). The box renderer gets
+                                  // this free from show_layout.
+      {
+        guint16 fr = 0, fg_ = 0, fb = 0, fa = 0xffff;
+        for (GSList *a = run->item->analysis.extra_attrs; a; a = a->next) {
+          PangoAttribute *attr = (PangoAttribute *)a->data;
+          if (attr->klass->type == PANGO_ATTR_FOREGROUND) {
+            const PangoColor &c = ((PangoAttrColor *)attr)->color;
+            fr = c.red; fg_ = c.green; fb = c.blue;
+            run_has_fg = true;
+          } else if (attr->klass->type == PANGO_ATTR_FOREGROUND_ALPHA) {
+            fa = ((PangoAttrInt *)attr)->value;
+          } else if (attr->klass->type == PANGO_ATTR_RISE) {
+            run_rise_px = ((PangoAttrInt *)attr)->value
+                          / (double)PANGO_SCALE;
+          }
+        }
+        if (run_has_fg)
+          cr->set_source_rgba(fr / 65535.0, fg_ / 65535.0, fb / 65535.0,
+                              fa / 65535.0);
+        else
+          apply_fill(cr, text_obj.fill);
+      }
+
+      for (int gi = 0; gi < gs->num_glyphs; ++gi) {
+        PangoGlyphInfo &gi_info = gs->glyphs[gi];
+
+        // Advance includes layout-baked letter spacing (see header note).
+        const double adv_px = gi_info.geometry.width / (double)PANGO_SCALE;
+
+        if (gi_info.glyph == PANGO_GLYPH_EMPTY ||
+            (gi_info.glyph & PANGO_GLYPH_UNKNOWN_FLAG)) {
+          glyph_x_px += adv_px;
+          continue;
+        }
+
+        // Centre of this glyph on the arc, via the pattern mapping
+        // arc(x) = arc_start + (x - x_start); x_start is 0 by the fitter's
+        // contract but subtract it anyway so the mapping reads literally.
+        const double glyph_centre_arc =
+            arc_start + (glyph_x_px - bl.x_start) + adv_px * 0.5;
+        double lookup_arc =
+            flip ? w.total - glyph_centre_arc : glyph_centre_arc;
+
+        if (w.closed) {
+          // Wrap into [0, total) — fmod of a negative stays negative.
+          lookup_arc = std::fmod(lookup_arc, w.total);
+          if (lookup_arc < 0.0)
+            lookup_arc += w.total;
+        } else if (lookup_arc < 0.0 || lookup_arc > w.total) {
+          glyph_x_px += adv_px;  // off the open guide's ends: skip
+          continue;
+        }
+
+        Vec2 pos;
+        double angle;
+        if (!path_point_at(w.bp, w.arc_table, w.total, lookup_arc, pos, angle))
+          break;
+        const double effective_angle = flip ? angle + M_PI : angle;
+
+        cr->save();
+        cr->translate(pos.x, pos.y);
+        cr->rotate(effective_angle);
+
+        PangoGlyphString single;
+        int log_cluster = 0;
+        single.num_glyphs = 1;
+        single.glyphs = &gi_info;
+        single.log_clusters = &log_cluster;
+
+        // Horizontal: centre on the advance. Vertical — the v2 attachment
+        // convention (s347, Scott's badge ruling): an UNFLIPPED line puts
+        // its BASELINE on the path (glyphs rise into the band above);
+        // a FLIPPED line hangs from its ASCENDER (cap line on the path,
+        // glyphs descending into the band below), so top and bottom text
+        // occupy the same annulus on a ring. In the glyph frame that's a
+        // +ascent perpendicular drop for flipped lines. Rise lifts against
+        // it as usual.
+        const double perp = flip ? bl.ascent : 0.0;
+        cr->move_to(-adv_px * 0.5, bl.y + perp - run_rise_px);
+        pango_cairo_show_glyph_string(cr->cobj(), pfont, &single);
+        cr->restore();
+
+        glyph_x_px += adv_px;
+      }
+
+    } while (pango_layout_iter_next_run(iter));
+    pango_layout_iter_free(iter);
+  }
 }
 
 // ── s301 m1c — Glyph render for bound text ──────────────────────────────────
@@ -1039,6 +1310,26 @@ void Canvas::draw_text_node(const Cairo::RefPtr<Cairo::Context> &cr,
     LOG_DEBUG("draw_text_node: bound but boundary iid='{}' not resolved",
               obj.text_boundary_ids.front());
     // Fall through to legacy rendering.
+  }
+
+  // ── s347 — path-text v2 m2: guide-attached text routes to the pattern
+  // renderer ────────────────────────────────────────────────────────────
+  // Before the empty-content placeholder: an empty attached text draws
+  // nothing here (the ToP anchor-tick overlay marks the attachment; a
+  // vertical placeholder bar at the cached text_x/y would sit at the wrong
+  // angle on the curve — the m3 caret renders properly rotated). If the
+  // guide iid dangles (deleted before m5's detach-to-box conversion
+  // exists), fall through to legacy free rendering — degraded but visible,
+  // same principle as the boundary branch above.
+  if (!obj.text_guide_id.empty()) {
+    SceneNode *guide = top_find_path_by_id(obj.text_guide_id);
+    if (guide && guide->path) {
+      draw_text_on_guide(cr, obj, *guide);
+      return;
+    }
+    LOG_INFO("[TOPSAVE] DANGLE: text iid='{}' guide_id='{}' did not "
+             "resolve — free rendering fallback",
+             obj.internal_id, obj.text_guide_id);
   }
 
   if (obj.text_content.empty()) {
@@ -5638,112 +5929,78 @@ void Canvas::draw_formfit_debug(const Cairo::RefPtr<Cairo::Context>& cr) {
 }
 
 void Canvas::draw_top_overlay(const Cairo::RefPtr<Cairo::Context> &cr) {
+  // s346 — path-text v2 overlay (docs/text_on_path_v2.md): the phase
+  // machine's text-bbox highlight and legacy I-beam are retired. The tool
+  // shows two things for the selected attached text: the GUIDE as a dashed
+  // highlight (so the ruler the text reads is unmistakable) and an ANCHOR
+  // TICK at text_guide_anchor — a perpendicular stroke + dot at the arc
+  // point, rotated to the local tangent. The caret proper lands in v2 m3;
+  // the tick is m1's visible proof of where typing will begin.
   if (!m_doc)
+    return;
+  SceneNode *txt = m_top_text;
+  if (txt && !is_node_alive(txt)) {  // undo of the creation deletes the node
+    m_top_text = nullptr;            // out from under this raw pointer
+    txt = nullptr;
+  }
+  if (!txt && m_selected && m_selected->is_text() &&
+      !m_selected->text_guide_id.empty())
+    txt = m_selected;
+  if (!txt || txt->text_guide_id.empty())
+    return;
+  SceneNode *guide = top_find_path_by_id(txt->text_guide_id);
+  if (!guide || !guide->path)
     return;
 
   const double ox = doc_origin_x();
   const double oy = doc_origin_y();
+  BezierPath bp = BezierPath::from_path_data(*guide->path);
+  std::vector<double> arc_table;
+  const double total = build_arc_table(bp, arc_table);
+  if (total < 0.001)
+    return;
 
-  // Highlight selected text node (phase 1)
-  if (m_top_text && m_top_phase >= 1) {
-    double tx, ty;
-    double doc_ty = m_doc->canvas_height() - m_top_text->text_y;
-    doc_to_screen(m_top_text->text_x, doc_ty, tx, ty);
+  // Dashed guide highlight (same look the old phase-2 overlay used).
+  cr->save();
+  cr->translate(ox, oy);
+  cr->scale(m_zoom, m_zoom);
+  bp.apply_to_cairo(cr);
+  std::vector<double> dash = {6.0 / m_zoom, 3.0 / m_zoom};
+  cr->set_dash(dash, 0);
+  cr->set_source_rgba(0.133, 0.773, 0.369, 0.6);
+  cr->set_line_width(1.0 / m_zoom);
+  cr->stroke();
+  cr->restore();
+
+  // Anchor tick: perpendicular stroke through the path + a small dot,
+  // both in screen units so they read the same at any zoom.
+  //
+  // s347 — one tick PER LINE. Line 0's tick sits at text_guide_anchor on
+  // the guide (the m1 tick). Each further line shows a tick at its OWN
+  // anchor image — the point its alignment seats around. All ticks mark
+  // the one shared anchor.
+  // s348 m2 — the positions now come from top_anchor_ticks, the SAME
+  // helper on_top_begin's slide-grab hit-tests against, so the drawn tick
+  // and the grab target cannot disagree. Grab any tick, move all lines.
+  auto draw_tick = [&](const Vec2 &dpos, double dangle) {
+    double sx, sy;
+    doc_to_screen(dpos.x, dpos.y, sx, sy);
+    const double perp = dangle + M_PI * 0.5;
+    const double px = std::cos(perp), py = std::sin(perp);
+    const double half = 9.0;  // screen px
     cr->save();
-    cr->set_source_rgba(0.3, 0.6, 1.0, 0.6);
-    cr->set_line_width(1.5);
-    double approx_w = m_top_text->text_content.size() *
-                      m_top_text->text_font_size * 0.6 * m_zoom;
-    double approx_h = m_top_text->text_font_size * m_zoom;
-    cr->rectangle(tx - 2, ty - approx_h - 2, approx_w + 4, approx_h + 4);
+    cr->set_source_rgba(0.3, 0.6, 1.0, 0.95);
+    cr->set_line_width(2.0);
+    cr->move_to(sx - px * half, sy - py * half);
+    cr->line_to(sx + px * half, sy + py * half);
     cr->stroke();
+    cr->arc(sx, sy, 3.0, 0.0, 2.0 * M_PI);
+    cr->fill();
     cr->restore();
-  }
+  };
 
-  // Phase 2: draw offset drag handle at text_path_offset position
-  if (m_top_phase == 2 && m_top_text && !m_top_text->text_path_id.empty()) {
-    SceneNode *guide = top_find_path_by_id(m_top_text->text_path_id);
-    if (guide && guide->path) {
-      BezierPath bp = BezierPath::from_path_data(*guide->path);
-      std::vector<double> arc_table;
-      double total = build_arc_table(bp, arc_table);
-
-      // Always draw guide path as dashed green line (not just outline mode)
-      cr->save();
-      cr->translate(ox, oy);
-      cr->scale(m_zoom, m_zoom);
-      bp.apply_to_cairo(cr);
-      std::vector<double> dash = {6.0 / m_zoom, 3.0 / m_zoom};
-      cr->set_dash(dash, 0);
-      cr->set_source_rgba(0.133, 0.773, 0.369, 0.6);
-      cr->set_line_width(1.0 / m_zoom);
-      cr->stroke();
-      cr->restore();
-
-      // Draw I-beam cursor at offset position (perpendicular to path tangent).
-      // flip=true: mirror to show where text actually starts on the reversed
-      // path.
-      double ibeam_arc = m_top_text->text_path_flip
-                             ? total - m_top_text->text_path_offset
-                             : m_top_text->text_path_offset;
-      Vec2 pos;
-      double angle;
-      if (path_point_at(bp, arc_table, total, ibeam_arc, pos, angle)) {
-        double hsx, hsy;
-        doc_to_screen(pos.x, pos.y, hsx, hsy);
-
-        // I-beam geometry: vertical stroke + top/bottom serifs
-        // All drawn perpendicular to the path tangent
-        double perp = angle + M_PI * 0.5;
-        double px = std::cos(perp); // perpendicular unit vector
-        double py = std::sin(perp);
-        double tx = std::cos(angle); // tangent unit vector
-        double ty = std::sin(angle);
-
-        const double stem = 12.0; // half-height of vertical stroke
-        const double serif = 5.0; // half-width of top/bottom serifs
-        const double stroke_w = 1.5;
-
-        // Top and bottom serif endpoints
-        double top_x = hsx + px * stem;
-        double top_y = hsy + py * stem;
-        double bot_x = hsx - px * stem;
-        double bot_y = hsy - py * stem;
-
-        cr->save();
-        // Shadow pass for contrast
-        cr->set_source_rgba(0.0, 0.0, 0.0, 0.5);
-        cr->set_line_width(stroke_w + 2.0);
-        cr->set_line_cap(Cairo::Context::LineCap::ROUND);
-        // Vertical stem
-        cr->move_to(top_x, top_y);
-        cr->line_to(bot_x, bot_y);
-        cr->stroke();
-        // Top serif
-        cr->move_to(top_x - tx * serif, top_y - ty * serif);
-        cr->line_to(top_x + tx * serif, top_y + ty * serif);
-        cr->stroke();
-        // Bottom serif
-        cr->move_to(bot_x - tx * serif, bot_y - ty * serif);
-        cr->line_to(bot_x + tx * serif, bot_y + ty * serif);
-        cr->stroke();
-
-        // Green foreground pass
-        cr->set_source_rgba(0.133, 0.773, 0.369, 1.0);
-        cr->set_line_width(stroke_w);
-        cr->move_to(top_x, top_y);
-        cr->line_to(bot_x, bot_y);
-        cr->stroke();
-        cr->move_to(top_x - tx * serif, top_y - ty * serif);
-        cr->line_to(top_x + tx * serif, top_y + ty * serif);
-        cr->stroke();
-        cr->move_to(bot_x - tx * serif, bot_y - ty * serif);
-        cr->line_to(bot_x + tx * serif, bot_y + ty * serif);
-        cr->stroke();
-        cr->restore();
-      }
-    }
-  }
+  for (const auto &t : top_anchor_ticks(txt, guide))
+    draw_tick(t.pos, t.angle);
 }
 
 // ── Guide rendering

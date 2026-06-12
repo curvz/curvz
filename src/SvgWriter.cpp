@@ -2,6 +2,7 @@
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"
 #include "TextCursor.hpp"  // compute_text_layout — for TextBox per-baseline emit
+#include <functional>       // s347 [TOPSAVE] — save-summary tree walk
 #include <sstream>
 #include <iomanip>
 #include <fstream>
@@ -516,6 +517,52 @@ static void collect_mgrs(const SceneNode& n, MgrCollector& mc) {
 // one merged <span> per segment carrying all attrs active over it (close-all /
 // reopen-all). Not minimal markup, but valid and exactly round-tripping — the
 // decode pump re-flattens abutting same-value runs if it ever matters.
+// ── s347 — Curvz-private span run-lists for PLAIN <text> ────────────────────
+// The Mgr persists kCurvz* paragraph/run spans (align, leading, indents,
+// tabs, stroke runs, style binding) as flat "start:end:value" lists in
+// data-curvz-* attributes; plain <text> — where path-text v2 emits — carried
+// none of them, so a centred ring text reloaded left-aligned. Same shapes,
+// "-runs"-suffixed names (plain <text> already uses data-curvz-align for the
+// LEGACY whole-node alignment string; the suffix avoids the collision).
+static std::string curvz_text_span_runs(const SceneNode& obj) {
+    std::ostringstream out;
+    struct { int type; const char* attr; } int_kinds[] = {
+        { curvz::utils::kCurvzLeadingAttr,     "data-curvz-leading-runs"      },
+        { curvz::utils::kCurvzStrokeColorAttr, "data-curvz-stroke-color-runs" },
+        { curvz::utils::kCurvzStrokeWidthAttr, "data-curvz-stroke-width-runs" },
+        { curvz::utils::kCurvzAlignAttr,       "data-curvz-align-runs"        },
+        { curvz::utils::kCurvzIndentLeftAttr,  "data-curvz-indent-left-runs"  },
+        { curvz::utils::kCurvzIndentRightAttr, "data-curvz-indent-right-runs" },
+        { curvz::utils::kCurvzIndentFirstAttr, "data-curvz-indent-first-runs" },
+    };
+    for (const auto& k : int_kinds) {
+        std::string runs;
+        for (const auto& s : obj.text_attr_spans) {
+            if (s.type != k.type) continue;
+            if (!runs.empty()) runs += ";";
+            runs += std::to_string(s.start_byte) + ":" +
+                    std::to_string(s.end_byte) + ":" +
+                    std::to_string(s.ivalue);
+        }
+        if (!runs.empty()) out << " " << k.attr << "=\"" << runs << "\"";
+    }
+    struct { int type; const char* attr; } str_kinds[] = {
+        { curvz::utils::kCurvzTabsAttr,  "data-curvz-tabs-runs"       },
+        { curvz::utils::kCurvzStyleAttr, "data-curvz-text-style-runs" },
+    };
+    for (const auto& k : str_kinds) {
+        std::string runs;
+        for (const auto& s : obj.text_attr_spans) {
+            if (s.type != k.type || s.svalue.empty()) continue;
+            if (!runs.empty()) runs += "|";
+            runs += std::to_string(s.start_byte) + ":" +
+                    std::to_string(s.end_byte) + ":" + s.svalue;
+        }
+        if (!runs.empty()) out << " " << k.attr << "=\"" << runs << "\"";
+    }
+    return out.str();
+}
+
 static std::string encode_markup(const std::string& text,
                                  const std::vector<AttrSpan>& spans) {
     auto esc = [](const std::string& s, bool in_attr) {
@@ -1317,6 +1364,7 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         std::ostringstream d;
         std::string all_types;
         std::string child_ids;
+        std::string child_iids;   // s347 — full leaf UUIDs (see emit below)
 
         for (const auto& child : obj.children) {
             if (child->type != GlyphObject::Type::Path || !child->path) continue;
@@ -1360,6 +1408,14 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
             // references to data-curvz-child-ids resolve correctly.
             if (!child_ids.empty()) child_ids += ",";
             child_ids += curvz::utils::encode_svg_id(child->name, child->internal_id);
+
+            // s347 — full child IIDS by index. encode_svg_id above embeds
+            // only the SHORT iid (and the parser never decodes it), so leaf
+            // UUIDs did not survive a round trip — and path-text v2's
+            // text_guide_id points AT a compound leaf. Position-paired with
+            // data-curvz-child-ids; the parser restores by index.
+            if (!child_iids.empty()) child_iids += ",";
+            child_iids += child->internal_id;
         }
 
         if (d.tellp() == 0) return; // no valid children
@@ -1376,6 +1432,8 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         // S77 m3c: bound_style lives on the compound node itself.
         std::string style_s  = style_binding_attr(obj);
 
+        LOG_INFO("[TOPSAVE] write compound iid='{}' child_iids='{}'",
+                 obj.internal_id, child_iids);
         out << pad << "<path"
             << " data-curvz-compound=\"1\""
             << (role_hint ? std::string(" ") + role_hint : std::string())
@@ -1388,6 +1446,7 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
             << " d=\"" << d.str() << "\""
             << " data-curvz-types=\"" << all_types << "\""
             << " data-curvz-child-ids=\"" << child_ids << "\""
+            << " data-curvz-child-iids=\"" << child_iids << "\""
             << fill_s << stroke_s << swatch_s << style_s
             << shadow_attr_str(obj)  // S97 m1
             << "/>\n";
@@ -1485,12 +1544,45 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         out << shadow_attr_str(obj);  // S97 m1 — on the <text> open tag, applies to both branches below
         // Custom attribute for reliable round-trip (split_tags discards char data).
         out << " data-curvz-content=\"" << xml_escape(obj.text_content) << "\"";
+        // s347 — the per-run spine for PLAIN texts (path-text v2 lives in
+        // this branch). The TBM emits its spans as a CDATA markup payload on
+        // the Mgr <g>; plain <text> carried no span serialization at all, so
+        // colour runs, rise, per-run bold/italic — everything the StyleBar
+        // writes as spans — vanished on save. Same encode_markup pump,
+        // attribute form (xml-escaped); parser unescapes and routes through
+        // decode_markup_into. data-curvz-content above stays as the
+        // foreign-reader/plain fallback; decode rewrites text_content with
+        // the identical clean string, so precedence is moot.
+        if (!obj.text_attr_spans.empty()) {
+            out << " data-curvz-markup-attr=\""
+                << xml_escape(encode_markup(obj.text_content,
+                                            obj.text_attr_spans))
+                << "\"";
+            out << curvz_text_span_runs(obj);  // s347 — kCurvz* runs (align &c.)
+        }
         if (!obj.text_path_id.empty()) {
             LOG_DEBUG("SvgWriter: text node '{}' text_path_id='{}'",
                       obj.id, obj.text_path_id);
             out << " data-curvz-path-id=\"" << obj.text_path_id << "\"";
             out << " data-curvz-path-offset=\"" << fmt6(obj.text_path_offset) << "\"";
             if (obj.text_path_flip) out << " data-curvz-path-flip=\"1\"";
+        }
+        // s347 — path-text v2 round-trip (docs/text_on_path_v2.md): the ruler
+        // reference. The iid is the guide LEAF path's internal id (always a
+        // UUID — written at attach time, never an SVG id, so no migration
+        // pass is needed on load); the anchor is the arc-length offset in doc
+        // units. Geometry is derived from these two per paint, so they are
+        // the WHOLE persistent state of the attachment. Distinct from the
+        // legacy data-curvz-path-* triple above, which dies at m5.
+        if (!obj.text_guide_id.empty()) {
+            out << " data-curvz-guide-id=\"" << obj.text_guide_id << "\"";
+            out << " data-curvz-guide-anchor=\"" << fmt6(obj.text_guide_anchor) << "\"";
+            // s348 m3 — the flipped family's independent slide; only when set.
+            if (obj.text_guide_anchor_flip_delta != 0.0)
+                out << " data-curvz-guide-anchor-flip-delta=\""
+                    << fmt6(obj.text_guide_anchor_flip_delta) << "\"";
+            LOG_INFO("[TOPSAVE] write text iid='{}' guide_id='{}' anchor={:.1f}",
+                     obj.internal_id, obj.text_guide_id, obj.text_guide_anchor);
         }
         // s301 m1a — text container model round-trip. Boundary list emitted as
         // space-separated iids in document order (= overflow-chain order); line
@@ -1956,6 +2048,22 @@ bool write_svg_file(const CurvzDocument& doc, const std::string& path,
     if (!f) {
         LOG_ERROR("SvgWriter: cannot open '{}' for writing", path);
         return false;
+    }
+    // s347 [TOPSAVE] — UNCONDITIONAL save summary. Fires on every save so
+    // a grep that returns nothing means "this code never ran" (stale build
+    // or save not triggered), not "the branch wasn't hit". Counts the
+    // guide-attached texts present in the doc AT WRITE TIME — if this says
+    // 0 while the canvas shows attached text, something upstream cleared
+    // text_guide_id before the save.
+    {
+        int guide_texts = 0;
+        std::function<void(const SceneNode*)> cnt = [&](const SceneNode* n) {
+            if (n->is_text() && !n->text_guide_id.empty()) ++guide_texts;
+            for (const auto& ch : n->children) cnt(ch.get());
+        };
+        for (const auto& l : doc.layers) cnt(l.get());
+        LOG_INFO("[TOPSAVE] SAVE '{}' — guide-attached texts in doc: {}",
+                 path, guide_texts);
     }
     f << write_svg(doc, text_styles);
     LOG_DEBUG("SvgWriter: wrote '{}'", path);
