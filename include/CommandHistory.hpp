@@ -240,6 +240,74 @@ struct MoveObjectCommand : CurvzCommand {
     // SceneNode* is held. Default `references() == false` is correct.
 };
 
+// ── FlipTextCommand ───────────────────────────────────────────────────────────
+// s355 — atomic undo for flipping a free Type::Text node. One flip is one
+// user action, so it must be one undo entry, but it mutates TWO pieces of
+// state: the anchor position (text_x/text_y, reflected about the selection
+// centre) and the mirror parity flag (text_mirror_h / text_mirror_v). The
+// two compose to a true reflection (see SceneNode text_mirror_* comment), so
+// they undo together. Same iid + project resolution idiom as MoveObjectCommand:
+// resolve at execute()/undo(), no-op cleanly if the node is gone, no raw
+// SceneNode* held so no references() override is needed.
+//
+// horizontal == true captures an H-flip (text_x + mirror_h); false captures a
+// V-flip (text_y + mirror_v). The opposite axis's fields are passed equal
+// before==after so a single command shape handles both without branching.
+struct FlipTextCommand : CurvzCommand {
+    CurvzProject* proj;     // resolution root
+    std::string   obj_iid;  // SceneNode::internal_id of the target
+    bool          horizontal;          // which axis this flip was about
+    double        before_x, before_y, after_x, after_y;
+    bool          before_mh, before_mv, after_mh, after_mv;
+
+    FlipTextCommand(CurvzProject* proj, std::string obj_iid, bool horizontal,
+                    double bx, double by, double ax, double ay,
+                    bool bmh, bool bmv, bool amh, bool amv)
+        : proj(proj)
+        , obj_iid(std::move(obj_iid))
+        , horizontal(horizontal)
+        , before_x(bx), before_y(by), after_x(ax), after_y(ay)
+        , before_mh(bmh), before_mv(bmv), after_mh(amh), after_mv(amv) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override {
+        return horizontal ? "Flip text horizontal" : "Flip text vertical";
+    }
+    // No `references()` override — iid-based capture, default false is correct.
+};
+
+// ── FlipTextParityCommand ─────────────────────────────────────────────────────
+// s355 — toggles ONLY the mirror parity on a text-bearing node (a TextBoxMgr,
+// or a free Type::Text), leaving position and geometry alone. Two uses:
+//   1. Text-edit mode flip ("if in text mode, text flips") — caret active in a
+//      TBM, the glyphs reverse but the box boundary stays put. Pushed alone.
+//   2. Inside the whole-TBM flip composite, paired with the boundary's
+//      EditPathCommand(s), so the box geometry and the glyph parity flip as one
+//      atomic Ctrl+Z.
+// Same iid + project resolve-or-no-op idiom as the commands above; no raw
+// SceneNode* held, so no references() override.
+struct FlipTextParityCommand : CurvzCommand {
+    CurvzProject* proj;
+    std::string   obj_iid;
+    bool          horizontal;
+    bool          before_mh, before_mv, after_mh, after_mv;
+
+    FlipTextParityCommand(CurvzProject* proj, std::string obj_iid,
+                          bool horizontal, bool bmh, bool bmv,
+                          bool amh, bool amv)
+        : proj(proj)
+        , obj_iid(std::move(obj_iid))
+        , horizontal(horizontal)
+        , before_mh(bmh), before_mv(bmv), after_mh(amh), after_mv(amv) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override {
+        return horizontal ? "Flip text horizontal" : "Flip text vertical";
+    }
+};
+
 // ── EditPathCommand ───────────────────────────────────────────────────────────
 // s167 m1 — Migrated from raw-SceneNode* capture to iid + project capture.
 //

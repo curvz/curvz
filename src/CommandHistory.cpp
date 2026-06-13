@@ -446,6 +446,57 @@ void MoveObjectCommand::undo() {
     if (obj->is_image()) { obj->image_x = before_x; obj->image_y = before_y; }
 }
 
+// ── FlipTextCommand bodies (s355) ────────────────────────────────────
+// Writes both halves of a text flip in lock-step: the reflected anchor
+// position and the mirror parity flag. Same iid-resolve-or-no-op idiom
+// as MoveObjectCommand above. Both axes' x/y are written (the unchanged
+// axis carries before==after, so writing it is a harmless identity).
+void FlipTextCommand::execute() {
+    if (!proj) return;
+    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
+    if (obj_iid.empty()) return;
+    auto* obj = curvz::utils::find_by_iid(*proj, obj_iid);
+    if (!obj || !obj->is_text()) return;
+    obj->text_x        = after_x;
+    obj->text_y        = after_y;
+    obj->text_mirror_h = after_mh;
+    obj->text_mirror_v = after_mv;
+}
+
+void FlipTextCommand::undo() {
+    if (!proj) return;
+    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
+    if (obj_iid.empty()) return;
+    auto* obj = curvz::utils::find_by_iid(*proj, obj_iid);
+    if (!obj || !obj->is_text()) return;
+    obj->text_x        = before_x;
+    obj->text_y        = before_y;
+    obj->text_mirror_h = before_mh;
+    obj->text_mirror_v = before_mv;
+}
+
+// Parity-only flip: works on a TextBoxMgr (or a free Type::Text). Resolves the
+// node and writes just the two mirror flags; no position, no geometry.
+void FlipTextParityCommand::execute() {
+    if (!proj) return;
+    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
+    if (obj_iid.empty()) return;
+    auto* obj = curvz::utils::find_by_iid(*proj, obj_iid);
+    if (!obj) return;
+    obj->text_mirror_h = after_mh;
+    obj->text_mirror_v = after_mv;
+}
+
+void FlipTextParityCommand::undo() {
+    if (!proj) return;
+    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
+    if (obj_iid.empty()) return;
+    auto* obj = curvz::utils::find_by_iid(*proj, obj_iid);
+    if (!obj) return;
+    obj->text_mirror_h = before_mh;
+    obj->text_mirror_v = before_mv;
+}
+
 // ── ZOrderCommand bodies (s169 m2) ───────────────────────────────────
 // Resolve the parent layer iid, then call the static apply_order helper
 // with the captured id-order vector. If the layer is gone, no-op cleanly.

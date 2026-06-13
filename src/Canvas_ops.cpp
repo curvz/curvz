@@ -7233,6 +7233,34 @@ void Canvas::import_image_to_canvas(const std::string &path,
 // Paths have their node coordinates negated; images get a scale(-1,1) or
 // scale(1,-1) composed into their transform.
 void Canvas::flip_selection(bool horizontal) {
+  // s355 — text-edit mode: the caret is inside a TBM, so flip mirrors the
+  // glyphs only (Mgr parity), boundary geometry untouched — "if in text mode,
+  // text flips." Handled before the empty-selection guard because edit mode
+  // may carry no object selection. The boundary-Path-selected ("bbx only")
+  // case needs no special handling: a boundary Path is a plain Type::Path, so
+  // it flows through the generic path branch below and mirrors its geometry
+  // with no parity, which is exactly "flip just bbx."
+  if (m_text_editing && m_text_editing->is_text_box_mgr()) {
+    SceneNode *mgr = m_text_editing;
+    bool bmh = mgr->text_mirror_h, bmv = mgr->text_mirror_v;
+    if (horizontal) mgr->text_mirror_h = !mgr->text_mirror_h;
+    else            mgr->text_mirror_v = !mgr->text_mirror_v;
+    if (m_history)
+      m_history->push(std::make_unique<FlipTextParityCommand>(
+          project(), mgr->internal_id, horizontal, bmh, bmv,
+          mgr->text_mirror_h, mgr->text_mirror_v));
+    m_sig_doc_changed.emit();
+    queue_draw();
+    {
+      MacroStep s;
+      s.op = horizontal ? MacroStep::Op::FlipH : MacroStep::Op::FlipV;
+      record_step_if_recording(s);
+    }
+    LOG_INFO("Canvas: flip_{} (text-edit parity only)",
+             horizontal ? "horizontal" : "vertical");
+    return;
+  }
+
   if (m_selection.empty() || !m_doc)
     return;
 
@@ -7254,6 +7282,48 @@ void Canvas::flip_selection(bool horizontal) {
 
   std::vector<ScaleObjectsCommand::LeafSnap> path_snaps;
   std::vector<ScaleImageCommand::Snap> img_snaps;
+
+  // s355 — whole-TBM flip: mirror ALL the Mgr's boundary geometry about the
+  // selection centre AND toggle the glyph parity, as one atomic composite.
+  // Shared by two entry points: the Mgr directly in m_selection, and (under
+  // the Selection tool) a TBM boundary Path in m_selection resolved up to its
+  // Mgr. handled_mgrs dedups when several boundaries of one Mgr are selected.
+  std::set<SceneNode *> handled_mgrs;
+  auto flip_whole_tbm = [&](SceneNode *mgr) {
+    if (!mgr || !handled_mgrs.insert(mgr).second)
+      return;
+    auto comp = std::make_unique<CompositeCommand>(
+        horizontal ? "Flip text + box H" : "Flip text + box V");
+    std::vector<SceneNode *> tb_leaves;
+    collect_paths(mgr, tb_leaves);
+    for (SceneNode *leaf : tb_leaves) {
+      if (!leaf->path || leaf->path->nodes.empty())
+        continue;
+      PathData before = *leaf->path;
+      for (auto &n : leaf->path->nodes) {
+        if (horizontal) {
+          n.x = 2.0 * cx - n.x;
+          n.cx1 = 2.0 * cx - n.cx1;
+          n.cx2 = 2.0 * cx - n.cx2;
+        } else {
+          n.y = 2.0 * cy - n.y;
+          n.cy1 = 2.0 * cy - n.cy1;
+          n.cy2 = 2.0 * cy - n.cy2;
+        }
+      }
+      comp->add(std::make_unique<EditPathCommand>(
+          project(), leaf->internal_id, before, *leaf->path,
+          horizontal ? "Flip text + box H" : "Flip text + box V"));
+    }
+    bool bmh = mgr->text_mirror_h, bmv = mgr->text_mirror_v;
+    if (horizontal) mgr->text_mirror_h = !mgr->text_mirror_h;
+    else            mgr->text_mirror_v = !mgr->text_mirror_v;
+    comp->add(std::make_unique<FlipTextParityCommand>(
+        project(), mgr->internal_id, horizontal, bmh, bmv,
+        mgr->text_mirror_h, mgr->text_mirror_v));
+    if (m_history)
+      m_history->push(std::move(comp));
+  };
 
   for (SceneNode *obj : m_selection) {
     if (obj->is_image()) {
@@ -7286,18 +7356,93 @@ void Canvas::flip_selection(bool horizontal) {
       continue;
     }
 
-    // Text — reflect anchor point around centre
+    // Text — reflect the anchor about the selection centre AND toggle the
+    // mirror parity so the glyphs reverse along with the geometry. The two
+    // compose to a true reflection of the whole selection, text included
+    // (see SceneNode text_mirror_* comment): position reflection relocates
+    // the run into the mirrored layout, the parity flag reverses the
+    // letterforms about the anchor at the draw seam, and together they map
+    // every glyph point p -> 2c - p regardless of where the anchor sits in
+    // the bbox. One atomic FlipTextCommand so a single Ctrl+Z restores both.
+    // s355.
     if (obj->is_text()) {
       double bef_x = obj->text_x, bef_y = obj->text_y;
-      if (horizontal)
+      bool bef_mh = obj->text_mirror_h, bef_mv = obj->text_mirror_v;
+      if (horizontal) {
         obj->text_x = 2.0 * cx - obj->text_x;
-      else
+        obj->text_mirror_h = !obj->text_mirror_h;
+      } else {
         obj->text_y = 2.0 * cy - obj->text_y;
+        obj->text_mirror_v = !obj->text_mirror_v;
+      }
       if (m_history)
-        m_history->push(std::make_unique<MoveObjectCommand>(
-            project(), obj->internal_id,
-            bef_x, bef_y, obj->text_x, obj->text_y));
+        m_history->push(std::make_unique<FlipTextCommand>(
+            project(), obj->internal_id, horizontal,
+            bef_x, bef_y, obj->text_x, obj->text_y,
+            bef_mh, bef_mv, obj->text_mirror_h, obj->text_mirror_v));
       continue;
+    }
+
+    // Whole TBM (Mgr selected) — "text/bbx can flip." Mirror the boundary
+    // geometry AND toggle the glyph parity, as ONE atomic composite so a
+    // single Ctrl+Z restores both. The boundary leaves are reached the same
+    // way collect_paths does (Mgr -> view -> boundary Path); each is mirrored
+    // about the selection centre and captured as an EditPathCommand, paired
+    // with a FlipTextParityCommand for the Mgr's glyph mirror. For a
+    // rectangular box the boundary mirror is a visual no-op (identical rect),
+    // so what shows is the glyphs reversing inside an unchanged frame; for an
+    // irregular flow region the boundary genuinely reflects and the text
+    // reflows into it AND reads backwards. s355.
+    if (obj->is_text_box_mgr()) {
+      flip_whole_tbm(obj);
+      continue;
+    }
+
+    // s355 — TBM boundary Path selected under the SELECTION tool == "flip the
+    // whole text box" (text + bbx): resolve the boundary up to its Mgr and run
+    // the same composite (mirrors every boundary of that Mgr + sets parity).
+    // Under the NODE tool the same boundary means "flip just the bbx" — skip
+    // this and fall through to the generic path mirror below (geometry only,
+    // no parity). This is the tool-keyed split the design calls for.
+    if (obj->type == SceneNode::Type::Path &&
+        active_tool() == ActiveTool::Selection) {
+      SceneNode *owner_mgr = nullptr;
+      if (find_textbox_member(obj, &owner_mgr, nullptr) && owner_mgr) {
+        flip_whole_tbm(owner_mgr);
+        continue;  // boundaries already mirrored by the helper — don't
+                   // double-mirror this one in the generic branch.
+      }
+    }
+
+    // s355 — text-on-path (ToP). A textonpath_N group is {guide ruler,
+    // Type::Text-with-guide}. Flipping must NOT mirror the guide geometry —
+    // that reverses the arc traversal and throws the text off the ring (the
+    // upside-down result). Instead set parity on the ToP text node(s); the
+    // glyphs then render wrong-reading IN PLACE on the same ring
+    // (draw_text_on_guide reflects them about the guide centre), and the guide
+    // stays put. Detected by any Type::Text-with-guide descendant; a plain
+    // group has none and falls through to the geometry mirror below.
+    {
+      std::vector<SceneNode *> top_texts;
+      std::function<void(SceneNode *)> gather = [&](SceneNode *n) {
+        if (n->is_text() && !n->text_guide_id.empty())
+          top_texts.push_back(n);
+        for (auto &ch : n->children)
+          gather(ch.get());
+      };
+      gather(obj);
+      if (!top_texts.empty()) {
+        for (SceneNode *t : top_texts) {
+          bool bmh = t->text_mirror_h, bmv = t->text_mirror_v;
+          if (horizontal) t->text_mirror_h = !t->text_mirror_h;
+          else            t->text_mirror_v = !t->text_mirror_v;
+          if (m_history)
+            m_history->push(std::make_unique<FlipTextParityCommand>(
+                project(), t->internal_id, horizontal, bmh, bmv,
+                t->text_mirror_h, t->text_mirror_v));
+        }
+        continue;
+      }
     }
 
     // Path / group / compound — collect leaves

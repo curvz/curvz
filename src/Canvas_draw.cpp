@@ -259,6 +259,27 @@ void Canvas::draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
   // per glyph).
   bool src_set = false, src_fg = false;
   double sr = 0, sg = 0, sb = 0, sa = 0;
+  // s355 — ToP mirror parity. The flip left the guide ruler untouched (so the
+  // text stays on the same ring) and set parity on the text node; reflect the
+  // rendered glyphs about the guide's bbox centre. For a symmetric guide (a
+  // circle) the text keeps its arcs but reads backwards; positions derive from
+  // the unchanged guide and reflect as a unit, so glyph and placement stay in
+  // lock-step. Wraps the whole walk so every glyph mirrors together.
+  bool top_mirror = text_obj.text_mirror_h || text_obj.text_mirror_v;
+  if (top_mirror) {
+    double gx0 = guide.path->nodes[0].x, gy0 = guide.path->nodes[0].y;
+    double gx1 = gx0, gy1 = gy0;
+    for (const auto &n : guide.path->nodes) {
+      gx0 = std::min(gx0, n.x); gy0 = std::min(gy0, n.y);
+      gx1 = std::max(gx1, n.x); gy1 = std::max(gy1, n.y);
+    }
+    double gmcx = (gx0 + gx1) * 0.5, gmcy = (gy0 + gy1) * 0.5;
+    cr->save();
+    cr->translate(gmcx, gmcy);
+    if (text_obj.text_mirror_h) cr->scale(-1.0, 1.0);
+    if (text_obj.text_mirror_v) cr->scale(1.0, -1.0);
+    cr->translate(-gmcx, -gmcy);
+  }
   pattern_glyph_walk(text_obj, guide, [&](const PatternGlyph &g) {
     if (!src_set || src_fg != g.has_fg ||
         (g.has_fg &&
@@ -287,6 +308,8 @@ void Canvas::draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
     pango_cairo_show_glyph_string(cr->cobj(), g.font, &single);
     cr->restore();
   });
+  if (top_mirror)
+    cr->restore();
 }
 
 // ── s301 m1c — Glyph render for bound text ──────────────────────────────────
@@ -308,7 +331,43 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
                                     const SceneNode& boundary,
                                     size_t byte_start,
                                     bool draw_overflow_indicator) {
-  TextLayout tl = compute_text_layout(&boundary, &text_obj, byte_start,
+  // s355 — mirror parity. The flip already reflected the boundary GEOMETRY
+  // (so the outline + handles flip), but the text must lay out to the box's
+  // ORIGINAL shape and then mirror as a whole. Laying out against the already-
+  // mirrored boundary and mirroring the glyphs again lands the text on the
+  // ORIGINAL shape (the "didn't reflow to the new box" bug). Instead, lay out
+  // (and clip) against a mirror-BACK copy of the boundary about its bbox centre
+  // — reflection preserves the centre, so this recovers the pre-flip shape —
+  // and let the glyph mirror below apply the matching forward reflection. The
+  // result is M(L(B)): a true mirror of the original text, which fits the
+  // flipped boundary M(B) and reads backwards.
+  std::unique_ptr<SceneNode> mirror_back_boundary;
+  const SceneNode *eff_boundary = &boundary;
+  if ((text_obj.text_mirror_h || text_obj.text_mirror_v) && boundary.path &&
+      !boundary.path->nodes.empty()) {
+    double bx0 = boundary.path->nodes[0].x, by0 = boundary.path->nodes[0].y;
+    double bx1 = bx0, by1 = by0;
+    for (const auto &n : boundary.path->nodes) {
+      bx0 = std::min(bx0, n.x); by0 = std::min(by0, n.y);
+      bx1 = std::max(bx1, n.x); by1 = std::max(by1, n.y);
+    }
+    double bcx = (bx0 + bx1) * 0.5, bcy = (by0 + by1) * 0.5;
+    mirror_back_boundary = clone_node(boundary);
+    for (auto &n : mirror_back_boundary->path->nodes) {
+      if (text_obj.text_mirror_h) {
+        n.x = 2.0 * bcx - n.x;
+        n.cx1 = 2.0 * bcx - n.cx1;
+        n.cx2 = 2.0 * bcx - n.cx2;
+      }
+      if (text_obj.text_mirror_v) {
+        n.y = 2.0 * bcy - n.y;
+        n.cy1 = 2.0 * bcy - n.cy1;
+        n.cy2 = 2.0 * bcy - n.cy2;
+      }
+    }
+    eff_boundary = mirror_back_boundary.get();
+  }
+  TextLayout tl = compute_text_layout(eff_boundary, &text_obj, byte_start,
                                      project() ? &project()->text_styles : nullptr);
 
   // ── s308 m1 — Overflow indicator (drawn before baselines-empty
@@ -467,6 +526,29 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
     cr->rotate(tl.frame_angle);
     cr->translate(-tl.frame_cx, -tl.frame_cy);
   }
+  // s355 — glyph mirror parity. The flip reflected the boundary geometry; the
+  // layout above used a mirror-BACK copy (original shape), so applying the
+  // matching forward reflection here yields M(L(B)) — a true mirror of the
+  // original text that fits the flipped boundary and reads backwards. Centre
+  // is the boundary's own bbox midpoint, NOT tl.frame_cx/cy (those default to 0
+  // for an axis-aligned box, which would reflect about the doc origin).
+  // Reflection preserves the bbox centre, so the same centre is used by the
+  // flip, the mirror-back, and this block. Composed inside the frame rotation:
+  // the box centroid is the rotation pivot, so reflecting about it commutes.
+  if ((text_obj.text_mirror_h || text_obj.text_mirror_v) &&
+      boundary.path && !boundary.path->nodes.empty()) {
+    double mx0 = boundary.path->nodes[0].x, my0 = boundary.path->nodes[0].y;
+    double mx1 = mx0, my1 = my0;
+    for (const auto &n : boundary.path->nodes) {
+      mx0 = std::min(mx0, n.x); my0 = std::min(my0, n.y);
+      mx1 = std::max(mx1, n.x); my1 = std::max(my1, n.y);
+    }
+    double mcx = (mx0 + mx1) * 0.5, mcy = (my0 + my1) * 0.5;
+    cr->translate(mcx, mcy);
+    if (text_obj.text_mirror_h) cr->scale(-1.0, 1.0);
+    if (text_obj.text_mirror_v) cr->scale(1.0, -1.0);
+    cr->translate(-mcx, -mcy);
+  }
   // s317 — Clip glyphs to the interior (margin) rect. compute_text_layout
   //   wraps to this width, but a word that measures as fitting can render a
   //   hair wider; clipping guarantees text never spills past the margins,
@@ -474,14 +556,14 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
   // s320 m1 — clip in the UPRIGHT frame (the rotation transform above turns
   //   it into the rotated interior rect). For angle == 0 this is identical
   //   to the previous doc-space bbox.
-  if (boundary.path && boundary.path->nodes.size() >= 2) {
+  if (eff_boundary->path && eff_boundary->path->nodes.size() >= 2) {
     const double ca = std::cos(-tl.frame_angle), sa = std::sin(-tl.frame_angle);
     auto upright = [&](double x, double y, double& ux, double& uy) {
       double rx = x - tl.frame_cx, ry = y - tl.frame_cy;
       ux = tl.frame_cx + rx * ca - ry * sa;
       uy = tl.frame_cy + rx * sa + ry * ca;
     };
-    const auto& cbn = boundary.path->nodes;
+    const auto& cbn = eff_boundary->path->nodes;
     double cbx0, cby0; upright(cbn[0].x, cbn[0].y, cbx0, cby0);
     double cbx1 = cbx0, cby1 = cby0;
     for (const auto& pn : cbn) {
@@ -489,7 +571,7 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
       if (ux < cbx0) cbx0 = ux; if (ux > cbx1) cbx1 = ux;
       if (uy < cby0) cby0 = uy; if (uy > cby1) cby1 = uy;
     }
-    auto cm = effective_text_margins(&text_obj, &boundary);
+    auto cm = effective_text_margins(&text_obj, eff_boundary);
     const double clx = cbx0 + cm.left, cty = cby0 + cm.top;
     const double crx = cbx1 - cm.right, cby = cby1 - cm.bottom;
     if (crx > clx && cby > cty) {
@@ -1099,6 +1181,17 @@ void Canvas::draw_text_node(const Cairo::RefPtr<Cairo::Context> &cr,
   // transform where Y increases downward (doc_y = canvas_h - user_y).
   // text_y is already in doc (Y-down) space at this point.
   cr->translate(obj.text_x, obj.text_y);
+
+  // s355 — mirror parity. We're now at the anchor origin; reflecting here
+  // (local x=0 / y=0) mirrors the glyphs about the anchor. flip_selection
+  // has already reflected text_x/text_y about the selection centre, so the
+  // origin-local reflection and the moved origin compose to a true
+  // reflection of the run in place (every glyph point p -> 2c - p). Applied
+  // before apply_fill so a gradient fill, the glyphs, and the stroke all
+  // mirror together as one unit. scale(-1,1) is an isometry, so stroke
+  // width is preserved; h+v == scale(-1,-1) == 180-degree point reflection.
+  if (obj.text_mirror_h) cr->scale(-1.0, 1.0);
+  if (obj.text_mirror_v) cr->scale(1.0, -1.0);
 
   // Apply fill.
   apply_fill(cr, obj.fill);

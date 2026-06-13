@@ -703,6 +703,19 @@ struct SceneNode {
   // text. Direction belongs to the baseline, not the shape; node edits now
   // reflow the per-line spans but never touch the angle.
   double text_baseline_angle = 0.0;
+  // s355 — mirror parity. Flip is the reflection sibling of the baseline
+  // rotation above: rotate carries an angle, flip carries a sign. These
+  // are pure handedness flags — the glyphs mirror about the text's anchor
+  // origin at the draw seam (cr->scale(-1,1) / (1,-1)), the layout/buffer
+  // never move, so the text stays editable. flip_selection reflects the
+  // anchor position about the selection centre AND toggles the matching
+  // flag; the two compose to a true reflection of the whole selection
+  // (text included), which is what reverse / second-surface printing,
+  // mirror-read artwork, and reversed UV/projection bakes all require.
+  // Reversible by construction: flipping again about the same axis
+  // toggles the flag back. h+v together == 180-degree point reflection.
+  bool   text_mirror_h = false;
+  bool   text_mirror_v = false;
   double text_letter_spacing = 0.0; // extra advance between glyphs in doc units
   // ── s325 — per-run character formatting spine ──────────────────────────────
   // Flat list of per-attribute spans over text_content (the Mgr buffer). Empty
@@ -1057,6 +1070,8 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->text_align = src.text_align;
   dst->text_baseline_shift = src.text_baseline_shift;
   dst->text_baseline_angle = src.text_baseline_angle;
+  dst->text_mirror_h = src.text_mirror_h;
+  dst->text_mirror_v = src.text_mirror_v;
   dst->text_letter_spacing = src.text_letter_spacing;
   dst->text_attr_spans = src.text_attr_spans;  // s325 — per-run spine (value copy)
   dst->text_guide_id = src.text_guide_id;          // s346 — path-text v2
