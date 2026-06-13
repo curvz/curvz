@@ -130,6 +130,12 @@ private:
   int docs_current_dpi() const;
   int docs_chosen_dim_px() const;
 
+  // s353 — output path for a combined multi-page PDF. out_dir from the
+  // folder entry, stem from the project directory basename (fallback
+  // "Combined"). Used by both the collision scan and perform_export so the
+  // scanned and written paths agree.
+  std::string docs_combined_pdf_path() const;
+
   void docs_refresh_refpts_info();
 
   // Per-doc plan resolved once at on_export time and reused by
@@ -197,6 +203,18 @@ private:
   Gtk::CheckButton *m_docs_radio_svg = nullptr;
   Gtk::CheckButton *m_docs_radio_png = nullptr;
   Gtk::CheckButton *m_docs_radio_refpt = nullptr;
+  // s353 — PDF joins the format group as a 4th option. Vector PDF rendered
+  // through the live canvas draw_object path (real embedded text). When PDF
+  // is the chosen format the combine checkbox below becomes sensitive.
+  Gtk::CheckButton *m_docs_radio_pdf = nullptr;
+  // s353 — "Combine into single PDF". Sensitive only when PDF is selected.
+  // Checked -> one multi-page .pdf (one page per selected doc). Unchecked
+  // -> one .pdf per selected doc, like PNG/SVG.
+  Gtk::CheckButton *m_docs_combine_pdf = nullptr;
+  // s353 — combined-PDF output name (stem only; ".pdf" appended). Pre-filled
+  // with the project-folder basename. Sensitive only when PDF + combine are
+  // both active. Empty falls back to the project basename / "Combined".
+  Gtk::Entry *m_docs_combine_name = nullptr;
 
   // Section wrappers
   Gtk::Box *m_docs_size_section = nullptr;

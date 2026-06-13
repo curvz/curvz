@@ -5965,4 +5965,137 @@ void Canvas::draw_margin_doc_space(const Cairo::RefPtr<Cairo::Context> &cr,
   cr->restore();
 }
 
+// ── PDF export (s353) ────────────────────────────────────────────────────────
+//
+// The "paint the document" half of on_draw, with the "paint the editor" half
+// removed. on_draw is: workspace bg -> drop shadow -> artboard fill -> grid ->
+// draw_objects(cr) -> border -> handles/marquee/overlays. Everything but the
+// draw_objects content is chrome. draw_objects itself interleaves chrome layers
+// (guide/grid/margin) and reference layers with art layers and applies the
+// editor zoom; for a clean output render we want only the art layers, in
+// document-unit space, with the editor zoom factored out (the caller's surface
+// transform owns the doc-unit -> page-point mapping).
+//
+// The per-page walk is inlined into export_pdf's render_one lambda below
+// (draw_object is private, so it must be called from member context). The
+// walk mirrors draw_objects but:
+//   - skips guide / grid / margin / ref layers (matches PngExporter's contract
+//     for "the document as output" — those are editor aids, not artwork),
+//   - skips ref / guide NODES on art layers (belt-and-suspenders, same as
+//     PngExporter::render_object),
+//   - passes black for the layer stroke colour, which is read only in outline
+//     mode (forced off by export_pdf's neutralize pass), so it never shows.
+bool Canvas::export_pdf(const std::vector<PdfPage> &pages, bool combine) {
+  if (pages.empty() || !pages.front().doc) {
+    LOG_WARN("export_pdf: no pages");
+    return false;
+  }
+
+  // ── Snapshot + neutralize editor interaction state ──────────────────────
+  // draw_object's editor decorations (selection halo, text caret, overflow
+  // bubble, ref hover, outline-mode 1px strokes) are each gated on one of
+  // these members. Neutral values make every decoration branch inert, so the
+  // 1200-line draw_object needs zero edits. Restored unconditionally below.
+  CurvzDocument          *save_doc        = m_doc;
+  SceneNode              *save_selected   = m_selected;
+  std::vector<SceneNode*> save_selection  = m_selection;
+  SceneNode              *save_text_edit  = m_text_editing;
+  SceneNode              *save_text_bound = m_text_boundary_editing;
+  SceneNode              *save_ref_hover  = m_ref_hovered;
+  std::string             save_overflow_iid = m_overflow_shown_iid;
+  double                  save_overflow_sy  = m_overflow_scroll_y;
+  bool                    save_outline    = m_outline_mode;
+  int                     save_sel_node   = m_selected_node;
+
+  m_selected             = nullptr;
+  m_selection.clear();
+  m_text_editing         = nullptr;
+  m_text_boundary_editing = nullptr;
+  m_ref_hovered          = nullptr;
+  m_overflow_shown_iid.clear();      // empty never == any node's internal_id
+  m_overflow_scroll_y    = 0.0;
+  m_outline_mode         = false;    // export real fills, not outline-edit strokes
+  m_selected_node        = -1;
+
+  auto render_one = [this](const Cairo::RefPtr<Cairo::Context> &cr,
+                           const PdfPage &pg) {
+    if (!pg.doc) return;
+    m_doc = pg.doc;  // scoped swap; restored after the loop
+    CurvzDocument &doc = *pg.doc;
+    const double cw = std::max(1, doc.canvas_width());
+    const double ch = std::max(1, doc.canvas_height());
+    cr->save();
+    // doc-unit space -> page points. Caller picks an aspect-matched box so
+    // sx == sy and the artwork lands flush against the page edges.
+    cr->scale(pg.page_w_pt / cw, pg.page_h_pt / ch);
+    // Content layers only — skip guide/grid/margin/ref layers and ref/guide
+    // nodes; black layer colour is unused with outline mode off.
+    for (int li = 0; li < (int)doc.layers.size(); ++li) {
+      const auto &layer = doc.layers[li];
+      if (!layer || !layer->visible)
+        continue;
+      if (layer->is_guide_layer() || layer->is_grid_layer() ||
+          layer->is_margin_layer() || layer->is_ref_layer())
+        continue;
+      for (int oi = (int)layer->children.size() - 1; oi >= 0; --oi) {
+        const SceneNode &obj = *layer->children[oi];
+        if (!obj.visible || obj.is_ref() || obj.is_guide())
+          continue;
+        draw_object(cr, obj, 0.0, 0.0, 0.0);
+      }
+    }
+    cr->restore();
+  };
+
+  bool ok = true;
+  try {
+    if (combine) {
+      const auto &first = pages.front();
+      auto surf = Cairo::PdfSurface::create(first.path,
+                                            first.page_w_pt, first.page_h_pt);
+      auto cr = Cairo::Context::create(surf);
+      for (const auto &pg : pages) {
+        if (!pg.doc) continue;
+        surf->set_size(pg.page_w_pt, pg.page_h_pt);  // applies to current page
+        render_one(cr, pg);
+        cr->show_page();
+      }
+      surf->finish();
+      LOG_INFO("export_pdf: combined {} page(s) -> '{}'",
+               pages.size(), first.path);
+    } else {
+      for (const auto &pg : pages) {
+        if (!pg.doc) { ok = false; continue; }
+        auto surf = Cairo::PdfSurface::create(pg.path,
+                                              pg.page_w_pt, pg.page_h_pt);
+        auto cr = Cairo::Context::create(surf);
+        render_one(cr, pg);
+        cr->show_page();
+        surf->finish();
+        LOG_INFO("export_pdf: wrote '{}' ({:.1f}x{:.1f}pt)",
+                 pg.path, pg.page_w_pt, pg.page_h_pt);
+      }
+    }
+  } catch (const std::exception &e) {
+    LOG_ERROR("export_pdf: exception: {}", e.what());
+    ok = false;
+  } catch (...) {
+    LOG_ERROR("export_pdf: unknown exception");
+    ok = false;
+  }
+
+  // ── Restore editor interaction state ────────────────────────────────────
+  m_doc                  = save_doc;
+  m_selected             = save_selected;
+  m_selection            = save_selection;
+  m_text_editing         = save_text_edit;
+  m_text_boundary_editing = save_text_bound;
+  m_ref_hovered          = save_ref_hover;
+  m_overflow_shown_iid   = save_overflow_iid;
+  m_overflow_scroll_y    = save_overflow_sy;
+  m_outline_mode         = save_outline;
+  m_selected_node        = save_sel_node;
+  return ok;
+}
+
 } // namespace Curvz

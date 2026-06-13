@@ -205,6 +205,13 @@ class Application;
 class MainWindow : public Gtk::ApplicationWindow {
 public:
   explicit MainWindow(Application &app);
+
+  // s353 — live Canvas accessor. ExportDialog's PDF branch renders each
+  // selected doc through the canvas's draw_object path (the only renderer
+  // that lays out the current text models correctly); the canvas scoped-
+  // swaps m_doc per page, so it can render any project doc, not just the
+  // active one. Borrowed reference; the canvas outlives every dialog.
+  Canvas &canvas() { return m_canvas; }
   // s216 m1 / s219 m1 / s221 m1 / s222 m1 / s222 m2 / s223 m1 / s230 m1 / s243
   // m2 / s246 m1 / s251 m1 / s254 m2 / s263 m2 — out-of-line dtor so
   // unique_ptr<curvz::scripting::LayersScriptable>,

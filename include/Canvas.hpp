@@ -152,6 +152,40 @@ public:
   // post-hoc). Returns nullptr if no history was attached.
   CommandHistory *history() { return m_history; }
 
+  // ── PDF export (s353) ─────────────────────────────────────────────────
+  // Render one or more project documents to PDF through the LIVE canvas
+  // draw_object path — the only renderer that lays out the current text
+  // models (TBM box text, text-on-path v2) correctly. pango_cairo on a
+  // Cairo::PdfSurface emits real text-showing operators and subset-embeds
+  // the fonts, so text ports into Affinity / Illustrator as editable text
+  // rather than outlines (s349 ruling #6).
+  //
+  // The renderer scoped-swaps m_doc to each page's doc for the duration of
+  // that page's paint and neutralizes all transient editor interaction
+  // state (selection, text-edit caret, overflow panel, ref hover) plus
+  // outline mode, so draw_object's editor decorations stay inert without
+  // any edit to draw_object itself. m_doc and all snapshotted state are
+  // restored before return (exception-safe). NOT set_document — that runs
+  // zoom_fit + a panel signal storm and wipes selection; the scoped swap
+  // is safe because the canvas holds no doc-bound layout cache (text layout
+  // is computed at draw time; the only render caches are node-side).
+  //
+  // page_w_pt / page_h_pt are the PDF page box in points (1pt = 1/72in).
+  // The caller (ExportDialog) derives them from the chosen export size +
+  // units + fit-side, exactly like PNG/SVG. Content is scaled doc-units ->
+  // page-points to fill the box; the caller picks an aspect-matched box.
+  //
+  // combine = false -> one .pdf per page at its own `path`.
+  // combine = true  -> a single multi-page .pdf at pages[0].path, one
+  //                    show_page() per doc, each page sized to its own doc.
+  struct PdfPage {
+    CurvzDocument *doc = nullptr;
+    std::string    path;          // output path (combine: only [0].path used)
+    double         page_w_pt = 0.0;
+    double         page_h_pt = 0.0;
+  };
+  bool export_pdf(const std::vector<PdfPage> &pages, bool combine);
+
   // Swatch library — non-owning pointer wired at project load time.
   // Phase 5 M3 introduced: apply_swatch_to_selection routes through
   // library->set_paint() to maintain the reverse usage index. Safe to

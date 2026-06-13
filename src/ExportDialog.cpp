@@ -88,6 +88,17 @@ double to_px(double value, const std::string& units, int dpi) {
     return value;
 }
 
+// s353 — chosen dimension -> PDF points (1pt = 1/72in). Sibling to to_px;
+// PDF page boxes are points-native, so px is the only unit that depends on
+// DPI (px -> pt = px * 72/dpi). in/mm/pt convert directly, DPI-independent.
+double to_pt(double value, const std::string& units, int dpi) {
+    if (units == "pt") return value;
+    if (units == "in") return value * 72.0;
+    if (units == "mm") return value * 72.0 / 25.4;
+    if (units == "px") return (dpi > 0) ? value * 72.0 / dpi : value;
+    return value;
+}
+
 // Strip ".svg" or any extension off a filename, returning the stem.
 std::string strip_ext(const std::string& name) {
     auto dot = name.find_last_of('.');
@@ -307,11 +318,15 @@ void ExportDialog::docs_build_format(Gtk::Box& root) {
                             "dlg_xu_d_rpng", "PNG");
     m_docs_radio_refpt = Gtk::make_managed<curvz::widgets::CheckButton>(
                             "dlg_xu_d_rref", "Refpt coordinates");
+    m_docs_radio_pdf   = Gtk::make_managed<curvz::widgets::CheckButton>(
+                            "dlg_xu_d_rpdf", "PDF");
     curvz::utils::set_name(m_docs_radio_svg,   "dlg_xu_d_rsvg",  "export_unified_dialog_docs_radio_svg");
     curvz::utils::set_name(m_docs_radio_png,   "dlg_xu_d_rpng",  "export_unified_dialog_docs_radio_png");
     curvz::utils::set_name(m_docs_radio_refpt, "dlg_xu_d_rref",  "export_unified_dialog_docs_radio_refpt");
+    curvz::utils::set_name(m_docs_radio_pdf,   "dlg_xu_d_rpdf",  "export_unified_dialog_docs_radio_pdf");
     m_docs_radio_png->set_group(*m_docs_radio_svg);
     m_docs_radio_refpt->set_group(*m_docs_radio_svg);
+    m_docs_radio_pdf->set_group(*m_docs_radio_svg);
     m_docs_radio_svg->set_active(true);
 
     m_docs_radio_svg->signal_toggled().connect(
@@ -320,11 +335,50 @@ void ExportDialog::docs_build_format(Gtk::Box& root) {
         [this]() { docs_update_visibility(); });
     m_docs_radio_refpt->signal_toggled().connect(
         [this]() { docs_update_visibility(); docs_refresh_refpts_info(); });
+    m_docs_radio_pdf->signal_toggled().connect(
+        [this]() { docs_update_visibility(); });
 
     row->append(*m_docs_radio_svg);
     row->append(*m_docs_radio_png);
     row->append(*m_docs_radio_refpt);
+    row->append(*m_docs_radio_pdf);
     root.append(*row);
+
+    // s353 — combine option. Lives under the format row; only sensitive when
+    // PDF is the chosen format (docs_update_visibility toggles that). Off by
+    // default so multi-select PDF behaves like PNG/SVG (one file per doc).
+    auto combine_row =
+        Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    combine_row->set_margin_top(4);
+    m_docs_combine_pdf = Gtk::make_managed<curvz::widgets::CheckButton>(
+                            "dlg_xu_d_pdfc", "Combine into single PDF");
+    curvz::utils::set_name(m_docs_combine_pdf, "dlg_xu_d_pdfc",
+                           "export_unified_dialog_docs_combine_pdf");
+    // Re-run visibility on toggle so the name field follows the checkbox.
+    m_docs_combine_pdf->signal_toggled().connect(
+        [this]() { docs_update_visibility(); });
+
+    auto name_label = Gtk::make_managed<Gtk::Label>("Name:");
+    m_docs_combine_name = Gtk::make_managed<curvz::widgets::Entry>(
+                              "dlg_xu_d_pdfn");
+    curvz::utils::set_name(m_docs_combine_name, "dlg_xu_d_pdfn",
+                           "export_unified_dialog_docs_combine_name");
+    m_docs_combine_name->set_hexpand(true);
+    // Pre-fill with the project-folder basename (fallback "Combined").
+    {
+        namespace fs = std::filesystem;
+        std::string stem = "Combined";
+        if (m_project && !m_project->directory.empty()) {
+            std::string base = fs::path(m_project->directory).filename().string();
+            if (!base.empty()) stem = base;
+        }
+        m_docs_combine_name->set_text(stem);
+    }
+
+    combine_row->append(*m_docs_combine_pdf);
+    combine_row->append(*name_label);
+    combine_row->append(*m_docs_combine_name);
+    root.append(*combine_row);
 }
 
 // ─── Documents: size ────────────────────────────────────────────────────────
@@ -616,8 +670,18 @@ void ExportDialog::docs_build_status_and_button(Gtk::Box& root) {
 void ExportDialog::docs_update_visibility() {
     const bool refpt_mode =
         m_docs_radio_refpt && m_docs_radio_refpt->get_active();
+    const bool pdf_mode =
+        m_docs_radio_pdf && m_docs_radio_pdf->get_active();
     if (m_docs_size_section)   m_docs_size_section->set_visible(!refpt_mode);
     if (m_docs_refpts_section) m_docs_refpts_section->set_visible(refpt_mode);
+
+    // s353 — combine is meaningful only for PDF. Show it always (so the tab
+    // doesn't reflow) but gate sensitivity on the PDF radio. The name field
+    // follows: sensitive only when PDF + combine are both active.
+    if (m_docs_combine_pdf) m_docs_combine_pdf->set_sensitive(pdf_mode);
+    const bool combine_on =
+        pdf_mode && m_docs_combine_pdf && m_docs_combine_pdf->get_active();
+    if (m_docs_combine_name) m_docs_combine_name->set_sensitive(combine_on);
 
     const bool need_dpi = (docs_current_units() != "px");
     if (m_docs_dpi_row) m_docs_dpi_row->set_visible(need_dpi);
@@ -653,6 +717,32 @@ int ExportDialog::docs_chosen_dim_px() const {
     double px = to_px(v, docs_current_units(), docs_current_dpi());
     int rounded = static_cast<int>(std::round(px));
     return std::max(1, rounded);
+}
+
+std::string ExportDialog::docs_combined_pdf_path() const {
+    namespace fs = std::filesystem;
+    std::string out_dir = m_docs_folder_entry
+        ? std::string(m_docs_folder_entry->get_text()) : std::string();
+
+    // User-entered stem wins; strip any ".pdf" the user typed and trim. Fall
+    // back to the project-folder basename, then "Combined", if blank.
+    std::string stem;
+    if (m_docs_combine_name) {
+        stem = std::string(m_docs_combine_name->get_text());
+        auto a = stem.find_first_not_of(" \t");
+        auto b = stem.find_last_not_of(" \t");
+        stem = (a == std::string::npos) ? std::string()
+                                        : stem.substr(a, b - a + 1);
+        stem = strip_ext(stem);  // drops a trailing ".pdf" if present
+    }
+    if (stem.empty()) {
+        stem = "Combined";
+        if (m_project && !m_project->directory.empty()) {
+            std::string base = fs::path(m_project->directory).filename().string();
+            if (!base.empty()) stem = base;
+        }
+    }
+    return (fs::path(out_dir) / (stem + ".pdf")).string();
 }
 
 // ─── Documents: select all/none ─────────────────────────────────────────────
@@ -734,15 +824,18 @@ void ExportDialog::docs_on_export() {
         return;
     }
 
-    // Three-way format radio decides the output extension.
+    // Format radio decides the output extension.
     const bool want_svg   = m_docs_radio_svg   && m_docs_radio_svg->get_active();
     const bool want_png   = m_docs_radio_png   && m_docs_radio_png->get_active();
     const bool want_refpt = m_docs_radio_refpt && m_docs_radio_refpt->get_active();
+    const bool want_pdf   = m_docs_radio_pdf   && m_docs_radio_pdf->get_active();
     std::string ext;
     if (want_svg) {
         ext = ".svg";
     } else if (want_png) {
         ext = ".png";
+    } else if (want_pdf) {
+        ext = ".pdf";
     } else /* want_refpt */ {
         const auto rfmt = m_docs_refpts_format_drop
             ? refpt_format_for_index(m_docs_refpts_format_drop->get_selected())
@@ -752,8 +845,8 @@ void ExportDialog::docs_on_export() {
 
     LOG_INFO("ExportDialog docs_on_export "
              "radio_svg.active={} radio_png.active={} radio_refpt.active={} "
-             "→ ext={}",
-             want_svg, want_png, want_refpt, ext);
+             "radio_pdf.active={} → ext={}",
+             want_svg, want_png, want_refpt, want_pdf, ext);
 
     // Resolve per-doc target paths.
     std::vector<DocTarget> targets;
@@ -775,13 +868,25 @@ void ExportDialog::docs_on_export() {
         return;
     }
 
-    // Collision scan.
+    // Collision scan. For a combined PDF the real output is a single file,
+    // so scan that one path rather than the per-doc target paths (the per-
+    // doc targets still carry the doc pointers perform_export needs).
+    const bool combine_pdf =
+        want_pdf && m_docs_combine_pdf && m_docs_combine_pdf->get_active();
     std::vector<std::string> collisions;
-    for (const auto& t : targets) {
-        bool exists = fs::exists(t.path, ec);
-        LOG_INFO("ExportDialog docs scan: target='{}' exists={}",
-                 t.path, exists);
-        if (exists) collisions.push_back(t.path);
+    if (combine_pdf) {
+        std::string cpath = docs_combined_pdf_path();
+        bool exists = fs::exists(cpath, ec);
+        LOG_INFO("ExportDialog docs scan (combined pdf): target='{}' exists={}",
+                 cpath, exists);
+        if (exists) collisions.push_back(cpath);
+    } else {
+        for (const auto& t : targets) {
+            bool exists = fs::exists(t.path, ec);
+            LOG_INFO("ExportDialog docs scan: target='{}' exists={}",
+                     t.path, exists);
+            if (exists) collisions.push_back(t.path);
+        }
     }
 
     if (collisions.empty()) {
@@ -869,6 +974,75 @@ void ExportDialog::docs_perform_export(const std::vector<DocTarget>& targets) {
     const auto refpts_fmt = m_docs_refpts_format_drop
         ? refpt_format_for_index(m_docs_refpts_format_drop->get_selected())
         : RefptExporter::Format::Csv;
+
+    // s353 — PDF goes through the LIVE canvas (real embedded text), not a
+    // free-function writer. A single export_pdf call renders all pages:
+    // combined -> one multi-page .pdf; otherwise one .pdf per doc. Page
+    // boxes are aspect-matched to each doc; the chosen export dimension +
+    // fit-side set the long edge in points (px converts at the chosen DPI).
+    const bool want_pdf = m_docs_radio_pdf && m_docs_radio_pdf->get_active();
+    if (want_pdf) {
+        const bool combine =
+            m_docs_combine_pdf && m_docs_combine_pdf->get_active();
+        const int    dpi       = docs_current_dpi();
+        const double chosen_pt = std::max(1.0, to_pt(size_value, units, dpi));
+
+        std::vector<Canvas::PdfPage> pages;
+        pages.reserve(targets.size());
+        for (const auto& t : targets) {
+            if (!t.doc) continue;
+            const double cw = std::max(1, t.doc->canvas_width());
+            const double ch = std::max(1, t.doc->canvas_height());
+            Canvas::PdfPage pg;
+            pg.doc  = t.doc;
+            pg.path = t.path;
+            if (fit_width) {
+                pg.page_w_pt = chosen_pt;
+                pg.page_h_pt = chosen_pt * ch / cw;
+            } else {
+                pg.page_h_pt = chosen_pt;
+                pg.page_w_pt = chosen_pt * cw / ch;
+            }
+            pages.push_back(pg);
+        }
+
+        int written = 0, failed = 0;
+        if (pages.empty()) {
+            failed = 1;
+        } else {
+            if (combine) pages.front().path = docs_combined_pdf_path();
+            bool ok = false;
+            if (auto* mw = main_window()) {
+                ok = mw->canvas().export_pdf(pages, combine);
+            } else {
+                LOG_ERROR("ExportDialog docs pdf: no MainWindow — cannot render");
+            }
+            if (ok) written = combine ? 1 : (int)pages.size();
+            else    failed  = combine ? 1 : (int)pages.size();
+            LOG_INFO("ExportDialog docs pdf: combine={} pages={} ok={}",
+                     combine, pages.size(), ok);
+        }
+
+        if (written > 0) m_export_ran = true;
+        const std::string out_dir = m_docs_folder_entry
+            ? std::string(m_docs_folder_entry->get_text()) : std::string();
+        if (written > 0 && !out_dir.empty()) {
+            m_last_export_dir = out_dir;
+            if (auto* mw = main_window())
+                mw->set_last_folder("export-docs", out_dir);
+        }
+        if (failed == 0 && written > 0) {
+            LOG_INFO("ExportDialog docs pdf: wrote {} file(s) to '{}'",
+                     written, out_dir);
+            if (m_window) m_window->close();
+        } else {
+            if (m_docs_status) m_docs_status->set_text(
+                "PDF export failed. Check the output folder and try again.");
+            LOG_ERROR("ExportDialog docs pdf: failed (written={} failed={})",
+                      written, failed);
+        }
+        return;
+    }
 
     int written = 0;
     int failed  = 0;
