@@ -97,4 +97,22 @@ public:
                              bool is_closed = false) const;
 };
 
+// ── Arc-length parameterization (free functions) ────────────────────────────
+// Arc-length sampling of a BezierPath, at the length(32) per-segment fidelity
+// class. These were Canvas members (build_arc_table / path_point_at) but carry
+// no Canvas state — hoisted here as the single source of truth so the glyph
+// outliner (GlyphOutline.cpp) and Canvas both parameterize a path identically.
+// Canvas::build_arc_table / Canvas::path_point_at now delegate to these; the
+// pattern-text walk derives every glyph position through point_at_arc, so a
+// rendered curve and its saved/converted outline can never disagree.
+
+// Fills arc_table with cumulative segment lengths (arc_table[0]==0,
+// arc_table[segment_count()] == total). Returns the total arc length.
+double arc_table_for(const BezierPath& bp, std::vector<double>& arc_table);
+
+// Given a (clamped) arc offset, returns the doc-space point + tangent angle.
+// false when the path is degenerate (total < epsilon / empty table).
+bool point_at_arc(const BezierPath& bp, const std::vector<double>& arc_table,
+                  double total_len, double arc_offset, Vec2& pos, double& angle);
+
 } // namespace Curvz

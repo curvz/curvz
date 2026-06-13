@@ -1034,4 +1034,50 @@ std::pair<PathData, PathData> BezierPath::split_at_node(int idx) const {
     return { left.to_path_data(), right.to_path_data() };
 }
 
+// ── Arc-length parameterization (free functions) ────────────────────────────
+// Moved verbatim from Canvas::build_arc_table / Canvas::path_point_at — they
+// were stateless const members. Canvas now delegates here so there is one
+// implementation behind both the renderer/converter and the SvgWriter glyph
+// outliner (GlyphOutline.cpp can't reach Canvas).
+
+double arc_table_for(const BezierPath& bp, std::vector<double>& arc_table) {
+    int n = bp.segment_count();
+    arc_table.clear();
+    arc_table.reserve(n + 1);
+    double total = 0.0;
+    arc_table.push_back(0.0);
+    for (int i = 0; i < n; ++i) {
+        double len = bp.segment(i).length(32);
+        total += len;
+        arc_table.push_back(total);
+    }
+    return total;
+}
+
+bool point_at_arc(const BezierPath& bp, const std::vector<double>& arc_table,
+                  double total_len, double arc_offset, Vec2& pos, double& angle) {
+    if (total_len < 0.001 || arc_table.empty())
+        return false;
+    arc_offset = std::max(0.0, std::min(arc_offset, total_len));
+
+    int n = bp.segment_count();
+    for (int i = 0; i < n; ++i) {
+        double seg_start = arc_table[i];
+        double seg_end   = arc_table[i + 1];
+        double seg_len   = seg_end - seg_start;
+        if (arc_offset <= seg_end || i == n - 1) {
+            double local =
+                (seg_len > 0.001) ? (arc_offset - seg_start) / seg_len : 0.0;
+            local = std::max(0.0, std::min(1.0, local));
+            CubicSegment seg = bp.segment(i);
+            Vec2 pt  = seg.at(local);
+            Vec2 tan = seg.tangent(local);
+            pos   = pt;
+            angle = std::atan2(tan.y, tan.x);
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace Curvz

@@ -518,6 +518,7 @@ set(SOURCES
 
     # SVG serialisation
     src/SvgWriter.cpp
+    src/GlyphOutline.cpp    # s350 m1 — shared glyph-to-outline unit (Canvas + SvgWriter)
     src/SvgParser.cpp
     # s290 m1a — peer-class copy of SvgParser. m1b.1 added on_path
     # fan-out; m1b.2 added on_compound/group bracketing; m1b.3 added

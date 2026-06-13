@@ -1136,6 +1136,8 @@ std::unique_ptr<CurvzDocument> AnimatingSvgParser::parse(const std::string& svg)
     // We reverse children on close only for foreign.
     struct StackEntry { SceneNode* node; AffineMatrix xfm; bool is_curvz = false; };
     std::vector<StackEntry> stack;
+    int compat_skip_depth = 0;   // s350 m2 — see SvgParser: discard the
+                                 // data-curvz-compat presentation subtree
     SceneNode* current_layer = nullptr;  // kept for logging/compat
     int    obj_counter   = 1;
 
@@ -1299,8 +1301,21 @@ std::unique_ptr<CurvzDocument> AnimatingSvgParser::parse(const std::string& svg)
         try {
         if (tag.empty() || tag[0] == '?' || tag[0] == '!') continue;
 
+        // s350 m2 — discard the data-curvz-compat presentation subtree on load
+        // (regenerated every save). Same depth-tracked skip as SvgParser.
+        if (compat_skip_depth > 0) {
+            if (tag[0] == '/')            --compat_skip_depth;
+            else if (tag.back() != '/')   ++compat_skip_depth;
+            continue;
+        }
+        if (tag.find("data-curvz-compat") != std::string::npos) {
+            if (tag.back() != '/') compat_skip_depth = 1;
+            continue;
+        }
+
         // Closing tags — pop the stack
         if (tag[0] == '/') {
+
             // Close of <clipPath>: leave the "currently defining" state.
             // The definition tag inside it (a <path> or <g data-curvz-compound>)
             // has already been stashed into clip_defs by the normal element

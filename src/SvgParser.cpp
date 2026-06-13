@@ -1288,6 +1288,8 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
     // We reverse children on close only for foreign.
     struct StackEntry { SceneNode* node; AffineMatrix xfm; bool is_curvz = false; };
     std::vector<StackEntry> stack;
+    int compat_skip_depth = 0;   // s350 m2 — depth inside a data-curvz-compat
+                                 // presentation subtree (discarded on load)
     SceneNode* current_layer = nullptr;  // kept for logging/compat
     int    obj_counter   = 1;
 
@@ -1528,6 +1530,23 @@ std::unique_ptr<CurvzDocument> parse_svg(const std::string& svg) {
             continue;
         }
         if (tag.empty() || tag[0] == '?' || tag[0] == '!') continue;
+
+        // s350 m2 — Compat presentation subtree. Saved files carry a
+        // <g data-curvz-compat="outline"> sibling holding rendered glyph
+        // outlines for foreign SVG viewers; it is regenerated from the
+        // CDATA / data-curvz-* truth every save, so on load we DISCARD the
+        // whole subtree. Depth-tracked: its children are self-closing <path>
+        // today, but track nested opens defensively. A self-closing tag
+        // (tag.back()=='/') neither opens nor closes a level.
+        if (compat_skip_depth > 0) {
+            if (tag[0] == '/')            --compat_skip_depth;  // close
+            else if (tag.back() != '/')   ++compat_skip_depth;  // nested open
+            continue;
+        }
+        if (tag.find("data-curvz-compat") != std::string::npos) {
+            if (tag.back() != '/') compat_skip_depth = 1;  // open <g ...>
+            continue;                                       // never process it
+        }
 
         // Closing tags — pop the stack
         if (tag[0] == '/') {

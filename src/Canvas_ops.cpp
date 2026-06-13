@@ -4525,153 +4525,12 @@ static FT_Outline_Funcs s_ft_callbacks = {
     0  // delta
 };
 
-// ── s344 — Per-glyph outline emission from a RESOLVED baseline ────────────────
-// One node per glyph appended to `out`: a bare Path when the glyph is a single
-// contour, a Compound when it has 2+ (so counters/holes fill together under
-// even-odd). Anchored exactly like the renderer: draw_text_in_boundary places
-// each baseline's PangoLayout at (bl.x_start, bl.y - layout_baseline) in the
-// boundary's UPRIGHT frame and paints it; here we read the same resolved layout,
-// FreeType-decompose each glyph at the same pen positions, and map into doc
-// space (then rotate into the frame). Because the layout is the one the fitter
-// produced, wrap / margins / per-run styles / justify / letter-spacing are
-// already baked into the glyph advances and positions -- nothing is recomputed.
-// Per-run font + size come from the resolved run (styled runs vary); colour is
-// the Mgr node fill (per-run colour is a deferred follow-up).
-static void emit_baseline_glyph_nodes(
-    const BaselineLayout &bl, const TextLayout &tl, FT_Library ft_lib,
-    const FillStyle &fill, const StrokeStyle &stroke, double fallback_px,
-    std::vector<std::unique_ptr<SceneNode>> &out) {
-  if (!bl.pango)
-    return;
-  PangoLayout *layout = bl.pango.get();
-
-  // Frame rotation (upright -> doc), matching the cr transform in draw.
-  const bool rot = (tl.frame_angle != 0.0);
-  const double ca = std::cos(tl.frame_angle), sa = std::sin(tl.frame_angle);
-  auto to_doc = [&](double &x, double &y) {
-    if (!rot)
-      return;
-    double rx = x - tl.frame_cx, ry = y - tl.frame_cy;
-    x = tl.frame_cx + rx * ca - ry * sa;
-    y = tl.frame_cy + rx * sa + ry * ca;
-  };
-
-  PangoLayoutIter *iter = pango_layout_get_iter(layout);
-  do {
-    PangoLayoutRun *run = pango_layout_iter_get_run(iter);
-    if (!run)
-      continue;
-    PangoFont *pfont = run->item->analysis.font;
-    PangoGlyphString *gs = run->glyphs;
-
-    PangoRectangle run_ext;
-    pango_layout_iter_get_run_extents(iter, nullptr, &run_ext);
-    double run_x_px = run_ext.x / (double)PANGO_SCALE;
-
-    // Resolve font file + face index + the ACTUAL rendered pixel size, all from
-    // the same resolved FcPattern (FC_PIXEL_SIZE is the size Pango/Cairo drew
-    // these glyphs at -- the authoritative scale for FreeType to match).
-    const char *font_file = nullptr;
-    int face_idx = 0;
-    double px_size = 0.0;
-    PangoFcFont *fc_font = PANGO_FC_FONT(pfont);
-    if (fc_font) {
-      FcPattern *pat = pango_fc_font_get_pattern(fc_font);
-      FcPatternGetString(pat, FC_FILE, 0, (FcChar8 **)&font_file);
-      FcPatternGetInteger(pat, FC_INDEX, 0, &face_idx);
-      FcPatternGetDouble(pat, FC_PIXEL_SIZE, 0, &px_size);
-    }
-    if (!font_file) {
-      LOG_WARN("emit_baseline_glyph_nodes: no font file for run, skipping");
-      continue;
-    }
-    if (px_size <= 0.0)
-      px_size = fallback_px; // node font size, not a magic constant
-
-    FT_Face ft_face = nullptr;
-    if (FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
-      LOG_WARN("emit_baseline_glyph_nodes: FT_New_Face failed for {}",
-               font_file);
-      continue;
-    }
-    // 72 dpi so 1pt == 1px: FC_PIXEL_SIZE px maps straight to FT char size.
-    FT_Set_Char_Size(ft_face, 0, (FT_F26Dot6)(px_size * 64.0), 72, 72);
-    const double ft_scale = 1.0 / 64.0;
-
-    double pen_x = run_x_px;
-    for (int gi = 0; gi < gs->num_glyphs; ++gi) {
-      PangoGlyphInfo &g = gs->glyphs[gi];
-      PangoGlyph glyph_id = g.glyph;
-      double adv = g.geometry.width / (double)PANGO_SCALE; // spacing baked in
-      if (glyph_id == PANGO_GLYPH_EMPTY ||
-          (glyph_id & PANGO_GLYPH_UNKNOWN_FLAG)) {
-        pen_x += adv;
-        continue;
-      }
-      double gx = pen_x + g.geometry.x_offset / (double)PANGO_SCALE;
-      double glyph_base_y = bl.y + g.geometry.y_offset / (double)PANGO_SCALE;
-
-      if (FT_Load_Glyph(ft_face, glyph_id, FT_LOAD_NO_BITMAP) == 0 &&
-          ft_face->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
-        FTOutlineCtx ctx;
-        ctx.scale = ft_scale;
-        FT_Outline_Decompose(&ft_face->glyph->outline, &s_ft_callbacks, &ctx);
-
-        // Map every contour node from glyph space (Y-up, origin at the pen on
-        // the baseline) into doc space, then into the rotated frame.
-        std::vector<PathData> contours;
-        for (auto &pd : ctx.contours) {
-          if (pd.nodes.empty())
-            continue;
-          for (auto &n : pd.nodes) {
-            auto map = [&](double &nx, double &ny) {
-              double dx = bl.x_start + gx + nx;
-              double dy = glyph_base_y - ny;
-              to_doc(dx, dy);
-              nx = dx;
-              ny = dy;
-            };
-            map(n.x, n.y);
-            map(n.cx1, n.cy1);
-            map(n.cx2, n.cy2);
-          }
-          contours.push_back(std::move(pd));
-        }
-
-        if (contours.size() == 1) {
-          // Single contour -> bare Path (no hole to resolve).
-          auto p = std::make_unique<SceneNode>();
-          p->type = SceneNode::Type::Path;
-          p->name = "glyph";
-          p->fill = fill;
-          p->stroke = stroke;
-          p->path = std::make_unique<PathData>(std::move(contours[0]));
-          out.push_back(std::move(p));
-        } else if (contours.size() >= 2) {
-          // 2+ contours -> Compound; stroke sits on each child (Compound's
-          // draw reads stroke per-child, never from the Compound itself).
-          auto comp = std::make_unique<SceneNode>();
-          comp->type = SceneNode::Type::Compound;
-          comp->name = "glyph";
-          comp->fill = fill;
-          comp->stroke = stroke;
-          for (auto &pd : contours) {
-            auto child = std::make_unique<SceneNode>();
-            child->type = SceneNode::Type::Path;
-            child->fill = fill;
-            child->stroke = stroke;
-            child->path = std::make_unique<PathData>(std::move(pd));
-            comp->children.push_back(std::move(child));
-          }
-          out.push_back(std::move(comp));
-        }
-      }
-      pen_x += adv;
-    }
-    FT_Done_Face(ft_face);
-  } while (pango_layout_iter_next_run(iter));
-  pango_layout_iter_free(iter);
-}
+// ── s344/s350 — Per-glyph box-text outline ──────────────────────────────────
+// emit_baseline_glyph_nodes moved to the GlyphOutline unit (outline_box_text),
+// which also computes the layout and inits FreeType internally. Behaviour is
+// unchanged (node fill; per-run box colour stays a deferred follow-up).
+// build_mgr_outline_group below consumes it; SvgWriter consumes the same unit
+// at save time (s350 m2).
 
 // ── s344 — TextBoxMgr -> Group{ box(es) below, "text" group of glyphs above } ─
 std::unique_ptr<SceneNode> Canvas::build_mgr_outline_group(SceneNode *mgr) {
@@ -4683,12 +4542,6 @@ std::unique_ptr<SceneNode> Canvas::build_mgr_outline_group(SceneNode *mgr) {
   auto regions = build_member_regions(mgr);
   if (regions.empty())
     return nullptr;
-
-  FT_Library ft_lib = nullptr;
-  if (FT_Init_FreeType(&ft_lib) != 0) {
-    LOG_WARN("build_mgr_outline_group: FreeType init failed");
-    return nullptr;
-  }
 
   const style::TextStyleLibrary *lib =
       project() ? &project()->text_styles : nullptr;
@@ -4705,16 +4558,13 @@ std::unique_ptr<SceneNode> Canvas::build_mgr_outline_group(SceneNode *mgr) {
     // ride along because clone_node deep-copies the whole node.
     box_clones.push_back(clone_node(*reg.boundary));
 
-    // Resolved layout for this member's slice; emit its glyph nodes.
-    TextLayout tl = compute_text_layout(reg.boundary, mgr, reg.byte_start, lib);
-    for (const auto &bl : tl.baselines)
-      emit_baseline_glyph_nodes(bl, tl, ft_lib, mgr->fill, mgr->stroke,
-                                mgr->text_font_size > 0.0 ? mgr->text_font_size
-                                                          : 24.0,
-                                text_group->children);
+    // s350 — outline this member's slice through the shared unit (computes
+    // its own layout + FreeType; colours each glyph by its run span).
+    outline_box_text(reg.boundary, mgr, reg.byte_start, lib, mgr->fill,
+                     mgr->stroke,
+                     mgr->text_font_size > 0.0 ? mgr->text_font_size : 24.0,
+                     text_group->children);
   }
-
-  FT_Done_FreeType(ft_lib);
 
   if (text_group->children.empty())
     return nullptr; // nothing flowed/visible to outline
@@ -4833,161 +4683,21 @@ void Canvas::text_to_paths_op() {
     if (!obj->text_guide_id.empty()) {
       SceneNode *guide_v2 = top_find_path_by_id(obj->text_guide_id);
       if (guide_v2 && guide_v2->path) {
-        // Colour buckets: glyphs covered by a foreground span outline into
-        // a Solid bucket per span colour; everything else into the
-        // node-fill bucket. A Compound paints with ITS OWN fill (even-odd,
-        // child fills inert — S58g), so multi-colour output must be one
-        // Compound per bucket; the uniform case stays a single bare
-        // Compound, byte-compatible with the legacy shape.
-        struct Bucket {
-          bool has_fg;
-          double r, g, b, a;
-          std::vector<PathData> contours;
-        };
-        std::vector<Bucket> buckets;
-        auto bucket_for = [&](const PatternGlyph &g) -> Bucket & {
-          for (auto &bk : buckets) {
-            if (bk.has_fg != g.has_fg)
-              continue;
-            if (!g.has_fg ||
-                (bk.r == g.fg_r && bk.g == g.fg_g && bk.b == g.fg_b &&
-                 bk.a == g.fg_a))
-              return bk;
-          }
-          buckets.push_back({g.has_fg, g.fg_r, g.fg_g, g.fg_b, g.fg_a, {}});
-          return buckets.back();
-        };
-
-        // FT face per Pango run font, opened lazily and sized from the
-        // FONT's own absolute size — styles and spans make size per-RUN;
-        // the node's text_font_size is only the baseline tier (s344) and
-        // would mis-size styled runs.
-        struct FaceEntry { FT_Face face = nullptr; bool tried = false; };
-        std::map<PangoFont *, FaceEntry> faces;
-        auto face_for = [&](PangoFont *pfont) -> FT_Face {
-          auto &e = faces[pfont];
-          if (e.tried)
-            return e.face;
-          e.tried = true;
-          const char *font_file = nullptr;
-          int face_idx = 0;
-#if defined(PANGO_VERSION_CHECK) && PANGO_VERSION_CHECK(1, 18, 0)
-          PangoFcFont *fc_font = PANGO_FC_FONT(pfont);
-          if (fc_font) {
-            FcPattern *pat = pango_fc_font_get_pattern(fc_font);
-            FcPatternGetString(pat, FC_FILE, 0, (FcChar8 **)&font_file);
-            FcPatternGetInteger(pat, FC_INDEX, 0, &face_idx);
-          }
-#endif
-          if (!font_file) {
-            LOG_WARN("text_to_paths_op: v2 — could not resolve font file "
-                     "for run, skipping its glyphs");
-            return nullptr;
-          }
-          FT_Face face = nullptr;
-          if (FT_New_Face(ft_lib, font_file, face_idx, &face) != 0) {
-            LOG_WARN("text_to_paths_op: v2 — FT_New_Face failed for {}",
-                     font_file);
-            return nullptr;
-          }
-          double size_px = obj->text_font_size;
-          if (PangoFontDescription *d =
-                  pango_font_describe_with_absolute_size(pfont)) {
-            if (pango_font_description_get_size(d) > 0)
-              size_px =
-                  pango_font_description_get_size(d) / (double)PANGO_SCALE;
-            pango_font_description_free(d);
-          }
-          FT_Set_Char_Size(face, 0, (FT_F26Dot6)(size_px * 64.0), 72, 72);
-          e.face = face;
-          return face;
-        };
-
-        pattern_glyph_walk(*obj, *guide_v2, [&](const PatternGlyph &g) {
-          FT_Face face = face_for(g.font);
-          if (!face)
-            return;
-          if (FT_Load_Glyph(face, g.info->glyph, FT_LOAD_NO_BITMAP) != 0 ||
-              face->glyph->format != FT_GLYPH_FORMAT_OUTLINE)
-            return;
-
-          FTOutlineCtx ctx;
-          ctx.scale = 1.0 / 64.0;
-          FT_Outline_Decompose(&face->glyph->outline, &s_ft_callbacks, &ctx);
-
-          // EXACTLY the renderer's frame: pen at (-adv/2, pen_y) in the
-          // rotated frame; show_glyph_string applies the glyph geometry
-          // offsets on top of the pen and draws FT Y-up ink downward, so
-          // an FT point (fx, fy) lands at
-          //   local = (fx + x_off - adv/2,  pen_y + y_off - fy)
-          // then rotates by angle about the walk point.
-          const double ca = std::cos(g.angle), sa = std::sin(g.angle);
-          const double x_off =
-              g.info->geometry.x_offset / (double)PANGO_SCALE;
-          const double y_off =
-              g.info->geometry.y_offset / (double)PANGO_SCALE;
-          auto xform = [&](double &nx, double &ny) {
-            const double lx = nx + x_off - g.adv_px * 0.5;
-            const double ly = g.pen_y + y_off - ny;
-            nx = g.pos.x + lx * ca - ly * sa;
-            ny = g.pos.y + lx * sa + ly * ca;
-          };
-          Bucket &bucket = bucket_for(g);
-          for (auto &pd : ctx.contours) {
-            for (auto &n : pd.nodes) {
-              xform(n.x, n.y);
-              xform(n.cx1, n.cy1);
-              xform(n.cx2, n.cy2);
-            }
-            if (!pd.nodes.empty())
-              bucket.contours.push_back(std::move(pd));
-          }
-        });
-
-        for (auto &fe : faces)
-          if (fe.second.face)
-            FT_Done_Face(fe.second.face);
-
-        buckets.erase(std::remove_if(buckets.begin(), buckets.end(),
-                                     [](const Bucket &b) {
-                                       return b.contours.empty();
-                                     }),
-                      buckets.end());
-        if (buckets.empty()) {
+        // s350 m1 — outline geometry through the shared unit (the same walk +
+        // FreeType + colour-bucket logic this branch used inline, now in
+        // GlyphOutline so SvgWriter shares it). Returns one Compound per colour
+        // bucket; this verb names them and wraps multi-bucket in a Group.
+        auto bucket_outlines = outline_pattern_text(
+            *obj, *guide_v2, project() ? &project()->text_styles : nullptr);
+        if (bucket_outlines.empty()) {
           LOG_WARN("text_to_paths_op: v2 '{}' produced no contours",
                    obj->text_content);
           continue;
         }
-
-        auto make_compound = [&](Bucket &b) {
-          auto compound = std::make_unique<SceneNode>();
-          compound->type = SceneNode::Type::Compound;
-          if (b.has_fg) {
-            FillStyle f = obj->fill;
-            f.type = FillStyle::Type::Solid;
-            f.r = b.r; f.g = b.g; f.b = b.b; f.a = b.a;
-            compound->fill = f;
-          } else {
-            compound->fill = obj->fill;
-          }
-          compound->stroke = obj->stroke;
-          compound->opacity = obj->opacity;
-          for (auto &pd : b.contours) {
-            auto path_child = std::make_unique<SceneNode>();
-            path_child->type = SceneNode::Type::Path;
-            path_child->fill = compound->fill;
-            // Stroke per child — same rationale as the legacy branch
-            // below (Compound's draw reads stroke per-child).
-            path_child->stroke = obj->stroke;
-            path_child->path = std::make_unique<PathData>(std::move(pd));
-            compound->children.push_back(std::move(path_child));
-          }
-          return compound;
-        };
-
+        const size_t v2_buckets = bucket_outlines.size();
         std::unique_ptr<SceneNode> outline;
-        if (buckets.size() == 1) {
-          outline = make_compound(buckets[0]);
+        if (bucket_outlines.size() == 1) {
+          outline = std::move(bucket_outlines[0]);
           outline->name = m_doc->uniquify_name(obj->name + " (outline)");
         } else {
           // Coloured spans: one Compound per colour under one Group, so
@@ -4997,14 +4707,13 @@ void Canvas::text_to_paths_op() {
           outline->name = m_doc->uniquify_name(obj->name + " (outline)");
           outline->opacity = obj->opacity;
           int bi = 0;
-          for (auto &b : buckets) {
-            auto c = make_compound(b);
+          for (auto &c : bucket_outlines) {
             c->name = m_doc->uniquify_name(
                 obj->name + " (outline " + std::to_string(++bi) + ")");
             outline->children.push_back(std::move(c));
           }
         }
-
+        
         // Replace IN THE ACTUAL PARENT (find_parent descends groups).
         int v2_idx = -1;
         SceneNode *v2_parent = find_parent(m_doc, obj, &v2_idx);
@@ -5022,7 +4731,6 @@ void Canvas::text_to_paths_op() {
         outline->id = obj->id;
 
         const std::string v2_label = obj->text_content;  // obj freed below
-        const size_t v2_buckets = buckets.size();
         if (m_top_text == obj)  // cached ToP pointer — about to dangle
           m_top_text = nullptr;
 

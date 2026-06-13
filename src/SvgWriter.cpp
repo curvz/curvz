@@ -2,6 +2,7 @@
 #include "CurvzLog.hpp"
 #include "curvz_utils.hpp"
 #include "TextCursor.hpp"  // compute_text_layout — for TextBox per-baseline emit
+#include "GlyphOutline.hpp" // s350 m2 — outline_box_text / outline_pattern_text (compat presentation)
 #include <functional>       // s347 [TOPSAVE] — save-summary tree walk
 #include <sstream>
 #include <iomanip>
@@ -489,6 +490,62 @@ struct MgrCollector {
 };
 
 static const MgrCollector* g_mgr_collector = nullptr;
+
+// ── s350 m2 — NodeIndex (guide resolution for the compat presentation) ───────
+// SvgWriter has no Canvas, so a guide-attached (ToP v2) <text> can't reach its
+// guide path to outline it. This is the writer's analogue of Canvas's
+// top_find_path_by_id: a pre-pass indexes every node by internal_id, and the
+// Text branch looks up data-curvz-guide-id to feed outline_pattern_text. Same
+// collector idiom as MgrCollector above; g_node_index is the file-scope handle.
+struct NodeIndex {
+    std::map<std::string, const SceneNode*> by_iid;
+};
+static const NodeIndex* g_node_index = nullptr;
+
+static void collect_nodes(const SceneNode& n, NodeIndex& ni) {
+    if (!n.internal_id.empty() && !ni.by_iid.count(n.internal_id))
+        ni.by_iid[n.internal_id] = &n;
+    for (const auto& c : n.children)
+        if (c) collect_nodes(*c, ni);
+    if (n.clip_shape)     collect_nodes(*n.clip_shape, ni);
+    if (n.blend_source_a) collect_nodes(*n.blend_source_a, ni);
+    if (n.blend_source_b) collect_nodes(*n.blend_source_b, ni);
+    if (n.warp_source)    collect_nodes(*n.warp_source, ni);
+}
+
+// Forward decl (no default arg — the definition below carries it) so the
+// compat-emit helper can recurse through the normal element serializer.
+static void write_object(std::ostringstream& out, const GlyphObject& obj,
+                         int indent, const char* role_hint);
+
+// ── s350 m2 — Compat presentation emit ───────────────────────────────────────
+// The dual-channel ruling: data-curvz-* / CDATA is the editable truth; every
+// save ALSO emits the rendered text as a real glyph-outline group so foreign
+// SVG viewers show accurate text. On load the parser discards any
+// data-curvz-compat subtree and Curvz regenerates it. The outline nodes are
+// throwaway (regenerated every save), so we scrub their identity first —
+// otherwise write_object would stamp fresh UUIDs on every glyph and churn the
+// diff on each save.
+static void scrub_identity(SceneNode& n) {
+    n.id.clear();
+    n.internal_id.clear();
+    for (auto& c : n.children)
+        if (c) scrub_identity(*c);
+}
+static void emit_compat_outline(std::ostringstream& out,
+                                std::vector<std::unique_ptr<SceneNode>>& nodes,
+                                int indent) {
+    if (nodes.empty())
+        return;
+    const std::string gpad(indent * 2, ' ');
+    out << gpad << "<g data-curvz-compat=\"outline\">\n";
+    for (auto& n : nodes) {
+        if (!n) continue;
+        scrub_identity(*n);
+        write_object(out, *n, indent + 1, nullptr);
+    }
+    out << gpad << "</g>\n";
+}
 
 static void collect_mgrs(const SceneNode& n, MgrCollector& mc) {
     mc.add(&n);
@@ -1110,61 +1167,21 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         //    with the rest of the document.
         write_object(out, boundary, indent + 1);
 
-        // ── Per-baseline path + textPath pairs. compute_text_layout
-        //    runs Pango against the current boundary + text to find
-        //    where each visual line sits in doc space. For empty
-        //    buffers the baseline list is empty, and we emit nothing —
-        //    the textbox loads back as an empty frame the user can
-        //    type into. Same behaviour as a freshly-created textbox.
-        TextLayout layout = compute_text_layout(&boundary, &text, 0,
-                                                g_text_styles);  // s345
-        const std::string ipad((indent + 1) * 2, ' ');
-        for (size_t bi = 0; bi < layout.baselines.size(); ++bi) {
-            const auto& bl = layout.baselines[bi];
-            // Stable id from the textbox iid + baseline index. Re-savable
-            // (same textbox produces same ids on re-emit, which lets diff
-            // tools compare versions cleanly).
-            const std::string bid = "baseline_" + obj.internal_id + "_" +
-                                    std::to_string(bi);
-            // Transparent line for the textPath reference. fill="none"
-            // and stroke="none" make it invisible in external viewers;
-            // the marker data-curvz-baseline lets the parser identify
-            // and discard these on load (regenerated from compute_text_layout).
-            out << ipad << "<path id=\"" << bid << "\""
-                << " d=\"M " << fmt2(bl.x_start) << " " << fmt2(bl.y)
-                << " L "    << fmt2(bl.x_end)   << " " << fmt2(bl.y) << "\""
-                << " fill=\"none\" stroke=\"none\""
-                << " data-curvz-baseline=\"1\"/>\n";
-
-            // Slice of the buffer for this baseline. Guard against
-            // out-of-range byte ranges (defensive — compute_text_layout
-            // should produce coherent ranges).
-            const std::string& buf = text.text_content;
-            size_t bs = std::min(bl.byte_start, buf.size());
-            size_t be = std::min(bl.byte_end,   buf.size());
-            if (be < bs) be = bs;
-            std::string slice = buf.substr(bs, be - bs);
-
-            // <text><textPath href="#baseline_iid_N">slice</textPath></text>.
-            // Font + fill attrs ride on the <text> so the textPath
-            // renders correctly in external viewers — same attribute
-            // set as the normal text emit, minus the position attrs
-            // (textPath positions itself along its href target).
-            out << ipad << "<text"
-                << " font-family=\"" << text.text_font_family << "\""
-                << " font-size=\""   << fmt2(text.text_font_size) << "\"";
-            if (text.text_bold)   out << " font-weight=\"bold\"";
-            if (text.text_italic) out << " font-style=\"italic\"";
-            out << " fill=\"" << fill_attr(text.fill) << "\"";
-            if (text.stroke.paint.type != FillStyle::Type::None)
-                out << stroke_attrs(text.stroke);
-            out << ">"
-                << "<textPath href=\"#" << bid << "\">"
-                << xml_escape(slice)
-                << "</textPath>"
-                << "</text>\n";
-        }
-
+        // ── s350 m2 — Presentation channel (was per-baseline path + <textPath>
+        //    pairs, xlink-broken in Inkscape + ignored frame rotation). The
+        //    data-curvz-content above is the editable truth; here we emit the
+        //    rendered glyphs as a real outline group so foreign SVG viewers show
+        //    accurate text. The parser discards any data-curvz-compat subtree on
+        //    load and Curvz regenerates it from the content every save. Empty
+        //    buffer -> empty layout -> no group, same as before (loads as an
+        //    empty frame). Outline is already in doc space, so rotated boxes
+        //    render correctly with no frame handling here.
+        std::vector<std::unique_ptr<SceneNode>> compat_nodes;
+        outline_box_text(&boundary, &text, 0, g_text_styles, text.fill,
+                         text.stroke,
+                         text.text_font_size > 0.0 ? text.text_font_size : 24.0,
+                         compat_nodes);
+        emit_compat_outline(out, compat_nodes, indent + 1);
         out << pad << "</g>\n";
         return;
     }
@@ -1301,43 +1318,18 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
             // serialise through the same code path any other Path uses.
             write_object(out, boundary, indent + 1);
 
-            // Per-baseline path + textPath pairs for THIS view. The Mgr
-            // plays the role of the "text node" (carries buffer + font
-            // defaults) — same as the pre-m1c-redux emit did, just at
-            // one less indent level since there's no Mgr wrapper now.
-            const std::string vipad((indent + 1) * 2, ' ');
-            TextLayout layout = compute_text_layout(&boundary, &obj, 0,
-                                                    g_text_styles);  // s345
-            for (size_t bi = 0; bi < layout.baselines.size(); ++bi) {
-                const auto& bl = layout.baselines[bi];
-                const std::string bid = "baseline_" + view.internal_id + "_" +
-                                        std::to_string(bi);
-                out << vipad << "<path id=\"" << bid << "\""
-                    << " d=\"M " << fmt2(bl.x_start) << " " << fmt2(bl.y)
-                    << " L "    << fmt2(bl.x_end)   << " " << fmt2(bl.y) << "\""
-                    << " fill=\"none\" stroke=\"none\""
-                    << " data-curvz-baseline=\"1\"/>\n";
-
-                const std::string& buf = obj.text_content;
-                size_t bs = std::min(bl.byte_start, buf.size());
-                size_t be = std::min(bl.byte_end,   buf.size());
-                if (be < bs) be = bs;
-                std::string slice = buf.substr(bs, be - bs);
-
-                out << vipad << "<text"
-                    << " font-family=\"" << obj.text_font_family << "\""
-                    << " font-size=\""   << fmt2(obj.text_font_size) << "\"";
-                if (obj.text_bold)   out << " font-weight=\"bold\"";
-                if (obj.text_italic) out << " font-style=\"italic\"";
-                out << " fill=\"" << fill_attr(obj.fill) << "\"";
-                if (obj.stroke.paint.type != FillStyle::Type::None)
-                    out << stroke_attrs(obj.stroke);
-                out << ">"
-                    << "<textPath href=\"#" << bid << "\">"
-                    << xml_escape(slice)
-                    << "</textPath>"
-                    << "</text>\n";
-            }
+            // s350 m2 — Presentation channel for THIS view (was per-baseline
+            // path + <textPath> pairs). The Mgr plays the "text node" (buffer +
+            // font defaults); the view's boundary is the frame. Outline glyphs
+            // go in a data-curvz-compat group the parser discards on load.
+            // byte_start=0 matches the prior emit (multi-view byte cascade is
+            // the same deferred item it always was).
+            std::vector<std::unique_ptr<SceneNode>> compat_nodes;
+            outline_box_text(&boundary, &obj, 0, g_text_styles, obj.fill,
+                             obj.stroke,
+                             obj.text_font_size > 0.0 ? obj.text_font_size : 24.0,
+                             compat_nodes);
+            emit_compat_outline(out, compat_nodes, indent + 1);
             out << pad << "</g>\n";
             ++canvas_index;
         }
@@ -1611,6 +1603,31 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
             if (obj.text_path_flip) out << " side=\"right\"";
             out << ">" << xml_escape(obj.text_content) << "</textPath>\n";
             out << pad << "</text>\n";
+        } else if (!obj.text_guide_id.empty()) {
+            // s350 m2 — path-text v2 presentation. The data-curvz-guide-id /
+            // -anchor attrs above are the editable truth (geometry derives from
+            // them per paint). A plain <text x y> body would render a straight
+            // phantom in foreign viewers, so the body is EMPTY; the rendered
+            // glyphs follow as a sibling data-curvz-compat outline group walked
+            // along the guide. Parser discards the group and rebuilds the text
+            // from the attrs; Curvz regenerates the outline every save.
+            out << "></text>\n";
+            const SceneNode* guide = nullptr;
+            if (g_node_index) {
+                auto it = g_node_index->by_iid.find(obj.text_guide_id);
+                if (it != g_node_index->by_iid.end()) guide = it->second;
+            }
+            if (guide && guide->path) {
+                auto compat_nodes =
+                    outline_pattern_text(obj, *guide, g_text_styles);
+                emit_compat_outline(out, compat_nodes, indent);
+                LOG_INFO("[TOPSAVE] compat outline for '{}' — {} bucket(s)",
+                         obj.internal_id, compat_nodes.size());
+            } else {
+                LOG_WARN("SvgWriter: [TOPSAVE] guide '{}' for text '{}' not "
+                         "found / no path — no compat outline emitted",
+                         obj.text_guide_id, obj.internal_id);
+            }
         } else {
             out << ">" << xml_escape(obj.text_content) << "</text>\n";
         }
@@ -1807,6 +1824,13 @@ std::string write_svg(const CurvzDocument& doc,
     for (const auto& l : doc.layers)
         if (l) collect_mgrs(*l, mc);
     g_mgr_collector = &mc;
+
+    // s350 m2 — index every node by iid so guide-attached <text> can resolve
+    // its guide path for the compat outline (the writer's top_find_path_by_id).
+    NodeIndex node_index;
+    for (const auto& l : doc.layers)
+        if (l) collect_nodes(*l, node_index);
+    g_node_index = &node_index;
 
     // ── <defs> with <clipPath> + <linearGradient>/<radialGradient> ────
     // Walk the tree once, collect every ClipGroup, and emit its

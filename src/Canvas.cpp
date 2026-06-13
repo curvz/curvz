@@ -8571,17 +8571,11 @@ std::string Canvas::ruler_structured_block() const {
 // the start of segment i. Returns total path length.
 double Canvas::build_arc_table(const BezierPath &bp,
                                std::vector<double> &arc_table) const {
-  int n = bp.segment_count();
-  arc_table.clear();
-  arc_table.reserve(n + 1);
-  double total = 0.0;
-  arc_table.push_back(0.0);
-  for (int i = 0; i < n; ++i) {
-    double len = bp.segment(i).length(32);
-    total += len;
-    arc_table.push_back(total);
-  }
-  LOG_DEBUG("build_arc_table: {} segs total_len={:.1f}", n, total);
+  // s350 — single source of truth lives on BezierPath (free function) so the
+  // SvgWriter glyph outliner shares it. This member is a thin delegate.
+  double total = arc_table_for(bp, arc_table);
+  LOG_DEBUG("build_arc_table: {} segs total_len={:.1f}", bp.segment_count(),
+            total);
   return total;
 }
 
@@ -8590,30 +8584,9 @@ bool Canvas::path_point_at(const BezierPath &bp,
                            const std::vector<double> &arc_table,
                            double total_len, double arc_offset, Vec2 &pos,
                            double &angle) const {
-  if (total_len < 0.001 || arc_table.empty())
-    return false;
-  // Clamp to path length
-  arc_offset = std::max(0.0, std::min(arc_offset, total_len));
-
-  int n = bp.segment_count();
-  for (int i = 0; i < n; ++i) {
-    double seg_start = arc_table[i];
-    double seg_end = arc_table[i + 1];
-    double seg_len = seg_end - seg_start;
-    if (arc_offset <= seg_end || i == n - 1) {
-      double local =
-          (seg_len > 0.001) ? (arc_offset - seg_start) / seg_len : 0.0;
-      local = std::max(0.0, std::min(1.0, local));
-      CubicSegment seg = bp.segment(i);
-      Vec2 pt = seg.at(local);
-      Vec2 tan = seg.tangent(local);
-      pos = pt;
-      angle = std::atan2(tan.y, tan.x);
-      return true;
-    }
-  }
-  return false;
+  return point_at_arc(bp, arc_table, total_len, arc_offset, pos, angle);
 }
+
 
 // s346 — path-text v2: see Canvas.hpp. Coarse sample every segment, keep the
 // global best, then refine within the winning segment by golden-section-ish
