@@ -4758,25 +4758,11 @@ void Canvas::text_to_paths_op() {
                obj->text_guide_id, obj->text_content);
     }
 
-    // ── Detect text-on-path ───────────────────────────────────────────
-    bool is_top = !obj->text_path_id.empty();
-    SceneNode *guide_node =
-        is_top ? top_find_path_by_id(obj->text_path_id) : nullptr;
-    if (is_top && (!guide_node || !guide_node->path)) {
-      LOG_WARN("text_to_paths_op: PTT guide not found for '{}', falling back "
-               "to normal",
-               obj->text_content);
-      is_top = false;
-    }
-
-    // Build arc table once if PTT
-    BezierPath top_bp;
-    std::vector<double> top_arc_table;
-    double top_total = 0.0;
-    if (is_top) {
-      top_bp = BezierPath::from_path_data(*guide_node->path);
-      top_total = build_arc_table(top_bp, top_arc_table);
-    }
+    // s351 — the legacy text_path_id PTT branch was removed with the legacy
+    // ToP cleanup. What remains here is FREE placement: a plain text node, or
+    // the v2 dangling-guide fallback above that fell through to here. (Path-
+    // text v2 with a live guide is handled by the outline_pattern_text branch
+    // near the top of this function.)
 
     // ── 1. Build Pango layout to resolve font + glyph positions ──────
     // Use a 1×1 scratch Cairo surface — we only need layout metrics, not
@@ -4822,17 +4808,6 @@ void Canvas::text_to_paths_op() {
       anchor_off_x = -logical.width * 0.5;
     if (obj->text_anchor == "end")
       anchor_off_x = -logical.width;
-
-    // PTT: compute anchor arc position and perp offset (mirrors
-    // draw_text_on_path)
-    double top_anchor_arc = obj->text_path_offset;
-    double top_perp_offset = -obj->text_baseline_shift;
-    if (is_top) {
-      if (obj->text_anchor == "middle")
-        top_anchor_arc -= logical.width * 0.5;
-      else if (obj->text_anchor == "end")
-        top_anchor_arc -= logical.width;
-    }
 
     // ── 2. Iterate glyph runs ─────────────────────────────────────────
     // We'll collect all contours across all glyphs into one Compound.
@@ -4915,68 +4890,21 @@ void Canvas::text_to_paths_op() {
 
           FT_Outline_Decompose(&ft_face->glyph->outline, &s_ft_callbacks, &ctx);
 
-          if (is_top) {
-            // ── PTT placement: rotate + translate to path point ──
-            // Mirror draw_text_on_path exactly.
-            double glyph_centre_arc =
-                top_anchor_arc + glyph_x_px + adv_px * 0.5;
-            double lookup_arc = obj->text_path_flip
-                                    ? top_total - glyph_centre_arc
-                                    : glyph_centre_arc;
-            lookup_arc = std::max(0.0, std::min(lookup_arc, top_total));
+          // ── Free text placement: translate + Y-flip ──────────
+          double tx = obj->text_x + anchor_off_x + gx;
+          double ty = obj->text_y - baseline_px + gy;
 
-            Vec2 pos;
-            double angle;
-            if (!path_point_at(top_bp, top_arc_table, top_total, lookup_arc,
-                               pos, angle)) {
-              glyph_x_px += adv_px;
-              continue;
+          for (auto &pd : ctx.contours) {
+            for (auto &n : pd.nodes) {
+              n.x = n.x + tx;
+              n.y = ty - n.y;
+              n.cx1 = n.cx1 + tx;
+              n.cy1 = ty - n.cy1;
+              n.cx2 = n.cx2 + tx;
+              n.cy2 = ty - n.cy2;
             }
-            double eff_angle = obj->text_path_flip ? angle + M_PI : angle;
-
-            // Local glyph origin in rotated frame:
-            // glyph draw point = (-adv/2, perp_offset) in rotated coords.
-            // FT point (ft_x, ft_y) in Y-up glyph space maps to:
-            //   local_x = ft_x - adv/2
-            //   local_y = -ft_y + perp_offset  (Y-flip + perp shift)
-            // Then rotate by eff_angle and translate to pos.
-            double cos_a = std::cos(eff_angle);
-            double sin_a = std::sin(eff_angle);
-            double half_adv = adv_px * 0.5;
-
-            auto xform = [&](double &nx, double &ny) {
-              double lx = nx - half_adv;
-              double ly = -ny + top_perp_offset;
-              nx = pos.x + lx * cos_a - ly * sin_a;
-              ny = pos.y + lx * sin_a + ly * cos_a;
-            };
-
-            for (auto &pd : ctx.contours) {
-              for (auto &n : pd.nodes) {
-                xform(n.x, n.y);
-                xform(n.cx1, n.cy1);
-                xform(n.cx2, n.cy2);
-              }
-              if (!pd.nodes.empty())
-                all_contours.push_back(std::move(pd));
-            }
-          } else {
-            // ── Normal text placement: translate + Y-flip ────────
-            double tx = obj->text_x + anchor_off_x + gx;
-            double ty = obj->text_y - baseline_px + gy;
-
-            for (auto &pd : ctx.contours) {
-              for (auto &n : pd.nodes) {
-                n.x = n.x + tx;
-                n.y = ty - n.y;
-                n.cx1 = n.cx1 + tx;
-                n.cy1 = ty - n.cy1;
-                n.cx2 = n.cx2 + tx;
-                n.cy2 = ty - n.cy2;
-              }
-              if (!pd.nodes.empty())
-                all_contours.push_back(std::move(pd));
-            }
+            if (!pd.nodes.empty())
+              all_contours.push_back(std::move(pd));
           }
         }
 
@@ -5060,30 +4988,10 @@ void Canvas::text_to_paths_op() {
                                  std::move(compound));
     owner_layer->children.erase(owner_layer->children.begin() + insert_idx + 1);
 
-    // ── 8. Remove guide path (PTT only) ───────────────────────────────
-    // The guide path is now an invisible orphan — remove it.
-    // Find it before pushing undo so we can store its index.
-    SceneNode *guide_parent = nullptr;
-    int guide_idx = -1;
-    std::unique_ptr<SceneNode> guide_snap;
-    if (is_top && guide_node) {
-      for (auto &layer : m_doc->layers) {
-        for (int i = 0; i < (int)layer->children.size(); ++i) {
-          if (layer->children[i].get() == guide_node) {
-            guide_parent = layer.get();
-            guide_idx = i;
-            break;
-          }
-        }
-        if (guide_parent)
-          break;
-      }
-      if (guide_parent) {
-        guide_snap = clone_node(*guide_node);
-        guide_parent->children.erase(guide_parent->children.begin() +
-                                     guide_idx);
-      }
-    }
+    // s351 — the legacy PTT guide-removal step (step 8) is gone with the
+    // legacy ToP cleanup. Free text has no guide; v2-with-guide converts via
+    // the outline_pattern_text branch up top, which deliberately KEEPS the
+    // guide (the ruler is an independent object).
 
     if (m_history) {
       auto composite =
@@ -5091,15 +4999,11 @@ void Canvas::text_to_paths_op() {
       composite->add(std::make_unique<ReplaceNodeCommand>(
           owner_layer, insert_idx, std::move(before_snap),
           clone_node(*raw_compound)));
-      if (guide_parent && guide_snap) {
-        composite->add(std::make_unique<DeleteObjectCommand>(
-            guide_parent, std::move(guide_snap), guide_idx));
-      }
       m_history->push(std::move(composite));
     }
 
-    LOG_INFO("text_to_paths_op: '{}' → {} contour(s){}", legacy_label,
-             all_contours.size(), is_top ? " (PTT, guide removed)" : "");
+    LOG_INFO("text_to_paths_op: '{}' → {} contour(s)", legacy_label,
+             all_contours.size());
   }
 
   FT_Done_FreeType(ft_lib);
@@ -9073,72 +8977,9 @@ void Canvas::apply_corner_treatment_op(CornerType type, double radius) {
   queue_draw();
 }
 
-// Works from any tool — scans m_selection for text nodes with text_path_id set,
-// or path nodes whose partner text node is implicitly in the pair.
-// Each detach is pushed as an undoable LinkTextToPathCommand
-// (after_path_id="").
-void Canvas::release_text_from_path() {
-  if (!m_doc)
-    return;
-
-  // Collect all text nodes to release — from m_selection directly, or via
-  // partner lookup if the user selected the guide path side of the pair.
-  std::vector<SceneNode *> to_release;
-  auto add_if_linked = [&](SceneNode *n) {
-    if (!n || n->text_path_id.empty())
-      return;
-    if (std::find(to_release.begin(), to_release.end(), n) == to_release.end())
-      to_release.push_back(n);
-  };
-  for (SceneNode *obj : m_selection) {
-    if (obj->is_text())
-      add_if_linked(obj);
-    else if (obj->is_path()) {
-      SceneNode *partner = top_pair_partner(obj);
-      if (partner && partner->is_text())
-        add_if_linked(partner);
-    }
-  }
-  // Also check m_top_text for when we're in the TOP tool
-  if (m_top_text)
-    add_if_linked(m_top_text);
-
-  if (to_release.empty())
-    return;
-
-  for (SceneNode *tn : to_release) {
-    // Compute where the text anchor sits on the path so the detached
-    // node lands where it was visually, making it immediately re-selectable.
-    double detach_x = tn->text_x, detach_y = tn->text_y;
-    top_compute_detach_position(*tn, detach_x, detach_y);
-
-    if (m_history) {
-      m_history->push(std::make_unique<LinkTextToPathCommand>(
-          project(), tn->internal_id,
-          tn->text_path_id, tn->text_path_offset, tn->text_path_flip,
-          tn->text_x, tn->text_y,               // before x/y
-          "", 0.0, false, detach_x, detach_y)); // after x/y
-    }
-    tn->text_x = detach_x;
-    tn->text_y = detach_y;
-    tn->text_path_id = "";
-    tn->text_path_offset = 0.0;
-    tn->text_path_flip = false;
-  }
-
-  // Reset TOP tool state if active
-  if (m_tool == ActiveTool::TextOnPath) {
-    m_top_text = nullptr;
-    m_top_path_node = nullptr;
-    m_top_phase = 0;
-    m_top_dragging = false;
-  }
-
-  m_sig_doc_changed.emit();
-  notify_object_selection_changed();
-  queue_draw();
-  LOG_DEBUG("release_text_from_path: released {} text node(s)",
-            to_release.size());
-}
+// s351 — release_text_from_path removed with the legacy ToP cleanup. It was
+// the legacy detach verb (repositioning text to a free node via the
+// LinkTextToPathCommand tuple-swap). Path-text v2 detach == delete the text
+// outright (on_top_rclick); there is no free-text node to reposition to.
 
 } // namespace Curvz

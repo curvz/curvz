@@ -2413,21 +2413,14 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             auto ls = attr(tag, "letter-spacing");
             if (!ls.empty()) obj->text_letter_spacing = dbl(ls);
 
-            // Text-on-path attributes
-            auto path_id = attr(tag, "data-curvz-path-id");
-            if (!path_id.empty()) {
-                obj->text_path_id = path_id;
-                auto off = attr(tag, "data-curvz-path-offset");
-                if (!off.empty()) obj->text_path_offset = dbl(off);
-                obj->text_path_flip = (attr(tag, "data-curvz-path-flip") == "1");
-            }
+            // s351 — the legacy data-curvz-path-* read was removed with the
+            // legacy ToP cleanup. Old files carrying those attrs load as plain
+            // text (silently ignored — no migration, per ruling).
 
             // s347 — path-text v2 ruler reference (text_on_path_v2.md). The
             // guide iid is written as an internal UUID at attach time, so it
-            // loads verbatim — no svg-id migration pass like the legacy
-            // text_path_id needs. A dangling iid (guide deleted) degrades at
-            // render time (free-rendering fall-through) until m5's
-            // detach-to-box conversion owns that case.
+            // loads verbatim — no svg-id migration pass. A dangling iid (guide
+            // deleted) degrades at render time (free-rendering fall-through).
             auto guide_id = attr(tag, "data-curvz-guide-id");
             if (!guide_id.empty()) {
                 obj->text_guide_id = guide_id;
@@ -2968,80 +2961,10 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                  guide_texts, resolved);
     }
 
-    // Build SVG-id → internal_id map for text_path_id migration.
-    // Text nodes loaded from older files store the SVG id in text_path_id.
-    // Now that all nodes have internal_ids, migrate to use internal_id.
-    std::unordered_map<std::string, std::string> svgid_to_iid;
-    std::function<void(SceneNode*)> collect_ids = [&](SceneNode* n) {
-        if (!n->id.empty() && !n->internal_id.empty())
-            svgid_to_iid[n->id] = n->internal_id;
-        for (auto& ch : n->children)
-            collect_ids(ch.get());
-    };
-    for (auto& layer : doc->layers)
-        collect_ids(layer.get());
-
-    // Migrate text_path_id: if it looks like an SVG id (not a UUID), remap it.
-    // Also clear stale UUID references that no longer match any path's internal_id.
-    auto is_uuid = [](const std::string& s) {
-        // UUID format: 8-4-4-4-12 hex chars with dashes
-        return s.size() == 36 && s[8] == '-' && s[13] == '-' &&
-               s[18] == '-' && s[23] == '-';
-    };
-
-    // Build set of all known internal_ids so we can detect orphaned UUID refs.
-    std::unordered_set<std::string> known_iids;
-    std::function<void(SceneNode*)> collect_iids = [&](SceneNode* n) {
-        if (!n->internal_id.empty()) known_iids.insert(n->internal_id);
-        for (auto& ch : n->children) collect_iids(ch.get());
-    };
-    for (auto& layer : doc->layers) collect_iids(layer.get());
-
-    std::function<void(SceneNode*)> migrate_path_ids = [&](SceneNode* n) {
-        if (n->is_text() && !n->text_path_id.empty()) {
-            if (!is_uuid(n->text_path_id)) {
-                // Old format: SVG id string — remap to current internal_id.
-                auto it = svgid_to_iid.find(n->text_path_id);
-                if (it != svgid_to_iid.end()) {
-                    LOG_DEBUG("SvgParser: migrated text_path_id '{}' → '{}'",
-                              n->text_path_id, it->second);
-                    n->text_path_id = it->second;
-                }
-            } else if (known_iids.find(n->text_path_id) == known_iids.end()) {
-                // UUID format but no matching path — stale reference from a
-                // previous session before data-curvz-iid was stable.
-                // Try to rescue: find a path whose SVG id maps to some iid,
-                // and if there is exactly one path in the doc, re-link to it.
-                // Otherwise clear the link so the user sees honest state.
-                std::string rescue_iid;
-                int path_count = 0;
-                std::function<void(SceneNode*)> find_paths = [&](SceneNode* nd) {
-                    if (nd->is_path() && nd->path) {
-                        ++path_count;
-                        rescue_iid = nd->internal_id;
-                    }
-                    for (auto& ch : nd->children) find_paths(ch.get());
-                };
-                for (auto& layer : doc->layers) find_paths(layer.get());
-
-                if (path_count == 1 && !rescue_iid.empty()) {
-                    LOG_INFO("SvgParser: rescued stale text_path_id '{}' → '{}' (only path in doc)",
-                             n->text_path_id, rescue_iid);
-                    n->text_path_id = rescue_iid;
-                } else {
-                    LOG_WARN("SvgParser: cleared stale text_path_id '{}' — no matching path found (paths={})",
-                             n->text_path_id, path_count);
-                    n->text_path_id.clear();
-                    n->text_path_offset = 0.0;
-                    n->text_path_flip   = false;
-                }
-            }
-        }
-        for (auto& ch : n->children)
-            migrate_path_ids(ch.get());
-    };
-    for (auto& layer : doc->layers)
-        migrate_path_ids(layer.get());
+    // s351 — the legacy text_path_id iid-migration pass (svgid_to_iid /
+    // is_uuid / known_iids / migrate_path_ids) was removed with the legacy
+    // ToP cleanup. This parser carries no boundary-id migration (unlike
+    // SvgParser), so the whole block went with the legacy field.
 
     // S90 Stage 2 — clear active gradient resolver. Paired with the
     // activation near the top of parse_svg. See file-scope pointer note.

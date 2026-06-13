@@ -2289,70 +2289,9 @@ void StepRepeatCommand::undo() {
     }
 }
 
-// ── LinkTextToPathCommand bodies (s175 m2) ───────────────────────────
-// Single-target field swap — TextEdit template. Resolves obj_iid then
-// writes the five paired fields (text_path_id, text_path_offset,
-// text_path_flip, text_x, text_y) for the requested direction.
-//
-// text_path_id is *already* an iid — see header docstring for the s174
-// finding. It's stored and resolved verbatim; on the other side, the
-// path lookup via Canvas::top_find_path_by_id treats it as an iid match
-// against SceneNode::internal_id.
-void LinkTextToPathCommand::execute() {
-    if (!proj) {
-        LOG_INFO("[IIDDIAG] LinkTextToPath::exec  proj=NULL  iid='{}'", obj_iid);
-        return;
-    }
-    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
-    if (obj_iid.empty()) {
-        LOG_INFO("[IIDDIAG] LinkTextToPath::exec  empty obj_iid "
-                 "(push site bug?)");
-        return;
-    }
-    auto* obj = curvz::utils::find_by_iid(*proj, obj_iid);
-    if (!obj) {
-        LOG_INFO("[IIDDIAG] LinkTextToPath::exec  iid='{}' resolved=nullptr",
-                 obj_iid);
-        return;
-    }
-    LOG_INFO("[IIDDIAG] LinkTextToPath::exec  iid='{}' resolved name='{}' "
-             "live_iid='{}'  before_pid='{}' after_pid='{}'",
-             obj_iid, obj->name, obj->internal_id,
-             before_path_id, after_path_id);
-    obj->text_path_id     = after_path_id;
-    obj->text_path_offset = after_offset;
-    obj->text_path_flip   = after_flip;
-    obj->text_x           = after_x;
-    obj->text_y           = after_y;
-}
-
-void LinkTextToPathCommand::undo() {
-    if (!proj) {
-        LOG_INFO("[IIDDIAG] LinkTextToPath::undo  proj=NULL  iid='{}'", obj_iid);
-        return;
-    }
-    invalidate_iid_indexes(proj);  // s168 m6 — fresh walk before resolve
-    if (obj_iid.empty()) {
-        LOG_INFO("[IIDDIAG] LinkTextToPath::undo  empty obj_iid "
-                 "(push site bug?)");
-        return;
-    }
-    auto* obj = curvz::utils::find_by_iid(*proj, obj_iid);
-    if (!obj) {
-        LOG_INFO("[IIDDIAG] LinkTextToPath::undo  iid='{}' resolved=nullptr",
-                 obj_iid);
-        return;
-    }
-    LOG_INFO("[IIDDIAG] LinkTextToPath::undo  iid='{}' resolved name='{}' "
-             "live_iid='{}'  before_pid='{}' after_pid='{}'",
-             obj_iid, obj->name, obj->internal_id,
-             before_path_id, after_path_id);
-    obj->text_path_id     = before_path_id;
-    obj->text_path_offset = before_offset;
-    obj->text_path_flip   = before_flip;
-    obj->text_x           = before_x;
-    obj->text_y           = before_y;
-}
+// s351 — LinkTextToPathCommand bodies removed with the legacy ToP cleanup
+// (the legacy link/unlink/slide tuple-swap). Path-text v2 anchor slides
+// round-trip via PatternAnchorCommand; there is no legacy tuple to swap.
 
 // s145 m1 — undo depth is now a user pref (AppPreferences::undo_history_depth),
 // read on every push. The MAX_HISTORY constant in the header is retained as a

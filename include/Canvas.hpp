@@ -432,7 +432,6 @@ public:
   //   malformed or has no visible (flowed) glyphs. Manages its own FreeType
   //   library internally so FreeType stays out of this header.
   std::unique_ptr<SceneNode> build_mgr_outline_group(SceneNode* mgr);
-  void release_text_from_path(); // detach PTT text nodes in current selection
                                  // (undoable)
   // s162 m3: set_selection_single now folds in notify_object_selection_changed
   // so SelectionContext stays in sync no matter who calls it. Previously
@@ -2078,17 +2077,13 @@ private:
                                     double bx_user, double by_user,
                                     bool push_labels);
 
-  // ── Text-on-Path tool state ───────────────────────────────────────────────
-  // Phase 0 = waiting for text pick
-  // Phase 1 = text selected, waiting for path pick
-  // Phase 2 = linked, may drag offset handle
-  int m_top_phase = 0;
+  // ── Text-on-Path tool state (path-text v2) ────────────────────────────────
+  // m_top_text — the attached text being edited/selected on a guide.
+  // m_top_dragging — armed by on_top_begin for press-drag selection on the
+  // curve. (The legacy phase machine + offset-handle drag state were removed
+  // with the s351 legacy ToP cleanup.)
   SceneNode *m_top_text = nullptr;
-  SceneNode *m_top_path_node = nullptr;
   bool m_top_dragging = false;
-  double m_top_drag_start_off = 0.0;
-  double m_top_drag_start_x = 0.0;
-  double m_top_drag_start_y = 0.0;
   // s348 m2 — slide-anchor drag (path-text v2): grabbing ANY line's anchor
   // tick slides the ONE shared text_guide_anchor along the guide; every
   // line's geometry is derived, so all lines move together. Live mutation
@@ -2107,10 +2102,6 @@ private:
   void on_top_end(double x, double y);
   void on_top_rclick(double x, double y);
   void draw_top_overlay(const Cairo::RefPtr<Cairo::Context> &cr);
-  bool is_top_guide_path(const SceneNode &node) const;
-  SceneNode *top_pair_partner(SceneNode *node) const;
-  bool top_compute_detach_position(const SceneNode &tn, double &out_x,
-                                   double &out_y) const;
   SceneNode *top_find_path_by_id(const std::string &id) const;
   void on_pivot_dialog(double doc_x, double doc_y);
   double build_arc_table(const BezierPath &bp,
@@ -3067,13 +3058,10 @@ public:
 
 private:
   void position_text_entry(); // move entry widget to node's screen pos
-  void draw_text_on_path(const Cairo::RefPtr<Cairo::Context> &cr,
-                         const SceneNode &text_obj,
-                         const SceneNode &guide_path);
   // s347 — path-text v2 m2: the pattern renderer. Consumes
   // compute_text_layout's pattern baselines (glyph-walks each one along the
-  // guide's arc). Replaces draw_text_on_path for v2 objects; the legacy
-  // renderer above dies with the rest of the old walker at m5.
+  // guide's arc). s351 — the legacy draw_text_on_path renderer it replaced
+  // was removed with the legacy ToP cleanup.
   void draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
                           const SceneNode &text_obj,
                           const SceneNode &guide);

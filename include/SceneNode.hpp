@@ -712,12 +712,6 @@ struct SceneNode {
   // consumed at the layout apply seam. Meaningful on the buffer-owning node
   // (TextBoxMgr); offsets are absolute byte positions into text_content.
   std::vector<AttrSpan> text_attr_spans;
-  // Text-on-path fields — meaningful on Text only when text_path_id is
-  // non-empty
-  std::string text_path_id; // id of guide path SceneNode; empty = normal text
-  double text_path_offset =
-      0.0; // arc-length start offset along path in doc units
-  bool text_path_flip = false; // true = text hangs below path (inside circle)
 
   // ── s346 — Path-text v2: the RULER model (docs/text_on_path_v2.md) ─────────
   // The guide is a ruler the text reads, not a container it owns: text paints
@@ -725,9 +719,9 @@ struct SceneNode {
   // per paint from (guide, anchor) — attached text has no position of its own
   // (text_x/text_y become a cached convenience only). The guide reference is
   // the iid of a LEAF path; compound subpaths are child Path nodes with their
-  // own iids, so "which subpath" is answered by which leaf was clicked. Kept
-  // distinct from the legacy triple above so the old walker never fires on v2
-  // objects; the legacy fields + walker are deleted in v2 m5.
+  // own iids, so "which subpath" is answered by which leaf was clicked.
+  // s351 — the legacy text_path_id triple + walker this model superseded
+  // are now deleted; text_guide_id is the sole path-attachment reference.
   std::string text_guide_id;       // iid of guide LEAF path; empty = unattached
   double text_guide_anchor = 0.0;  // arc-length anchor along the guide (doc units)
   // s348 m3 — the FLIPPED family's independent slide. One arc-length delta
@@ -755,11 +749,9 @@ struct SceneNode {
   // second, and so on. A boundary participates in at most one chain — see
   // text_unified_model.md "Valid candidates" rule.
   std::vector<std::string> text_boundary_ids;
-  // Optional line-pattern path. Empty = default horizontal line pattern.
-  // When set, every line of text follows this path, duplicated downward at
-  // the leading distance. This is how text-on-path is expressed in the
-  // unified model — set the line pattern, the renderer applies the rules.
-  std::string text_line_path_id;
+  // s351 — text_line_path_id (the unified-model line-pattern reference) was
+  // vestigial: path-text is expressed by the v2 ruler model (text_guide_id),
+  // never the line-pattern field. Removed with the legacy ToP cleanup.
   // Inset margins from the boundary edge inward (doc units). Text flows in
   // the inset region, not the raw boundary. Zero on all four sides = boundary
   // edge IS the text edge.
@@ -1067,15 +1059,11 @@ inline std::unique_ptr<SceneNode> clone_node(const SceneNode &src) {
   dst->text_baseline_angle = src.text_baseline_angle;
   dst->text_letter_spacing = src.text_letter_spacing;
   dst->text_attr_spans = src.text_attr_spans;  // s325 — per-run spine (value copy)
-  dst->text_path_id = src.text_path_id;
-  dst->text_path_offset = src.text_path_offset;
-  dst->text_path_flip = src.text_path_flip;
   dst->text_guide_id = src.text_guide_id;          // s346 — path-text v2
   dst->text_guide_anchor = src.text_guide_anchor;  // s346 — path-text v2
   dst->text_guide_anchor_flip_delta = src.text_guide_anchor_flip_delta;  // s348 m3
   // s301 m1a — text container model field copy
   dst->text_boundary_ids = src.text_boundary_ids;
-  dst->text_line_path_id = src.text_line_path_id;
   dst->text_margin_top    = src.text_margin_top;
   dst->text_margin_bottom = src.text_margin_bottom;
   dst->text_margin_left   = src.text_margin_left;

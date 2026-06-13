@@ -4308,15 +4308,20 @@ bool Canvas::is_node_alive(const SceneNode *target) const {
 // Coverage list — extend as new pointer-holders appear. The compile-time
 // rule: any new "SceneNode * m_…" member should be triaged against this
 // pump and added if it can persist across destructive ops.
-// s298 m2 (A1) — recursive walk that clears any text node's text-on-path
-// fields (text_path_id, text_path_offset, text_path_flip) when they point
-// at the target node's internal_id. Called from scrub_node_refs below to
-// close the silent-dangling class described in s297's text-on-path recon
-// (text_on_path_redesign.md, finding 3 / bug B2): deleting a guide path
-// previously left attached text with a stale text_path_id; the renderer
-// fell back to straight text on next paint, the SVG round-trip preserved
-// the dead iid on save, and the link became impossible to repair without
-// hand-editing the file.
+// s298 m2 (A1) — recursive walk that clears any text node's stale iid
+// references when they point at the target node's internal_id. Called from
+// scrub_node_refs below to close the silent-dangling class described in
+// s297's recon (text_on_path_redesign.md, finding 3 / bug B2): deleting a
+// referenced node previously left a binder with a stale iid that re-bound
+// to whatever the index resolved to next (or to nothing).
+//
+// s351 — the legacy text-on-path triple this originally scrubbed is gone
+// with the legacy ToP cleanup; the live binding left to scrub is the
+// unified container model's boundary list (text_boundary_ids). Path-text
+// v2's guide reference (text_guide_id) is intentionally NOT scrubbed here:
+// a dangling guide degrades to straight text via draw_text_node's fallback
+// (same graceful behaviour the legacy scrub aimed at), and converting it
+// to a box on guide-delete is detach-to-box-verb territory, not hygiene.
 //
 // Descent rules mirror CurvzDocument::index_walk: children, plus the
 // authoritative non-children slots (clip_shape, blend_source_a/_b,
@@ -4324,45 +4329,22 @@ bool Canvas::is_node_alive(const SceneNode *target) const {
 // warp_cache) are deliberately skipped — same reasoning as the iid
 // walker, those rebuild on next paint and their iids aren't stable.
 //
-// Why fields are zeroed but text_x/text_y is left alone: when scrub
-// fires, the path is about to be destroyed and we don't have a sensible
-// new anchor position. The text node stays where it was; the renderer
-// falls through to draw_text_node's straight-text path on the next
-// paint. Compare release_text_from_path, which DOES reposition (via
-// top_compute_detach_position) because there the path is still alive
-// at detach time and we can compute a position along it.
+// For the boundary list, erasing rather than zeroing preserves the chain
+// order of the remaining boundaries; if the dead node was the first
+// boundary, the next-in-chain becomes the new first naturally.
 //
 // Not undoable on its own — scrub_node_refs is the destructive-op seam,
 // and the caller (delete command, etc.) owns the undo for what's being
-// destroyed. Open question deferred: if a future delete-path command
-// captures the partner text's link state and restores it on undo, the
-// pair could come back as a unit. For now, undoing a delete that took
-// a guide path with it leaves any partner text as straight text — a
-// known limitation, smaller than the silent-dangling original.
+// destroyed.
 static void scrub_text_path_refs(const SceneNode *n, const std::string &dead_iid) {
   if (!n)
     return;
   for (const auto &c : n->children) {
-    if (c->is_text() && c->text_path_id == dead_iid) {
-      c->text_path_id = "";
-      c->text_path_offset = 0.0;
-      c->text_path_flip = false;
-    }
-    // s301 m1a — also scrub the unified container-model bindings.
-    // Removing any boundary iid that points at the dead node, and clearing
-    // the line-pattern id if it matches. Same rationale as the text_path_id
-    // scrub above: leaving a stale iid produces silent dangling references
-    // that re-bind to whatever the iid index resolves to next (or to nothing,
-    // which presents as text reverting to legacy unbound rendering). For
-    // the boundary list, erasing rather than zeroing preserves the chain
-    // order of the remaining boundaries; if the dead node was the first
-    // boundary, the next-in-chain becomes the new first naturally.
+    // s301 m1a — scrub the unified container-model boundary bindings:
+    // remove any boundary iid that points at the dead node.
     if (c->is_text()) {
       auto &bs = c->text_boundary_ids;
       bs.erase(std::remove(bs.begin(), bs.end(), dead_iid), bs.end());
-      if (c->text_line_path_id == dead_iid) {
-        c->text_line_path_id = "";
-      }
     }
     scrub_text_path_refs(c.get(), dead_iid);
   }
@@ -6515,11 +6497,9 @@ void Canvas::scrub_node_refs(const SceneNode *target) {
   // Could persist across an unrelated destructive op in node mode.
   if (m_continue_target == target)
     m_continue_target = nullptr;
-  // m_top_text / m_top_path_node — text-on-path cached pointers.
+  // m_top_text — path-text v2 cached pointer.
   if (m_top_text == target)
     m_top_text = nullptr;
-  if (m_top_path_node == target)
-    m_top_path_node = nullptr;
   // Eyedropper / ruler / ref / text-edit hover state — short-lived but
   // could survive a mutation triggered by a hotkey while the pointer is
   // hovering. Cheap to scrub.
@@ -7080,13 +7060,6 @@ std::optional<Canvas::BBox> Canvas::object_bbox(const SceneNode &obj,
 
   // ── Text: measure actual layout extents via Pango ──────────────────────
   if (obj.type == SceneNode::Type::Text) {
-    // Linked text-on-path: use the guide path's bbox so the selection box
-    // reflects where the text actually renders, not the creation point.
-    if (!obj.text_path_id.empty()) {
-      SceneNode *guide = top_find_path_by_id(obj.text_path_id);
-      if (guide)
-        return object_bbox(*guide, include_stroke);
-    }
     // s348 m1 — path-text v2: a pattern text's bbox derives from the SAME
     // pump every other consumer rides. Pre-s348 a v2 text fell through to
     // the free-text Pango measure below — a straight-line PHANTOM of the
@@ -8830,68 +8803,11 @@ SceneNode *Canvas::top_find_path_by_id(const std::string &id) const {
   return nullptr;
 }
 
-// Computes the doc-space position where a linked text node's anchor sits on
-// its guide path.  Used when detaching so text_x/text_y land where the text
-// was visually, making the node immediately re-selectable.
-// Returns false if the guide path can't be found.
-bool Canvas::top_compute_detach_position(const SceneNode &tn, double &out_x,
-                                         double &out_y) const {
-  if (tn.text_path_id.empty())
-    return false;
-  SceneNode *guide = top_find_path_by_id(tn.text_path_id);
-  if (!guide || !guide->path)
-    return false;
-  BezierPath bp = BezierPath::from_path_data(*guide->path);
-  std::vector<double> arc_table;
-  double total = build_arc_table(bp, arc_table);
-  double arc =
-      tn.text_path_flip ? total - tn.text_path_offset : tn.text_path_offset;
-  arc = std::max(0.0, std::min(arc, total));
-  Vec2 pos;
-  double angle;
-  if (!path_point_at(bp, arc_table, total, arc, pos, angle))
-    return false;
-  out_x = pos.x;
-  // Convert doc Y-down back to text_y (which is Y-down baseline)
-  out_y = pos.y;
-  return true;
-}
-
-// node in the document.  Used to suppress fill/stroke on guide paths in
-// normal render mode (they should be invisible outside outline mode).
-bool Canvas::is_top_guide_path(const SceneNode &node) const {
-  if (!m_doc || node.internal_id.empty())
-    return false;
-  for (const auto &layer : m_doc->layers) {
-    for (const auto &child : layer->children) {
-      if (child->is_text() && child->text_path_id == node.internal_id)
-        return true;
-    }
-  }
-  return false;
-}
-
-// Returns the partner of a PTT pair:
-//   - If node is a linked text node  → returns its guide path SceneNode
-//   - If node is a guide path        → returns the text node that links to it
-//   - Otherwise                      → returns nullptr
-SceneNode *Canvas::top_pair_partner(SceneNode *node) const {
-  if (!m_doc || !node)
-    return nullptr;
-  // Text node case: look up its guide path
-  if (node->is_text() && !node->text_path_id.empty())
-    return top_find_path_by_id(node->text_path_id);
-  // Path node case: scan for a text node referencing it
-  if (node->is_path() && !node->internal_id.empty()) {
-    for (const auto &layer : m_doc->layers) {
-      for (const auto &child : layer->children) {
-        if (child->is_text() && child->text_path_id == node->internal_id)
-          return child.get();
-      }
-    }
-  }
-  return nullptr;
-}
+// s351 — top_compute_detach_position, is_top_guide_path, and top_pair_partner
+// removed with the legacy ToP cleanup. They were the legacy pairing/detach
+// helpers keyed on text_path_id. Path-text v2 guides are independent
+// drawables (the ruler model): they render normally, are not paired, and
+// have no detach-reposition (detach == delete the text; the guide stays).
 
 void Canvas::set_guide_selection(const std::vector<SceneNode *> &sel) {
   m_guide_selection = sel;

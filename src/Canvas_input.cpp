@@ -251,28 +251,15 @@ void Canvas::set_active_tool(ActiveTool tool) {
 
   // Entering / leaving TextOnPath tool
   if (tool == ActiveTool::TextOnPath) {
-    m_top_phase = 0;
     m_top_text = nullptr;
-    m_top_path_node = nullptr;
     m_top_dragging = false;
-    // If there's already a linked text node selected, restore phase 2
-    // so the user can drag the start point immediately without re-clicking.
-    if (m_selected && m_selected->is_text() &&
-        !m_selected->text_path_id.empty()) {
-      SceneNode *guide = top_find_path_by_id(m_selected->text_path_id);
-      if (guide) {
-        m_top_text = m_selected;
-        m_top_path_node = guide;
-        m_top_phase = 2;
-        LOG_DEBUG("set_active_tool(TOP): restored phase 2 for linked text '{}'",
-                  m_selected->text_path_id);
-      }
-    }
+    // s351 — the legacy phase-2 restore (re-arm offset-handle drag for a
+    // selected text_path_id node) was removed with the legacy ToP cleanup.
+    // Path-text v2 resolves the active text fresh per gesture (on_top_begin /
+    // the anchor-tick grab), so there is no phase state to restore.
   }
   if (m_prev_tool == ActiveTool::TextOnPath && tool != ActiveTool::TextOnPath) {
-    m_top_phase = 0;
     m_top_text = nullptr;
-    m_top_path_node = nullptr;
     m_top_dragging = false;
   }
 
@@ -5562,10 +5549,10 @@ void Canvas::on_select_begin(double x, double y) {
     if (!already_selected) {
       m_selection.clear();
       m_selection.push_back(hit);
-      // PTT coupled selection: also add the pair partner so both move together
-      SceneNode *partner = top_pair_partner(hit);
-      if (partner && !is_selected(partner))
-        m_selection.push_back(partner);
+      // s351 — the legacy PTT coupled selection (auto-add the text/guide
+      // pair so they moved together) was removed with the legacy ToP
+      // cleanup. In the v2 ruler model the guide and the text are
+      // independent objects; selecting one does not select the other.
       // New selection → reset custom pivot
       m_has_custom_pivot = false;
       m_pivot_dragging = false;
@@ -6590,17 +6577,9 @@ void Canvas::on_select_end(double /*dx*/, double /*dy*/) {
         }
       }
       m_selected = m_selection.empty() ? nullptr : m_selection.front();
-      // PTT coupled selection: ensure both members of any PTT pair are
-      // included if either was caught by the marquee.
-      std::vector<SceneNode *> partners;
-      for (SceneNode *obj : m_selection) {
-        SceneNode *p = top_pair_partner(obj);
-        if (p && !is_selected(p) &&
-            std::find(partners.begin(), partners.end(), p) == partners.end())
-          partners.push_back(p);
-      }
-      for (SceneNode *p : partners)
-        m_selection.push_back(p);
+      // s351 — the legacy PTT coupled marquee selection (pull in the
+      // text/guide partner of anything caught) was removed with the legacy
+      // ToP cleanup. The v2 ruler model keeps guide and text independent.
       notify_object_selection_changed();
       LOG_DEBUG("Marquee selected {} objects", m_selection.size());
     }
@@ -10667,9 +10646,7 @@ void Canvas::on_top_motion(double x, double y) {
   // s347 — drag-select during a pattern edit. The press (on_top_begin)
   // placed caret + anchor and armed m_top_dragging; motion moves the caret
   // WITHOUT collapsing, so the selection grows from the anchor — the
-  // universal press-drag text gesture, on the curve. Takes priority over
-  // the legacy slide below (which only ever ran for legacy text_path_id
-  // objects and dies at m5).
+  // universal press-drag text gesture, on the curve.
   if (m_top_dragging && m_text_editing && m_text_cursor &&
       !m_text_editing->text_guide_id.empty()) {
     if (auto b = m_text_cursor->byte_index_at(x, y)) {
@@ -10682,42 +10659,10 @@ void Canvas::on_top_motion(double x, double y) {
     queue_draw();
     return;
   }
-  if (!m_top_dragging || !m_top_text) {
-    queue_draw();
-    return;
-  }
-
-  // x, y are already doc-space coordinates (m_draw_cur_dx/dy passed by caller).
-  SceneNode *guide = top_find_path_by_id(m_top_text->text_path_id);
-  if (guide && guide->path) {
-    BezierPath bp = BezierPath::from_path_data(*guide->path);
-    std::vector<double> arc_table;
-    double total = build_arc_table(bp, arc_table);
-
-    // Sample path at fine intervals to find nearest arc position
-    const int samples = 256;
-    double best_dist2 = 1e18;
-    double best_arc = m_top_text->text_path_offset;
-    for (int i = 0; i <= samples; ++i) {
-      double arc = total * i / (double)samples;
-      Vec2 pt;
-      double ang;
-      if (path_point_at(bp, arc_table, total, arc, pt, ang)) {
-        double d2 = (pt.x - x) * (pt.x - x) + (pt.y - y) * (pt.y - y);
-        if (d2 < best_dist2) {
-          best_dist2 = d2;
-          best_arc = arc;
-        }
-      }
-    }
-    m_top_text->text_path_offset = std::max(
-        0.0, std::min(m_top_text->text_path_flip ? total - best_arc : best_arc,
-                      total));
-  } else {
-    // Fallback: horizontal drag delta
-    double ddx = x - m_top_drag_start_x;
-    m_top_text->text_path_offset = std::max(0.0, m_top_drag_start_off + ddx);
-  }
+  // s351 — the legacy along-path slide (sampling the guide to write
+  // text_path_offset directly) was removed with the legacy ToP cleanup. v2
+  // anchor slides go through the m_top_anchor_dragging branch above (writing
+  // text_guide_anchor); v2 drag-select returns above. Nothing else to do.
   queue_draw();
 }
 
@@ -10727,8 +10672,8 @@ void Canvas::on_top_end(double /*x*/, double /*y*/) {
   // value, so push-time execute is a no-op write and Ctrl+Z restores the
   // grab-time arc. Zero-delta releases (a click on the tick) push nothing
   // — exact double equality is right here, motion wrote by direct
-  // assignment from the projection. Deliberately NOT LinkTextToPathCommand:
-  // that's the legacy tuple-swap and dies at the legacy-deletion milestone.
+  // assignment from the projection. (The legacy LinkTextToPathCommand
+  // tuple-swap was removed with the s351 legacy ToP cleanup.)
   if (m_top_anchor_dragging) {
     m_top_anchor_dragging = false;
     if (m_history && m_top_text && is_node_alive(m_top_text) &&
@@ -10745,103 +10690,85 @@ void Canvas::on_top_end(double /*x*/, double /*y*/) {
     queue_draw();
     return;
   }
-  // s347 — release a drag-select (pattern edit) without touching the
-  // legacy slide-commit machinery below.
+  // s347 — release a drag-select (pattern edit) without touching any
+  // legacy slide-commit machinery.
   if (m_top_dragging && m_text_editing && m_text_cursor &&
       !m_text_editing->text_guide_id.empty()) {
     m_top_dragging = false;
     queue_draw();
     return;
   }
-  if (m_top_dragging) {
-    // s298 m4 (A3): make the slide-along-path drag undoable. Previously
-    // this was a live mutation with no command record — the drag updated
-    // text_path_offset directly in on_top_motion and on_top_end only
-    // emitted doc_changed to persist. That left no undo entry, and any
-    // subsequent TextEditCommand would snapshot the post-slide offset
-    // as its `before`, so undoing the edit would NOT revert the slide.
-    // Contributes to B1's "history fell off a cliff" symptom class
-    // (text_on_path_redesign.md, recon findings 1+2).
-    //
-    // Reuses LinkTextToPathCommand — it already swaps the full
-    // (text_path_id, offset, flip, x, y) tuple, which is a strict
-    // superset of what a slide changes (only offset). before/after
-    // for the unchanged fields are equal, so undo/redo of a pure
-    // slide is a no-op on those fields and a flip on offset. Cheaper
-    // than minting a new command class; description() reads "Link
-    // text to path" which is slightly imprecise for a slide but
-    // tolerable — the undo menu rarely surfaces this string and the
-    // class can grow a slide-detecting description() later if needed.
-    //
-    // Guards:
-    //   - m_top_text must be a real attached text node (text_path_id
-    //     non-empty). If the user clicked without dragging onto a
-    //     fresh path, the drag may have started in phase 1; defensive.
-    //   - Skip the push if the offset didn't actually move — clicks
-    //     and zero-delta drags shouldn't pollute history. Exact equality
-    //     is fine here: on_top_motion writes the offset by direct
-    //     assignment from arc-table sampling, so identical samples
-    //     produce identical doubles.
-    //   - obj_iid must be non-empty for the captured-iid command to
-    //     resolve at undo time. The text node should already have a
-    //     stable iid from creation, but defensive ensure mirrors the
-    //     pattern at the phase-1 link push site above.
-    if (m_history && m_top_text && !m_top_text->text_path_id.empty() &&
-        m_top_text->text_path_offset != m_top_drag_start_off) {
-      if (m_top_text->internal_id.empty())
-        m_top_text->internal_id = generate_internal_id();
-      m_history->push(std::make_unique<LinkTextToPathCommand>(
-          project(), m_top_text->internal_id,
-          m_top_text->text_path_id,       // before path_id (unchanged)
-          m_top_drag_start_off,           // before offset (captured at begin)
-          m_top_text->text_path_flip,     // before flip (unchanged)
-          m_top_text->text_x, m_top_text->text_y, // before x/y (unchanged)
-          m_top_text->text_path_id,       // after path_id (same)
-          m_top_text->text_path_offset,   // after offset (current live)
-          m_top_text->text_path_flip,     // after flip (same)
-          m_top_text->text_x, m_top_text->text_y)); // after x/y (same)
-    }
-    m_sig_doc_changed.emit(); // persist the new offset
-  }
+  // s351 — the legacy along-path slide-commit (a LinkTextToPathCommand
+  // swapping the text_path_id/offset/flip tuple) was removed with the legacy
+  // ToP cleanup. v2 anchor slides commit via PatternAnchorCommand in the
+  // m_top_anchor_dragging branch above.
   m_top_dragging = false;
 }
 
 void Canvas::on_top_rclick(double x, double y) {
   if (!m_doc)
     return;
-  LOG_DEBUG("on_top_rclick: top_text={} top_phase={}", (void *)m_top_text,
-            m_top_phase);
-
-  // If we have a currently selected text node, release it via the proper
-  // pathway so text_x/text_y is repositioned and undo works correctly.
-  if (m_top_text && !m_top_text->text_path_id.empty()) {
-    set_selection_single(m_top_text);
-    release_text_from_path();
-    return;
-  }
-
-  // Fallback: hit-test any text node with text_path_id
-  double dx, dy;
-  screen_to_doc(x, y, dx, dy);
-  for (auto &layer : m_doc->layers) {
-    if (!layer->visible)
-      continue;
-    for (auto &obj_uptr : layer->children) {
-      SceneNode *obj = obj_uptr.get();
-      if (!obj->is_text() || obj->text_path_id.empty())
-        continue;
-      SceneNode *guide = top_find_path_by_id(obj->text_path_id);
-      if (guide && guide->path) {
-        BezierPath bp = BezierPath::from_path_data(*guide->path);
+  // s351 — path-text v2 detach. Scott's ruling: there is no free-text
+  // primitive and no box to land in, so "detach" simply DELETES the attached
+  // text. The guide is an independent drawable (the ruler model) and is left
+  // untouched. Undoable through the normal delete path.
+  //
+  // Target resolution, in priority order: the text being edited, the cached
+  // active text, then a hit-test of the guide under the cursor (delete the
+  // text it carries).
+  SceneNode *target = nullptr;
+  if (m_text_editing && !m_text_editing->text_guide_id.empty())
+    target = m_text_editing;
+  else if (m_top_text && is_node_alive(m_top_text) &&
+           !m_top_text->text_guide_id.empty())
+    target = m_top_text;
+  else {
+    double dx, dy;
+    screen_to_doc(x, y, dx, dy);
+    std::function<SceneNode *(SceneNode *)> visit =
+        [&](SceneNode *n) -> SceneNode * {
+      if (n->is_path() && n->path && n->path->nodes.size() >= 2 &&
+          !n->internal_id.empty()) {
+        BezierPath bp = BezierPath::from_path_data(*n->path);
         HitResult hr = bp.hit_test({dx, dy}, m_zoom, 20.0);
         if (hr.kind != HitResult::Kind::None) {
-          set_selection_single(obj);
-          release_text_from_path();
-          return;
+          if (SceneNode *txt = find_guide_attached_text(n->internal_id))
+            return txt;
         }
       }
+      for (auto &ch : n->children)
+        if (SceneNode *r = visit(ch.get()))
+          return r;
+      return nullptr;
+    };
+    for (auto &layer : m_doc->layers) {
+      if (!layer->visible || layer->locked || layer->is_special_layer())
+        continue;
+      for (auto &obj : layer->children)
+        if ((target = visit(obj.get())))
+          break;
+      if (target)
+        break;
     }
   }
+
+  if (!target)
+    return;
+
+  LOG_DEBUG("on_top_rclick: deleting path-text iid='{}' guide='{}'",
+            target->internal_id, target->text_guide_id);
+
+  // End any active edit session first so the cursor doesn't dangle on the
+  // node we're about to remove. cancel_text_edit deletes a brand-new empty
+  // node itself, in which case the delete below is skipped (already gone).
+  if (m_text_editing == target)
+    cancel_text_edit();
+  if (!is_node_alive(target)) {
+    queue_draw();
+    return;
+  }
+  set_selection_single(target);
+  delete_selected();
 }
 
 // ── Guide drag from ruler ────────────────────────────────────────────────────

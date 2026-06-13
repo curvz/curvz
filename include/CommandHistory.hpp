@@ -312,32 +312,21 @@ struct TextEditCommand : CurvzCommand {
     bool        before_bold = false, before_italic = false;
     FillStyle   before_fill;
     StrokeStyle before_stroke;
-    // s298 m3 (A2): text-on-path triple + baseline_shift + letter_spacing.
-    // Previously snapshot_before/record_after/apply walked only the
-    // typographic basics (content/family/anchor/align/x/y/size/bold/
-    // italic/fill/stroke). text_path_id, text_path_offset, text_path_flip,
-    // text_baseline_shift, text_letter_spacing were all silently
-    // unobserved — meaning a content edit that ran during text-on-path
-    // mode (or after a slide-along-path) would roll back the typographic
-    // basics on undo while leaving the path attachment / offset in their
-    // post-edit state, producing the "history desync" symptom logged
-    // against B1 in text_on_path_redesign.md (recon finding 1). Adding
-    // them here makes TextEditCommand a faithful round-trip across the
-    // full text-node state surface. Default-init values are the
-    // "unlinked text" baseline — empty id, zero offset, no flip, zero
-    // shift, zero spacing — so a snapshot of a plain text node looks
-    // the same as before this change and the field additions are a
-    // pure superset.
-    std::string before_text_path_id;
-    double      before_text_path_offset = 0.0;
-    bool        before_text_path_flip = false;
+    // s298 m3 (A2): baseline_shift + letter_spacing snapshot. Previously
+    // snapshot_before/record_after/apply walked only the typographic basics
+    // (content/family/anchor/align/x/y/size/bold/italic/fill/stroke), so a
+    // content edit silently dropped these on undo. Including them makes
+    // TextEditCommand a faithful round-trip across the text-node state
+    // surface. s351 — the legacy text_path_id triple that also lived here
+    // is gone with the legacy ToP cleanup; path attachment is the v2
+    // (text_guide_id) model, whose anchor edits round-trip via
+    // PatternAnchorCommand, not TextEditCommand.
     double      before_baseline_shift = 0.0;
     double      before_letter_spacing = 0.0;
-    // s301 m1a — text container model snapshot fields. Empty list / empty id /
-    // zero margins are the unbound-legacy baseline so a TextEditCommand
-    // snapshot of a pre-s301 text node looks identical to before this change.
+    // s301 m1a — text container model snapshot fields. Empty list / zero
+    // margins are the unbound baseline so a TextEditCommand snapshot of a
+    // pre-s301 text node looks identical to before this change.
     std::vector<std::string> before_boundary_ids;
-    std::string before_line_path_id;
     double      before_margin_top    = 0.0;
     double      before_margin_bottom = 0.0;
     double      before_margin_left   = 0.0;
@@ -375,14 +364,10 @@ struct TextEditCommand : CurvzCommand {
     bool        after_bold = false, after_italic = false;
     FillStyle   after_fill;
     StrokeStyle after_stroke;
-    std::string after_text_path_id;
-    double      after_text_path_offset = 0.0;
-    bool        after_text_path_flip = false;
     double      after_baseline_shift = 0.0;
     double      after_letter_spacing = 0.0;
     // s301 m1a — text container model after-state fields.
     std::vector<std::string> after_boundary_ids;
-    std::string after_line_path_id;
     double      after_margin_top    = 0.0;
     double      after_margin_bottom = 0.0;
     double      after_margin_left   = 0.0;
@@ -409,14 +394,10 @@ struct TextEditCommand : CurvzCommand {
         c.before_fill    = o->fill;
         c.before_stroke  = o->stroke;
         // s298 m3 (A2)
-        c.before_text_path_id     = o->text_path_id;
-        c.before_text_path_offset = o->text_path_offset;
-        c.before_text_path_flip   = o->text_path_flip;
         c.before_baseline_shift   = o->text_baseline_shift;
         c.before_letter_spacing   = o->text_letter_spacing;
         // s301 m1a — text container model
         c.before_boundary_ids  = o->text_boundary_ids;
-        c.before_line_path_id  = o->text_line_path_id;
         c.before_margin_top    = o->text_margin_top;
         c.before_margin_bottom = o->text_margin_bottom;
         c.before_margin_left   = o->text_margin_left;
@@ -450,14 +431,10 @@ struct TextEditCommand : CurvzCommand {
         after_fill    = o->fill;
         after_stroke  = o->stroke;
         // s298 m3 (A2)
-        after_text_path_id     = o->text_path_id;
-        after_text_path_offset = o->text_path_offset;
-        after_text_path_flip   = o->text_path_flip;
         after_baseline_shift   = o->text_baseline_shift;
         after_letter_spacing   = o->text_letter_spacing;
         // s301 m1a — text container model
         after_boundary_ids  = o->text_boundary_ids;
-        after_line_path_id  = o->text_line_path_id;
         after_margin_top    = o->text_margin_top;
         after_margin_bottom = o->text_margin_bottom;
         after_margin_left   = o->text_margin_left;
@@ -487,14 +464,10 @@ struct TextEditCommand : CurvzCommand {
         o->fill            = after ? after_fill    : before_fill;
         o->stroke          = after ? after_stroke  : before_stroke;
         // s298 m3 (A2)
-        o->text_path_id       = after ? after_text_path_id     : before_text_path_id;
-        o->text_path_offset   = after ? after_text_path_offset : before_text_path_offset;
-        o->text_path_flip     = after ? after_text_path_flip   : before_text_path_flip;
         o->text_baseline_shift= after ? after_baseline_shift   : before_baseline_shift;
         o->text_letter_spacing= after ? after_letter_spacing   : before_letter_spacing;
         // s301 m1a — text container model
         o->text_boundary_ids  = after ? after_boundary_ids  : before_boundary_ids;
-        o->text_line_path_id  = after ? after_line_path_id  : before_line_path_id;
         o->text_margin_top    = after ? after_margin_top    : before_margin_top;
         o->text_margin_bottom = after ? after_margin_bottom : before_margin_bottom;
         o->text_margin_left   = after ? after_margin_left   : before_margin_left;
@@ -1459,9 +1432,8 @@ struct GuideMoveCommand : CurvzCommand {
 // capture, before/after doubles, find_by_iid resolution at replay, clean
 // no-op if the node is gone. text_x/text_y stay untouched — they are a
 // creation-time cached convenience, not geometry (text_on_path_v2.md).
-// Deliberately NOT LinkTextToPathCommand, which swaps the legacy
-// (text_path_id, offset, flip, x, y) tuple and dies with the legacy
-// walker at the s348 legacy-deletion milestone.
+// (The legacy LinkTextToPathCommand tuple-swap this replaced was deleted
+// with the s351 legacy ToP cleanup.)
 struct PatternAnchorCommand : CurvzCommand {
     CurvzProject* proj;
     std::string   obj_iid;
@@ -1998,58 +1970,10 @@ struct StepRepeatCommand : CurvzCommand {
     // SceneNode* is held. Default `references() == false` is correct.
 };
 
-// ── LinkTextToPathCommand ─────────────────────────────────────────────────────
-// s175 m2 — Migrated from raw-SceneNode* obj capture to iid + project
-// capture. TextEdit template — single-target field swap.
-//
-// Undoable link/unlink of a text node to a guide path.
-// Stores before/after text_path_id, offset, flip, and text_x/text_y so that
-// detach (which repositions the text node) is fully reversible.
-//
-// s174 finding (banked, applied here): text_path_id is *already* an iid
-// (it stores the target path's internal_id, not its SVG id — verified via
-// Canvas::top_find_path_by_id which searches by internal_id == id, and
-// SvgWriter writes it back as data-curvz-path-id for round-trip). So
-// before_path_id / after_path_id are kept verbatim — they're not
-// pointers, they're the same iid that find_by_iid resolves on the other
-// end. No SVG-id-to-iid upgrade needed.
-//
-// s175 m2: obj_iid replaces SceneNode* obj. Resolution via
-// curvz::utils::find_by_iid at execute()/undo() time. If the text node
-// is destroyed between push and replay, the command no-ops cleanly.
-// Bodies move out-of-line into CommandHistory.cpp so the resolver can
-// use the full CurvzProject type.
-struct LinkTextToPathCommand : CurvzCommand {
-    CurvzProject* proj;     // resolution root
-    std::string   obj_iid;  // internal_id of the target text node
-    std::string before_path_id;
-    double      before_offset;
-    bool        before_flip;
-    double      before_x, before_y;   // text_x/text_y before the operation
-    std::string after_path_id;
-    double      after_offset;
-    bool        after_flip;
-    double      after_x, after_y;     // text_x/text_y after the operation
-
-    LinkTextToPathCommand(CurvzProject* proj, std::string obj_iid,
-                          std::string bpid, double boff, bool bflip,
-                          double bx, double by,
-                          std::string apid, double aoff, bool aflip,
-                          double ax, double ay)
-        : proj(proj), obj_iid(std::move(obj_iid))
-        , before_path_id(std::move(bpid)), before_offset(boff), before_flip(bflip)
-        , before_x(bx), before_y(by)
-        , after_path_id(std::move(apid)),  after_offset(aoff),  after_flip(aflip)
-        , after_x(ax), after_y(ay) {}
-
-    void execute() override;  // see CommandHistory.cpp
-    void undo()    override;  // see CommandHistory.cpp
-    std::string description() const override {
-        return after_path_id.empty() ? "Detach text from path" : "Link text to path";
-    }
-    // No `references()` override — iid-based capture means no raw
-    // SceneNode* is held. Default `references() == false` is correct.
-};
+// s351 — LinkTextToPathCommand removed with the legacy ToP cleanup. It was
+// the legacy link/unlink/slide tuple-swap (text_path_id/offset/flip + x/y);
+// path-text v2 has no such tuple (geometry derives from guide+anchor), and
+// anchor slides round-trip via PatternAnchorCommand.
 
 // ── EditSwatchCommand ─────────────────────────────────────────────────────────
 // Records a colour AND/OR name change to a single swatch in the

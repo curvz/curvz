@@ -719,8 +719,9 @@ bool is_ordinary_target_layer(const Curvz::SceneNode& layer);
 // Why this exists: iids are stable UUIDs (good for code), but exposing
 // them in UI labels is a UX leak — users see things like
 // "e0677496-dfb3-4001-810a-97050f9c7aa0" where they expect a name.
-// First user-visible case: the Text-on-Path inspector row, which used
-// to render `text_path_id` directly as the label text.
+// s351 — its first user (the legacy Text-on-Path inspector row) was removed
+// with the legacy ToP cleanup; the helper is kept as a general utility (the
+// backlogged v2 path-text inspector section is its natural next caller).
 //
 // Format: "<Layer Name> → <Node Name>". If the node is nested under a
 // group inside a layer, intermediate group names are skipped — the

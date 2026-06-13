@@ -1552,20 +1552,15 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
                 << "\"";
             out << curvz_text_span_runs(obj);  // s347 — kCurvz* runs (align &c.)
         }
-        if (!obj.text_path_id.empty()) {
-            LOG_DEBUG("SvgWriter: text node '{}' text_path_id='{}'",
-                      obj.id, obj.text_path_id);
-            out << " data-curvz-path-id=\"" << obj.text_path_id << "\"";
-            out << " data-curvz-path-offset=\"" << fmt6(obj.text_path_offset) << "\"";
-            if (obj.text_path_flip) out << " data-curvz-path-flip=\"1\"";
-        }
+        // s351 — the legacy data-curvz-path-* triple emit was removed with the
+        // legacy ToP cleanup. Path-text v2 persists via data-curvz-guide-id /
+        // -anchor below.
         // s347 — path-text v2 round-trip (docs/text_on_path_v2.md): the ruler
         // reference. The iid is the guide LEAF path's internal id (always a
         // UUID — written at attach time, never an SVG id, so no migration
         // pass is needed on load); the anchor is the arc-length offset in doc
         // units. Geometry is derived from these two per paint, so they are
-        // the WHOLE persistent state of the attachment. Distinct from the
-        // legacy data-curvz-path-* triple above, which dies at m5.
+        // the WHOLE persistent state of the attachment.
         if (!obj.text_guide_id.empty()) {
             out << " data-curvz-guide-id=\"" << obj.text_guide_id << "\"";
             out << " data-curvz-guide-anchor=\"" << fmt6(obj.text_guide_anchor) << "\"";
@@ -1588,22 +1583,11 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
             }
             out << "\"";
         }
-        if (!obj.text_line_path_id.empty()) {
-            out << " data-curvz-line-path-id=\"" << obj.text_line_path_id << "\"";
-        }
         if (obj.text_margin_top    != 0.0) out << " data-curvz-margin-top=\""    << fmt2(obj.text_margin_top)    << "\"";
         if (obj.text_margin_bottom != 0.0) out << " data-curvz-margin-bottom=\"" << fmt2(obj.text_margin_bottom) << "\"";
         if (obj.text_margin_left   != 0.0) out << " data-curvz-margin-left=\""   << fmt2(obj.text_margin_left)   << "\"";
         if (obj.text_margin_right  != 0.0) out << " data-curvz-margin-right=\""  << fmt2(obj.text_margin_right)  << "\"";
-        if (!obj.text_path_id.empty()) {
-            // Emit SVG-standard textPath for interoperability with other SVG viewers
-            out << ">\n";
-            out << pad << "  <textPath href=\"#" << obj.text_path_id << "\"";
-            out << " startOffset=\"" << fmt2(obj.text_path_offset) << "px\"";
-            if (obj.text_path_flip) out << " side=\"right\"";
-            out << ">" << xml_escape(obj.text_content) << "</textPath>\n";
-            out << pad << "</text>\n";
-        } else if (!obj.text_guide_id.empty()) {
+        if (!obj.text_guide_id.empty()) {
             // s350 m2 — path-text v2 presentation. The data-curvz-guide-id /
             // -anchor attrs above are the editable truth (geometry derives from
             // them per paint). A plain <text x y> body would render a straight

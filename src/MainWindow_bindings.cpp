@@ -226,7 +226,7 @@ void MainWindow::connect_signals() {
   // clone seam: every field the writer emits round-trips for free, so we
   // can't forget one (the same lesson as S98 m2 fix1, applied to docs).
   // After parse we mint fresh internal_ids on every node and remap
-  // text_path_id references through the old→new map so text-on-path
+  // text_guide_id references through the old→new map so path-text
   // survives. Non-SVG state (canvas model, ruler origin, bg/guide colours,
   // export metadata, measure flags) is copied directly from the source —
   // the SVG round-trip doesn't carry those.
@@ -264,15 +264,18 @@ void MainWindow::connect_signals() {
       rewrite_iids(layer.get());
 
     // ── 3. Remap iid-keyed cross-references inside the clone ──────────
-    // text_path_id is the only cross-reference Curvz currently keeps as
-    // an iid. If more iid-keyed refs land later, extend this walker.
+    // s351 — path-text v2's guide reference (text_guide_id) is the iid
+    // cross-reference Curvz keeps on text; remapped here so a duplicated
+    // doc's attached text still points at the clone's fresh guide iid.
+    // (Replaced the legacy text_path_id remap with the legacy ToP cleanup.)
+    // If more iid-keyed refs land later, extend this walker.
     std::function<void(SceneNode *)> remap_refs = [&](SceneNode *n) {
-      if (n->is_text() && !n->text_path_id.empty()) {
-        auto it = iid_map.find(n->text_path_id);
+      if (n->is_text() && !n->text_guide_id.empty()) {
+        auto it = iid_map.find(n->text_guide_id);
         if (it != iid_map.end())
-          n->text_path_id = it->second;
-        // If not in map, the original ref was already broken — leave it
-        // for the parser's stale-ref rescue logic to handle on next load.
+          n->text_guide_id = it->second;
+        // If not in map, the original ref was already broken — the guide
+        // degrades to free-rendering on next load.
       }
       for (auto &ch : n->children)
         remap_refs(ch.get());
@@ -584,15 +587,9 @@ void MainWindow::connect_signals() {
   m_properties.signal_request_flip().connect(
       [this](bool horizontal) { m_canvas.flip_selection(horizontal); });
 
-  m_properties.signal_request_detach_text().connect([this](SceneNode *node) {
-    if (!node)
-      return;
-    // Ensure the node is in the canvas selection so release_text_from_path
-    // finds it
-    m_canvas.set_selection_single(node);
-    m_canvas.release_text_from_path();
-    Glib::signal_idle().connect_once([this]() { refresh_inspector(); });
-  });
+  // s351 — the inspector detach-text wiring was removed with the legacy ToP
+  // cleanup (the Detach button and its signal are gone). Detach is now the
+  // ToP-tool right-click, which deletes the path-text outright.
 
   m_properties.signal_canvas_changed().connect([this](CanvasModel cm) {
     auto *doc = m_project->active_doc();
@@ -1971,11 +1968,9 @@ void MainWindow::connect_signals() {
         if (m_canvas.selection_tool_key(kv, shift, ctrl, alt))
           return true;
 
-        // ── Shift+U: release text from path ──────────────────────────────
-        if (!ctrl && shift && !alt && (kv == GDK_KEY_u || kv == GDK_KEY_U)) {
-          m_canvas.release_text_from_path();
-          return true;
-        }
+        // s351 — Shift+U (release text from path) was removed with the legacy
+        // ToP cleanup. Detach is now the ToP-tool right-click (delete the
+        // path-text); normal Delete also removes it.
 
         // ── No-modifier tool hotkeys ────────────────────────────────────────
         if (!ctrl && !shift && !alt) {

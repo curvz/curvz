@@ -81,204 +81,10 @@ static bool parse_layer_color(const std::string &hex, double &r, double &g,
   return true;
 }
 
-// ── draw_text_on_path
-// ───────────────────────────────────────────────────────── Places each glyph
-// individually along the guide path using the arc-length table. Each glyph is
-// translated to its path position and rotated to match the path tangent at that
-// point.
-//
-// Strategy:
-//   1. Build a Pango layout for the full text to extract per-glyph advance
-//      widths (using pango_glyph_string_get_logical_widths).
-//   2. Walk the path arc-length table, placing each glyph's centre at
-//      offset + advance/2 from the previous glyph's end.
-//   3. For each glyph: save CTM, translate to path point, rotate by tangent
-//      angle (± flip), render via pango_cairo_show_glyph_string, restore.
-//
-// We're called from inside the doc-space transform (translate+scale applied).
-// ─────────────────────────────────────────────────────────────────────────────
-void Canvas::draw_text_on_path(const Cairo::RefPtr<Cairo::Context> &cr,
-                               const SceneNode &obj, const SceneNode &guide) {
-  if (!guide.path)
-    return;
-
-  // Build arc-length table in doc units
-  BezierPath bp = BezierPath::from_path_data(*guide.path);
-  std::vector<double> arc_table;
-  double total_len = build_arc_table(bp, arc_table);
-  LOG_DEBUG(
-      "draw_text_on_path: text='{}' path_id='{}' total_len={:.1f} zoom={:.2f}",
-      obj.text_content, obj.text_path_id, total_len, m_zoom);
-  if (total_len < 0.001) {
-    LOG_DEBUG("draw_text_on_path: ABORT total_len<0.001");
-    return;
-  }
-
-  // Use only first line of text
-  std::string text = obj.text_content;
-  auto nl = text.find('\n');
-  if (nl != std::string::npos)
-    text = text.substr(0, nl);
-  if (text.empty()) {
-    LOG_DEBUG("draw_text_on_path: ABORT text empty after trim");
-    return;
-  }
-
-  // Build Pango layout — same as draw_text_node
-  PangoLayout *layout = pango_cairo_create_layout(cr->cobj());
-  PangoFontDescription *desc = pango_font_description_new();
-  pango_font_description_set_family(desc, obj.text_font_family.c_str());
-  pango_font_description_set_absolute_size(desc,
-                                           obj.text_font_size * PANGO_SCALE);
-  if (obj.text_bold)
-    pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
-  if (obj.text_italic)
-    pango_font_description_set_style(desc, PANGO_STYLE_ITALIC);
-  pango_layout_set_font_description(layout, desc);
-  pango_font_description_free(desc);
-  pango_layout_set_text(layout, text.c_str(), -1);
-
-  // Baseline: distance from layout top to baseline in pixels
-  double baseline_px = pango_layout_get_baseline(layout) / (double)PANGO_SCALE;
-
-  // Total layout width for alignment anchor
-  PangoRectangle logical;
-  pango_layout_get_pixel_extents(layout, nullptr, &logical);
-  double total_text_w = logical.width;
-
-  // Alignment: offset is anchor point on path
-  // left=start, center=middle, right=end
-  double anchor_arc = obj.text_path_offset;
-  if (obj.text_anchor == "middle")
-    anchor_arc -= total_text_w * 0.5;
-  else if (obj.text_anchor == "end")
-    anchor_arc -= total_text_w;
-
-  // Perpendicular offset from path:
-  // flip=false → baseline on path, glyphs extend upward (negative Y in rotated
-  // frame). flip=true  → reversed traversal + π rotation puts glyphs on the
-  // outside of the
-  //              bottom arc, readable. Perp is same sign — glyphs still extend
-  //              "up" in their own rotated frame, which is outward from the
-  //              circle bottom.
-  double perp_offset = -obj.text_baseline_shift;
-
-  LOG_DEBUG(
-      "draw_text_on_path: text='{}' total_text_w={:.1f} total_path={:.1f} "
-      "baseline_px={:.1f} perp={:.1f} anchor_arc={:.1f} flip={}",
-      text, total_text_w, total_len, baseline_px, perp_offset, anchor_arc,
-      obj.text_path_flip);
-
-  // Apply fill colour once (all glyphs share it)
-  apply_fill(cr, obj.fill);
-
-  // ── Iterate runs and place each glyph individually ─────────────────────
-  // Use the proven pattern from text_to_paths_op:
-  // pango_layout_iter_get_run_extents gives us the run's x position in
-  // layout coordinates — critical for correct multi-glyph placement.
-  PangoLayoutIter *iter = pango_layout_get_iter(layout);
-  do {
-    PangoLayoutRun *run = pango_layout_iter_get_run(iter);
-    if (!run)
-      continue;
-
-    PangoGlyphString *gs = run->glyphs;
-    PangoFont *pfont = run->item->analysis.font;
-
-    // Run origin in layout space (pixels)
-    PangoRectangle run_ext;
-    pango_layout_iter_get_run_extents(iter, nullptr, &run_ext);
-    double run_x_px = run_ext.x / (double)PANGO_SCALE;
-
-    // Walk glyphs within this run
-    double glyph_x_px = run_x_px; // x position of this glyph within layout
-
-    for (int gi = 0; gi < gs->num_glyphs; ++gi) {
-      PangoGlyphInfo &gi_info = gs->glyphs[gi];
-
-      // Skip empty/space glyphs
-      if (gi_info.glyph == PANGO_GLYPH_EMPTY ||
-          (gi_info.glyph & PANGO_GLYPH_UNKNOWN_FLAG)) {
-        glyph_x_px += gi_info.geometry.width / (double)PANGO_SCALE;
-        continue;
-      }
-
-      double adv_px = gi_info.geometry.width / (double)PANGO_SCALE +
-                      obj.text_letter_spacing;
-
-      // Centre of this glyph on the path arc.
-      // flip=true: traverse path in reverse so text reads correctly on
-      // the bottom of a circle — mirror the arc position to the far end.
-      double glyph_centre_arc = anchor_arc + glyph_x_px + adv_px * 0.5;
-      double lookup_arc =
-          obj.text_path_flip ? total_len - glyph_centre_arc : glyph_centre_arc;
-
-      // Skip glyphs outside path bounds
-      if (lookup_arc < 0.0 || lookup_arc > total_len) {
-        glyph_x_px += adv_px;
-        continue;
-      }
-
-      Vec2 pos;
-      double angle;
-      if (!path_point_at(bp, arc_table, total_len, lookup_arc, pos, angle)) {
-        LOG_DEBUG("draw_text_on_path: path_point_at FAILED arc={:.1f}",
-                  lookup_arc);
-        break;
-      }
-
-      // flip=true: add π so glyph faces the opposite tangent direction,
-      // making it readable when traversing the path in reverse.
-      double effective_angle = obj.text_path_flip ? angle + M_PI : angle;
-
-      if (gi == 0) {
-        LOG_DEBUG("draw_text_on_path: glyph 0 adv={:.1f} centre_arc={:.1f} "
-                  "lookup={:.1f} pos=({:.1f},{:.1f}) angle={:.3f} perp={:.1f}",
-                  adv_px, glyph_centre_arc, lookup_arc, pos.x, pos.y,
-                  effective_angle, perp_offset);
-      }
-
-      // Place glyph: translate to path point, rotate to (effective) tangent.
-      cr->save();
-      cr->translate(pos.x, pos.y);
-      cr->rotate(effective_angle);
-
-      // Draw single glyph via pango_cairo_show_glyph_string
-      PangoGlyphString single;
-      int log_cluster = 0;
-      single.num_glyphs = 1;
-      single.glyphs = &gi_info;
-      single.log_clusters = &log_cluster;
-
-      // Horizontal: centre glyph on its advance width.
-      // Vertical: baseline_shift pushes away from the path (always negative
-      // in the rotated frame — after the π flip, "away" is still -Y).
-      double gx = -adv_px * 0.5;
-      double gy = perp_offset;
-
-      cr->move_to(gx, gy);
-      pango_cairo_show_glyph_string(cr->cobj(), pfont, &single);
-
-      // Optional stroke
-      if (obj.stroke.paint.type != FillStyle::Type::None) {
-        cr->move_to(gx, gy);
-        pango_cairo_glyph_string_path(cr->cobj(), pfont, &single);
-        apply_stroke_style(cr, obj.stroke);
-        cr->stroke();
-        // Restore fill for next glyph
-        apply_fill(cr, obj.fill);
-      }
-
-      cr->restore();
-
-      glyph_x_px += adv_px;
-    }
-
-  } while (pango_layout_iter_next_run(iter));
-
-  pango_layout_iter_free(iter);
-  g_object_unref(layout);
-}
+// s351 — draw_text_on_path (the legacy per-glyph arc renderer keyed on
+// text_path_id/offset/flip) removed with the legacy ToP cleanup. Path-text
+// v2 renders through draw_text_on_guide / compute_text_layout's pattern
+// fitter (below).
 
 // ── s347 — path-text v2 m2: draw_text_on_guide ──────────────────────────────
 // (docs/text_on_path_v2.md.) The pattern renderer. Lays the text out through
@@ -1279,21 +1085,10 @@ void Canvas::draw_text_node(const Cairo::RefPtr<Cairo::Context> &cr,
     return;
   }
 
-  // ── Text-on-path branch ───────────────────────────────────────────────
-  if (!obj.text_path_id.empty()) {
-    LOG_DEBUG("draw_text_node: text_path_id='{}' looking up guide",
-              obj.text_path_id);
-    SceneNode *guide = top_find_path_by_id(obj.text_path_id);
-    if (guide && guide->path) {
-      LOG_DEBUG("draw_text_node: guide found id='{}' nodes={}", guide->id,
-                guide->path->nodes.size());
-      draw_text_on_path(cr, obj, *guide);
-      return;
-    }
-    LOG_DEBUG("draw_text_node: guide NOT found for id='{}' — falling through",
-              obj.text_path_id);
-    // Guide path not found — fall through to normal rendering
-  }
+  // s351 — the legacy text_path_id draw branch (-> draw_text_on_path) was
+  // removed with the legacy ToP cleanup. Path-text v2 routes through the
+  // pattern fitter (draw_text_on_guide), dispatched on text_guide_id where
+  // the v2 renderer is wired; this function handles plain/free text only.
 
   // Build a Pango layout via the C API (PangoCairo) since pangomm's
   // create_layout requires a Cairo::Context and we have one).
@@ -4548,23 +4343,9 @@ void Canvas::draw_object(const Cairo::RefPtr<Cairo::Context> &cr,
     cr->set_line_width(1.0 / m_zoom);
     cr->stroke();
   } else {
-    // If this path is a text-on-path guide, suppress all fill and stroke
-    // in normal (preview) mode — it should be invisible.  Exception: when
-    // selected, show it as a plain stroke so the user can see its geometry.
-    if (is_top_guide_path(obj)) {
-      bool selected = std::any_of(m_selection.begin(), m_selection.end(),
-                                  [&obj](SceneNode *s) { return s == &obj; });
-      if (selected) {
-        cr->set_source_rgba(0.3, 0.6, 1.0, 0.7);
-        cr->set_line_width(1.0 / m_zoom);
-        cr->stroke();
-      } else {
-        cr->begin_new_path();
-      }
-      end_alpha();
-      cr->restore();
-      return;
-    }
+    // s351 — the legacy invisible-guide gate (is_top_guide_path) was removed
+    // with the legacy ToP cleanup. Path-text v2 guides are independent
+    // drawables (the ruler model) and paint normally; nothing is suppressed.
     if (obj.fill.type != FillStyle::Type::None) {
       if (obj.fill.is_gradient()) {
         if (auto bb = object_bbox(obj, false)) {

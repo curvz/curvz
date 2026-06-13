@@ -139,10 +139,9 @@ public:
   }
   using RequestFlipSignal = sigc::signal<void(bool /*horizontal*/)>;
   RequestFlipSignal &signal_request_flip() { return m_sig_request_flip; }
-  using RequestDetachTextSignal = sigc::signal<void(SceneNode *)>;
-  RequestDetachTextSignal &signal_request_detach_text() {
-    return m_sig_request_detach_text;
-  }
+  // s351 — RequestDetachTextSignal removed with the legacy ToP cleanup; the
+  // legacy inspector Detach button it drove is gone (detach is now the
+  // ToP-tool right-click).
   // Emitted when the user clicks "Release" in the Blend section of the
   // inspector. MainWindow connects this to Canvas::release_blend.
   using RequestReleaseBlendSignal = sigc::signal<void()>;
@@ -483,7 +482,6 @@ private:
   RequestSplitSignal m_sig_request_split;
   RequestNodeTypeChangeSignal m_sig_request_node_type_change;
   RequestFlipSignal m_sig_request_flip;
-  RequestDetachTextSignal m_sig_request_detach_text;
   RequestReleaseBlendSignal m_sig_request_release_blend;
   RequestReleaseWarpSignal m_sig_request_release_warp;
   RequestFlattenWarpSignal m_sig_request_flatten_warp;
