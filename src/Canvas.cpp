@@ -3533,12 +3533,19 @@ static std::string generate_unique_name(const std::string &base_name,
 // scale) silently targeted the original instead. Confirmed by
 // GRPDIAG log evidence in s298 m1 — clone produced new ptr + new
 // name but identical iid.
-void freshen_ids(SceneNode *node, CurvzDocument *doc, int &counter) {
+void freshen_ids(SceneNode *node, CurvzDocument *doc, int &counter,
+                 std::unordered_map<std::string, std::string> *iid_map) {
+  // s352 — capture the old iid BEFORE we overwrite it, so a caller can
+  // build the old->new map needed to remap iid cross-references in the
+  // freshly cloned subtree (text_guide_id, text_boundary_ids).
+  std::string old_iid = node->internal_id;
   node->internal_id = generate_internal_id();
+  if (iid_map && !old_iid.empty())
+    (*iid_map)[old_iid] = node->internal_id;
   node->id = "obj" + std::to_string(counter++);
   node->name = generate_unique_name(node->name, doc);
   for (auto &child : node->children)
-    freshen_ids(child.get(), doc, counter);
+    freshen_ids(child.get(), doc, counter, iid_map);
 }
 
 // ── copy_selected
@@ -3868,6 +3875,115 @@ void Canvas::paste_clipboard() {
 
 // ── duplicate_selected
 // ────────────────────────────────────────────────────────
+namespace {
+
+// s352 — collect every iid present within the subtree rooted at `n`.
+// Children-only descent: the cross-ref targets we care about (path-text
+// guides, TBM boundaries) live in the children tree — guides as separate
+// top-level objects, boundaries one or two levels under a Mgr. clip/blend/
+// warp source slots never hold a guide or boundary, so they're skipped.
+void collect_subtree_iids(const SceneNode *n,
+                          std::unordered_set<std::string> &out) {
+  if (!n)
+    return;
+  if (!n->internal_id.empty())
+    out.insert(n->internal_id);
+  for (const auto &c : n->children)
+    collect_subtree_iids(c.get(), out);
+}
+
+// s352 — top-level layer-child object whose subtree contains `iid`.
+// Returns the DIRECT layer child (the duplicable object), even when the
+// match is a nested leaf (a compound subpath, a Mgr-nested boundary).
+SceneNode *top_level_owner_of_iid(CurvzDocument *doc, const std::string &iid) {
+  if (!doc || iid.empty())
+    return nullptr;
+  std::function<bool(const SceneNode *)> contains =
+      [&](const SceneNode *n) -> bool {
+    if (!n)
+      return false;
+    if (n->internal_id == iid)
+      return true;
+    for (const auto &c : n->children)
+      if (contains(c.get()))
+        return true;
+    return false;
+  };
+  for (auto &layer : doc->layers)
+    for (auto &child : layer->children)
+      if (contains(child.get()))
+        return child.get();
+  return nullptr;
+}
+
+// s352 — duplicate-time source inclusion (path-text v2 ruler model, the
+// s352 rule (a)). A text derives its geometry from a source it references
+// by iid: a path-text reads a GUIDE (text_guide_id); box text reads a
+// BOUNDARY (text_boundary_ids). Duplicated alone, the clone's ref would
+// still point at the ORIGINAL source, so the copy renders on top of the
+// original (one-text-per-guide hides it) — the "copies the path only" bug.
+//
+// Fix: pull each referenced source into the cloned set so the clone gets
+// its own independent source and the cross-ref remap can repoint it. The
+// in-set guard makes this self-correcting across the two text models:
+//   - Box text (TBM): the boundary lives INSIDE the Mgr subtree, so it is
+//     already in-set when the Mgr is selected — no inclusion, remap only.
+//   - Path text (ToP): the guide is a SEPARATE top-level object, so it is
+//     NOT in-set — its owner gets pulled in here.
+// The rule is asymmetric on purpose: text cannot stand alone (no geometry
+// of its own), but a guide/boundary is a complete object, so selecting
+// only the source duplicates just that source. This is NOT the move/select
+// coupling removed in s351 — there you slide/restyle independently; here
+// the text simply has nothing to duplicate without its ruler.
+void augment_selection_with_referenced_sources(
+    CurvzDocument *doc, std::vector<SceneNode *> &selection) {
+  if (!doc)
+    return;
+  // iids already inside the cloned set.
+  std::unordered_set<std::string> in_set;
+  for (SceneNode *s : selection)
+    collect_subtree_iids(s, in_set);
+  // referenced source iids from every text node in the selected subtrees.
+  std::vector<std::string> refs;
+  std::function<void(const SceneNode *)> gather = [&](const SceneNode *n) {
+    if (!n)
+      return;
+    if (n->is_text()) {
+      if (!n->text_guide_id.empty())
+        refs.push_back(n->text_guide_id);
+      for (const auto &b : n->text_boundary_ids)
+        if (!b.empty())
+          refs.push_back(b);
+    }
+    for (const auto &c : n->children)
+      gather(c.get());
+  };
+  for (SceneNode *s : selection)
+    gather(s);
+  // pull in owners of refs that point OUTSIDE the cloned set.
+  for (const auto &iid : refs) {
+    if (in_set.count(iid))
+      continue; // already cloned (TBM boundary, or a same-selection guide)
+    SceneNode *owner = top_level_owner_of_iid(doc, iid);
+    if (!owner)
+      continue; // dangling ref -> clone degrades to free-rendering, fine
+    bool already = false;
+    for (SceneNode *s : selection)
+      if (s == owner) {
+        already = true;
+        break;
+      }
+    if (already)
+      continue;
+    selection.push_back(owner);
+    collect_subtree_iids(owner, in_set); // its iids are now in-set too
+    LOG_INFO("[DUP] auto-included guide/boundary owner iid='{}' for ref '{}'",
+             owner->internal_id, iid);
+  }
+}
+
+} // namespace
+
 void Canvas::duplicate_selected() {
   // s298 DIAG — STRIP after triage. Entry-point dump.
   LOG_INFO("[GRPDIAG] duplicate_selected: ENTRY  m_selection.size={} "
@@ -3885,7 +4001,13 @@ void Canvas::duplicate_selected() {
     return;
   }
 
-  auto entries = collect_selection_entries(m_doc, m_selection);
+  // s352 — pull each selected text's referenced guide/boundary into the
+  // cloned set if it is not already in (path-text guides are separate
+  // top-level objects; box-text boundaries are already nested in-set).
+  std::vector<SceneNode *> sel = m_selection;
+  augment_selection_with_referenced_sources(m_doc, sel);
+
+  auto entries = collect_selection_entries(m_doc, sel);
   if (entries.empty()) {
     LOG_INFO("[GRPDIAG] duplicate_selected: BAIL — entries empty after "
              "collect_selection_entries (all selected nodes are likely "
@@ -3902,13 +4024,19 @@ void Canvas::duplicate_selected() {
   std::vector<SceneNode *> new_selection;
   int id_counter = s_next_id;
 
-  // Process in ascending index order so insertions don't shift later indices
-  // We insert each duplicate immediately above its original (index + offset).
-  // We accumulate an offset_shift to account for already-inserted duplicates.
-  int shift = 0;
+  // s352 — clone + freshen ALL entries first, accumulating ONE old->new
+  // iid map across the whole cloned set, then remap iid cross-refs so a
+  // cloned text reads the cloned guide/boundary rather than the original.
+  // The map must span all entries because a text and its guide are
+  // SEPARATE top-level entries — a per-entry map would never see across
+  // the pair. Snapshot for the undo command is taken AFTER the remap so
+  // redo re-inserts the repointed clone.
+  std::unordered_map<std::string, std::string> iid_map;
+  std::vector<std::unique_ptr<SceneNode>> dups;
+  dups.reserve(entries.size());
   for (auto &e : entries) {
     auto dup = clone_node(*e.node);
-    freshen_ids(dup.get(), m_doc, id_counter);
+    freshen_ids(dup.get(), m_doc, id_counter, &iid_map);
 
     // Translate path nodes by OFFSET
     std::vector<SceneNode *> paths;
@@ -3925,7 +4053,19 @@ void Canvas::duplicate_selected() {
         n.cy2 -= OFFSET;
       }
     }
+    dups.push_back(std::move(dup));
+  }
+  // Remap now that the full old->new map exists across every clone.
+  for (auto &dup : dups)
+    curvz::utils::remap_text_crossrefs(*dup, iid_map);
 
+  // Process in ascending index order so insertions don't shift later
+  // indices. We insert each duplicate immediately above its original
+  // (index + offset), accumulating a shift for already-inserted dups.
+  int shift = 0;
+  for (size_t k = 0; k < entries.size(); ++k) {
+    auto &e = entries[k];
+    auto &dup = dups[k];
     int ins = e.index +
               shift; // insert above original (lower index = higher in layer)
     auto snap = clone_node(*dup);
@@ -3994,7 +4134,13 @@ void Canvas::duplicate_in_place_selected() {
     return;
   }
 
-  auto entries = collect_selection_entries(m_doc, m_selection);
+  // s352 — same source inclusion as duplicate_selected: a duplicated
+  // path-text pulls in its guide so the in-place copy is an independent
+  // ToP pair (box-text boundaries are already nested in-set).
+  std::vector<SceneNode *> sel = m_selection;
+  augment_selection_with_referenced_sources(m_doc, sel);
+
+  auto entries = collect_selection_entries(m_doc, sel);
   if (entries.empty()) {
     LOG_INFO("[GRPDIAG] duplicate_in_place_selected: BAIL — entries empty");
     return;
@@ -4005,11 +4151,25 @@ void Canvas::duplicate_in_place_selected() {
   std::vector<SceneNode *> new_selection;
   int id_counter = s_next_id;
 
-  int shift = 0;
+  // s352 — shared old->new iid map across all clones, then remap iid
+  // cross-refs (text_guide_id / text_boundary_ids) so the in-place copy
+  // reads its OWN guide/boundary. Snapshot taken after the remap.
+  std::unordered_map<std::string, std::string> iid_map;
+  std::vector<std::unique_ptr<SceneNode>> dups;
+  dups.reserve(entries.size());
   for (auto &e : entries) {
     auto dup = clone_node(*e.node);
-    freshen_ids(dup.get(), m_doc, id_counter);
+    freshen_ids(dup.get(), m_doc, id_counter, &iid_map);
     // No position offset — duplicate lands exactly on top
+    dups.push_back(std::move(dup));
+  }
+  for (auto &dup : dups)
+    curvz::utils::remap_text_crossrefs(*dup, iid_map);
+
+  int shift = 0;
+  for (size_t k = 0; k < entries.size(); ++k) {
+    auto &e = entries[k];
+    auto &dup = dups[k];
     int ins = e.index + shift;
     auto snap = clone_node(*dup);
     new_selection.push_back(dup.get());

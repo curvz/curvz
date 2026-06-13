@@ -79,6 +79,7 @@
 #include <gtkmm/window.h>
 #include <map>         // s125 m2a — result map for show_form
 #include <string>
+#include <unordered_map> // s352 — old->new iid map for remap_text_crossrefs
 #include <utility>     // s339-cont — std::pair (snap_range_to_paragraphs)
 #include <variant>     // s125 m2a v2 — FormFieldSpec / FormFieldValue::Value
 #include <vector>      // s125 m2a — buttons + fields lists
@@ -274,6 +275,30 @@ double normalize_doc_for_target(Curvz::CurvzDocument& doc,
 // Returns nullptr if iid is empty or no document contains a match.
 Curvz::SceneNode* find_by_iid(const Curvz::CurvzProject& proj,
                               const std::string& iid);
+
+// ── Cloned-subtree iid cross-reference remap (s352) ──────────────────
+// When a SceneNode subtree is cloned and its iids are freshened, any
+// iid-keyed cross-reference the clone carries still points at the
+// ORIGINAL node. This pump repoints them. It walks `root` and every
+// descendant, translating each text cross-reference through `iid_map`
+// (old internal_id -> new internal_id):
+//
+//   - text_guide_id      (path-text v2 ruler reference; single iid)
+//   - text_boundary_ids  (TBM / container boundary chain; iid list)
+//
+// A reference whose old iid is NOT in the map points outside the cloned
+// set and is left INTACT (it either still resolves to a live original,
+// or it was already dangling and degrades gracefully on the next paint).
+// Non-text nodes carry empty cross-refs, so the walk is a no-op on them.
+//
+// One pump, two callers: object-level duplicate (Canvas dup verbs, which
+// build the map via freshen_ids' out-param) and whole-document duplicate
+// (MainWindow dup-doc, which builds the map during its SVG round-trip
+// iid rewrite). The map's key space is whatever the caller freshened;
+// each only remaps refs that landed in its own clone.
+void remap_text_crossrefs(
+    Curvz::SceneNode& root,
+    const std::unordered_map<std::string, std::string>& iid_map);
 
 // ── Per-run formatting span pump (s326 m2) ───────────────────────────
 // The flat-span apply seam from text_formatting_design.md §1/§7. A

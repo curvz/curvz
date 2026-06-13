@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map> // s352 — freshen_ids iid-map out-param
 #include <vector>
 
 namespace Curvz {
@@ -71,7 +72,12 @@ inline void record_step_if_recording(MacroStep step) {
 
 // Defined in Canvas.cpp (CORE):
 SceneNode *find_parent(CurvzDocument *doc, SceneNode *target, int *out_idx);
-void freshen_ids(SceneNode *node, CurvzDocument *doc, int &counter);
+// s352 — optional `iid_map` accumulates old internal_id -> fresh internal_id
+// for every node freshened, so a caller can remap iid cross-references in the
+// cloned subtree afterward (curvz::utils::remap_text_crossrefs). Pass nullptr
+// (the default) when no remap is wanted; all pre-s352 callers are unchanged.
+void freshen_ids(SceneNode *node, CurvzDocument *doc, int &counter,
+                 std::unordered_map<std::string, std::string> *iid_map = nullptr);
 void collect_paths(SceneNode *obj, std::vector<SceneNode *> &out);
 std::vector<SelectionEntry>
 collect_selection_entries(CurvzDocument *doc,

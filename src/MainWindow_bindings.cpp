@@ -226,8 +226,8 @@ void MainWindow::connect_signals() {
   // clone seam: every field the writer emits round-trips for free, so we
   // can't forget one (the same lesson as S98 m2 fix1, applied to docs).
   // After parse we mint fresh internal_ids on every node and remap
-  // text_guide_id references through the old→new map so path-text
-  // survives. Non-SVG state (canvas model, ruler origin, bg/guide colours,
+  // text cross-references (guide + boundary) through the old->new map so
+  // attached path-text and box text survive. Non-SVG state (canvas model, ruler origin, bg/guide colours,
   // export metadata, measure flags) is copied directly from the source —
   // the SVG round-trip doesn't carry those.
   m_gallery.signal_dup_doc().connect([this](int idx) {
@@ -264,24 +264,15 @@ void MainWindow::connect_signals() {
       rewrite_iids(layer.get());
 
     // ── 3. Remap iid-keyed cross-references inside the clone ──────────
-    // s351 — path-text v2's guide reference (text_guide_id) is the iid
-    // cross-reference Curvz keeps on text; remapped here so a duplicated
-    // doc's attached text still points at the clone's fresh guide iid.
-    // (Replaced the legacy text_path_id remap with the legacy ToP cleanup.)
-    // If more iid-keyed refs land later, extend this walker.
-    std::function<void(SceneNode *)> remap_refs = [&](SceneNode *n) {
-      if (n->is_text() && !n->text_guide_id.empty()) {
-        auto it = iid_map.find(n->text_guide_id);
-        if (it != iid_map.end())
-          n->text_guide_id = it->second;
-        // If not in map, the original ref was already broken — the guide
-        // degrades to free-rendering on next load.
-      }
-      for (auto &ch : n->children)
-        remap_refs(ch.get());
-    };
+    // s352 — one shared pump (curvz::utils::remap_text_crossrefs) repoints
+    // BOTH path-text's guide ref (text_guide_id) AND the container model's
+    // boundary chain (text_boundary_ids) through the old->new map, so a
+    // duplicated doc's attached/box text points at the clone's fresh iids.
+    // (s351 had inlined a text_guide_id-only walk here; folding it into the
+    // shared pump also closes the carried text_boundary_ids dup-doc gap.)
+    // Refs not in the map were already broken and degrade on next load.
     for (auto &layer : dup->layers)
-      remap_refs(layer.get());
+      curvz::utils::remap_text_crossrefs(*layer, iid_map);
 
     // ── 4. Copy non-SVG state from the source ─────────────────────────
     dup->canvas = src.canvas;

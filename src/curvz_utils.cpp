@@ -342,6 +342,36 @@ Curvz::SceneNode *find_by_iid(const Curvz::CurvzProject &proj,
   return nullptr;
 }
 
+// ── remap_text_crossrefs (s352) ──────────────────────────────────────
+// Repoint a cloned subtree's iid-keyed text cross-references through an
+// old->new iid map. See the header for the contract. Field-driven, not
+// type-driven: a node is rewritten iff it actually carries a ref, so the
+// walk never needs to know which node types can hold one. Refs whose old
+// iid is absent from the map point outside the cloned set and are left
+// untouched.
+void remap_text_crossrefs(
+    Curvz::SceneNode &root,
+    const std::unordered_map<std::string, std::string> &iid_map) {
+  // text_guide_id — path-text v2 ruler reference (single iid).
+  if (!root.text_guide_id.empty()) {
+    auto it = iid_map.find(root.text_guide_id);
+    if (it != iid_map.end())
+      root.text_guide_id = it->second;
+  }
+  // text_boundary_ids — TBM / container boundary chain (iid list). Remap
+  // in place so chain order is preserved.
+  for (auto &bid : root.text_boundary_ids) {
+    if (bid.empty())
+      continue;
+    auto it = iid_map.find(bid);
+    if (it != iid_map.end())
+      bid = it->second;
+  }
+  for (auto &child : root.children)
+    if (child)
+      remap_text_crossrefs(*child, iid_map);
+}
+
 // ── find_layer_index_by_iid (s171 m1) ────────────────────────────────
 // Doc-relative top-level scan. Layers don't appear inside other layers'
 // children (the layers vector IS the top-level layer list), so a direct
