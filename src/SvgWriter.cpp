@@ -532,13 +532,58 @@ static void scrub_identity(SceneNode& n) {
     for (auto& c : n.children)
         if (c) scrub_identity(*c);
 }
+
+// ── s356 — mirror parity foreign-viewer transform ────────────────────────────
+// The flip's editable truth is data-curvz-mirror (read on load; the draw seam
+// reflects glyphs from it). But the BAKED presentation a foreign viewer renders
+// (the compat outline group / a plain <text> body) carries no parity, so an
+// exported flipped text reads forwards in Inkscape/browsers. This helper builds
+// the SVG transform that reflects that presentation about the SAME centre the
+// draw seam uses, so the foreign render matches Curvz exactly (convergent eyes).
+// A reflection is an involution about a point: x -> 2cx - x (h), y -> 2cy - y
+// (v). As an SVG matrix(a,b,c,d,e,f): a=-1/e=2cx for h, d=-1/f=2cy for v; h+v is
+// the 180-degree point reflection. On a data-curvz-compat group this is purely
+// cosmetic for foreign readers — the parser discards that subtree and Curvz
+// regenerates it from the model every save, so it never round-trips.
+static std::string mirror_transform_attr(bool h, bool v, double cx, double cy) {
+    if (!h && !v) return "";
+    const double a = h ? -1.0 : 1.0;
+    const double d = v ? -1.0 : 1.0;
+    const double e = h ? 2.0 * cx : 0.0;
+    const double f = v ? 2.0 * cy : 0.0;
+    std::ostringstream s;
+    s << " transform=\"matrix(" << fmt6(a) << ",0,0," << fmt6(d) << ","
+      << fmt6(e) << "," << fmt6(f) << ")\"";
+    return s.str();
+}
+
+// Node-coordinate bbox centre — matches the draw-seam reflection pivot exactly
+// (Canvas_draw mirrors about path->nodes min/max midpoint, NOT control-point
+// extents). Replicated rather than borrowed so the two stay byte-for-byte in
+// step; if one moves the other must too.
+static bool node_bbox_centre(const SceneNode* n, double& cx, double& cy) {
+    if (!n || !n->path || n->path->nodes.empty()) return false;
+    double x0 = n->path->nodes[0].x, y0 = n->path->nodes[0].y;
+    double x1 = x0, y1 = y0;
+    for (const auto& nd : n->path->nodes) {
+        x0 = std::min(x0, nd.x); y0 = std::min(y0, nd.y);
+        x1 = std::max(x1, nd.x); y1 = std::max(y1, nd.y);
+    }
+    cx = (x0 + x1) * 0.5;
+    cy = (y0 + y1) * 0.5;
+    return true;
+}
+
 static void emit_compat_outline(std::ostringstream& out,
                                 std::vector<std::unique_ptr<SceneNode>>& nodes,
-                                int indent) {
+                                int indent,
+                                bool mirror_h = false, bool mirror_v = false,
+                                double cx = 0.0, double cy = 0.0) {
     if (nodes.empty())
         return;
     const std::string gpad(indent * 2, ' ');
-    out << gpad << "<g data-curvz-compat=\"outline\">\n";
+    out << gpad << "<g data-curvz-compat=\"outline\""
+        << mirror_transform_attr(mirror_h, mirror_v, cx, cy) << ">\n";
     for (auto& n : nodes) {
         if (!n) continue;
         scrub_identity(*n);
@@ -906,6 +951,17 @@ static void write_textbox_mgr_def(std::ostringstream& out,
     //   the other baseline text properties, NOT the boundary shape.
     if (mgr.text_baseline_angle != 0.0)
         out << " data-curvz-baseline-angle=\"" << fmt6(mgr.text_baseline_angle) << "\"";
+    // s356 — mirror parity round-trip. The reflection sibling of the baseline
+    //   angle above (see SceneNode text_mirror_* comment): a pure handedness
+    //   flag the draw seam reads (cr->scale) — the buffer never moves. Single
+    //   attr, value "h"/"v"/"hv"; omitted when neither set so un-flipped boxes
+    //   stay byte-identical. The presentation channel (textPath / compat
+    //   outline) is regenerated from the model every save, so this attr is the
+    //   WHOLE persistent truth of the flip for the Curvz round-trip.
+    if (mgr.text_mirror_h || mgr.text_mirror_v)
+        out << " data-curvz-mirror=\""
+            << (mgr.text_mirror_h ? "h" : "") << (mgr.text_mirror_v ? "v" : "")
+            << "\"";
     if (mgr.text_bold)   out << " data-curvz-font-bold=\"1\"";
     if (mgr.text_italic) out << " data-curvz-font-italic=\"1\"";
     // s325 m3 — the CDATA below is Pango markup (plain text is valid markup,
@@ -1181,7 +1237,11 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
                          text.stroke,
                          text.text_font_size > 0.0 ? text.text_font_size : 24.0,
                          compat_nodes);
-        emit_compat_outline(out, compat_nodes, indent + 1);
+        // s356 — reflect the baked outline about the boundary bbox centre so a
+        // flipped legacy TextBox reads backwards in foreign viewers too.
+        { double bcx = 0, bcy = 0; node_bbox_centre(&boundary, bcx, bcy);
+          emit_compat_outline(out, compat_nodes, indent + 1,
+                              text.text_mirror_h, text.text_mirror_v, bcx, bcy); }
         out << pad << "</g>\n";
         return;
     }
@@ -1329,7 +1389,13 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
                              obj.stroke,
                              obj.text_font_size > 0.0 ? obj.text_font_size : 24.0,
                              compat_nodes);
-            emit_compat_outline(out, compat_nodes, indent + 1);
+            // s356 — parity lives on the Mgr (obj); reflect THIS view's outline
+            // about THIS view's boundary centre (the draw seam mirrors each view
+            // about its own boundary bbox midpoint, so per-view centres keep the
+            // foreign render in lock-step with Curvz even for overflow chains).
+            { double bcx = 0, bcy = 0; node_bbox_centre(&boundary, bcx, bcy);
+              emit_compat_outline(out, compat_nodes, indent + 1,
+                                  obj.text_mirror_h, obj.text_mirror_v, bcx, bcy); }
             out << pad << "</g>\n";
             ++canvas_index;
         }
@@ -1520,6 +1586,27 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
         if (obj.text_italic) out << " font-style=\"italic\"";
         if (obj.text_baseline_shift != 0.0)
             out << " data-curvz-baseline-shift=\"" << fmt2(obj.text_baseline_shift) << "\"";
+        // s356 — mirror parity round-trip (free text + ToP guide-attached text,
+        //   which both ride this <text> branch). Same single-attr encoding as
+        //   the TBM def: "h"/"v"/"hv", omitted on the un-flipped default. The
+        //   draw seam reflects glyphs about the anchor (free) / guide centre
+        //   (ToP) from this flag, so it is the whole persistent flip state.
+        if (obj.text_mirror_h || obj.text_mirror_v)
+            out << " data-curvz-mirror=\""
+                << (obj.text_mirror_h ? "h" : "") << (obj.text_mirror_v ? "v" : "")
+                << "\"";
+        // s356 — foreign-viewer flip for PLAIN free text: this branch's else
+        //   path emits a real <text> body that foreign viewers render, so the
+        //   reflection rides the tag's transform, about the anchor (text_x,
+        //   text_y) the draw seam mirrors around. Gated to the non-guide case:
+        //   the ToP path emits an EMPTY body (the visible glyphs are the compat
+        //   outline group, which gets its own transform about the guide centre).
+        //   Curvz's parser ignores transform on <text> (geometry-only,
+        //   path-guarded), so this never double-applies on read-back — the
+        //   data-curvz-mirror attr above remains the sole round-trip truth.
+        if ((obj.text_mirror_h || obj.text_mirror_v) && obj.text_guide_id.empty())
+            out << mirror_transform_attr(obj.text_mirror_h, obj.text_mirror_v,
+                                         obj.text_x, obj.text_y);
         if (obj.text_letter_spacing != 0.0)
             out << " letter-spacing=\"" << fmt2(obj.text_letter_spacing) << "\"";
         if (obj.text_anchor != "start")
@@ -1604,7 +1691,15 @@ static void write_object(std::ostringstream& out, const GlyphObject& obj, int in
             if (guide && guide->path) {
                 auto compat_nodes =
                     outline_pattern_text(obj, *guide, g_text_styles);
-                emit_compat_outline(out, compat_nodes, indent);
+                // s356 — parity is on the text node (obj); reflect the baked
+                // glyph outline about the GUIDE bbox centre, matching the
+                // draw seam (it leaves the guide ruler untouched and mirrors
+                // the rendered text about that centre). For a symmetric ring
+                // the foreign render keeps its arcs but reads backwards.
+                double gcx = 0, gcy = 0; node_bbox_centre(guide, gcx, gcy);
+                emit_compat_outline(out, compat_nodes, indent,
+                                    obj.text_mirror_h, obj.text_mirror_v,
+                                    gcx, gcy);
                 LOG_INFO("[TOPSAVE] compat outline for '{}' — {} bucket(s)",
                          obj.internal_id, compat_nodes.size());
             } else {

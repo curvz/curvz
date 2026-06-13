@@ -2553,6 +2553,14 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
                     auto ba = attr(tag, "data-curvz-baseline-angle");
                     if (!ba.empty()) mgr->text_baseline_angle = dbl(ba,
                                                   mgr->text_baseline_angle);
+                    // s356 — mirror parity (absent -> stays false -> un-flipped).
+                    //   Value contains 'h' and/or 'v'; the draw seam reflects
+                    //   the glyphs from these flags on reload.
+                    {
+                        auto mir = attr(tag, "data-curvz-mirror");
+                        if (mir.find('h') != std::string::npos) mgr->text_mirror_h = true;
+                        if (mir.find('v') != std::string::npos) mgr->text_mirror_v = true;
+                    }
                     if (attr(tag, "data-curvz-font-bold")   == "1")
                         mgr->text_bold = true;
                     if (attr(tag, "data-curvz-font-italic") == "1")
@@ -3186,6 +3194,14 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             if (!bs.empty()) obj->text_baseline_shift = dbl(bs);
             auto ls = attr(tag, "letter-spacing");
             if (!ls.empty()) obj->text_letter_spacing = dbl(ls);
+
+            // s356 — mirror parity (free text + ToP guide-attached). Absent ->
+            //   stays false. Same single-attr "h"/"v"/"hv" encoding as the TBM.
+            {
+                auto mir = attr(tag, "data-curvz-mirror");
+                if (mir.find('h') != std::string::npos) obj->text_mirror_h = true;
+                if (mir.find('v') != std::string::npos) obj->text_mirror_v = true;
+            }
 
             // s351 — the legacy data-curvz-path-* read was removed with the
             // legacy ToP cleanup. Old files carrying those attrs load as plain

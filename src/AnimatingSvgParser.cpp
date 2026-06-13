@@ -2413,6 +2413,17 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
             auto ls = attr(tag, "letter-spacing");
             if (!ls.empty()) obj->text_letter_spacing = dbl(ls);
 
+            // s356 — mirror parity (free text + ToP guide-attached). Must ride
+            //   both parsers (the s347 lesson): this is the replay/import twin
+            //   of the SvgParser read. Single-attr "h"/"v"/"hv", absent ->
+            //   false. AnimatingSvgParser doesn't reconstruct the TBM def, so
+            //   only the free-<text> read lands here.
+            {
+                auto mir = attr(tag, "data-curvz-mirror");
+                if (mir.find('h') != std::string::npos) obj->text_mirror_h = true;
+                if (mir.find('v') != std::string::npos) obj->text_mirror_v = true;
+            }
+
             // s351 — the legacy data-curvz-path-* read was removed with the
             // legacy ToP cleanup. Old files carrying those attrs load as plain
             // text (silently ignored — no migration, per ruling).
