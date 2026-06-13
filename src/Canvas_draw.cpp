@@ -308,28 +308,41 @@ void Canvas::draw_text_on_path(const Cairo::RefPtr<Cairo::Context> &cr,
 // Known limit (legacy parity): underline/strikethrough attrs don't render —
 // pango_cairo_show_glyph_string draws glyphs only. Per-glyph decoration
 // segments are an m4+ nicety if wanted.
-void Canvas::draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
-                                const SceneNode &text_obj,
-                                const SceneNode &guide) {
+//
+// s349 m7 — the per-glyph placement loop moved OUT of this function into
+// pattern_glyph_walk (below) so the convert-to-path outliner
+// (text_to_paths_op, Canvas_ops.cpp) consumes the identical placement.
+// What remains here is pure ink: the selection band (editor chrome,
+// geometry not glyphs — it keeps its own walk derivation) and a consumer
+// that show_glyph_string's each yielded glyph.
+
+namespace {
+// s347 m4 — each line rides its OWN walk path (line 0/1 the guide, 2+
+// inward parallel offsets). Derive per distinct offset through THE pump
+// (pattern_walk_path) and cache the arc table per offset for the pass.
+// (s349 m7: type hoisted file-local so the walk and the selection band
+// share it; each pass keeps its own cache instance.)
+struct GuideWalk { BezierPath bp; std::vector<double> arc_table;
+                   double total = 0.0; bool closed = false; bool ok = false; };
+}  // namespace
+
+bool Canvas::pattern_glyph_walk(
+    const SceneNode &text_obj, const SceneNode &guide,
+    const std::function<void(const PatternGlyph &)> &fn) {
   if (!guide.path || guide.path->nodes.size() < 2)
-    return;
+    return false;
 
   TextLayout tl = compute_text_layout(
       &guide, &text_obj, 0,
       project() ? &project()->text_styles : nullptr);
   if (tl.baselines.empty())
-    return;
+    return false;
 
-  // s347 m4 — each line rides its OWN walk path (line 0/1 the guide, 2+
-  // inward parallel offsets). Derive per distinct offset through THE pump
-  // (pattern_walk_path) and cache the arc table per offset for the draw.
-  struct Walk { BezierPath bp; std::vector<double> arc_table;
-                double total = 0.0; bool closed = false; bool ok = false; };
-  std::map<double, Walk> walks;
-  auto walk_for = [&](double offset) -> const Walk& {
+  std::map<double, GuideWalk> walks;
+  auto walk_for = [&](double offset) -> const GuideWalk& {
     auto it = walks.find(offset);
     if (it != walks.end()) return it->second;
-    Walk w;
+    GuideWalk w;
     PathData pd = pattern_walk_path(*guide.path, offset);
     if (pd.nodes.size() >= 2) {
       w.bp = BezierPath::from_path_data(pd);
@@ -339,11 +352,129 @@ void Canvas::draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
     }
     return walks.emplace(offset, std::move(w)).first->second;
   };
-  {
-    const Walk& w0 = walk_for(0.0);
-    if (!w0.ok)
-      return;
+  if (!walk_for(0.0).ok)
+    return false;
+
+  for (const auto &bl : tl.baselines) {
+    if (!bl.pango || !bl.pattern)
+      continue;
+    const GuideWalk &w = walk_for(bl.pattern->offset);   // s347 m4
+    if (!w.ok)
+      continue;
+    const double arc_start = bl.pattern->arc_start;
+    const bool flip = bl.pattern->flip;
+
+    PangoLayoutIter *iter = pango_layout_get_iter(bl.pango.get());
+    do {
+      PangoLayoutRun *run = pango_layout_iter_get_run(iter);
+      if (!run)
+        continue;
+
+      PangoGlyphString *gs = run->glyphs;
+      PangoFont *pfont = run->item->analysis.font;
+
+      // Run origin within the line's layout (line-local px frame — the
+      // same frame x_start/x_end and the arc mapping live in).
+      PangoRectangle run_ext;
+      pango_layout_iter_get_run_extents(iter, nullptr, &run_ext);
+      double glyph_x_px = run_ext.x / (double)PANGO_SCALE;
+
+      // Per-run ink source + rise: a foreground span covering this run is
+      // surfaced on the yield (the renderer inks with it; the outliner
+      // colour-buckets by it). PANGO_ATTR_RISE is applied by pango_layout's
+      // run renderer, NOT baked into glyph geometry, so show_glyph_string
+      // loses it; lift the run's rise here and fold it into pen_y
+      // (+rise = up = -y in the glyph frame). The box renderer gets this
+      // free from show_layout.
+      bool run_has_fg = false;
+      double run_rise_px = 0.0;
+      guint16 fr = 0, fg_ = 0, fb = 0, fa = 0xffff;
+      for (GSList *a = run->item->analysis.extra_attrs; a; a = a->next) {
+        PangoAttribute *attr = (PangoAttribute *)a->data;
+        if (attr->klass->type == PANGO_ATTR_FOREGROUND) {
+          const PangoColor &c = ((PangoAttrColor *)attr)->color;
+          fr = c.red; fg_ = c.green; fb = c.blue;
+          run_has_fg = true;
+        } else if (attr->klass->type == PANGO_ATTR_FOREGROUND_ALPHA) {
+          fa = ((PangoAttrInt *)attr)->value;
+        } else if (attr->klass->type == PANGO_ATTR_RISE) {
+          run_rise_px = ((PangoAttrInt *)attr)->value
+                        / (double)PANGO_SCALE;
+        }
+      }
+
+      for (int gi = 0; gi < gs->num_glyphs; ++gi) {
+        PangoGlyphInfo &gi_info = gs->glyphs[gi];
+
+        // Advance includes layout-baked letter spacing (see header note).
+        const double adv_px = gi_info.geometry.width / (double)PANGO_SCALE;
+
+        if (gi_info.glyph == PANGO_GLYPH_EMPTY ||
+            (gi_info.glyph & PANGO_GLYPH_UNKNOWN_FLAG)) {
+          glyph_x_px += adv_px;
+          continue;
+        }
+
+        // Centre of this glyph on the arc, via the pattern mapping
+        // arc(x) = arc_start + (x - x_start); x_start is 0 by the fitter's
+        // contract but subtract it anyway so the mapping reads literally.
+        const double glyph_centre_arc =
+            arc_start + (glyph_x_px - bl.x_start) + adv_px * 0.5;
+        double lookup_arc =
+            flip ? w.total - glyph_centre_arc : glyph_centre_arc;
+
+        if (w.closed) {
+          // Wrap into [0, total) — fmod of a negative stays negative.
+          lookup_arc = std::fmod(lookup_arc, w.total);
+          if (lookup_arc < 0.0)
+            lookup_arc += w.total;
+        } else if (lookup_arc < 0.0 || lookup_arc > w.total) {
+          glyph_x_px += adv_px;  // off the open guide's ends: skip
+          continue;
+        }
+
+        Vec2 pos;
+        double angle;
+        if (!path_point_at(w.bp, w.arc_table, w.total, lookup_arc, pos, angle))
+          break;
+
+        // The v2 attachment convention (s347, Scott's badge ruling): an
+        // UNFLIPPED line puts its BASELINE on the path (glyphs rise into
+        // the band above); a FLIPPED line hangs from its ASCENDER (cap
+        // line on the path, glyphs descending into the band below), so
+        // top and bottom text occupy the same annulus on a ring. In the
+        // glyph frame that's a +ascent perpendicular drop for flipped
+        // lines. Rise lifts against it as usual.
+        const double perp = flip ? bl.ascent : 0.0;
+
+        PatternGlyph g;
+        g.info   = &gi_info;
+        g.font   = pfont;
+        g.pos    = pos;
+        g.angle  = flip ? angle + M_PI : angle;
+        g.adv_px = adv_px;
+        g.pen_y  = bl.y + perp - run_rise_px;
+        g.has_fg = run_has_fg;
+        if (run_has_fg) {
+          g.fg_r = fr / 65535.0; g.fg_g = fg_ / 65535.0;
+          g.fg_b = fb / 65535.0; g.fg_a = fa / 65535.0;
+        }
+        fn(g);
+
+        glyph_x_px += adv_px;
+      }
+
+    } while (pango_layout_iter_next_run(iter));
+    pango_layout_iter_free(iter);
   }
+  return true;
+}
+
+void Canvas::draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
+                                const SceneNode &text_obj,
+                                const SceneNode &guide) {
+  if (!guide.path || guide.path->nodes.size() < 2)
+    return;
 
   // ── s347 m3 — Selection highlight on the curve ────────────────────────
   // The pattern twin of draw_text_in_boundary's rectangle pass: clip the
@@ -353,8 +484,31 @@ void Canvas::draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
   // +descent (bottom edge), tops walked forward and bottoms back, filled
   // as one polygon per baseline. Same translucent blue as the box pass;
   // drawn BEFORE glyphs so text reads through it.
+  //
+  // s349 m7 — this pass derives its OWN layout + walk cache: it consumes
+  // band geometry (arc intervals swept into strips), not glyph yields, so
+  // it stays out of pattern_glyph_walk. Only runs during an active edit
+  // with a live selection, so the second compute_text_layout is paid only
+  // then.
   if (&text_obj == m_text_editing && m_text_cursor &&
       m_text_cursor->has_selection()) {
+    TextLayout tl = compute_text_layout(
+        &guide, &text_obj, 0,
+        project() ? &project()->text_styles : nullptr);
+    std::map<double, GuideWalk> walks;
+    auto walk_for = [&](double offset) -> const GuideWalk& {
+      auto it = walks.find(offset);
+      if (it != walks.end()) return it->second;
+      GuideWalk w;
+      PathData pd = pattern_walk_path(*guide.path, offset);
+      if (pd.nodes.size() >= 2) {
+        w.bp = BezierPath::from_path_data(pd);
+        w.total = build_arc_table(w.bp, w.arc_table);
+        w.closed = pd.closed;
+        w.ok = (w.total >= 0.001);
+      }
+      return walks.emplace(offset, std::move(w)).first->second;
+    };
     auto [sel_start, sel_end] = m_text_cursor->selection_range();
     cr->save();
     cr->set_source_rgba(0.30, 0.55, 0.95, 0.30);
@@ -376,7 +530,7 @@ void Canvas::draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
           bl.pattern->arc_start + (double)p_e.x / (double)PANGO_SCALE;
       if (a2 <= a1)
         continue;
-      const Walk& w = walk_for(bl.pattern->offset);   // s347 m4
+      const GuideWalk& w = walk_for(bl.pattern->offset);   // s347 m4
       if (!w.ok)
         continue;
       // Sample density: ~one point per 4 doc units, bounded.
@@ -426,128 +580,41 @@ void Canvas::draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
     cr->restore();
   }
 
-  for (const auto &bl : tl.baselines) {
-    if (!bl.pango || !bl.pattern)
-      continue;
-    const Walk& w = walk_for(bl.pattern->offset);   // s347 m4
-    if (!w.ok)
-      continue;
-    const double arc_start = bl.pattern->arc_start;
-    const bool flip = bl.pattern->flip;
+  // ── Glyph pass — placement comes from THE walk (s349 m7); this consumer
+  // only inks. Source is set lazily and re-set only when the run colour
+  // actually changes (the walk yields per glyph; per-run behaviour is
+  // recovered by the change check, so a gradient node fill isn't rebuilt
+  // per glyph).
+  bool src_set = false, src_fg = false;
+  double sr = 0, sg = 0, sb = 0, sa = 0;
+  pattern_glyph_walk(text_obj, guide, [&](const PatternGlyph &g) {
+    if (!src_set || src_fg != g.has_fg ||
+        (g.has_fg &&
+         (sr != g.fg_r || sg != g.fg_g || sb != g.fg_b || sa != g.fg_a))) {
+      if (g.has_fg)
+        cr->set_source_rgba(g.fg_r, g.fg_g, g.fg_b, g.fg_a);
+      else
+        apply_fill(cr, text_obj.fill);
+      src_set = true; src_fg = g.has_fg;
+      sr = g.fg_r; sg = g.fg_g; sb = g.fg_b; sa = g.fg_a;
+    }
 
-    PangoLayoutIter *iter = pango_layout_get_iter(bl.pango.get());
-    do {
-      PangoLayoutRun *run = pango_layout_iter_get_run(iter);
-      if (!run)
-        continue;
+    cr->save();
+    cr->translate(g.pos.x, g.pos.y);
+    cr->rotate(g.angle);
 
-      PangoGlyphString *gs = run->glyphs;
-      PangoFont *pfont = run->item->analysis.font;
+    PangoGlyphString single;
+    int log_cluster = 0;
+    single.num_glyphs = 1;
+    single.glyphs = g.info;
+    single.log_clusters = &log_cluster;
 
-      // Run origin within the line's layout (line-local px frame — the
-      // same frame x_start/x_end and the arc mapping live in).
-      PangoRectangle run_ext;
-      pango_layout_iter_get_run_extents(iter, nullptr, &run_ext);
-      double glyph_x_px = run_ext.x / (double)PANGO_SCALE;
-
-      // Per-run ink source: a foreground span covering this run wins;
-      // otherwise the node fill (same precedence the box renderer gets for
-      // free from pango_cairo_show_layout).
-      bool run_has_fg = false;
-      double run_rise_px = 0.0;   // s347 m4 — PANGO_ATTR_RISE is applied by
-                                  // pango_layout's run renderer, NOT baked
-                                  // into glyph geometry, so show_glyph_string
-                                  // loses it; lift the run's rise here and
-                                  // offset perpendicular (+rise = up = -y in
-                                  // the glyph frame). The box renderer gets
-                                  // this free from show_layout.
-      {
-        guint16 fr = 0, fg_ = 0, fb = 0, fa = 0xffff;
-        for (GSList *a = run->item->analysis.extra_attrs; a; a = a->next) {
-          PangoAttribute *attr = (PangoAttribute *)a->data;
-          if (attr->klass->type == PANGO_ATTR_FOREGROUND) {
-            const PangoColor &c = ((PangoAttrColor *)attr)->color;
-            fr = c.red; fg_ = c.green; fb = c.blue;
-            run_has_fg = true;
-          } else if (attr->klass->type == PANGO_ATTR_FOREGROUND_ALPHA) {
-            fa = ((PangoAttrInt *)attr)->value;
-          } else if (attr->klass->type == PANGO_ATTR_RISE) {
-            run_rise_px = ((PangoAttrInt *)attr)->value
-                          / (double)PANGO_SCALE;
-          }
-        }
-        if (run_has_fg)
-          cr->set_source_rgba(fr / 65535.0, fg_ / 65535.0, fb / 65535.0,
-                              fa / 65535.0);
-        else
-          apply_fill(cr, text_obj.fill);
-      }
-
-      for (int gi = 0; gi < gs->num_glyphs; ++gi) {
-        PangoGlyphInfo &gi_info = gs->glyphs[gi];
-
-        // Advance includes layout-baked letter spacing (see header note).
-        const double adv_px = gi_info.geometry.width / (double)PANGO_SCALE;
-
-        if (gi_info.glyph == PANGO_GLYPH_EMPTY ||
-            (gi_info.glyph & PANGO_GLYPH_UNKNOWN_FLAG)) {
-          glyph_x_px += adv_px;
-          continue;
-        }
-
-        // Centre of this glyph on the arc, via the pattern mapping
-        // arc(x) = arc_start + (x - x_start); x_start is 0 by the fitter's
-        // contract but subtract it anyway so the mapping reads literally.
-        const double glyph_centre_arc =
-            arc_start + (glyph_x_px - bl.x_start) + adv_px * 0.5;
-        double lookup_arc =
-            flip ? w.total - glyph_centre_arc : glyph_centre_arc;
-
-        if (w.closed) {
-          // Wrap into [0, total) — fmod of a negative stays negative.
-          lookup_arc = std::fmod(lookup_arc, w.total);
-          if (lookup_arc < 0.0)
-            lookup_arc += w.total;
-        } else if (lookup_arc < 0.0 || lookup_arc > w.total) {
-          glyph_x_px += adv_px;  // off the open guide's ends: skip
-          continue;
-        }
-
-        Vec2 pos;
-        double angle;
-        if (!path_point_at(w.bp, w.arc_table, w.total, lookup_arc, pos, angle))
-          break;
-        const double effective_angle = flip ? angle + M_PI : angle;
-
-        cr->save();
-        cr->translate(pos.x, pos.y);
-        cr->rotate(effective_angle);
-
-        PangoGlyphString single;
-        int log_cluster = 0;
-        single.num_glyphs = 1;
-        single.glyphs = &gi_info;
-        single.log_clusters = &log_cluster;
-
-        // Horizontal: centre on the advance. Vertical — the v2 attachment
-        // convention (s347, Scott's badge ruling): an UNFLIPPED line puts
-        // its BASELINE on the path (glyphs rise into the band above);
-        // a FLIPPED line hangs from its ASCENDER (cap line on the path,
-        // glyphs descending into the band below), so top and bottom text
-        // occupy the same annulus on a ring. In the glyph frame that's a
-        // +ascent perpendicular drop for flipped lines. Rise lifts against
-        // it as usual.
-        const double perp = flip ? bl.ascent : 0.0;
-        cr->move_to(-adv_px * 0.5, bl.y + perp - run_rise_px);
-        pango_cairo_show_glyph_string(cr->cobj(), pfont, &single);
-        cr->restore();
-
-        glyph_x_px += adv_px;
-      }
-
-    } while (pango_layout_iter_next_run(iter));
-    pango_layout_iter_free(iter);
-  }
+    // Horizontal: centre on the advance. Vertical: pen_y carries the
+    // attachment convention + rise (see pattern_glyph_walk).
+    cr->move_to(-g.adv_px * 0.5, g.pen_y);
+    pango_cairo_show_glyph_string(cr->cobj(), g.font, &single);
+    cr->restore();
+  });
 }
 
 // ── s301 m1c — Glyph render for bound text ──────────────────────────────────

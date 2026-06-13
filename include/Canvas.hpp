@@ -3076,6 +3076,35 @@ private:
   void draw_text_on_guide(const Cairo::RefPtr<Cairo::Context> &cr,
                           const SceneNode &text_obj,
                           const SceneNode &guide);
+
+  // ── s349 m7 — THE per-glyph pattern walk ──────────────────────────────
+  // One walk yields every placed glyph of a guide-attached (v2) text:
+  // position on the line's own walk path, tangent rotation, rise lift, the
+  // flip ascender-attachment convention, closed wrap / open clamp-skip —
+  // ALL of the placement math that used to live inline in
+  // draw_text_on_guide, factored so the renderer (show_glyph_string) and
+  // the outliner (text_to_paths_op's FreeType contour pass) consume the
+  // SAME placement and cannot disagree. The consumer receives the glyph in
+  // the rotated frame contract the renderer uses: translate(pos),
+  // rotate(angle), pen at (-adv_px/2, pen_y); show_glyph_string applies
+  // the glyph geometry offsets on top of the pen, so an outline consumer
+  // must add geometry.x_offset / y_offset itself (see the m7 xform in
+  // Canvas_ops.cpp). Returns false when nothing can place (no pattern
+  // baselines / degenerate walk) so callers may fall back.
+  struct PatternGlyph {
+    PangoGlyphInfo *info = nullptr;  // glyph id + geometry (advance, offsets)
+    PangoFont      *font = nullptr;  // run font (resolved family/size/weight)
+    Vec2            pos;     // doc point on the walk path at the glyph centre
+    double          angle  = 0.0;  // tangent rotation, flip's π applied
+    double          adv_px = 0.0;  // advance incl. layout-baked letter spacing
+    double          pen_y  = 0.0;  // perpendicular pen drop in the rotated
+                             // frame: bl.y + attach perp (flip→ascent) − rise
+    bool            has_fg = false;  // a foreground span covers this run
+    double fg_r = 0, fg_g = 0, fg_b = 0, fg_a = 1;  // span colour if has_fg
+  };
+  bool pattern_glyph_walk(const SceneNode &text_obj, const SceneNode &guide,
+                          const std::function<void(const PatternGlyph &)> &fn);
+
   void draw_text_node(const Cairo::RefPtr<Cairo::Context> &cr,
                       const SceneNode &obj);
 

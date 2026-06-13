@@ -47,6 +47,7 @@
 #include <glibmm/main.h>
 #include <gtkmm/gestureclick.h>
 #include <limits>
+#include <map>      // s349 m7 — per-run-font FT face cache in text_to_paths_op
 #include <numeric>
 #include <set>
 #include <string>
@@ -4741,6 +4742,19 @@ void Canvas::text_to_paths_op() {
     return;
   }
 
+  // s349 m7 — A live edit session's buffer must land before conversion:
+  // commit (the unbound-new pattern branch also performs the textonpath_#
+  // grouping), THEN gather from the post-commit selection. Converting
+  // mid-edit otherwise leaves m_text_editing / m_text_cursor pointing into
+  // a node the replace below destroys.
+  if (m_text_editing)
+    commit_text_edit();
+  if (m_selection.empty()) {
+    // commit of an empty new text cancels and can drop the selection
+    LOG_WARN("Canvas: text_to_paths_op — nothing selected after commit");
+    return;
+  }
+
   // s344 — Gather both legacy Type::Text nodes and TextBoxMgr objects. A
   // canvas click selects a member's boundary Path, so resolve those up to the
   // owning Mgr; a layers selection is the Mgr directly. Dedup so two selected
@@ -4750,12 +4764,31 @@ void Canvas::text_to_paths_op() {
   auto have_mgr = [&](SceneNode *m) {
     return std::find(mgr_nodes.begin(), mgr_nodes.end(), m) != mgr_nodes.end();
   };
+  auto have_text = [&](SceneNode *t) {
+    return std::find(text_nodes.begin(), text_nodes.end(), t) !=
+           text_nodes.end();
+  };
   for (SceneNode *obj : m_selection) {
     if (obj->is_text_box_mgr()) {
       if (!have_mgr(obj))
         mgr_nodes.push_back(obj);
     } else if (obj->is_text()) {
-      text_nodes.push_back(obj);
+      if (!have_text(obj))
+        text_nodes.push_back(obj);
+    } else if (obj->type == SceneNode::Type::Group) {
+      // s349 m7 — a textonpath_# group (the post-commit shape of v2 pattern
+      // text: finalize_new_pattern_text groups text + guide) is what a
+      // canvas click selects. Descend and gather every pattern text inside;
+      // the guide and any other members are left alone. Non-pattern text
+      // inside arbitrary groups stays out of scope (same deferred edge as
+      // a Mgr nested in a Group).
+      std::function<void(SceneNode *)> scan = [&](SceneNode *n) {
+        if (n->is_text() && !n->text_guide_id.empty() && !have_text(n))
+          text_nodes.push_back(n);
+        for (auto &ch : n->children)
+          scan(ch.get());
+      };
+      scan(obj);
     } else {
       SceneNode *mgr = nullptr;
       if (find_textbox_member(obj, &mgr, nullptr) && mgr && !have_mgr(mgr))
@@ -4780,6 +4813,242 @@ void Canvas::text_to_paths_op() {
   for (SceneNode *obj : text_nodes) {
     if (obj->text_content.empty())
       continue;
+
+    // ── s349 m7 — path-text v2: outline through THE walk ────────────────
+    // A v2 pattern text (text_guide_id set) used to fall through to the
+    // free-text placement below and outline as straight-line text at the
+    // cached text_x/text_y — another phantom, the same disease m1 cured in
+    // object_bbox. Now the outliner consumes pattern_glyph_walk — the
+    // identical per-glyph placement the renderer inks from — emitting
+    // FreeType contours transformed per glyph, so outline and render
+    // CANNOT disagree. Both topologies inherit for free: the walk routes
+    // closed wrap / open clamp-skip / flips / offset stacks internally.
+    //
+    // The guide is NOT touched: the ruler model (text_on_path_v2.md) makes
+    // it a real drawable the user owns; only the legacy walker's invisible
+    // orphan guides are deleted on convert. The outline replaces the text
+    // node IN ITS ACTUAL PARENT — committed pattern text lives inside its
+    // textonpath_# group, not at layer level — and the group survives as
+    // an ordinary group around (guide, outline).
+    if (!obj->text_guide_id.empty()) {
+      SceneNode *guide_v2 = top_find_path_by_id(obj->text_guide_id);
+      if (guide_v2 && guide_v2->path) {
+        // Colour buckets: glyphs covered by a foreground span outline into
+        // a Solid bucket per span colour; everything else into the
+        // node-fill bucket. A Compound paints with ITS OWN fill (even-odd,
+        // child fills inert — S58g), so multi-colour output must be one
+        // Compound per bucket; the uniform case stays a single bare
+        // Compound, byte-compatible with the legacy shape.
+        struct Bucket {
+          bool has_fg;
+          double r, g, b, a;
+          std::vector<PathData> contours;
+        };
+        std::vector<Bucket> buckets;
+        auto bucket_for = [&](const PatternGlyph &g) -> Bucket & {
+          for (auto &bk : buckets) {
+            if (bk.has_fg != g.has_fg)
+              continue;
+            if (!g.has_fg ||
+                (bk.r == g.fg_r && bk.g == g.fg_g && bk.b == g.fg_b &&
+                 bk.a == g.fg_a))
+              return bk;
+          }
+          buckets.push_back({g.has_fg, g.fg_r, g.fg_g, g.fg_b, g.fg_a, {}});
+          return buckets.back();
+        };
+
+        // FT face per Pango run font, opened lazily and sized from the
+        // FONT's own absolute size — styles and spans make size per-RUN;
+        // the node's text_font_size is only the baseline tier (s344) and
+        // would mis-size styled runs.
+        struct FaceEntry { FT_Face face = nullptr; bool tried = false; };
+        std::map<PangoFont *, FaceEntry> faces;
+        auto face_for = [&](PangoFont *pfont) -> FT_Face {
+          auto &e = faces[pfont];
+          if (e.tried)
+            return e.face;
+          e.tried = true;
+          const char *font_file = nullptr;
+          int face_idx = 0;
+#if defined(PANGO_VERSION_CHECK) && PANGO_VERSION_CHECK(1, 18, 0)
+          PangoFcFont *fc_font = PANGO_FC_FONT(pfont);
+          if (fc_font) {
+            FcPattern *pat = pango_fc_font_get_pattern(fc_font);
+            FcPatternGetString(pat, FC_FILE, 0, (FcChar8 **)&font_file);
+            FcPatternGetInteger(pat, FC_INDEX, 0, &face_idx);
+          }
+#endif
+          if (!font_file) {
+            LOG_WARN("text_to_paths_op: v2 — could not resolve font file "
+                     "for run, skipping its glyphs");
+            return nullptr;
+          }
+          FT_Face face = nullptr;
+          if (FT_New_Face(ft_lib, font_file, face_idx, &face) != 0) {
+            LOG_WARN("text_to_paths_op: v2 — FT_New_Face failed for {}",
+                     font_file);
+            return nullptr;
+          }
+          double size_px = obj->text_font_size;
+          if (PangoFontDescription *d =
+                  pango_font_describe_with_absolute_size(pfont)) {
+            if (pango_font_description_get_size(d) > 0)
+              size_px =
+                  pango_font_description_get_size(d) / (double)PANGO_SCALE;
+            pango_font_description_free(d);
+          }
+          FT_Set_Char_Size(face, 0, (FT_F26Dot6)(size_px * 64.0), 72, 72);
+          e.face = face;
+          return face;
+        };
+
+        pattern_glyph_walk(*obj, *guide_v2, [&](const PatternGlyph &g) {
+          FT_Face face = face_for(g.font);
+          if (!face)
+            return;
+          if (FT_Load_Glyph(face, g.info->glyph, FT_LOAD_NO_BITMAP) != 0 ||
+              face->glyph->format != FT_GLYPH_FORMAT_OUTLINE)
+            return;
+
+          FTOutlineCtx ctx;
+          ctx.scale = 1.0 / 64.0;
+          FT_Outline_Decompose(&face->glyph->outline, &s_ft_callbacks, &ctx);
+
+          // EXACTLY the renderer's frame: pen at (-adv/2, pen_y) in the
+          // rotated frame; show_glyph_string applies the glyph geometry
+          // offsets on top of the pen and draws FT Y-up ink downward, so
+          // an FT point (fx, fy) lands at
+          //   local = (fx + x_off - adv/2,  pen_y + y_off - fy)
+          // then rotates by angle about the walk point.
+          const double ca = std::cos(g.angle), sa = std::sin(g.angle);
+          const double x_off =
+              g.info->geometry.x_offset / (double)PANGO_SCALE;
+          const double y_off =
+              g.info->geometry.y_offset / (double)PANGO_SCALE;
+          auto xform = [&](double &nx, double &ny) {
+            const double lx = nx + x_off - g.adv_px * 0.5;
+            const double ly = g.pen_y + y_off - ny;
+            nx = g.pos.x + lx * ca - ly * sa;
+            ny = g.pos.y + lx * sa + ly * ca;
+          };
+          Bucket &bucket = bucket_for(g);
+          for (auto &pd : ctx.contours) {
+            for (auto &n : pd.nodes) {
+              xform(n.x, n.y);
+              xform(n.cx1, n.cy1);
+              xform(n.cx2, n.cy2);
+            }
+            if (!pd.nodes.empty())
+              bucket.contours.push_back(std::move(pd));
+          }
+        });
+
+        for (auto &fe : faces)
+          if (fe.second.face)
+            FT_Done_Face(fe.second.face);
+
+        buckets.erase(std::remove_if(buckets.begin(), buckets.end(),
+                                     [](const Bucket &b) {
+                                       return b.contours.empty();
+                                     }),
+                      buckets.end());
+        if (buckets.empty()) {
+          LOG_WARN("text_to_paths_op: v2 '{}' produced no contours",
+                   obj->text_content);
+          continue;
+        }
+
+        auto make_compound = [&](Bucket &b) {
+          auto compound = std::make_unique<SceneNode>();
+          compound->type = SceneNode::Type::Compound;
+          if (b.has_fg) {
+            FillStyle f = obj->fill;
+            f.type = FillStyle::Type::Solid;
+            f.r = b.r; f.g = b.g; f.b = b.b; f.a = b.a;
+            compound->fill = f;
+          } else {
+            compound->fill = obj->fill;
+          }
+          compound->stroke = obj->stroke;
+          compound->opacity = obj->opacity;
+          for (auto &pd : b.contours) {
+            auto path_child = std::make_unique<SceneNode>();
+            path_child->type = SceneNode::Type::Path;
+            path_child->fill = compound->fill;
+            // Stroke per child — same rationale as the legacy branch
+            // below (Compound's draw reads stroke per-child).
+            path_child->stroke = obj->stroke;
+            path_child->path = std::make_unique<PathData>(std::move(pd));
+            compound->children.push_back(std::move(path_child));
+          }
+          return compound;
+        };
+
+        std::unique_ptr<SceneNode> outline;
+        if (buckets.size() == 1) {
+          outline = make_compound(buckets[0]);
+          outline->name = m_doc->uniquify_name(obj->name + " (outline)");
+        } else {
+          // Coloured spans: one Compound per colour under one Group, so
+          // each colour keeps even-odd counters within itself.
+          outline = std::make_unique<SceneNode>();
+          outline->type = SceneNode::Type::Group;
+          outline->name = m_doc->uniquify_name(obj->name + " (outline)");
+          outline->opacity = obj->opacity;
+          int bi = 0;
+          for (auto &b : buckets) {
+            auto c = make_compound(b);
+            c->name = m_doc->uniquify_name(
+                obj->name + " (outline " + std::to_string(++bi) + ")");
+            outline->children.push_back(std::move(c));
+          }
+        }
+
+        // Replace IN THE ACTUAL PARENT (find_parent descends groups).
+        int v2_idx = -1;
+        SceneNode *v2_parent = find_parent(m_doc, obj, &v2_idx);
+        if (!v2_parent || v2_idx < 0) {
+          LOG_WARN("text_to_paths_op: v2 '{}' has no parent in document; "
+                   "skipped",
+                   obj->text_content);
+          continue;
+        }
+
+        // ReplaceNodeCommand removes by SVG id; fresh nodes have empty id —
+        // carry a unique id onto both sides (the s344 Mgr-branch fix).
+        if (obj->id.empty())
+          obj->id = obj->internal_id;
+        outline->id = obj->id;
+
+        const std::string v2_label = obj->text_content;  // obj freed below
+        const size_t v2_buckets = buckets.size();
+        if (m_top_text == obj)  // cached ToP pointer — about to dangle
+          m_top_text = nullptr;
+
+        auto before_snap = clone_node(*obj);
+        SceneNode *raw_outline = outline.get();
+        v2_parent->children.insert(v2_parent->children.begin() + v2_idx,
+                                   std::move(outline));
+        v2_parent->children.erase(v2_parent->children.begin() + v2_idx + 1);
+
+        if (m_history) {
+          m_history->push(std::make_unique<ReplaceNodeCommand>(
+              v2_parent, v2_idx, std::move(before_snap),
+              clone_node(*raw_outline)));
+        }
+
+        LOG_INFO("text_to_paths_op: v2 '{}' -> outline ({} colour "
+                 "bucket(s)); guide kept",
+                 v2_label, v2_buckets);
+        continue;
+      }
+      // Dangling guide: the renderer free-renders as its fallback —
+      // outline the same picture (fall through to free placement below).
+      LOG_WARN("text_to_paths_op: v2 guide '{}' dangling for '{}' — free "
+               "placement fallback",
+               obj->text_guide_id, obj->text_content);
+    }
 
     // ── Detect text-on-path ───────────────────────────────────────────
     bool is_top = !obj->text_path_id.empty();
@@ -5073,7 +5342,11 @@ void Canvas::text_to_paths_op() {
     SceneNode *raw_compound = compound.get();
 
     // Clone the original text node before replacing it — needed for undo.
+    // s349 — also capture the label: obj is freed by the erase below, and
+    // the LOG at the bottom used to read obj->text_content after the free
+    // (the Mgr branch already carries this fix).
     auto before_snap = clone_node(*obj);
+    const std::string legacy_label = obj->text_content;
 
     owner_layer->children.insert(owner_layer->children.begin() + insert_idx,
                                  std::move(compound));
@@ -5117,7 +5390,7 @@ void Canvas::text_to_paths_op() {
       m_history->push(std::move(composite));
     }
 
-    LOG_INFO("text_to_paths_op: '{}' → {} contour(s){}", obj->text_content,
+    LOG_INFO("text_to_paths_op: '{}' → {} contour(s){}", legacy_label,
              all_contours.size(), is_top ? " (PTT, guide removed)" : "");
   }
 
