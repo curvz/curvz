@@ -908,7 +908,8 @@ MainWindow::script_export_png(const std::string& path, int size) {
   // script-driven exports are identifiable in the log apart from
   // GUI Export Documents writes (which log through ExportDialog's
   // own lines) and from the writer's own debug-level line.
-  if (!export_png_sized(*doc, path, out_w, out_h)) {
+  if (!export_png_sized(*doc, path, out_w, out_h,
+                        &m_project->text_styles)) {  // s359 — styled colour
     return ScriptExportPngResult::IoFailed;
   }
   LOG_INFO("export png: wrote '{}' {}x{}", path, out_w, out_h);

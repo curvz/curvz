@@ -19,6 +19,15 @@
 
 namespace Curvz {
 
+// s359 — optional style library so PNG export resolves bound-style text colour
+// (paragraph/run styles whose colour lives in the project's TextStyleLibrary,
+// not on the node). When null, text falls back to the node fill exactly as
+// before — the symbolic icon-theme exports (export_png / render_png used by the
+// theme writer) pass null and stay black-on-transparent. Document export
+// (export_png_sized) threads &project.text_styles so styled box text exports in
+// its true colour, matching the canvas and PDF.
+namespace style { class TextStyleLibrary; }
+
 // Standard sizes exported for a complete icon theme
 static constexpr int k_png_sizes[] = { 16, 24, 32, 48, 64, 128, 256 };
 static constexpr int k_png_size_count = 7;
@@ -26,10 +35,12 @@ static constexpr int k_png_size_count = 7;
 // Render the document to a PNG file at the given pixel size.
 // Square output, aspect-preserved with letterboxed transparency.
 // Returns true on success.
-bool export_png(const CurvzDocument& doc, const std::string& path, int size_px);
+bool export_png(const CurvzDocument& doc, const std::string& path, int size_px,
+                const style::TextStyleLibrary* text_styles = nullptr);
 
 // Render to an in-memory PNG blob. Returns empty vector on failure.
-std::vector<unsigned char> render_png(const CurvzDocument& doc, int size_px);
+std::vector<unsigned char> render_png(const CurvzDocument& doc, int size_px,
+                                      const style::TextStyleLibrary* text_styles = nullptr);
 
 // ── S104 m1 — non-square aspect-preserving export ─────────────────────────────
 //
@@ -48,7 +59,8 @@ std::vector<unsigned char> render_png(const CurvzDocument& doc, int size_px);
 bool export_png_sized(const CurvzDocument& doc,
                       const std::string& path,
                       int width_px,
-                      int height_px);
+                      int height_px,
+                      const style::TextStyleLibrary* text_styles = nullptr);
 
 // ── Template thumbnail (S63 M2) ───────────────────────────────────────────────
 // Renders an annotated thumbnail for a template bundle: the canvas outline

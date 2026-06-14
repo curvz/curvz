@@ -324,6 +324,20 @@ void outline_box_text(const SceneNode *boundary, const SceneNode *text,
     y = tl.frame_cy + rx * sa + ry * ca;
   };
 
+  // s359 — per-run foreground. The box outliner used to bake the single node
+  // `fill` onto every glyph, so styled (coloured) box text saved/exported as the
+  // node colour (black) even though the canvas — which hands the styled
+  // PangoLayout straight to pango_cairo_show_layout — painted the run colours.
+  // resolve_run_ink() was written to be "shared by the pattern walk and the box
+  // outliner" (see its header) but only the pattern walk consumed it. Wire it in
+  // here too: eff_fill carries the active run's colour and emit_glyph_outline
+  // paints with it. A run with a FOREGROUND span -> Solid seeded from the span
+  // (other paint attrs inherited from the node fill, matching
+  // outline_pattern_text's bucket seeding); a run with no span -> the node fill,
+  // exactly as before. The trailing hyphen dash inherits the last run's eff_fill,
+  // matching draw_hyphen_dash riding the last-set cairo source.
+  FillStyle eff_fill = fill;
+
   // s358 — shared glyph emit. Loads + decomposes one glyph, maps its contours
   // to doc space at (origin_x, base_y), and pushes a Path (single contour) or
   // even-odd Compound (holes) into out. The per-run glyph loop and the trailing
@@ -360,7 +374,7 @@ void outline_box_text(const SceneNode *boundary, const SceneNode *text,
       auto p = std::make_unique<SceneNode>();
       p->type = SceneNode::Type::Path;
       p->name = "glyph";
-      p->fill = fill;
+      p->fill = eff_fill;
       p->stroke = stroke;
       p->path = std::make_unique<PathData>(std::move(contours[0]));
       out.push_back(std::move(p));
@@ -368,12 +382,12 @@ void outline_box_text(const SceneNode *boundary, const SceneNode *text,
       auto comp = std::make_unique<SceneNode>();
       comp->type = SceneNode::Type::Compound;
       comp->name = "glyph";
-      comp->fill = fill;
+      comp->fill = eff_fill;
       comp->stroke = stroke;
       for (auto &pd : contours) {
         auto child = std::make_unique<SceneNode>();
         child->type = SceneNode::Type::Path;
-        child->fill = fill;
+        child->fill = eff_fill;
         child->stroke = stroke;
         child->path = std::make_unique<PathData>(std::move(pd));
         comp->children.push_back(std::move(child));
@@ -396,6 +410,22 @@ void outline_box_text(const SceneNode *boundary, const SceneNode *text,
       PangoFont *pfont = run->item->analysis.font;
       last_pfont = pfont;
       PangoGlyphString *gs = run->glyphs;
+
+      // s359 — resolve THIS run's foreground colour. has_fg -> Solid seeded from
+      // the span (inherit the node fill's other paint fields); no span -> node
+      // fill. Mirrors outline_pattern_text's per-glyph bucket colour so the box
+      // and pattern outliners colour identically.
+      const RunInk ink = resolve_run_ink(run);
+      if (ink.has_fg) {
+        eff_fill = fill;
+        eff_fill.type = FillStyle::Type::Solid;
+        eff_fill.r = ink.r;
+        eff_fill.g = ink.g;
+        eff_fill.b = ink.b;
+        eff_fill.a = ink.a;
+      } else {
+        eff_fill = fill;
+      }
 
       PangoRectangle run_ext;
       pango_layout_iter_get_run_extents(iter, nullptr, &run_ext);

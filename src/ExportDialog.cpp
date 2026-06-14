@@ -1095,7 +1095,8 @@ void ExportDialog::docs_perform_export(const std::vector<DocTarget>& targets) {
                 out_w = std::max(1, (int)std::round(
                     chosen_px * (double)cw / (double)ch));
             }
-            ok = export_png_sized(*t.doc, t.path, out_w, out_h);
+            ok = export_png_sized(*t.doc, t.path, out_w, out_h,
+                                  &m_project->text_styles);  // s359 — styled colour
         } else /* want_refpt */ {
             const std::size_t n = RefptExporter::count_exportable(*t.doc);
             std::string body =

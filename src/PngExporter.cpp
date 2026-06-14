@@ -4,6 +4,7 @@
 #include "math/BezierPath.hpp"
 #include "TextCursor.hpp"    // s358 — compute_text_layout (TBM / bound box text)
 #include "GlyphOutline.hpp"  // s358 — pattern_glyph_walk (ToP v2 path text)
+#include "style/TextStyleLibrary.hpp"  // s359 — bound-style colour resolve
 #include <cairomm/cairomm.h>
 #include <pango/pangocairo.h>
 #include <cairo/cairo.h>
@@ -81,6 +82,15 @@ static void apply_stroke(const Cairo::RefPtr<Cairo::Context>& cr, const StrokeSt
 // render_to_surface / render_to_surface_sized, cleared after.
 static const CurvzDocument* g_png_doc = nullptr;
 
+// s359 — style library holder, set/cleared around the layer walk alongside
+// g_png_doc. The text branches read it to resolve bound-style colour (a
+// paragraph/run style whose colour lives in the project lib, not on the node).
+// Null = node-fill fallback, the prior behaviour (and what symbolic icon
+// exports want). This is the "deferred refinement" the s358 render_text comment
+// flagged: PNG export now threads the project lib so styled box text exports in
+// its true colour instead of the node fill (black).
+static const style::TextStyleLibrary* g_png_text_styles = nullptr;
+
 static void render_object(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNode& obj);
 
 static void render_path_obj(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNode& obj) {
@@ -153,13 +163,17 @@ static void render_text(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNode
     // the node's own scalars); per-span named-style resolution is the deferred
     // refinement that lands when PNG export threads the project lib -- same
     // Stage-1 "visibility wins" posture this file already takes for gradients.
+    // s359 — style lib now threaded via g_png_text_styles (was the deferred
+    // refinement this comment described). Null still resolves from the node's
+    // own scalars, the prior posture.
     const CurvzDocument* doc = g_png_doc;
+    const style::TextStyleLibrary* lib = g_png_text_styles;
 
     // ── Legacy bound text (Type::Text carrying a boundary path) ──────────────
     if (doc && !obj.text_boundary_ids.empty()) {
         SceneNode* boundary = doc->find_by_iid(obj.text_boundary_ids.front());
         if (boundary && boundary->path) {
-            TextLayout tl = compute_text_layout(boundary, &obj, 0, nullptr);
+            TextLayout tl = compute_text_layout(boundary, &obj, 0, lib);
             cr->save();
             if (tl.frame_angle != 0.0) {  // rotated box -> lay into its frame
                 cr->translate(tl.frame_cx, tl.frame_cy);
@@ -193,7 +207,7 @@ static void render_text(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNode
             bool src_set = false, src_fg = false;
             double sr = 0, sg = 0, sb = 0, sa = 0;
             pattern_glyph_walk(
-                obj, *guide, nullptr, [&](const PatternGlyph& g) {
+                obj, *guide, lib, [&](const PatternGlyph& g) {
                     if (!src_set || src_fg != g.has_fg ||
                         (g.has_fg && (sr != g.fg_r || sg != g.fg_g ||
                                       sb != g.fg_b || sa != g.fg_a))) {
@@ -276,7 +290,11 @@ static void render_text_box_mgr(const Cairo::RefPtr<Cairo::Context>& cr,
         // Box shape underneath — its own fill/stroke (visible background/border).
         render_object(cr, boundary);
         // Text slice for this view, starting where the prior view ended.
-        TextLayout tl = compute_text_layout(&boundary, &obj, flow, nullptr);
+        // s359 — g_png_text_styles threaded so bound-style colour resolves into
+        // bl.pango (was nullptr -> the span dropped -> text fell back to
+        // obj.fill = black, while the canvas showed it coloured).
+        TextLayout tl = compute_text_layout(&boundary, &obj, flow,
+                                            g_png_text_styles);
         cr->save();
         if (tl.frame_angle != 0.0) {  // rotated box -> lay into its frame
             cr->translate(tl.frame_cx, tl.frame_cy);
@@ -284,36 +302,8 @@ static void render_text_box_mgr(const Cairo::RefPtr<Cairo::Context>& cr,
             cr->translate(-tl.frame_cx, -tl.frame_cy);
         }
         apply_fill(cr, obj.fill);
-        // s358 diag — TBM text exports black while the canvas shows it white.
-        // Theory: the #ffffff is a foreground SPAN that the fitter only bakes
-        // into bl.pango when given the style lib; we pass nullptr, so the span
-        // is dropped and the text falls back to obj.fill. Log obj.fill plus
-        // whether bl.pango actually carries a PANGO_ATTR_FOREGROUND, to confirm
-        // before threading the lib. (Remove once closed.)
-        LOG_DEBUG("PngExporter TBM: obj.fill.type={} rgb=({:.2f},{:.2f},{:.2f},"
-                  "{:.2f}) lib=null",
-                  (int)obj.fill.type, obj.fill.r, obj.fill.g, obj.fill.b,
-                  obj.fill.a);
         for (const auto& bl : tl.baselines) {
             if (!bl.pango) continue;
-            bool fg_found = false;
-            guint16 fr = 0, fg2 = 0, fb = 0;
-            if (PangoAttrList* al = pango_layout_get_attributes(bl.pango.get())) {
-                PangoAttrIterator* ai = pango_attr_list_get_iterator(al);
-                do {
-                    PangoAttribute* a =
-                        pango_attr_iterator_get(ai, PANGO_ATTR_FOREGROUND);
-                    if (a) {
-                        PangoColor& c = ((PangoAttrColor*)a)->color;
-                        fg_found = true; fr = c.red; fg2 = c.green; fb = c.blue;
-                    }
-                } while (pango_attr_iterator_next(ai));
-                pango_attr_iterator_destroy(ai);
-            }
-            LOG_DEBUG("PngExporter TBM baseline: layout_fg={} fg=({},{},{}) "
-                      "text='{}'",
-                      fg_found, fr, fg2, fb,
-                      pango_layout_get_text(bl.pango.get()));
             cr->save();
             double base_px =
                 pango_layout_get_baseline(bl.pango.get()) / (double)PANGO_SCALE;
@@ -434,7 +424,8 @@ static void render_object(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNo
 // ── Surface render ────────────────────────────────────────────────────────────
 
 static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface(
-        const CurvzDocument& doc, int size_px) {
+        const CurvzDocument& doc, int size_px,
+        const style::TextStyleLibrary* text_styles) {
 
     auto surface = Cairo::ImageSurface::create(
         Cairo::ImageSurface::Format::ARGB32, size_px, size_px);
@@ -457,6 +448,7 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface(
     cr->scale(scale, scale);
 
     g_png_doc = &doc;  // s358 — let text branches resolve boundary/guide by iid
+    g_png_text_styles = text_styles;  // s359 — bound-style colour resolve
     // Layer z-order matches Canvas::draw_objects: paint layers[0] first
     // (bottom of z-order, last in panel) and layers[n-1] last (top of
     // z-order, first in panel). Cairo is last-painted-wins so iteration
@@ -474,6 +466,7 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface(
     }
 
     g_png_doc = nullptr;  // s358 — holder is per-render; never outlives the call
+    g_png_text_styles = nullptr;  // s359
     surface->flush();
     return surface;
 }
@@ -490,15 +483,17 @@ static cairo_status_t write_to_vector(void* closure,
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-std::vector<unsigned char> render_png(const CurvzDocument& doc, int size_px) {
-    auto surface = render_to_surface(doc, size_px);
+std::vector<unsigned char> render_png(const CurvzDocument& doc, int size_px,
+                                      const style::TextStyleLibrary* text_styles) {
+    auto surface = render_to_surface(doc, size_px, text_styles);
     std::vector<unsigned char> result;
     cairo_surface_write_to_png_stream(surface->cobj(), write_to_vector, &result);
     return result;
 }
 
-bool export_png(const CurvzDocument& doc, const std::string& path, int size_px) {
-    auto surface = render_to_surface(doc, size_px);
+bool export_png(const CurvzDocument& doc, const std::string& path, int size_px,
+                const style::TextStyleLibrary* text_styles) {
+    auto surface = render_to_surface(doc, size_px, text_styles);
     cairo_status_t status = cairo_surface_write_to_png(surface->cobj(), path.c_str());
     if (status != CAIRO_STATUS_SUCCESS) {
         LOG_ERROR("PngExporter: failed to write '{}' ({})", path,
@@ -525,7 +520,8 @@ bool export_png(const CurvzDocument& doc, const std::string& path, int size_px) 
 // Otherwise identical: transparent background, currentColor→black, layers
 // drawn bottom-up, guide/ref layers skipped, hidden layers/objects skipped.
 static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface_sized(
-        const CurvzDocument& doc, int width_px, int height_px) {
+        const CurvzDocument& doc, int width_px, int height_px,
+        const style::TextStyleLibrary* text_styles) {
 
     auto surface = Cairo::ImageSurface::create(
         Cairo::ImageSurface::Format::ARGB32, width_px, height_px);
@@ -547,6 +543,7 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface_sized(
     cr->scale(sx, sy);
 
     g_png_doc = &doc;  // s358 — let text branches resolve boundary/guide by iid
+    g_png_text_styles = text_styles;  // s359 — bound-style colour resolve
     // Layer z-order matches Canvas::draw_objects — see render_to_surface()
     // for the full reasoning. Layers ascending (last-painted-wins), children
     // descending (children[size-1] is bottom of within-layer z-order).
@@ -562,6 +559,7 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface_sized(
     }
 
     g_png_doc = nullptr;  // s358 — holder is per-render; never outlives the call
+    g_png_text_styles = nullptr;  // s359
     surface->flush();
     return surface;
 }
@@ -569,13 +567,14 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface_sized(
 bool export_png_sized(const CurvzDocument& doc,
                       const std::string& path,
                       int width_px,
-                      int height_px) {
+                      int height_px,
+                      const style::TextStyleLibrary* text_styles) {
     if (width_px <= 0 || height_px <= 0) {
         LOG_ERROR("PngExporter: invalid dimensions {}x{} for '{}'",
                   width_px, height_px, path);
         return false;
     }
-    auto surface = render_to_surface_sized(doc, width_px, height_px);
+    auto surface = render_to_surface_sized(doc, width_px, height_px, text_styles);
     cairo_status_t status = cairo_surface_write_to_png(surface->cobj(), path.c_str());
     if (status != CAIRO_STATUS_SUCCESS) {
         LOG_ERROR("PngExporter: failed to write '{}' ({})", path,
