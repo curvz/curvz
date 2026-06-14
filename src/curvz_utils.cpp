@@ -10,6 +10,7 @@
 #include "scripting/Scriptable.hpp" // s199 m1 — force_unregister_subtree pump
 
 #include <pango/pango.h>   // s330 — real PANGO_ATTR_* enum (no hardcoded ids)
+#include <pango/pangocairo.h>  // s357 m3-fix — draw_hyphen_dash (paint dash)
 #include <algorithm>
 #include <cctype>
 #include <chrono> // s269 m2 — trim_heap elapsed-us timing
@@ -821,6 +822,37 @@ void cairo_set_source_pixbuf(const Cairo::RefPtr<Cairo::Context> &cr,
   surf->mark_dirty();
 
   cr->set_source(surf, x, y);
+}
+
+// ── draw_hyphen_dash ──────────────────────────────────────────────────
+// See header. Paints a '-' just past the end of a hyphen-broken baseline,
+// without touching the line's layout (so justify + caret stay correct). The
+// trailing x comes from index_to_pos at the end of the line text -- which
+// reflects the ACTUAL glyph end under any alignment, including the stretched
+// right edge of a justified line -- not pango_layout_get_size (that returns
+// the set box width and would push the dash to the margin on a short left-
+// aligned line). The dash font copies the line's font description so the
+// hyphen matches the run's size/family; colour comes from cr's current source.
+void draw_hyphen_dash(const Cairo::RefPtr<Cairo::Context> &cr,
+                      PangoLayout *line, double x_start, double base_y) {
+  if (!cr || !line)
+    return;
+  const char *txt = pango_layout_get_text(line);
+  const int nb = txt ? (int)std::strlen(txt) : 0;
+  PangoRectangle pos;
+  pango_layout_index_to_pos(line, nb, &pos);
+  const double x_end = x_start + (double)pos.x / (double)PANGO_SCALE;
+
+  PangoLayout *dash = pango_cairo_create_layout(cr->cobj());
+  const PangoFontDescription *fd = pango_layout_get_font_description(line);
+  if (fd)
+    pango_layout_set_font_description(dash, fd);
+  pango_layout_set_text(dash, "-", 1);
+  const double base_px =
+      pango_layout_get_baseline(dash) / (double)PANGO_SCALE;
+  cr->move_to(x_end, base_y - base_px);
+  pango_cairo_show_layout(cr->cobj(), dash);
+  g_object_unref(dash);
 }
 
 // ── render_drop_shadow_under ────────────────────────────────────────

@@ -6,6 +6,9 @@
 #include "widgets/DropDown.hpp"  // s208 m5 — substrate system-tab dropdowns
 #include "widgets/Entry.hpp"     // s211 m1 — unregistered substrate Entry for per-tile rename
 #include "math/BezierPath.hpp"
+#include "TextCursor.hpp"      // s357 m3 — compute_text_layout (TBM thumbnail text)
+#include "GlyphOutline.hpp"    // s357 m3 — pattern_glyph_walk (ToP thumbnail text)
+#include <pango/pangocairo.h>  // s357 m3 — glyph inking in thumbnails
 #include <algorithm>
 #include <cairomm/cairomm.h>
 #include <cctype>
@@ -582,20 +585,196 @@ DocumentGallery::render_thumb(CurvzDocument *doc, int size) {
       }
 
     } else if (obj.type == SceneNode::Type::Text) {
-      // Draw a simple grey placeholder bar representing the text baseline
-      double fs = obj.text_font_size;
-      double tx = obj.text_x;
-      // text_y is Y-up; convert to Y-down doc space for Cairo
-      double ty = (double)doc->canvas_height() - obj.text_y - fs;
+      // s357 m3 — real glyph rendering, matching the canvas. Replaces the old
+      // grey placeholder bar, which both failed to show glyphs AND used a
+      // wrong `canvas_height - text_y` flip (the canvas and PngExporter treat
+      // text_y as doc Y-down, no flip — the flip is why bound/anchored text
+      // landed off the clip and read as "not drawn"). Three variants,
+      // dispatched exactly like Canvas::draw_text_node: bound text (TBM) ->
+      // compute_text_layout, guide-attached text (ToP v2) ->
+      // pattern_glyph_walk, else free text. Both layout pumps are the same
+      // free functions SvgWriter already reuses, so no Canvas instance is
+      // needed; the doc resolves its own boundary/guide nodes by iid.
+      const style::TextStyleLibrary *lib =
+          m_project ? &m_project->text_styles : nullptr;
+
+      // Fill source for text: currentColor -> doc luminance, Solid -> rgb.
+      // Gradient (and None) fall back to the luminance ink — a per-glyph
+      // gradient bbox isn't worth it at thumbnail size; visibility wins.
+      auto set_text_src = [&](const FillStyle &f) {
+        if (f.type == FillStyle::Type::Solid)
+          cr->set_source_rgb(f.r, f.g, f.b);
+        else
+          cr->set_source_rgb(cc, cc, cc);
+      };
+
+      // ── Bound text (TBM) ────────────────────────────────────────────────
+      if (!obj.text_boundary_ids.empty()) {
+        SceneNode *boundary = doc->find_by_iid(obj.text_boundary_ids.front());
+        if (boundary && boundary->path) {
+          TextLayout tl = compute_text_layout(boundary, &obj, 0, lib);
+          cr->save();
+          if (tl.frame_angle != 0.0) {  // rotated box -> lay into its frame
+            cr->translate(tl.frame_cx, tl.frame_cy);
+            cr->rotate(tl.frame_angle);
+            cr->translate(-tl.frame_cx, -tl.frame_cy);
+          }
+          set_text_src(obj.fill);
+          for (const auto &bl : tl.baselines) {
+            if (!bl.pango)
+              continue;
+            cr->save();
+            double base_px =
+                pango_layout_get_baseline(bl.pango.get()) / (double)PANGO_SCALE;
+            cr->move_to(bl.x_start, bl.y - base_px);
+            pango_cairo_show_layout(cr->cobj(), bl.pango.get());
+            cr->restore();
+          }
+          cr->restore();
+          return;
+        }
+        // Dangling boundary -> fall through to free render (degraded but
+        // visible), matching draw_text_node's own fallback.
+      }
+
+      // ── Guide-attached text (ToP v2) ────────────────────────────────────
+      if (!obj.text_guide_id.empty()) {
+        SceneNode *guide = doc->find_by_iid(obj.text_guide_id);
+        if (guide && guide->path && guide->path->nodes.size() >= 2) {
+          cr->save();
+          bool src_set = false, src_fg = false;
+          double sr = 0, sg = 0, sb = 0, sa = 0;
+          pattern_glyph_walk(
+              obj, *guide, lib, [&](const PatternGlyph &g) {
+                if (!src_set || src_fg != g.has_fg ||
+                    (g.has_fg && (sr != g.fg_r || sg != g.fg_g ||
+                                  sb != g.fg_b || sa != g.fg_a))) {
+                  if (g.has_fg)
+                    cr->set_source_rgba(g.fg_r, g.fg_g, g.fg_b, g.fg_a);
+                  else
+                    set_text_src(obj.fill);
+                  src_set = true; src_fg = g.has_fg;
+                  sr = g.fg_r; sg = g.fg_g; sb = g.fg_b; sa = g.fg_a;
+                }
+                cr->save();
+                cr->translate(g.pos.x, g.pos.y);
+                cr->rotate(g.angle);
+                PangoGlyphString single;
+                int log_cluster = 0;
+                single.num_glyphs = 1;
+                single.glyphs = g.info;
+                single.log_clusters = &log_cluster;
+                cr->move_to(-g.adv_px * 0.5, g.pen_y);
+                pango_cairo_show_glyph_string(cr->cobj(), g.font, &single);
+                cr->restore();
+              });
+          cr->restore();
+          return;
+        }
+        // Dangling guide -> fall through to free render.
+      }
+
+      // ── Free text ───────────────────────────────────────────────────────
+      if (obj.text_content.empty())
+        return;
       cr->save();
-      cr->set_source_rgba(0.7, 0.7, 0.7, 0.6);
-      double bar_w = std::min(fs * (double)obj.text_content.size() * 0.55,
-                              (double)cw - tx);
-      double bar_h = fs * 0.75;
-      if (bar_w > 1.0 && bar_h > 1.0)
-        cr->rectangle(tx, ty, bar_w, bar_h);
-      cr->fill();
+      // text_y is the baseline anchor in doc (Y-down) space — translate
+      // straight to it, no flip (canvas convention).
+      cr->translate(obj.text_x, obj.text_y);
+      if (obj.text_mirror_h) cr->scale(-1.0, 1.0);
+      if (obj.text_mirror_v) cr->scale(1.0, -1.0);
+      set_text_src(obj.fill);
+
+      PangoLayout *layout = pango_cairo_create_layout(cr->cobj());
+      PangoFontDescription *desc = pango_font_description_new();
+      pango_font_description_set_family(desc, obj.text_font_family.c_str());
+      pango_font_description_set_absolute_size(desc,
+                                               obj.text_font_size * PANGO_SCALE);
+      if (obj.text_bold)
+        pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
+      if (obj.text_italic)
+        pango_font_description_set_style(desc, PANGO_STYLE_ITALIC);
+      pango_layout_set_font_description(layout, desc);
+      pango_font_description_free(desc);
+      pango_layout_set_text(layout, obj.text_content.c_str(), -1);
+      if (obj.text_letter_spacing != 0.0) {
+        PangoAttrList *attrs = pango_attr_list_new();
+        pango_attr_list_insert(attrs, pango_attr_letter_spacing_new(
+            (int)(obj.text_letter_spacing * PANGO_SCALE)));
+        pango_layout_set_attributes(layout, attrs);
+        pango_attr_list_unref(attrs);
+      }
+      if (obj.text_align == "center")
+        pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
+      else if (obj.text_align == "right")
+        pango_layout_set_alignment(layout, PANGO_ALIGN_RIGHT);
+      else
+        pango_layout_set_alignment(layout, PANGO_ALIGN_LEFT);
+      pango_layout_set_justify(layout, obj.text_align == "justify");
+
+      PangoRectangle logical;
+      pango_layout_get_pixel_extents(layout, nullptr, &logical);
+      double off_x = 0.0;
+      if (obj.text_anchor == "middle") off_x = -logical.width * 0.5;
+      if (obj.text_anchor == "end")    off_x = -logical.width;
+
+      double base_px =
+          pango_layout_get_baseline(layout) / (double)PANGO_SCALE;
+      cr->move_to(off_x, -base_px - obj.text_baseline_shift);
+      pango_cairo_show_layout(cr->cobj(), layout);
+      g_object_unref(layout);
       cr->restore();
+
+    } else if (obj.is_text_box_mgr()) {
+      // s357 m3-fix — TextBoxMgr render. Live boxed text is NOT a Type::Text
+      // node (the earlier m3 only matched legacy Type::Text + boundary_ids,
+      // so current Mgr nodes drew nothing). The Mgr is the text-bearing node
+      // (text_content / font / fill live on it); its boundary sits one level
+      // deeper: Mgr -> CanvasView -> children[0] = boundary Path. Overflow
+      // chains across views — each view renders the slice starting where the
+      // previous left off (flow chained by bytes_consumed). Mirrors the
+      // TextBoxMgr branch in Canvas::draw_object.
+      const style::TextStyleLibrary *mlib =
+          m_project ? &m_project->text_styles : nullptr;
+      auto set_mgr_src = [&](const FillStyle &f) {
+        if (f.type == FillStyle::Type::Solid)
+          cr->set_source_rgb(f.r, f.g, f.b);
+        else
+          cr->set_source_rgb(cc, cc, cc);
+      };
+      size_t flow = 0;
+      for (const auto &view_ptr : obj.children) {
+        if (!view_ptr) continue;
+        const SceneNode &view = *view_ptr;
+        if (!view.is_canvas_view() || !view.visible) continue;
+        if (view.children.empty() || !view.children[0]) continue;
+        const SceneNode &boundary = *view.children[0];
+        if (boundary.type != SceneNode::Type::Path || !boundary.path) continue;
+        // Box shape underneath — reuse the Path branch so its own
+        // fill/stroke/gradient (a visible box background/border) render.
+        draw_node(boundary);
+        // Text slice for this member, starting where the prior view ended.
+        TextLayout tl = compute_text_layout(&boundary, &obj, flow, mlib);
+        cr->save();
+        if (tl.frame_angle != 0.0) {  // rotated box -> lay into its frame
+          cr->translate(tl.frame_cx, tl.frame_cy);
+          cr->rotate(tl.frame_angle);
+          cr->translate(-tl.frame_cx, -tl.frame_cy);
+        }
+        set_mgr_src(obj.fill);
+        for (const auto &bl : tl.baselines) {
+          if (!bl.pango)
+            continue;
+          cr->save();
+          double base_px =
+              pango_layout_get_baseline(bl.pango.get()) / (double)PANGO_SCALE;
+          cr->move_to(bl.x_start, bl.y - base_px);
+          pango_cairo_show_layout(cr->cobj(), bl.pango.get());
+          cr->restore();
+        }
+        cr->restore();
+        flow = tl.bytes_consumed;  // chain overflow into the next view
+      }
     }
   };
 

@@ -583,6 +583,8 @@ void MainWindow::connect_signals() {
   // ToP-tool right-click, which deletes the path-text outright.
 
   m_properties.signal_canvas_changed().connect([this](CanvasModel cm) {
+    if (!m_project)  // s357 m2 — same null-project class as cursor_moved
+      return;
     auto *doc = m_project->active_doc();
     if (!doc)
       return;
@@ -637,6 +639,15 @@ void MainWindow::connect_signals() {
   });
 
   m_canvas.signal_cursor_moved().connect([this](double x, double y) {
+    // s357 m2 — null-project guard. The canvas widget outlives the
+    // project: after do_close_project() resets m_project, GTK can still
+    // flush a synthetic motion event (gdk_surface_ensure_motion off the
+    // frame clock when the modal Save/close dialog dismisses and the
+    // pointer is back over the canvas). That motion fires this handler,
+    // and m_project->active_doc() dereferences a null project -> segfault.
+    // Matches the if (!m_project) idiom the sibling handlers already use.
+    if (!m_project)
+      return;
     auto *doc = m_project->active_doc();
     if (!doc)
       return;
@@ -665,6 +676,8 @@ void MainWindow::connect_signals() {
 
   // Corner square — set new ruler origin
   m_corner.signal_origin_changed().connect([this](double ux, double uy) {
+    if (!m_project)  // s357 m2 — same null-project class as cursor_moved
+      return;
     auto *doc = m_project->active_doc();
     if (!doc)
       return;
@@ -746,6 +759,8 @@ void MainWindow::connect_signals() {
 
   // Corner square double-click — reset origin to 0,0 (artboard bottom-left)
   m_corner.signal_origin_reset().connect([this]() {
+    if (!m_project)  // s357 m2 — same null-project class as cursor_moved
+      return;
     auto *doc = m_project->active_doc();
     if (!doc)
       return;
@@ -799,6 +814,8 @@ void MainWindow::connect_signals() {
 
   // Unit change from right-click on either ruler
   auto on_unit_changed = [this](Unit u) {
+    if (!m_project)  // s357 m2 — same null-project class as cursor_moved
+      return;
     auto *doc = m_project->active_doc();
     if (!doc)
       return;
@@ -2163,6 +2180,34 @@ void MainWindow::connect_signals() {
         if (ctrl && alt && !shift && (kv == GDK_KEY_b || kv == GDK_KEY_B)) {
           if (m_act_align_bottom && m_act_align_bottom->get_enabled())
             m_canvas.align_selection(AlignOp::AlignBottom);
+          return true;
+        }
+
+        // s357 — Flip chords wired explicitly in CAPTURE.
+        //
+        // The win.flip-horizontal / win.flip-vertical accels bound in
+        // Application.cpp (Ctrl+Shift+H / Ctrl+Alt+V) are cosmetic in this
+        // codebase — set_accels_for_action only labels the menu items; the
+        // Gio accel dispatch runs after this controller and never actually
+        // fired the action. So the keyboard flip never worked, and worse,
+        // Ctrl+Alt+V fell through to the bare-Ctrl+V paste branch below
+        // (which checks !shift but not !alt), pasting objects instead of
+        // flipping. Both chords are wired here, ABOVE the paste branch and
+        // ABOVE the `if (!ctrl) return false` gate.
+        //
+        // These also fire mid-text-edit: handle_text_edit_key (run from the
+        // text_cursor_active block far above) passes Ctrl/Alt chords through
+        // (returns false at its ctrl-passthrough gate), so neither chord is
+        // consumed before reaching here. flip_selection already carries the
+        // TBM text-edit parity branch (text_mirror_h/v), so flipping the text
+        // being edited Just Works; empty selection no-ops cleanly. This was
+        // the last loose end of the flip arc.
+        if (ctrl && shift && !alt && (kv == GDK_KEY_h || kv == GDK_KEY_H)) {
+          m_canvas.flip_selection(true);
+          return true;
+        }
+        if (ctrl && alt && !shift && (kv == GDK_KEY_v || kv == GDK_KEY_V)) {
+          m_canvas.flip_selection(false);
           return true;
         }
 

@@ -33,6 +33,7 @@
 #include "math/TextFlowGeometry.hpp"   // s323 — form-fit reflow geometry pumps
 #include "math/BezierPath.hpp"         // s347 m4 — pattern_path_length
 #include "math/PathOffset.hpp"         // s347 m4 — pattern_walk_path (offset lines)
+#include "Hyphenator.hpp"              // s357 m3 — auto-hyphenation candidates
 
 #include <pango/pangocairo.h>
 #include <glib.h>
@@ -898,7 +899,10 @@ static PangoLayout* make_single_line_layout(const SceneNode* text,
 // depending on whether `force_at_least_one_char` is set — for very
 // narrow lines we don't want to deadlock.
 static size_t fit_chunk_to_width(const char* chunk, size_t chunk_len,
-                                  PangoLayout* layout, double avail_doc) {
+                                  PangoLayout* layout, double avail_doc,
+                                  const std::string& lang,
+                                  bool* out_hyphenated) {
+    if (out_hyphenated) *out_hyphenated = false;
     if (chunk_len == 0) return 0;
     int avail_pango = (int)(avail_doc * PANGO_SCALE);
     if (avail_pango <= 0) return 0;
@@ -962,6 +966,70 @@ static size_t fit_chunk_to_width(const char* chunk, size_t chunk_len,
         p = nextp;
     }
 
+    // s357 m3 — Automatic hyphenation. When a whole word won't fit, place a
+    // hyphenated PREFIX of it on this line rather than pushing the entire word
+    // down (which leaves a ragged gap, or a loose justify spill). libhyphen
+    // yields the word's LEGAL break points; we take the longest prefix whose
+    // rendered right edge still fits avail. The break is a plain letter
+    // boundary (no U+00AD in the buffer), so the caller flags the line
+    // ended_by_hyphen and a draw-time overlay paints the '-'. s357 m3-fix
+    // reserves the dash advance here (see inside) so the chosen prefix leaves
+    // room for the overlay inside the box clip and for justify to fill without
+    // re-wrapping. Returns the chunk-relative break offset, or 0 for "no usable
+    // hyphenation".
+    auto try_hyphenate = [&](size_t word_start) -> size_t {
+        if (lang.empty()) return 0;
+        // s357 m3-fix — reserve the trailing hyphen's advance. The chosen
+        //   prefix must fit in (avail - hyphen), not just avail, so that (a)
+        //   the draw-time dash has room inside the box clip and (b) justify can
+        //   fill the line to (avail - hyphen) WITHOUT exceeding the prefix's
+        //   natural width -- otherwise Pango re-wraps the single-line layout and
+        //   the renderer stacks the wrapped glyphs at one baseline (the shatter
+        //   the justify block warns about). Measured in the line's own font via
+        //   a throwaway copy (attrs cleared so the '-' isn't styled by stale
+        //   per-run spans).
+        int hyphen_pango = 0;
+        {
+            PangoLayout* hl = pango_layout_copy(layout);
+            pango_layout_set_attributes(hl, nullptr);
+            pango_layout_set_text(hl, "-", 1);
+            pango_layout_set_width(hl, -1);
+            pango_layout_get_size(hl, &hyphen_pango, nullptr);
+            g_object_unref(hl);
+        }
+        const int avail_hy = avail_pango - hyphen_pango;
+        if (avail_hy <= 0) return 0;
+        // Word end = next line-break opportunity at/after word_start.
+        size_t word_end = chunk_len;
+        const char* p = chunk + word_start;
+        const char* end = chunk + chunk_len;
+        int ci = (int)g_utf8_strlen(chunk, (gssize)word_start);
+        while (p < end) {
+            const char* np = g_utf8_next_char(p);
+            ++ci;
+            size_t boff = (size_t)(np - chunk);
+            if (chunk[boff - 1] == '\n') { word_end = boff - 1; break; }
+            if (ci <= (int)n_chars && attrs[(size_t)ci].is_line_break) {
+                word_end = boff;
+                break;
+            }
+            p = np;
+        }
+        if (word_end <= word_start) return 0;
+        std::string word(chunk + word_start, word_end - word_start);
+        std::vector<size_t> cands = Curvz::hyphenate(word, lang);
+        // Longest prefix that fits in (avail - hyphen), largest candidate first.
+        for (size_t i = cands.size(); i-- > 0;) {
+            size_t abs = word_start + cands[i];
+            if (abs >= word_end) continue;  // safety
+            PangoRectangle pr;
+            pango_layout_index_to_pos(layout, (int)abs, &pr);
+            if (pr.x <= avail_hy)
+                return abs;
+        }
+        return 0;
+    };
+
     if (any_word_fit) {
         // Strip any trailing whitespace from best_break_byte so the
         // wrapped line doesn't end in a literal space. (Pango's
@@ -971,11 +1039,36 @@ static size_t fit_chunk_to_width(const char* chunk, size_t chunk_len,
                 chunk[best_break_byte - 1] == '\t')) {
             --best_break_byte;
         }
+        // s357 m3 — extend the line into the next (non-fitting) word via
+        // hyphenation. The word starts after the whitespace following the last
+        // fitting break; only accept a break that gains content past it.
+        size_t ws = best_break_byte;
+        while (ws < chunk_len && (chunk[ws] == ' ' || chunk[ws] == '\t'))
+            ++ws;
+        size_t hy = try_hyphenate(ws);
+        if (hy > best_break_byte) {
+            if (out_hyphenated) *out_hyphenated = true;
+            return hy;
+        }
         return best_break_byte;
     }
 
-    // Nothing fit at a word boundary. Fall back to a character break to
-    // avoid deadlock: take at least one codepoint.
+    // Nothing fit at a word boundary. s357 m3 — before the raw character-break
+    // fallback, try hyphenating the leading (over-long) word so it breaks at a
+    // dictionary point with a dash instead of mid-syllable.
+    {
+        size_t ws = 0;
+        while (ws < chunk_len && (chunk[ws] == ' ' || chunk[ws] == '\t'))
+            ++ws;
+        size_t hy = try_hyphenate(ws);
+        if (hy > 0) {
+            if (out_hyphenated) *out_hyphenated = true;
+            return hy;
+        }
+    }
+
+    // Fall back to a character break to avoid deadlock: take at least one
+    // codepoint.
     return (size_t)(g_utf8_next_char(chunk) - chunk);
 }
 
@@ -1853,8 +1946,13 @@ TextLayout compute_text_layout(const SceneNode* boundary,
                                                        line_tabs_c,
                                                        tab_indent_offset,
                                                        &line_base);
+        // s357 m3 — auto-hyphenation. Hardcoded "en_US" for now; m4 threads a
+        // per-box language. out_hyphenated tells us the fitter broke mid-word
+        // (a dictionary break, no U+00AD), so the dash append below fires.
+        bool auto_hyphenated = false;
         size_t consumed_on_line = fit_chunk_to_width(remaining, remaining_n,
-                                                      layout, avail);
+                                                      layout, avail, "en_US",
+                                                      &auto_hyphenated);
         // Special case: a leading '\n' makes fit_chunk_to_width return 0,
         // meaning "this line is empty; the very first character of the
         // remaining buffer is a hard newline." Emit an empty baseline and
@@ -1906,7 +2004,13 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         //   a word render past the margin and get clipped mid-word. A
         //   single unbreakable word that exceeds the width is left as-is
         //   (the paint clip is the final guard for that rare case).
-        {
+        // s357 m3 — skipped for a hyphenated line: the backoff jumps to the
+        //   last WHOLE-word break, which would discard the mid-word
+        //   hyphenation point and re-open the gap. The hyphen prefix was
+        //   already measured with index_to_pos against avail; any sub-em dash
+        //   overhang is bounded by the interior clip, same as the manual
+        //   soft-hyphen path.
+        if (!auto_hyphenated) {
             const int avail_pango = (int)(avail * PANGO_SCALE);
             // s317 — Tolerance. fit_chunk_to_width measures candidate breaks
             //   with index_to_pos over the FULL single-line layout; this
@@ -2007,27 +2111,25 @@ TextLayout compute_text_layout(const SceneNode* boundary,
         // the very end, beyond byte_end, where no caret position lives. One
         // visible dash, byte-faithful. Baking it into bl.pango still means the
         // renderer, justify, and the outline extractor all show it for free.
-        bl.ended_by_hyphen = bl.ended_by_wrap && line_consumed_end >= 2 &&
-            (unsigned char)buf[line_consumed_end - 2] == 0xC2 &&
-            (unsigned char)buf[line_consumed_end - 1] == 0xAD;
-        // s344 — Dash rendering DISABLED for isolation. Baking a dash into the
-        // line layout (append or substitute) is the only thing the hyphen work
-        // changed about the layout the CARET reads, and a caret regression
-        // appeared. Leaving bl.pango as the exact buffer slice here returns the
-        // per-line layout to byte-AND-char-identical-to-pre-hyphenation. The
-        // ended_by_hyphen flag is still recorded (no consumer yet). If the caret
-        // is healthy with this off, the dash returns as a draw-time OVERLAY that
-        // never mutates the layout (so it can't perturb caret byte-mapping).
-        // Re-enable by restoring the make_single_line_layout swap below.
-        //
-        // if (bl.ended_by_hyphen) {
-        //     std::string line_text(remaining, consumed_on_line);
-        //     line_text.push_back('-');
-        //     PangoLayout* hy = make_single_line_layout(
-        //         text, line_text.c_str(), (int)line_text.size(),
-        //         bl.byte_start, line_tabs_c, tab_indent_offset, &line_base);
-        //     bl.pango.reset(hy);
-        // }
+        // s357 m3 — ended_by_hyphen now covers BOTH sources: a manual soft
+        // hyphen (the trailing U+00AD = C2 AD), and an automatic dictionary
+        // break (auto_hyphenated, a plain letter boundary with no U+00AD). The
+        // dash append below treats them identically.
+        bl.ended_by_hyphen = bl.ended_by_wrap &&
+            ( auto_hyphenated ||
+              ( line_consumed_end >= 2 &&
+                (unsigned char)buf[line_consumed_end - 2] == 0xC2 &&
+                (unsigned char)buf[line_consumed_end - 1] == 0xAD ) );
+        // s357 m3-fix — NO dash baking. m1 baked a trailing '-' into bl.pango;
+        // the isolation test proved that desyncs JUSTIFIED lines (the dash is a
+        // layout byte the buffer's attr spans + Pango justification never see,
+        // so the whole run's glyph spacing smears). bl.pango now stays byte-
+        // identical to the buffer slice -- caret, justify, and attrs all read
+        // true text -- and the visible hyphen is a DRAW-TIME OVERLAY each
+        // renderer paints at the baseline's trailing edge when ended_by_hyphen
+        // is set (curvz::utils::draw_hyphen_dash). This is the path s344 named
+        // from the start; covers manual soft hyphens and automatic breaks
+        // identically, since both set ended_by_hyphen.
         // s345 — ownership: a soft-wrapped line's boundary position belongs
         // to the NEXT line (s305 m4d later-wins, unchanged); a hard-ended
         // line ('\n' follows, or end of buffer) also owns the position AT
@@ -2092,6 +2194,33 @@ TextLayout compute_text_layout(const SceneNode* boundary,
                 if (bl.byte_end <= bl.byte_start) continue;  // empty line
                 double avail = bl.x_end - bl.x_start;
                 if (avail <= 0.0) continue;
+
+                // s357 m3-fix — reserve the trailing hyphen's width on a
+                //   hyphen-broken line. Justify otherwise stretches the prefix
+                //   to the full interior margin, and the draw-time dash
+                //   (draw_hyphen_dash) then paints PAST the margin, outside the
+                //   interior clip in draw_text_in_boundary -> invisible. Filling
+                //   to (avail - hyphen) instead leaves exactly the dash's gap at
+                //   the right, so the overlay lands inside the clip. CLAMPED so
+                //   the target never drops below the prefix's natural width: a
+                //   narrower target makes Pango re-wrap the single-line layout
+                //   and the renderer stacks the wrapped glyphs at one baseline
+                //   (the shatter the spill block warns about). The fitter
+                //   already picks a break that leaves this room (avail - hyphen);
+                //   the clamp is the safety net for slop between the fitter's
+                //   and this block's independent '-' measurements.
+                if (bl.ended_by_hyphen) {
+                    int w_nat = 0;
+                    pango_layout_get_pixel_size(bl.pango.get(), &w_nat, nullptr);
+                    PangoLayout* hl =
+                        make_single_line_layout(text, "-", 1, bl.byte_start);
+                    int hw = 0;
+                    pango_layout_get_pixel_size(hl, &hw, nullptr);
+                    g_object_unref(hl);
+                    double target = avail - (double)hw;
+                    if (target > (double)w_nat && target > 0.0)
+                        avail = target;
+                }
 
                 // ── s333 — letter-spacing SPILL (river suppression) ──────────
                 // Plain Pango justify widens only the inter-word SPACES, equally

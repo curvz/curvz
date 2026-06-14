@@ -594,6 +594,11 @@ size_t Canvas::draw_text_in_boundary(const Cairo::RefPtr<Cairo::Context>& cr,
                      / (double)PANGO_SCALE;
     cr->move_to(bl.x_start, bl.y - base_px);
     pango_cairo_show_layout(cr->cobj(), bl.pango.get());
+    // s357 m3-fix — draw-time hyphen dash for a line that broke mid-word
+    //   (manual soft hyphen or automatic). Painted here, never baked into
+    //   bl.pango, so justify and the caret byte map stay clean.
+    if (bl.ended_by_hyphen)
+      curvz::utils::draw_hyphen_dash(cr, bl.pango.get(), bl.x_start, bl.y);
     cr->restore();
   }
 

@@ -360,6 +360,10 @@ set(SOURCES
                           # edit mode; not called from anywhere in 1b — the
                           # class is the foundation that 1c will hook into
                           # the keyhandler + glyph renderer.
+    src/Hyphenator.cpp    # s357 m2 — libhyphen pump (auto-hyphenation
+                          # candidate provider). Gated by CURVZ_HAVE_HYPHEN;
+                          # returns empty (-> plain wrapping) when the lib or a
+                          # dictionary is absent.
     src/SelectionContext.cpp  # s158 m1 — capability classifier (Info+Actions)
     src/DocumentGallery.cpp
     src/PropertiesPanel.cpp

@@ -95,6 +95,10 @@ struct PathData;        // s146 m2 — warp_presets pump signatures
 struct AttrSpan;        // s326 m2 — per-run formatting span pump signatures
 }
 
+// s357 m3-fix — opaque fwd for draw_hyphen_dash, so curvz_utils.hpp (widely
+// included) doesn't pull <pango/pango.h> into every consumer.
+typedef struct _PangoLayout PangoLayout;
+
 namespace curvz::utils {
 
 // ── Dialog motif inheritance ────────────────────────────────────────
@@ -920,6 +924,23 @@ void cairo_set_source_pixbuf(
     const Cairo::RefPtr<Cairo::Context>& cr,
     const Glib::RefPtr<Gdk::Pixbuf>& pb,
     double x, double y);
+
+// ── draw_hyphen_dash ──────────────────────────────────────────────────
+// Paint a visible hyphen at the trailing edge of a hyphen-broken baseline,
+// at DRAW TIME -- the dash is never baked into the line's PangoLayout. Baking
+// a trailing '-' into the layout adds a byte the buffer's attribute spans and
+// Pango's justification never account for, which smears the glyph spacing of
+// justified lines and perturbs the caret byte map (the s357 bug). Drawing the
+// dash here instead keeps `line` byte-identical to the buffer slice.
+//
+// Call once per baseline whose BaselineLayout.ended_by_hyphen is set, from
+// inside the same cr transform the line's glyphs are painted in. `line`
+// provides the trailing x (its end-of-text position, so it is correct under
+// left / justify / centre alike) and the font for the dash; (x_start, base_y)
+// is the baseline origin in cr user space. The dash inherits cr's current
+// source, so set the text fill before calling. No-op when `line` is null.
+void draw_hyphen_dash(const Cairo::RefPtr<Cairo::Context>& cr,
+                      PangoLayout* line, double x_start, double base_y);
 
 // ── render_drop_shadow_under ──────────────────────────────────────────
 // Paint a tinted, blurred, offset shadow of host_pat onto cr, in the
