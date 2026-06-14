@@ -1,7 +1,9 @@
 #include "PngExporter.hpp"
 #include "CurvzLog.hpp"
-#include "curvz_utils.hpp"   // s135 m2 — cairo_set_source_pixbuf pump
+#include "curvz_utils.hpp"   // s135 m2 — cairo_set_source_pixbuf pump; s358 — draw_hyphen_dash
 #include "math/BezierPath.hpp"
+#include "TextCursor.hpp"    // s358 — compute_text_layout (TBM / bound box text)
+#include "GlyphOutline.hpp"  // s358 — pattern_glyph_walk (ToP v2 path text)
 #include <cairomm/cairomm.h>
 #include <pango/pangocairo.h>
 #include <cairo/cairo.h>
@@ -71,6 +73,14 @@ static void apply_stroke(const Cairo::RefPtr<Cairo::Context>& cr, const StrokeSt
 
 // ── Object rendering ─────────────────────────────────────────────────────────
 
+// s358 — doc holder so the text branches (render_text / render_text_box_mgr)
+// can resolve a TextBox boundary or a ToP guide by iid without threading the
+// doc through every render_* frame. Mirrors SvgWriter's g_text_styles idiom:
+// the resolve sites sit deep in the object recursion and a holder is cleaner
+// than a doc parameter on path/group/image too. Set around the layer walk in
+// render_to_surface / render_to_surface_sized, cleared after.
+static const CurvzDocument* g_png_doc = nullptr;
+
 static void render_object(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNode& obj);
 
 static void render_path_obj(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNode& obj) {
@@ -135,6 +145,84 @@ static void render_group(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNod
 }
 
 static void render_text(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNode& obj) {
+    // s358 — three variants, dispatched exactly like Canvas::draw_text_node and
+    // DocumentGallery::draw_node: legacy bound text (Type::Text + boundary ids)
+    // -> compute_text_layout baseline walk; guide-attached text (ToP v2) ->
+    // pattern_glyph_walk along the guide; else free text laid at text_x/text_y.
+    // The style library is passed as nullptr for now (plain text resolves from
+    // the node's own scalars); per-span named-style resolution is the deferred
+    // refinement that lands when PNG export threads the project lib -- same
+    // Stage-1 "visibility wins" posture this file already takes for gradients.
+    const CurvzDocument* doc = g_png_doc;
+
+    // ── Legacy bound text (Type::Text carrying a boundary path) ──────────────
+    if (doc && !obj.text_boundary_ids.empty()) {
+        SceneNode* boundary = doc->find_by_iid(obj.text_boundary_ids.front());
+        if (boundary && boundary->path) {
+            TextLayout tl = compute_text_layout(boundary, &obj, 0, nullptr);
+            cr->save();
+            if (tl.frame_angle != 0.0) {  // rotated box -> lay into its frame
+                cr->translate(tl.frame_cx, tl.frame_cy);
+                cr->rotate(tl.frame_angle);
+                cr->translate(-tl.frame_cx, -tl.frame_cy);
+            }
+            apply_fill(cr, obj.fill);
+            for (const auto& bl : tl.baselines) {
+                if (!bl.pango) continue;
+                cr->save();
+                double base_px =
+                    pango_layout_get_baseline(bl.pango.get()) / (double)PANGO_SCALE;
+                cr->move_to(bl.x_start, bl.y - base_px);
+                pango_cairo_show_layout(cr->cobj(), bl.pango.get());
+                if (bl.ended_by_hyphen)
+                    curvz::utils::draw_hyphen_dash(cr, bl.pango.get(),
+                                                   bl.x_start, bl.y);
+                cr->restore();
+            }
+            cr->restore();
+            return;
+        }
+        // Dangling boundary -> fall through to free render (degraded, visible).
+    }
+
+    // ── Guide-attached text (ToP v2) ─────────────────────────────────────────
+    if (doc && !obj.text_guide_id.empty()) {
+        SceneNode* guide = doc->find_by_iid(obj.text_guide_id);
+        if (guide && guide->path && guide->path->nodes.size() >= 2) {
+            cr->save();
+            bool src_set = false, src_fg = false;
+            double sr = 0, sg = 0, sb = 0, sa = 0;
+            pattern_glyph_walk(
+                obj, *guide, nullptr, [&](const PatternGlyph& g) {
+                    if (!src_set || src_fg != g.has_fg ||
+                        (g.has_fg && (sr != g.fg_r || sg != g.fg_g ||
+                                      sb != g.fg_b || sa != g.fg_a))) {
+                        if (g.has_fg)
+                            cr->set_source_rgba(g.fg_r, g.fg_g, g.fg_b, g.fg_a);
+                        else
+                            apply_fill(cr, obj.fill);
+                        src_set = true; src_fg = g.has_fg;
+                        sr = g.fg_r; sg = g.fg_g; sb = g.fg_b; sa = g.fg_a;
+                    }
+                    cr->save();
+                    cr->translate(g.pos.x, g.pos.y);
+                    cr->rotate(g.angle);
+                    PangoGlyphString single;
+                    int log_cluster = 0;
+                    single.num_glyphs = 1;
+                    single.glyphs = g.info;
+                    single.log_clusters = &log_cluster;
+                    cr->move_to(-g.adv_px * 0.5, g.pen_y);
+                    pango_cairo_show_glyph_string(cr->cobj(), g.font, &single);
+                    cr->restore();
+                });
+            cr->restore();
+            return;
+        }
+        // Dangling guide -> fall through to free render.
+    }
+
+    // ── Free text ────────────────────────────────────────────────────────────
     if (obj.text_content.empty()) return;
 
     cr->save();
@@ -165,6 +253,80 @@ static void render_text(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNode
     pango_cairo_show_layout(cr->cobj(), layout);
     g_object_unref(layout);
     cr->restore();
+}
+
+// ── TextBoxMgr render (s358) ─────────────────────────────────────────────────
+// Live boxed text is a Type::TextBoxMgr node, NOT Type::Text: the Mgr carries
+// the buffer/font/fill, and its boundary sits one level deeper —
+// Mgr -> CanvasView -> children[0] = boundary Path. Overflow chains across
+// views by bytes_consumed. Mirrors DocumentGallery::draw_node's Mgr branch and
+// Canvas::draw_object; no doc lookup needed (the boundary is a structural
+// child). Without this branch the Mgr hit the switch's default and drew
+// nothing — box text was simply absent from PNG export.
+static void render_text_box_mgr(const Cairo::RefPtr<Cairo::Context>& cr,
+                                const SceneNode& obj) {
+    size_t flow = 0;
+    for (const auto& view_ptr : obj.children) {
+        if (!view_ptr) continue;
+        const SceneNode& view = *view_ptr;
+        if (!view.is_canvas_view() || !view.visible) continue;
+        if (view.children.empty() || !view.children[0]) continue;
+        const SceneNode& boundary = *view.children[0];
+        if (boundary.type != SceneNode::Type::Path || !boundary.path) continue;
+        // Box shape underneath — its own fill/stroke (visible background/border).
+        render_object(cr, boundary);
+        // Text slice for this view, starting where the prior view ended.
+        TextLayout tl = compute_text_layout(&boundary, &obj, flow, nullptr);
+        cr->save();
+        if (tl.frame_angle != 0.0) {  // rotated box -> lay into its frame
+            cr->translate(tl.frame_cx, tl.frame_cy);
+            cr->rotate(tl.frame_angle);
+            cr->translate(-tl.frame_cx, -tl.frame_cy);
+        }
+        apply_fill(cr, obj.fill);
+        // s358 diag — TBM text exports black while the canvas shows it white.
+        // Theory: the #ffffff is a foreground SPAN that the fitter only bakes
+        // into bl.pango when given the style lib; we pass nullptr, so the span
+        // is dropped and the text falls back to obj.fill. Log obj.fill plus
+        // whether bl.pango actually carries a PANGO_ATTR_FOREGROUND, to confirm
+        // before threading the lib. (Remove once closed.)
+        LOG_DEBUG("PngExporter TBM: obj.fill.type={} rgb=({:.2f},{:.2f},{:.2f},"
+                  "{:.2f}) lib=null",
+                  (int)obj.fill.type, obj.fill.r, obj.fill.g, obj.fill.b,
+                  obj.fill.a);
+        for (const auto& bl : tl.baselines) {
+            if (!bl.pango) continue;
+            bool fg_found = false;
+            guint16 fr = 0, fg2 = 0, fb = 0;
+            if (PangoAttrList* al = pango_layout_get_attributes(bl.pango.get())) {
+                PangoAttrIterator* ai = pango_attr_list_get_iterator(al);
+                do {
+                    PangoAttribute* a =
+                        pango_attr_iterator_get(ai, PANGO_ATTR_FOREGROUND);
+                    if (a) {
+                        PangoColor& c = ((PangoAttrColor*)a)->color;
+                        fg_found = true; fr = c.red; fg2 = c.green; fb = c.blue;
+                    }
+                } while (pango_attr_iterator_next(ai));
+                pango_attr_iterator_destroy(ai);
+            }
+            LOG_DEBUG("PngExporter TBM baseline: layout_fg={} fg=({},{},{}) "
+                      "text='{}'",
+                      fg_found, fr, fg2, fb,
+                      pango_layout_get_text(bl.pango.get()));
+            cr->save();
+            double base_px =
+                pango_layout_get_baseline(bl.pango.get()) / (double)PANGO_SCALE;
+            cr->move_to(bl.x_start, bl.y - base_px);
+            pango_cairo_show_layout(cr->cobj(), bl.pango.get());
+            if (bl.ended_by_hyphen)
+                curvz::utils::draw_hyphen_dash(cr, bl.pango.get(),
+                                               bl.x_start, bl.y);
+            cr->restore();
+        }
+        cr->restore();
+        flow = tl.bytes_consumed;  // chain overflow into the next view
+    }
 }
 
 // ── Image rendering ──────────────────────────────────────────────────────────
@@ -258,6 +420,7 @@ static void render_object(const Cairo::RefPtr<Cairo::Context>& cr, const SceneNo
         case SceneNode::Type::Compound: render_compound(cr, obj); break;
         case SceneNode::Type::Group:    render_group(cr, obj);    break;
         case SceneNode::Type::Text:     render_text(cr, obj);     break;
+        case SceneNode::Type::TextBoxMgr: render_text_box_mgr(cr, obj); break;
         case SceneNode::Type::Image:    render_image(cr, obj);    break;
         default: break;
     }
@@ -293,6 +456,7 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface(
     cr->translate(tx, ty);
     cr->scale(scale, scale);
 
+    g_png_doc = &doc;  // s358 — let text branches resolve boundary/guide by iid
     // Layer z-order matches Canvas::draw_objects: paint layers[0] first
     // (bottom of z-order, last in panel) and layers[n-1] last (top of
     // z-order, first in panel). Cairo is last-painted-wins so iteration
@@ -309,6 +473,7 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface(
         }
     }
 
+    g_png_doc = nullptr;  // s358 — holder is per-render; never outlives the call
     surface->flush();
     return surface;
 }
@@ -381,6 +546,7 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface_sized(
 
     cr->scale(sx, sy);
 
+    g_png_doc = &doc;  // s358 — let text branches resolve boundary/guide by iid
     // Layer z-order matches Canvas::draw_objects — see render_to_surface()
     // for the full reasoning. Layers ascending (last-painted-wins), children
     // descending (children[size-1] is bottom of within-layer z-order).
@@ -395,6 +561,7 @@ static Cairo::RefPtr<Cairo::ImageSurface> render_to_surface_sized(
         }
     }
 
+    g_png_doc = nullptr;  // s358 — holder is per-render; never outlives the call
     surface->flush();
     return surface;
 }

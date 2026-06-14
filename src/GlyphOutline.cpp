@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>   // s358 — std::strlen for the trailing hyphen dash
 #include <map>
 
 namespace Curvz {
@@ -323,17 +324,77 @@ void outline_box_text(const SceneNode *boundary, const SceneNode *text,
     y = tl.frame_cy + rx * sa + ry * ca;
   };
 
+  // s358 — shared glyph emit. Loads + decomposes one glyph, maps its contours
+  // to doc space at (origin_x, base_y), and pushes a Path (single contour) or
+  // even-odd Compound (holes) into out. The per-run glyph loop and the trailing
+  // hyphen dash on a wrapped line both go through this, so they produce
+  // byte-identical contours. The face must already be sized by the caller.
+  auto emit_glyph_outline = [&](FT_Face face, FT_UInt glyph_id,
+                                double origin_x, double base_y) {
+    if (FT_Load_Glyph(face, glyph_id, FT_LOAD_NO_BITMAP) != 0 ||
+        face->glyph->format != FT_GLYPH_FORMAT_OUTLINE)
+      return;
+    FTOutlineCtx ctx;
+    ctx.scale = 1.0 / 64.0;
+    FT_Outline_Decompose(&face->glyph->outline, &s_ft_callbacks, &ctx);
+
+    std::vector<PathData> contours;
+    for (auto &pd : ctx.contours) {
+      if (pd.nodes.empty())
+        continue;
+      for (auto &n : pd.nodes) {
+        auto map = [&](double &nx, double &ny) {
+          double dx = origin_x + nx;
+          double dy = base_y - ny;
+          to_doc(dx, dy);
+          nx = dx; ny = dy;
+        };
+        map(n.x, n.y);
+        map(n.cx1, n.cy1);
+        map(n.cx2, n.cy2);
+      }
+      contours.push_back(std::move(pd));
+    }
+
+    if (contours.size() == 1) {
+      auto p = std::make_unique<SceneNode>();
+      p->type = SceneNode::Type::Path;
+      p->name = "glyph";
+      p->fill = fill;
+      p->stroke = stroke;
+      p->path = std::make_unique<PathData>(std::move(contours[0]));
+      out.push_back(std::move(p));
+    } else if (contours.size() >= 2) {
+      auto comp = std::make_unique<SceneNode>();
+      comp->type = SceneNode::Type::Compound;
+      comp->name = "glyph";
+      comp->fill = fill;
+      comp->stroke = stroke;
+      for (auto &pd : contours) {
+        auto child = std::make_unique<SceneNode>();
+        child->type = SceneNode::Type::Path;
+        child->fill = fill;
+        child->stroke = stroke;
+        child->path = std::make_unique<PathData>(std::move(pd));
+        comp->children.push_back(std::move(child));
+      }
+      out.push_back(std::move(comp));
+    }
+  };
+
   for (const auto &bl : tl.baselines) {
     if (!bl.pango)
       continue;
     PangoLayout *layout = bl.pango.get();
 
     PangoLayoutIter *iter = pango_layout_get_iter(layout);
+    PangoFont *last_pfont = nullptr;  // s358 — trailing run's font for the dash
     do {
       PangoLayoutRun *run = pango_layout_iter_get_run(iter);
       if (!run)
         continue;
       PangoFont *pfont = run->item->analysis.font;
+      last_pfont = pfont;
       PangoGlyphString *gs = run->glyphs;
 
       PangoRectangle run_ext;
@@ -351,7 +412,6 @@ void outline_box_text(const SceneNode *boundary, const SceneNode *text,
         px_size = fallback_px;
       // 72 dpi so 1pt == 1px: FC_PIXEL_SIZE px maps straight to FT char size.
       FT_Set_Char_Size(ft_face, 0, (FT_F26Dot6)(px_size * 64.0), 72, 72);
-      const double ft_scale = 1.0 / 64.0;
 
       double pen_x = run_x_px;
       for (int gi = 0; gi < gs->num_glyphs; ++gi) {
@@ -367,60 +427,46 @@ void outline_box_text(const SceneNode *boundary, const SceneNode *text,
         double glyph_base_y =
             bl.y + g.geometry.y_offset / (double)PANGO_SCALE;
 
-        if (FT_Load_Glyph(ft_face, glyph_id, FT_LOAD_NO_BITMAP) == 0 &&
-            ft_face->glyph->format == FT_GLYPH_FORMAT_OUTLINE) {
-          FTOutlineCtx ctx;
-          ctx.scale = ft_scale;
-          FT_Outline_Decompose(&ft_face->glyph->outline, &s_ft_callbacks, &ctx);
-
-          std::vector<PathData> contours;
-          for (auto &pd : ctx.contours) {
-            if (pd.nodes.empty())
-              continue;
-            for (auto &n : pd.nodes) {
-              auto map = [&](double &nx, double &ny) {
-                double dx = bl.x_start + gx + nx;
-                double dy = glyph_base_y - ny;
-                to_doc(dx, dy);
-                nx = dx; ny = dy;
-              };
-              map(n.x, n.y);
-              map(n.cx1, n.cy1);
-              map(n.cx2, n.cy2);
-            }
-            contours.push_back(std::move(pd));
-          }
-
-          if (contours.size() == 1) {
-            auto p = std::make_unique<SceneNode>();
-            p->type = SceneNode::Type::Path;
-            p->name = "glyph";
-            p->fill = fill;
-            p->stroke = stroke;
-            p->path = std::make_unique<PathData>(std::move(contours[0]));
-            out.push_back(std::move(p));
-          } else if (contours.size() >= 2) {
-            auto comp = std::make_unique<SceneNode>();
-            comp->type = SceneNode::Type::Compound;
-            comp->name = "glyph";
-            comp->fill = fill;
-            comp->stroke = stroke;
-            for (auto &pd : contours) {
-              auto child = std::make_unique<SceneNode>();
-              child->type = SceneNode::Type::Path;
-              child->fill = fill;
-              child->stroke = stroke;
-              child->path = std::make_unique<PathData>(std::move(pd));
-              comp->children.push_back(std::move(child));
-            }
-            out.push_back(std::move(comp));
-          }
-        }
+        emit_glyph_outline(ft_face, glyph_id, bl.x_start + gx, glyph_base_y);
         pen_x += adv;
       }
       FT_Done_Face(ft_face);
     } while (pango_layout_iter_next_run(iter));
     pango_layout_iter_free(iter);
+
+    // s358 — trailing hyphen dash for a wrapped line. The cairo renderers
+    // paint a '-' overlay at the line's true glyph end (draw_hyphen_dash); the
+    // saved-SVG compat outline must carry the same dash as a real glyph contour
+    // or foreign viewers (Inkscape, browsers) show the hyphenated wrapping with
+    // no hyphen at the breaks. The dash rides the LAST run's font; x_end comes
+    // from index_to_pos at end-of-line text (the actual glyph end under any
+    // alignment, justified included). Hyphen-width reservation already lives in
+    // the layout (compute_text_layout), so x_end sits inside the line box and no
+    // extra budgeting is needed here.
+    if (bl.ended_by_hyphen && last_pfont) {
+      const char *ltxt = pango_layout_get_text(layout);
+      const int lnb = ltxt ? (int)std::strlen(ltxt) : 0;
+      PangoRectangle pe;
+      pango_layout_index_to_pos(layout, lnb, &pe);
+      const double x_end = bl.x_start + (double)pe.x / (double)PANGO_SCALE;
+
+      int dfi = 0;
+      double dpx = 0.0;
+      FT_Face dash_face = open_run_face(ft_lib, last_pfont, dfi, dpx);
+      if (dash_face) {
+        if (dpx <= 0.0)
+          dpx = fallback_px;
+        FT_Set_Char_Size(dash_face, 0, (FT_F26Dot6)(dpx * 64.0), 72, 72);
+        FT_UInt dgid = FT_Get_Char_Index(dash_face, '-');
+        if (dgid != 0) {
+          emit_glyph_outline(dash_face, dgid, x_end, bl.y);
+          LOG_DEBUG("outline_box_text: emitted hyphen dash at x_end={:.2f} "
+                    "base_y={:.2f}",
+                    x_end, bl.y);
+        }
+        FT_Done_Face(dash_face);
+      }
+    }
   }
 
   FT_Done_FreeType(ft_lib);

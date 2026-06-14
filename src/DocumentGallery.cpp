@@ -628,6 +628,16 @@ DocumentGallery::render_thumb(CurvzDocument *doc, int size) {
                 pango_layout_get_baseline(bl.pango.get()) / (double)PANGO_SCALE;
             cr->move_to(bl.x_start, bl.y - base_px);
             pango_cairo_show_layout(cr->cobj(), bl.pango.get());
+            // s358 — trailing hyphen dash, mirroring Canvas::draw_text_node.
+            // Draw-time overlay keyed on ended_by_hyphen; never baked into
+            // bl.pango, so justify and the caret byte map stay clean.
+            if (bl.ended_by_hyphen) {
+              curvz::utils::draw_hyphen_dash(cr, bl.pango.get(), bl.x_start,
+                                             bl.y);
+              LOG_DEBUG("DocumentGallery: bound-text thumbnail hyphen dash "
+                        "x_start={:.2f} base_y={:.2f}",
+                        bl.x_start, bl.y);
+            }
             cr->restore();
           }
           cr->restore();
@@ -770,6 +780,14 @@ DocumentGallery::render_thumb(CurvzDocument *doc, int size) {
               pango_layout_get_baseline(bl.pango.get()) / (double)PANGO_SCALE;
           cr->move_to(bl.x_start, bl.y - base_px);
           pango_cairo_show_layout(cr->cobj(), bl.pango.get());
+          // s358 — trailing hyphen dash, same draw-time overlay as the canvas.
+          if (bl.ended_by_hyphen) {
+            curvz::utils::draw_hyphen_dash(cr, bl.pango.get(), bl.x_start,
+                                           bl.y);
+            LOG_DEBUG("DocumentGallery: TBM thumbnail hyphen dash "
+                      "x_start={:.2f} base_y={:.2f}",
+                      bl.x_start, bl.y);
+          }
           cr->restore();
         }
         cr->restore();
