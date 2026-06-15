@@ -2724,4 +2724,119 @@ void UngroupNodeCommand::undo() {
              group_iid, group_name, children_ptrs.size());
 }
 
+// ── ReleaseCompoundCommand ────────────────────────────────────────────────────
+// s360 m1. See header for capture fields and execute/undo contract. Models
+// UngroupNodeCommand, plus a snapshot clone to restore the Compound's own
+// appearance (S58g) on undo.
+
+void ReleaseCompoundCommand::execute() {
+    if (!proj) {
+        LOG_INFO("ReleaseCompound::exec proj=NULL desc='{}'", desc);
+        return;
+    }
+    invalidate_iid_indexes(proj);
+
+    auto* compound = curvz::utils::find_by_iid(*proj, compound_iid);
+    if (!compound || compound->type != SceneNode::Type::Compound) {
+        LOG_INFO("ReleaseCompound::exec compound_iid='{}' resolved=nullptr or "
+                 "wrong type — no-op", compound_iid);
+        return;
+    }
+    auto* parent = curvz::utils::find_by_iid(*proj, parent_iid);
+    if (!parent) {
+        LOG_INFO("ReleaseCompound::exec parent_iid='{}' resolved=nullptr — no-op",
+                 parent_iid);
+        return;
+    }
+
+    // Current index of the Compound in parent (capture may have shifted).
+    int cidx = -1;
+    for (int i = 0; i < (int)parent->children.size(); ++i) {
+        if (parent->children[i].get() == compound) { cidx = i; break; }
+    }
+    if (cidx < 0) {
+        LOG_INFO("ReleaseCompound::exec compound iid='{}' not a child of "
+                 "parent_iid='{}' — no-op", compound_iid, parent_iid);
+        return;
+    }
+
+    // Pull children out, erase the Compound, then re-insert children at the
+    // Compound's slot. children[0] (top) lands at cidx; order preserved.
+    std::vector<std::unique_ptr<SceneNode>> kids;
+    kids.reserve(compound->children.size());
+    for (auto& c : compound->children) kids.push_back(std::move(c));
+    compound->children.clear();
+
+    parent->children.erase(parent->children.begin() + cidx);
+    for (int i = 0; i < (int)kids.size(); ++i)
+        parent->children.insert(parent->children.begin() + cidx + i,
+                                std::move(kids[i]));
+
+    invalidate_iid_indexes(proj);
+    LOG_INFO("ReleaseCompound::exec compound_iid='{}' dissolved → {} children "
+             "promoted", compound_iid, child_iids.size());
+}
+
+void ReleaseCompoundCommand::undo() {
+    if (!proj || !snapshot) {
+        LOG_INFO("ReleaseCompound::undo proj/snapshot NULL desc='{}'", desc);
+        return;
+    }
+    invalidate_iid_indexes(proj);
+
+    auto* parent = curvz::utils::find_by_iid(*proj, parent_iid);
+    if (!parent) {
+        LOG_INFO("ReleaseCompound::undo parent_iid='{}' resolved=nullptr — no-op",
+                 parent_iid);
+        return;
+    }
+
+    // Atomic: every captured child must still be a direct child of parent.
+    std::vector<SceneNode*> kids;
+    kids.reserve(child_iids.size());
+    for (const auto& cid : child_iids) {
+        auto* c = curvz::utils::find_by_iid(*proj, cid);
+        if (!c) {
+            LOG_INFO("ReleaseCompound::undo child iid='{}' resolved=nullptr — "
+                     "bailing", cid);
+            return;
+        }
+        bool in_parent = false;
+        for (const auto& pc : parent->children) {
+            if (pc.get() == c) { in_parent = true; break; }
+        }
+        if (!in_parent) {
+            LOG_INFO("ReleaseCompound::undo child iid='{}' no longer in parent — "
+                     "bailing", cid);
+            return;
+        }
+        kids.push_back(c);
+    }
+
+    // Re-create the Compound from the snapshot (faithful identity + appearance;
+    // clone_node preserves internal_id). Drop the snapshot's cloned children
+    // and move the LIVE children in, preserving order.
+    auto compound = clone_node(*snapshot);
+    compound->children.clear();
+    for (SceneNode* c : kids) {
+        for (auto it = parent->children.begin();
+             it != parent->children.end(); ++it) {
+            if (it->get() == c) {
+                compound->children.push_back(std::move(*it));
+                parent->children.erase(it);
+                break;
+            }
+        }
+    }
+
+    int ins = std::clamp(compound_index_before, 0,
+                         (int)parent->children.size());
+    parent->children.insert(parent->children.begin() + ins,
+                            std::move(compound));
+
+    invalidate_iid_indexes(proj);
+    LOG_INFO("ReleaseCompound::undo restored Compound iid='{}' with {} children",
+             compound_iid, kids.size());
+}
+
 } // namespace Curvz

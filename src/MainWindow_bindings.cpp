@@ -445,6 +445,12 @@ void MainWindow::connect_signals() {
   m_gallery.signal_copy_icon().connect(
       [this](std::string path) { on_copy_icon(path); });
 
+  // s360 — returning to the Project tab exits icon-preview mode if active,
+  // restoring the real active doc and refreshing the gallery + doc-tab bar
+  // (exit_preview_mode → update_all_panels). No-op when not previewing.
+  m_gallery.signal_show_project_tab().connect(
+      [this]() { exit_preview_mode(); });
+
   m_properties.signal_prop_changed().connect([this]() {
     LOG_DEBUG("signal_prop_changed: fired — calling queue_draw");
     // Any inspector edit may affect a Blend's A or B — invalidate caches
@@ -1500,6 +1506,15 @@ void MainWindow::connect_signals() {
         m_image_info_dialog.show(*this, std::move(info));
       });
 
+  // s360: an interactive SVG import that fails (unreadable / unparseable
+  // file, or a file with no drawable objects) emits this instead of a
+  // silent return. ImportFailureDialog is the presenter, peer to
+  // m_image_info_dialog; we forward parent + payload.
+  m_canvas.signal_request_import_failure().connect(
+      [this](ImportFailure f) {
+        m_import_failure_dialog.show(*this, std::move(f));
+      });
+
   // s210 m2: canvas right-click-while-R-held places a custom pivot
   // and emits this with the pivot doc coords. RotateFromPointDialog
   // is the presenter; Apply routes back through Canvas::apply_rotate_
@@ -1637,6 +1652,49 @@ void MainWindow::connect_signals() {
         if (!ctrl && !alt) {
           if (text_focused)
             return false;
+        }
+
+        // ── Editing chords belong to the focused text widget ────────────────
+        // s360: when a Gtk editable (Entry / CurvzEntry / the inner GtkText a
+        // SpinButton focuses) has keyboard focus, the clipboard and select-all
+        // chords are the editable's, not the canvas's. Without this, the
+        // bare-Ctrl+C/X/V/A branches below run m_canvas.* and consume the event
+        // (return true), so Ctrl+V never reaches the focused entry — paste was
+        // only possible via the entry's right-click menu (the reported bug on
+        // the metadata file-name / export-name fields).
+        //
+        // Deliberately narrow: only the plain (no-Shift) clipboard + select-all
+        // chords are handled here. Every other Ctrl shortcut (Ctrl+S, Ctrl+O,
+        // Ctrl+N, …) keeps firing regardless of focus, preserving the
+        // long-standing "Ctrl always fires" design (s181). Ctrl+Z is NOT taken:
+        // document undo stays global, since after a panel rebuild a field holds
+        // focus "essentially always" and a user pressing Ctrl+Z means doc-undo,
+        // not text-undo. Ctrl+Alt+V (paste-in-place) is excluded by the !alt
+        // test and reaches the canvas branch below.
+        //
+        // s360: with focus on the real GtkText, merely returning false here
+        // (letting the event propagate) did NOT make GtkText perform
+        // copy/paste — confirmed by instrumentation; the clipboard bindings
+        // never fired. So instead of relying on propagation we invoke the
+        // editable's own widget action directly (clipboard.copy/cut/paste,
+        // selection.select-all — the standard GtkText/GtkEntry actions) on the
+        // focused widget and consume the event. activate_action returns false
+        // if the action doesn't exist on this widget, in which case we fall
+        // through and the chord behaves as before (canvas op).
+        if (ctrl && !alt && !shift && text_focused) {
+          const char *act = nullptr;
+          switch (kv) {
+          case GDK_KEY_c:
+          case GDK_KEY_C: act = "clipboard.copy"; break;
+          case GDK_KEY_x:
+          case GDK_KEY_X: act = "clipboard.cut"; break;
+          case GDK_KEY_v:
+          case GDK_KEY_V: act = "clipboard.paste"; break;
+          case GDK_KEY_a:
+          case GDK_KEY_A: act = "selection.select-all"; break;
+          }
+          if (act && gtk_widget_activate_action(focused, act, nullptr))
+            return true; // performed on the focused editable; consume
         }
 
         // ── s301 m1c — Canvas text editor takes plain keystrokes ────────────

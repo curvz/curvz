@@ -8975,6 +8975,72 @@ bool Canvas::node_tool_key(guint keyval, bool shift, bool ctrl, bool alt) {
                    "Release the Blend first.");
       return true;
     }
+
+    // s360 — Break on a subpath nested in a Compound. Opening or splitting a
+    // subpath in place would corrupt the Compound's even-odd fill topology,
+    // and split can't reparent two halves into a layer the subpath isn't a
+    // direct child of. Per the s360 ruling we AUTO-RELEASE the owning Compound
+    // first (promoting the subpath to a top-level path), then break. Release +
+    // break compose into ONE CompositeCommand, so a single Ctrl+Z reverses
+    // both. A subpath nested in a Group (not a Compound) keeps the existing
+    // behaviour — out of scope here.
+    if (m_doc) {
+      int sub_idx = -1;
+      SceneNode *owner = find_parent(m_doc, m_selected, &sub_idx);
+      if (owner && owner->type == SceneNode::Type::Compound) {
+        int owner_idx = -1;
+        SceneNode *owner_parent = find_parent(m_doc, owner, &owner_idx);
+        if (!owner_parent) {
+          LOG_INFO("NodeTool: break-in-compound — compound iid='{}' has no "
+                   "parent; aborting", owner->internal_id);
+          return true;
+        }
+        // Capture child iids (top..bottom) + a snapshot for faithful undo,
+        // BEFORE the release frees the Compound node.
+        std::vector<std::string> child_iids;
+        child_iids.reserve(owner->children.size());
+        for (auto &c : owner->children)
+          if (c)
+            child_iids.push_back(c->internal_id);
+
+        auto comp = std::make_unique<CompositeCommand>(
+            bp.closed ? "Open path in compound" : "Split path in compound");
+        auto rel = std::make_unique<ReleaseCompoundCommand>(
+            project(), owner->internal_id, owner_parent->internal_id, owner_idx,
+            std::move(child_iids), clone_node(*owner),
+            "Release compound (break)");
+        rel->execute(); // dissolve now — m_selected (a child) re-parents up to
+                        // owner_parent; the SceneNode pointer stays valid.
+        comp->add(std::move(rel));
+
+        // m_selected is unchanged and now a direct child of owner_parent.
+        // Perform the break, capturing its command for the composite.
+        std::unique_ptr<CurvzCommand> brk;
+        if (bp.closed)
+          open_selected_at_node(&brk);
+        else
+          split_selected_at_node(&brk);
+
+        if (brk) {
+          comp->add(std::move(brk));
+          if (m_history)
+            m_history->push(std::move(comp));
+        } else {
+          // Break did not apply (e.g. the Compound was itself nested in a
+          // Group, so the subpath is still not a direct layer child and split
+          // bailed). Roll the release back rather than leave a dissolved
+          // compound with nothing gained.
+          comp->undo();
+          m_sig_doc_changed.emit();
+          m_sig_node_changed.emit(m_selected, m_selected_node);
+          queue_draw();
+          LOG_INFO("NodeTool: break-in-compound — break did not apply; "
+                   "released compound rolled back");
+        }
+        return true;
+      }
+    }
+
     if (bp.closed) {
       open_selected_at_node();
     } else {

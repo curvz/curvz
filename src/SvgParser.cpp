@@ -580,7 +580,29 @@ static std::vector<std::string> split_tags(const std::string& src) {
         }
         auto close = src.find('>', open);
         if (close == std::string::npos) break;
-        tags.push_back(src.substr(open + 1, close - open - 1));
+        // s360 — Normalize tag-internal whitespace to spaces. Foreign writers
+        // (Inkscape) place each attribute on its own line, so the opening tag
+        // arrives as "path\n     id=...\n     d=..." — the element name is
+        // followed by a NEWLINE, not a space. The element-dispatch checks
+        // downstream all test `rfind("path ", 0) == 0` / `tag == "path"`
+        // (name + SPACE), so a newline there means the element is never
+        // recognised and never parsed — the whole file imports as nothing.
+        // Convert \n \t \r to spaces so every dispatch site matches uniformly
+        // (one structural fix instead of patching each element handler).
+        // Quote-aware: whitespace INSIDE a quoted attribute value is left
+        // intact, so multi-line attribute values (e.g. data-curvz-content
+        // text) round-trip byte-for-byte. CDATA tokens take the fast-path
+        // above and never reach here, so text payloads are never touched.
+        std::string tagstr = src.substr(open + 1, close - open - 1);
+        {
+            char quote = 0;
+            for (char& c : tagstr) {
+                if (quote) { if (c == quote) quote = 0; continue; }
+                if (c == '"' || c == '\'')                 quote = c;
+                else if (c == '\n' || c == '\t' || c == '\r') c = ' ';
+            }
+        }
+        tags.push_back(std::move(tagstr));
         i = close + 1;
     }
     return tags;
@@ -3892,10 +3914,12 @@ bool is_guide_layer   = (attr(tag, "data-curvz-guide-layer") == "1");
     return doc;
 }
 
-std::unique_ptr<CurvzDocument> parse_svg_file(const std::string& path) {
+std::unique_ptr<CurvzDocument> parse_svg_file(const std::string& path,
+                                              std::string* fail_reason) {
     std::ifstream f(path);
     if (!f) {
         LOG_ERROR("SvgParser: cannot open '{}'", path);
+        if (fail_reason) *fail_reason = "The file could not be opened.";
         return nullptr;
     }
     std::ostringstream ss;
@@ -3923,6 +3947,8 @@ std::unique_ptr<CurvzDocument> parse_svg_file(const std::string& path) {
         std::fprintf(stderr,
                      "SvgParser: catastrophic parse failure on '%s' — %s\n",
                      path.c_str(), e.what());
+        if (fail_reason)
+            *fail_reason = std::string("The file could not be parsed: ") + e.what();
         return nullptr;
     } catch (...) {
         LOG_ERROR("SvgParser: catastrophic parse failure on '{}' — unknown "
@@ -3930,6 +3956,8 @@ std::unique_ptr<CurvzDocument> parse_svg_file(const std::string& path) {
         std::fprintf(stderr,
                      "SvgParser: catastrophic parse failure on '%s' — unknown "
                      "exception type\n", path.c_str());
+        if (fail_reason)
+            *fail_reason = "The file could not be parsed (unrecognized error).";
         return nullptr;
     }
     if (doc) doc->filename = path;

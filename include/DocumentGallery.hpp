@@ -39,6 +39,10 @@ public:
     using FilterChangedSignal = sigc::signal<void(std::string)>;
     using PreviewIconSignal   = sigc::signal<void(std::string)>;  // path
     using CopyIconSignal      = sigc::signal<void(std::string)>;  // path
+    // s360 — fired when the gallery switches back to the Project tab. MainWindow
+    // uses it to leave icon-preview mode (which swapped the canvas to a
+    // throwaway preview doc) and restore + refresh the real project view.
+    using ShowProjectTabSignal = sigc::signal<void()>;
 
     DocActivatedSignal&  signal_doc_activated()  { return m_signal_doc_activated; }
     AddDocSignal&        signal_add_doc()         { return m_signal_add_doc; }
@@ -49,6 +53,7 @@ public:
     FilterChangedSignal& signal_filter_changed()  { return m_signal_filter_changed; }
     PreviewIconSignal&   signal_preview_icon()    { return m_signal_preview_icon; }
     CopyIconSignal&      signal_copy_icon()       { return m_signal_copy_icon; }
+    ShowProjectTabSignal& signal_show_project_tab() { return m_signal_show_project_tab; }
 
 private:
     enum class ViewMode { Thumbnail, List };
@@ -56,6 +61,10 @@ private:
     void rebuild_project_tab();
     void rebuild_system_tab();
     void apply_filter();
+    // s360 — show/hide the no-matches empty-state and the (now-empty) scrolls
+    // after a filter pass. Shared by apply_filter (live typing) and
+    // rebuild_project_tab (full rebuild) so both paths stay consistent.
+    void update_filter_empty_state();
 
     Cairo::RefPtr<Cairo::ImageSurface> render_thumb(CurvzDocument* doc, int size);
     Cairo::RefPtr<Cairo::ImageSurface> render_svg_thumb(const std::string& path, int size);
@@ -102,6 +111,10 @@ private:
 
     // System tab placeholder (shown while not yet scanned)
     Gtk::Label          m_system_placeholder;
+    // s360 — empty-state shown in the Project tab when a search filter is
+    // active but matches no documents, so a filtered-to-nothing gallery reads
+    // as "no matches" rather than looking like the documents vanished.
+    Gtk::Label          m_project_empty;
 
     DocActivatedSignal  m_signal_doc_activated;
     AddDocSignal        m_signal_add_doc;
@@ -112,6 +125,7 @@ private:
     FilterChangedSignal m_signal_filter_changed;
     PreviewIconSignal   m_signal_preview_icon;
     CopyIconSignal      m_signal_copy_icon;
+    ShowProjectTabSignal m_signal_show_project_tab;
 };
 
 } // namespace Curvz

@@ -94,15 +94,15 @@ DocumentGallery::DocumentGallery() : Gtk::Box(Gtk::Orientation::VERTICAL) {
       m_view_mode = ViewMode::List;
       m_btn_view.set_icon_name("view-list-symbolic");
       m_btn_view.set_tooltip_text("Switch to thumbnail view");
-      m_thumb_scroll.set_visible(false);
-      m_list_scroll.set_visible(true);
     } else {
       m_view_mode = ViewMode::Thumbnail;
       m_btn_view.set_icon_name("view-grid-symbolic");
       m_btn_view.set_tooltip_text("Switch to list view");
-      m_list_scroll.set_visible(false);
-      m_thumb_scroll.set_visible(true);
     }
+    // s360 — single source of truth for scroll visibility: show the scroll for
+    // the current mode, unless a filter matched nothing (then keep the
+    // empty-state message and both scrolls hidden).
+    update_filter_empty_state();
   });
   m_header.append(m_btn_view);
 
@@ -202,6 +202,18 @@ DocumentGallery::DocumentGallery() : Gtk::Box(Gtk::Orientation::VERTICAL) {
   m_list_scroll.set_expand(true);
   m_list_scroll.set_visible(false); // starts hidden; thumbnail is default
   proj_stack->append(m_list_scroll);
+
+  // s360 — empty-state for an active search filter that matches nothing.
+  // Hidden by default; rebuild_project_tab toggles it (and the scrolls) so a
+  // filtered-to-zero gallery shows a message instead of looking empty.
+  m_project_empty.set_halign(Gtk::Align::CENTER);
+  m_project_empty.set_valign(Gtk::Align::CENTER);
+  m_project_empty.set_vexpand(true);
+  m_project_empty.set_wrap(true);
+  m_project_empty.set_justify(Gtk::Justification::CENTER);
+  m_project_empty.add_css_class("dim-label");
+  m_project_empty.set_visible(false);
+  proj_stack->append(m_project_empty);
 
   auto *proj_label = Gtk::make_managed<Gtk::Label>("Project");
   m_notebook.append_page(*proj_stack, *proj_label);
@@ -336,8 +348,22 @@ DocumentGallery::DocumentGallery() : Gtk::Box(Gtk::Orientation::VERTICAL) {
         rebuild_system_tab();
       });
     }
-    if (page == 0)
+    if (page == 0) {
+      // s360 — leaving the System tab: tell MainWindow to exit icon-preview
+      // mode (single-click on a system icon swaps the canvas to a throwaway
+      // preview doc; without this, switching back left preview active and the
+      // project docs + doc-tab bar unrefreshed — "docs gone but still there").
+      // Idempotent: the handler no-ops when preview isn't active.
+      m_signal_show_project_tab.emit();
+      // s360 — re-sync the gallery's own tile visibility + empty-state to the
+      // current filter. The filter may have changed (e.g. cleared) while the
+      // System tab was up, where search edits only rebuild the System tab; if
+      // we only emit filter_changed (which updates the doc-tab bar) the
+      // gallery would keep its stale pre-switch visibility. apply_filter()
+      // restores the documents when the search was cleared.
+      apply_filter();
       m_signal_filter_changed.emit(m_filter);
+    }
   });
 
   append(m_notebook);
@@ -841,6 +867,35 @@ void DocumentGallery::apply_filter() {
     std::string name = doc_display_name(m_project->documents[li].get());
     w->set_visible(str_icontains(name, m_filter));
   }
+
+  // s360 — keep the no-matches empty-state in sync during live typing.
+  update_filter_empty_state();
+}
+
+// s360 — show "No documents match …" when a filter is active and nothing
+// matches, hiding the (now-empty) scrolls; otherwise hide the message and
+// restore the scroll for the current view mode. Shared by apply_filter and
+// rebuild_project_tab. Documents lists are small, so the extra match pass is
+// cheap.
+void DocumentGallery::update_filter_empty_state() {
+  if (!m_project)
+    return;
+  int matches = 0;
+  for (const auto &d : m_project->documents)
+    if (str_icontains(doc_display_name(d.get()), m_filter))
+      ++matches;
+  bool no_match =
+      !m_filter.empty() && matches == 0 && !m_project->documents.empty();
+  m_project_empty.set_visible(no_match);
+  if (no_match) {
+    m_project_empty.set_text("No documents match \"" + m_filter + "\"");
+    m_thumb_scroll.set_visible(false);
+    m_list_scroll.set_visible(false);
+  } else {
+    // Mirror the view toggle: show the scroll for the current view mode.
+    m_thumb_scroll.set_visible(m_view_mode == ViewMode::Thumbnail);
+    m_list_scroll.set_visible(m_view_mode == ViewMode::List);
+  }
 }
 
 // ── Gallery rebuild
@@ -1165,6 +1220,9 @@ void DocumentGallery::rebuild_project_tab() {
 
     m_list_box.append(*row);
   }
+
+  // s360 — refresh the no-matches empty-state after rebuilding tiles.
+  update_filter_empty_state();
 }
 
 } // namespace Curvz

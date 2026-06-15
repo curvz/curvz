@@ -3956,6 +3956,69 @@ struct UngroupNodeCommand : CurvzCommand {
     // iid-based capture; default references() == false is correct.
 };
 
+// ── ReleaseCompoundCommand ────────────────────────────────────────────────────
+//
+// s360 m1. Undoable release (dissolve) of a single Compound: promotes its
+// child subpaths to the Compound's parent at the Compound's z-position, then
+// erases the Compound. Undo re-creates the Compound (faithful identity +
+// appearance from a snapshot clone) and re-collects the live children.
+//
+// Mirrors UngroupNodeCommand; the one addition is the appearance snapshot,
+// because a Compound carries its own fill/stroke/opacity (S58g) that a Group
+// does not. Children and parent are resolved by iid; clone_node preserves the
+// snapshot's internal_id so the restored Compound keeps its identity across
+// undo/redo.
+//
+// Intended as the single undoable release path: composed with the break
+// command in node-mode Break-on-compound (s360 m1), and adopted by the menu
+// Split Compound Path verb (s360 m2) to retire its hand-rolled, non-undoable
+// dissolve.
+//
+// Execute semantics:
+//   1. Resolve Compound by iid. No-op if gone / wrong type.
+//   2. Resolve parent by iid. No-op if gone.
+//   3. Find the Compound's CURRENT index in parent (capture may have shifted).
+//   4. Move children out into parent at cidx + position (children[0] = top
+//      lands at cidx, order preserved). Erase the now-empty Compound.
+//
+// Undo semantics:
+//   1. Resolve parent. No-op if gone.
+//   2. Resolve every captured child iid; ATOMIC — bail whole if any is gone or
+//      is no longer a direct child of parent.
+//   3. Re-create the Compound from the snapshot clone (identity + appearance),
+//      drop the snapshot's cloned children, move the LIVE children in (order
+//      preserved), insert at compound_index_before (clamped).
+struct ReleaseCompoundCommand : CurvzCommand {
+    CurvzProject*              proj;
+    std::string                compound_iid;
+    std::string                parent_iid;
+    int                        compound_index_before;
+    std::vector<std::string>   child_iids;   // children[0..] order (top..bottom)
+    std::unique_ptr<SceneNode> snapshot;     // clone: identity + appearance only
+    std::string                desc;
+
+    ReleaseCompoundCommand(CurvzProject* proj,
+                           std::string compound_iid,
+                           std::string parent_iid,
+                           int compound_index_before,
+                           std::vector<std::string> child_iids,
+                           std::unique_ptr<SceneNode> snapshot,
+                           std::string desc = "Release compound")
+        : proj(proj)
+        , compound_iid(std::move(compound_iid))
+        , parent_iid(std::move(parent_iid))
+        , compound_index_before(compound_index_before)
+        , child_iids(std::move(child_iids))
+        , snapshot(std::move(snapshot))
+        , desc(std::move(desc)) {}
+
+    void execute() override;  // see CommandHistory.cpp
+    void undo()    override;  // see CommandHistory.cpp
+    std::string description() const override { return desc; }
+    // iid-based capture (the snapshot is a detached clone, not a live-tree
+    // reference); default references() == false is correct, as for SplitPath.
+};
+
 class CommandHistory {
 public:
     static constexpr int MAX_HISTORY = 500;

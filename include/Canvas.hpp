@@ -2,6 +2,7 @@
 #include "CommandHistory.hpp"
 #include "CurvzDocument.hpp"
 #include "ImageInfo.hpp"  // s210 m1 — payload struct for signal_request_image_info
+#include "ImportFailure.hpp"  // s360 — payload struct for signal_request_import_failure
 #include "SceneNode.hpp"
 #include "GlyphOutline.hpp"   // s350 m1 — Curvz::PatternGlyph + pattern_glyph_walk
 #include "SelectionContext.hpp"  // s158 m1 — capability classifier
@@ -785,6 +786,18 @@ public:
     return m_sig_request_image_info;
   }
 
+  // s360 — emitted when an interactive SVG import fails. Payload is a
+  // pre-baked ImportFailure (filename, path, reason, optional detail);
+  // import_svg_to_canvas decides the reason and emits, MainWindow's
+  // ImportFailureDialog is a pure presenter. Replaces the prior silent
+  // log-and-return on both failure exits (null parse / no drawable
+  // objects). Same Canvas-gathers/MainWindow-presents split as
+  // signal_request_image_info.
+  using RequestImportFailureSignal = sigc::signal<void(ImportFailure)>;
+  RequestImportFailureSignal &signal_request_import_failure() {
+    return m_sig_request_import_failure;
+  }
+
   // Pen tool — invoked from MainWindow key handler
   void commit_pen_path();
   void cancel_pen_path();
@@ -1132,11 +1145,15 @@ public:
 
   // Open a closed path at the currently selected node (rotate + open).
   // No-op if path is open, no node selected, or fewer than 2 nodes.
-  void open_selected_at_node();
+  // s360: if out_cmd is non-null, the EditPathCommand is handed back via it
+  // (already applied) instead of being pushed to history, so the caller can
+  // compose it (e.g. with a ReleaseCompoundCommand into one undo step).
+  void open_selected_at_node(std::unique_ptr<CurvzCommand>* out_cmd = nullptr);
 
   // Split an open path at the currently selected node into two objects.
   // No-op if path is closed, node is head/tail, or fewer than 3 nodes.
-  void split_selected_at_node();
+  // s360: out_cmd composes the SplitPathCommand instead of pushing (see above).
+  void split_selected_at_node(std::unique_ptr<CurvzCommand>* out_cmd = nullptr);
 
   // Called by the inspector to apply a node coordinate edit through the
   // same pipeline as a canvas drag — canvas owns all writes to obj->path.
@@ -3173,6 +3190,10 @@ private:
   // SceneNode. Payload pre-baked by Canvas; MainWindow's ImageInfoDialog
   // presents it. See accessor banner above.
   RequestImageInfoSignal m_sig_request_image_info;
+  // s360: emitted from import_svg_to_canvas when an interactive import
+  // fails. Payload pre-baked by Canvas; MainWindow's ImportFailureDialog
+  // presents it. See accessor banner above.
+  RequestImportFailureSignal m_sig_request_import_failure;
   // s210 m2: emitted from on_pivot_dialog after right-click-while-R-held
   // places a custom pivot. Payload is the pivot doc-Y-down coords;
   // MainWindow's RotateFromPointDialog presents the dialog and routes

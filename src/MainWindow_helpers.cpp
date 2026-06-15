@@ -564,6 +564,25 @@ void MainWindow::refresh_inspector() {
   Glib::signal_idle().connect_once([this]() {
     if (m_closing)
       return;
+
+    // s360: the m_properties.refresh* calls below tear down and rebuild the
+    // inspector's widget subtree. If the window's keyboard focus currently
+    // sits on one of those widgets — e.g. a metadata Entry the user pasted
+    // into, then clicked the canvas background to deselect, scheduling this
+    // very refresh — destroying that focused widget leaves the GtkWindow with
+    // a dangling focus pointer. GTK's after-paint maybe_unset_focus_and_default
+    // then walks the inspector tab chain to relocate focus and crashes in
+    // gtk_label_grab_focus -> gtk_widget_is_ancestor on the stale widget (the
+    // selectable value labels are focusable, so they are the landing spot).
+    // Move focus to the canvas BEFORE the teardown so there is no dangling
+    // focus widget to scramble from. Raw gtk_window_get_focus (per the s219
+    // capture-controller rationale) returns the actual focused widget — the
+    // inner GtkText — which gtkmm's get_focus() can miss.
+    if (GtkWidget *focused = gtk_window_get_focus(GTK_WINDOW(this->gobj()))) {
+      if (gtk_widget_is_ancestor(focused, GTK_WIDGET(m_properties.gobj())))
+        m_canvas.grab_focus();
+    }
+
     auto *doc = m_project ? m_project->active_doc() : nullptr;
     SceneNode *sel = m_canvas.selected_object();
     CanvasModel *cm = doc ? &doc->canvas : nullptr;
@@ -1154,6 +1173,22 @@ void MainWindow::ndd_apply_chosen_theme(
 //   force_currentcolor: convert Solid fills/strokes to CurrentColor.
 //   normalize_to_1000:  rescale coords so long axis = 1000 (icon workflow).
 //                       When false, use SVG's own dimensions verbatim.
+void MainWindow::show_import_failure(const std::string &path,
+                                     const std::string &reason,
+                                     const std::string &detail) {
+  // s360 — surface a failed import to the user. The project-import paths
+  // (import_svg_impl / import_svg_as_doc) previously logged-and-returned,
+  // so a bad file was a silent no-op. Pre-bake the payload and present
+  // the themed dialog (peer to m_image_info_dialog).
+  ImportFailure f;
+  auto slash = path.rfind('/');
+  f.filename = (slash == std::string::npos) ? path : path.substr(slash + 1);
+  f.full_path = path;
+  f.reason = reason;
+  f.detail = detail;
+  m_import_failure_dialog.show(*this, std::move(f));
+}
+
 void MainWindow::import_svg_impl(const std::string &path,
                                  bool force_currentcolor,
                                  bool normalize_to_1000) {
@@ -1161,9 +1196,13 @@ void MainWindow::import_svg_impl(const std::string &path,
     return;
 
   try {
-    auto imported = Curvz::parse_svg_file(path);
+    std::string fail_reason;
+    auto imported = Curvz::parse_svg_file(path, &fail_reason);
     if (!imported) {
       LOG_ERROR("import_svg_impl: failed to parse '{}'", path);
+      show_import_failure(path, fail_reason.empty()
+                                    ? "The file could not be read as an SVG."
+                                    : fail_reason);
       return;
     }
 
@@ -1253,6 +1292,10 @@ void MainWindow::import_svg_impl(const std::string &path,
 
     if (imported_count == 0) {
       LOG_INFO("import_svg_impl: no objects found in '{}'", path);
+      show_import_failure(
+          path, "No importable objects were found.",
+          "The file parsed, but it contains no visible shapes — only "
+          "definitions, guides, metadata, or hidden layers.");
       return;
     }
 
@@ -1292,9 +1335,13 @@ bool MainWindow::import_svg_as_doc(const std::string &path,
   if (!m_project)
     return false;
 
-  auto imported = Curvz::parse_svg_file(path);
+  std::string fail_reason;
+  auto imported = Curvz::parse_svg_file(path, &fail_reason);
   if (!imported) {
     LOG_ERROR("import_svg_as_doc: failed to parse '{}'", path);
+    show_import_failure(path, fail_reason.empty()
+                                  ? "The file could not be read as an SVG."
+                                  : fail_reason);
     return false;
   }
 
@@ -1379,6 +1426,10 @@ bool MainWindow::import_svg_as_doc(const std::string &path,
 
   if (imported_count == 0) {
     LOG_INFO("import_svg_as_doc: no objects found in '{}'", path);
+    show_import_failure(
+        path, "No importable objects were found.",
+        "The file parsed, but it contains no visible shapes — only "
+        "definitions, guides, metadata, or hidden layers.");
     return false;
   }
 

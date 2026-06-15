@@ -98,6 +98,7 @@
 #include "GradientDialog.hpp"
 #include "HelpWindow.hpp"
 #include "ImageInfoDialog.hpp" // s210 m1 — hide-on-close singleton
+#include "ImportFailureDialog.hpp" // s360 — hide-on-close singleton
 #include "MacroEditorWindow.hpp"
 #include "MacroManagerWindow.hpp"
 #include "ManageTemplatesDialog.hpp"
@@ -1319,6 +1320,13 @@ private:
   void
   import_svg_impl(const std::string &path, bool force_currentcolor,
                   bool normalize_to_1000); // category: helper: import shared
+  // s360 — present the import-failure dialog for `path`. Shared by the
+  // project-import paths (import_svg_impl / import_svg_as_doc); the
+  // canvas-import path emits via Canvas::signal_request_import_failure
+  // instead, since it lives in Canvas, away from the dialog member.
+  void show_import_failure(const std::string &path,
+                           const std::string &reason,
+                           const std::string &detail = "");
   void on_place_image();                   // category: handler: documents
   // s125 m1d (was m1c on_place_image_as_doc, renamed): routes to
   // import_image_to_canvas with fit_canvas_to_image=true. Wired to
@@ -1429,6 +1437,7 @@ private:
   StyleEditorDialog m_style_editor_dialog;          // s201 m1
   TextStyleEditorDialog m_text_style_editor_dialog; // s342
   ImageInfoDialog m_image_info_dialog;              // s210 m1
+  ImportFailureDialog m_import_failure_dialog;       // s360
   RotateFromPointDialog m_rotate_from_point_dialog; // s210 m2
   ShortcutsDialog m_shortcuts_dialog;
   HelpWindow m_help_window;

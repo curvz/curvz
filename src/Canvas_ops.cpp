@@ -518,9 +518,11 @@ void Canvas::split_compound_path() {
   // selection is the union of all released children. No-op if the
   // selection contains no compounds.
   //
-  // Note: like make_compound_path, this does not push to m_history. Both
-  // ops are pending undo support — parity preserved here so a future fix
-  // wires them together.
+  // s360 m2: now undoable. Each compound is released through a
+  // ReleaseCompoundCommand (the same unit node-mode Break uses), all composed
+  // into one CompositeCommand so a single Ctrl+Z restores every split
+  // compound at once. (make_compound_path's undo remains pending — its
+  // inverse is a separate symmetric piece.)
   if (!m_doc || m_selection.empty()) return;
 
   // Collect the compounds to split. Working off a stable copy because
@@ -537,30 +539,33 @@ void Canvas::split_compound_path() {
   size_t total_released = 0;
   size_t compounds_split = 0;
 
+  auto comp = std::make_unique<CompositeCommand>(
+      targets.size() == 1 ? "Split compound path" : "Split compound paths");
+
   for (SceneNode *target : targets) {
     int insert_idx = 0;
     SceneNode *parent = find_parent(m_doc, target, &insert_idx);
     if (!parent) continue;
 
-    // Pull children out of the compound, then erase the compound from
-    // parent. Insert children at the compound's z-position, top-to-bottom
-    // order preserved (matches the within-layer descending convention —
-    // children[0] = top).
-    std::vector<std::unique_ptr<SceneNode>> released;
-    released.reserve(target->children.size());
-    for (auto &child : target->children)
-      released.push_back(std::move(child));
-
-    parent->children.erase(parent->children.begin() + insert_idx);
-
-    int idx = insert_idx;
-    for (auto &child : released) {
-      SceneNode *ptr = child.get();
-      parent->children.insert(parent->children.begin() + idx, std::move(child));
-      new_sel.push_back(ptr);
-      ++idx;
+    // Capture child iids (top..bottom) + a snapshot for faithful undo BEFORE
+    // the release frees the Compound. Children survive the dissolve (they are
+    // re-parented, not cloned), so their raw pointers stay valid for new_sel.
+    std::vector<std::string> child_iids;
+    child_iids.reserve(target->children.size());
+    for (auto &child : target->children) {
+      if (!child) continue;
+      child_iids.push_back(child->internal_id);
+      new_sel.push_back(child.get());
     }
-    total_released += released.size();
+    size_t released_count = child_iids.size();
+
+    auto rel = std::make_unique<ReleaseCompoundCommand>(
+        project(), target->internal_id, parent->internal_id, insert_idx,
+        std::move(child_iids), clone_node(*target), "Split compound path");
+    rel->execute(); // dissolve now; child pointers stay valid (re-parented)
+    comp->add(std::move(rel));
+
+    total_released += released_count;
     ++compounds_split;
   }
 
@@ -568,6 +573,9 @@ void Canvas::split_compound_path() {
   // split (e.g. all targets had unfindable parents — shouldn't happen in
   // practice), bail without mutating selection.
   if (new_sel.empty()) return;
+
+  if (m_history && !comp->steps.empty())
+    m_history->push(std::move(comp));
 
   m_selection      = new_sel;
   m_selected       = new_sel.front();
@@ -6839,7 +6847,7 @@ void Canvas::reverse_selected_path() {
 
 // ── open_selected_at_node
 // ─────────────────────────────────────────────────────
-void Canvas::open_selected_at_node() {
+void Canvas::open_selected_at_node(std::unique_ptr<CurvzCommand>* out_cmd) {
   if (!m_selected || !m_selected->path) {
     return;
   }
@@ -6873,10 +6881,13 @@ void Canvas::open_selected_at_node() {
   }
   *m_selected->path = bp.to_path_data();
 
-  if (m_history)
-    m_history->push(std::make_unique<EditPathCommand>(
-        project(), m_selected->internal_id,
-        std::move(before), *m_selected->path, "Open path at node"));
+  auto cmd = std::make_unique<EditPathCommand>(
+      project(), m_selected->internal_id,
+      std::move(before), *m_selected->path, "Open path at node");
+  if (out_cmd)
+    *out_cmd = std::move(cmd);
+  else if (m_history)
+    m_history->push(std::move(cmd));
 
   // Select the new tail (last node) — the cut point
   m_selected_node = (int)m_selected->path->nodes.size() - 1;
@@ -6888,7 +6899,7 @@ void Canvas::open_selected_at_node() {
 
 // ── split_selected_at_node
 // ────────────────────────────────────────────────────
-void Canvas::split_selected_at_node() {
+void Canvas::split_selected_at_node(std::unique_ptr<CurvzCommand>* out_cmd) {
   if (!m_selected || !m_selected->path) {
     return;
   }
@@ -6974,14 +6985,17 @@ void Canvas::split_selected_at_node() {
   right_node->stroke = m_selected->stroke;
   right_node->path = std::make_unique<PathData>(right_pd);
 
-  // Push undo before mutating
-  if (m_history) {
-    auto orig_snap = clone_node(*m_selected);
-    auto left_snap = clone_node(*left_node);
-    auto right_snap = clone_node(*right_node);
-    m_history->push(std::make_unique<SplitPathCommand>(
-        parent_layer, std::move(orig_snap), orig_index, std::move(left_snap),
-        std::move(right_snap)));
+  // Build the undo command from snapshots taken BEFORE the mutation below
+  // (m_selected / left_node / right_node are all still valid here). Route to
+  // the caller for composition (s360) or push to history as usual.
+  {
+    auto cmd = std::make_unique<SplitPathCommand>(
+        parent_layer, clone_node(*m_selected), orig_index,
+        clone_node(*left_node), clone_node(*right_node));
+    if (out_cmd)
+      *out_cmd = std::move(cmd);
+    else if (m_history)
+      m_history->push(std::move(cmd));
   }
 
   // Replace original with the two halves
@@ -7026,9 +7040,26 @@ void Canvas::import_svg_to_canvas(const std::string &path) {
   if (!m_doc)
     return;
 
-  auto src_doc = parse_svg_file(path);
+  // s360 — derive the last path component once for any failure payload.
+  auto basename_of = [](const std::string &p) {
+    auto slash = p.rfind('/');
+    return (slash == std::string::npos) ? p : p.substr(slash + 1);
+  };
+
+  std::string fail_reason;
+  auto src_doc = parse_svg_file(path, &fail_reason);
   if (!src_doc) {
     LOG_ERROR("import_svg_to_canvas: failed to parse '{}'", path);
+    // s360 — surface the failure instead of a silent return. parse_svg_file
+    // fills fail_reason on its known null paths (unreadable / parse throw);
+    // fall back to a generic line if it somehow came back empty.
+    ImportFailure f;
+    f.filename = basename_of(path);
+    f.full_path = path;
+    f.reason = fail_reason.empty()
+                   ? "The file could not be read as an SVG."
+                   : fail_reason;
+    m_sig_request_import_failure.emit(std::move(f));
     return;
   }
 
@@ -7052,6 +7083,15 @@ void Canvas::import_svg_to_canvas(const std::string &path) {
 
   if (imported.empty()) {
     LOG_WARN("import_svg_to_canvas: no visible objects in '{}'", path);
+    // s360 — the file parsed but held nothing drawable (only defs, guides,
+    // metadata, or hidden layers). Tell the user rather than no-op.
+    ImportFailure f;
+    f.filename = basename_of(path);
+    f.full_path = path;
+    f.reason = "No importable objects were found.";
+    f.detail = "The file parsed, but it contains no visible shapes — only "
+               "definitions, guides, metadata, or hidden layers.";
+    m_sig_request_import_failure.emit(std::move(f));
     return;
   }
 

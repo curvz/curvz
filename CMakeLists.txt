@@ -383,6 +383,11 @@ set(SOURCES
     # raw new-Gtk::Window self-deleting dialog in Canvas.cpp; the
     # Close button was the last raw Gtk::Button in that file.
     src/ImageInfoDialog.cpp
+    # s360 — Import-failure dialog. Same hide-on-close singleton pattern
+    # as ImageInfoDialog; presents the ImportFailure payload Canvas emits
+    # when an interactive SVG import fails (unreadable/unparseable file,
+    # or a file with no drawable objects) instead of a silent return.
+    src/ImportFailureDialog.cpp
     # s210 m2 — Rotate-from-point dialog (R-held + right-click flow).
     # Lifted out of Canvas_input.cpp; same hide-on-close singleton
     # pattern as ImageInfoDialog. Apply routes through Canvas::
